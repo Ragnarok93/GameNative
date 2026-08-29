@@ -4,8 +4,14 @@ import androidx.annotation.NonNull;
 
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 
 public class EnvVars implements Iterable<String> {
+    private static final String VK_INSTANCE_LAYERS = "VK_INSTANCE_LAYERS";
+    private static final String VK_LOADER_LAYERS_ENABLE = "VK_LOADER_LAYERS_ENABLE";
+
     private final LinkedHashMap<String, String> data = new LinkedHashMap<>();
 
     public EnvVars() {}
@@ -15,7 +21,18 @@ public class EnvVars implements Iterable<String> {
     }
 
     public void put(String name, Object value) {
-        data.put(name, String.valueOf(value));
+        String stringValue = String.valueOf(value);
+        data.put(name, stringValue);
+
+        // Vulkan loader 1.3.234+ added the loader-filter environment controls and
+        // deprecated VK_INSTANCE_LAYERS. GameNative still needs the legacy variable
+        // for older Wine/Vulkan-loader builds, so mirror that selection forward rather
+        // than choosing one loader generation. This is layer-name based, not GPU/vendor
+        // based, and therefore applies to LSFG as well as any other explicitly enabled
+        // Vulkan layer.
+        if (VK_INSTANCE_LAYERS.equals(name)) {
+            mirrorLegacyVulkanLayersToModernFilter(stringValue);
+        }
     }
 
     public void putAll(String values) {
@@ -26,12 +43,15 @@ public class EnvVars implements Iterable<String> {
             if (index < 0) continue;
             String name = unescape(part.substring(0, index));
             String value = unescape(part.substring(index + 1));
-            data.put(name, value);
+            put(name, value);
         }
     }
 
     public void putAll(EnvVars envVars) {
-        data.putAll(envVars.data);
+        if (envVars == this) return;
+        for (Map.Entry<String, String> entry : envVars.data.entrySet()) {
+            put(entry.getKey(), entry.getValue());
+        }
     }
 
     public String get(String name) {
@@ -83,6 +103,23 @@ public class EnvVars implements Iterable<String> {
     @Override
     public Iterator<String> iterator() {
         return data.keySet().iterator();
+    }
+
+    private void mirrorLegacyVulkanLayersToModernFilter(String legacyLayers) {
+        Set<String> enabledLayers = new LinkedHashSet<>();
+        addSeparatedValues(enabledLayers, data.get(VK_LOADER_LAYERS_ENABLE), ",");
+        addSeparatedValues(enabledLayers, legacyLayers, "[:;]");
+        if (!enabledLayers.isEmpty()) {
+            data.put(VK_LOADER_LAYERS_ENABLE, String.join(",", enabledLayers));
+        }
+    }
+
+    private static void addSeparatedValues(Set<String> target, String values, String separatorRegex) {
+        if (values == null || values.isEmpty()) return;
+        for (String value : values.split(separatorRegex)) {
+            String trimmed = value.trim();
+            if (!trimmed.isEmpty()) target.add(trimmed);
+        }
     }
 
     private static String escape(String s) {

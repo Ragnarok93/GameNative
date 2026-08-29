@@ -1,0 +1,49 @@
+name: Fork Validation Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/lsfg-discovery-material-you
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Configure non-production build values
+        run: |
+          cat <<'EOF' > local.properties
+          POSTHOG_API_KEY=
+          POSTHOG_HOST=https://us.i.posthog.com
+          STEAMGRIDDB_API_KEY=
+          CLOUD_PROJECT_NUMBER=
+          EOF
+
+      - name: Run affected unit-test suites
+        run: ./gradlew :app:testLegacyDebugUnitTest :app:testModernDebugUnitTest
+
+      - name: Build modern debug APK
+        run: ./gradlew :app:assembleModernDebug
+
+      - name: Upload modern debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamenative-modern-debug-lsfg-material-you
+          path: app/build/outputs/apk/modern/debug/app-modern-debug.apk
+          if-no-files-found: error

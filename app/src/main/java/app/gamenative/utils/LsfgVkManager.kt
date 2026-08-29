@@ -26,8 +26,8 @@ import kotlin.jvm.JvmStatic
  * real swapchain presentation path.
  *
  * Flow:
- * 1. At launch time: install the layer .so + manifest into the container's
- *    filesystem where the Vulkan loader discovers implicit layers.
+ * 1. At launch time: install the layer .so + manifest into the active
+ *    container HOME where the Vulkan loader discovers implicit layers.
  * 2. Copy Lossless.dll from the Steam install dir (app 993090) into the
  *    container's ~/.local/share/lsfg-vk/ directory.
  * 3. Write conf.toml with the DLL path, multiplier, flow scale, and
@@ -55,7 +55,8 @@ object LsfgVkManager {
     // Relative path from implicit_layer.d back to lib/
     private const val MANIFEST_LIBRARY_PATH = "../../../lib/$LIB_FILENAME"
 
-    // Process identifier written to conf.toml [[game]] exe field.
+    // Process identifier written to conf.toml [[game]] exe field and also used
+    // by the implicit-layer manifest's enable_environment gate.
     // Under Wine, /proc/self/exe points to the Wine loader, so we use this
     // stable identifier instead. Set via LSFG_PROCESS env var.
     private const val PROCESS_EXE_IDENTIFIER = "gamenative-lsfg"
@@ -80,8 +81,10 @@ object LsfgVkManager {
     private const val ENV_CONFIG = "LSFG_CONFIG"
     private const val ENV_PROCESS = "LSFG_PROCESS"
 
-    // Current runtime version (bumped when the bundled .so changes)
-    private const val RUNTIME_VERSION = "v1.3.3-android-arm64-v8a"
+    // Current runtime package revision. The native binary is still lsfg-vk
+    // v1.3.3; the suffix forces existing containers to receive the corrected
+    // implicit-layer manifest on the next launch.
+    private const val RUNTIME_VERSION = "v1.3.3-android-arm64-v8a-gamenative-implicit-r1"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -89,7 +92,7 @@ object LsfgVkManager {
 
     // ---- Public API --------------------------------------------------------
 
-    /** Whether LSFG is supported for this container's variant. */
+    /** Whether LSFG is supported for this container's runtime variant. */
     @JvmStatic
     fun isSupported(container: Container): Boolean =
         container.containerVariant.equals(Container.BIONIC, ignoreCase = true)
@@ -242,6 +245,11 @@ object LsfgVkManager {
      * - VkLayer_LS_frame_generation.json → ~/.local/share/vulkan/implicit_layer.d/
      * - Lossless.dll → ~/.local/share/lsfg-vk/  (copied from Steam install dir)
      *
+     * The active container is exposed at HOME=/.../home/xuser by
+     * ContainerManager.activateContainer(), which symlinks xuser to the
+     * per-container root. That means the manifest above is already in the
+     * Vulkan loader's standard $HOME/.local/share/vulkan/implicit_layer.d path.
+     *
      * Uses versioned caching to skip redundant copies.
      *
      * @return true if installation succeeded or was already up-to-date
@@ -379,11 +387,18 @@ object LsfgVkManager {
      * Apply LSFG-related environment variables to the launch environment.
      * Called during container startup in BionicProgramLauncherComponent.
      *
+     * The Vulkan loader already discovers the manifest as an implicit layer
+     * through $HOME/.local/share/vulkan/implicit_layer.d. Do not add that
+     * directory to VK_LAYER_PATH: Khronos defines VK_LAYER_PATH as an explicit
+     * layer search path, so doing so can cause the same manifest to be classified
+     * as explicit and the real implicit occurrence to be discarded as a duplicate.
+     *
      * @return true if LSFG is armed and env vars were applied
      */
     @JvmStatic
     fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean {
-        // Clear any stale env vars first
+        // Clear only LSFG-owned variables. Preserve caller-provided Vulkan layer
+        // search paths and enabled layers verbatim.
         envVars.remove(ENV_DISABLE)
         envVars.remove(ENV_CONFIG)
         envVars.remove(ENV_PROCESS)
@@ -400,30 +415,25 @@ object LsfgVkManager {
         if (!armed) {
             // Remove the manifest so the Vulkan loader can't find the layer
             disableLayerInContainer(container)
-            Timber.tag(TAG).i("LSFG disabled (enabled=%s, dll=%s)",
-                container.getExtra(EXTRA_ARMED, "false"), dllPath ?: "null")
+            Timber.tag(TAG).i(
+                "LSFG disabled (enabled=%s, dll=%s)",
+                container.getExtra(EXTRA_ARMED, "false"),
+                dllPath ?: "null",
+            )
             return false
         }
 
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
+        // The manifest uses this same variable/value as its enable_environment
+        // gate, so only GameNative-launched processes with LSFG armed activate it.
         envVars.put(ENV_PROCESS, PROCESS_EXE_IDENTIFIER)
 
-        // Add the container's implicit_layer.d to VK_LAYER_PATH so the
-        // Vulkan loader discovers the lsfg-vk layer installed there.
-        // The static VK_LAYER_PATH only covers /usr/share/vulkan/implicit_layer.d,
-        // but we install the layer into the container's ~/.local/share/vulkan/.
-        val containerLayerDir = File(container.rootDir, LAYER_RELATIVE_DIR)
-        val existingLayerPath = envVars["VK_LAYER_PATH"] ?: ""
-        if (existingLayerPath.isNotEmpty()) {
-            envVars.put("VK_LAYER_PATH", "$existingLayerPath:${containerLayerDir.absolutePath}")
-        } else {
-            envVars.put("VK_LAYER_PATH", containerLayerDir.absolutePath)
-        }
-
         Timber.tag(TAG).i(
-            "LSFG armed: dll=%s, multiplier=%d, flowScale=%.2f, perf=%s",
-            dllPath, multiplier(container), flowScale(container),
-            if (performanceMode(container)) "on" else "off"
+            "LSFG armed: dll=%s, multiplier=%d, flowScale=%.2f, perf=%s, discovery=implicit-home",
+            dllPath,
+            multiplier(container),
+            flowScale(container),
+            if (performanceMode(container)) "on" else "off",
         )
         return true
     }
@@ -644,7 +654,11 @@ object LsfgVkManager {
             if (ok) {
                 Timber.tag(TAG).i(
                     "Hot-reloaded conf.toml: enabled=%s, multiplier=%d, flowScale=%.2f, perf=%s, fpsLimit=%d",
-                    frameGenActive, multiplier, flowScale, performanceMode, fpsLimit(container)
+                    frameGenActive,
+                    multiplier,
+                    flowScale,
+                    performanceMode,
+                    fpsLimit(container),
                 )
             }
             ok
@@ -653,5 +667,4 @@ object LsfgVkManager {
             false
         }
     }
-
 }

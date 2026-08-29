@@ -7,6 +7,7 @@ import java.nio.file.Files
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -30,35 +31,42 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun applyLaunchEnv_doesNotForceOrReplaceInstanceLayers() {
+    fun applyLaunchEnv_usesStandardImplicitDiscoveryWithoutRewritingLayerPath() {
         val container = container(armed = true)
         val envVars = EnvVars().apply {
-            put("VK_LAYER_PATH", "/existing/layers")
+            put("VK_LAYER_PATH", "/existing/explicit-layers")
             put("VK_INSTANCE_LAYERS", "VK_LAYER_existing")
         }
 
         assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
 
-        val expectedLayerDir = File(
-            rootDir,
-            ".local/share/vulkan/implicit_layer.d",
-        ).absolutePath
-        assertEquals(
-            "/existing/layers:$expectedLayerDir",
-            envVars["VK_LAYER_PATH"],
-        )
+        // The active container is exposed through HOME=/.../home/xuser, where xuser
+        // symlinks to this container root. Its .local/share/vulkan/implicit_layer.d
+        // is therefore already a standard implicit-layer discovery location.
+        assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
+        assertEquals("gamenative-lsfg", envVars["LSFG_PROCESS"])
+        assertEquals(
+            File(rootDir, ".config/lsfg-vk/conf.toml").absolutePath,
+            envVars["LSFG_CONFIG"],
+        )
     }
 
     @Test
-    fun applyLaunchEnv_leavesInstanceLayerEnvironmentUntouchedWhenDisabled() {
+    fun applyLaunchEnv_clearsOnlyLsfgEnvironmentWhenDisabled() {
         val container = container(armed = false)
         val envVars = EnvVars().apply {
+            put("VK_LAYER_PATH", "/existing/explicit-layers")
             put("VK_INSTANCE_LAYERS", "VK_LAYER_existing")
+            put("LSFG_PROCESS", "stale")
+            put("LSFG_CONFIG", "/stale/conf.toml")
         }
 
         assertFalse(LsfgVkManager.applyLaunchEnv(container, envVars))
+        assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
+        assertNull(envVars["LSFG_PROCESS"])
+        assertNull(envVars["LSFG_CONFIG"])
     }
 
     private fun container(armed: Boolean): Container {

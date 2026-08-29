@@ -190,7 +190,7 @@ class LsfgCompatibilityDiagnosticsTest {
     }
 
     private fun container(armed: Boolean): Container = Container("CUSTOM_GAME_42").apply {
-        setRootDir(rootDir)
+        setRootDir(this@LsfgCompatibilityDiagnosticsTest.rootDir)
         setContainerVariant(Container.BIONIC)
         putExtra(LsfgVkManager.EXTRA_ARMED, armed)
         putExtra(LsfgVkManager.EXTRA_MULTIPLIER, 2)

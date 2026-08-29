@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_material_you_title">Material You colors</string>
+    <string name="settings_material_you_subtitle">Use colors from your Android wallpaper and system palette.</string>
+    <string name="settings_material_you_unsupported">Requires Android 12 or newer.</string>
+</resources>

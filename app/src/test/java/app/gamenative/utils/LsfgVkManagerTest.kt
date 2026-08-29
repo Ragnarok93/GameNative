@@ -27,7 +27,7 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun applyLaunchEnv_usesImplicitLayerSearchPathWithoutMutatingExplicitLayerPath() {
+    fun applyLaunchEnv_discoversAndExplicitlyEnablesLsfgWithoutDroppingExistingLayers() {
         File(rootDir, ".local/share/lsfg-vk/Lossless.dll").apply {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf(1))
@@ -39,8 +39,8 @@ class LsfgVkManagerTest {
             putExtra(LsfgVkManager.EXTRA_ARMED, true)
         }
         val envVars = EnvVars().apply {
-            put("VK_LAYER_PATH", "/existing/explicit")
-            put("VK_IMPLICIT_LAYER_PATH", "/existing/implicit")
+            put("VK_LAYER_PATH", "/existing/layers")
+            put("VK_INSTANCE_LAYERS", "VK_LAYER_EXISTING")
         }
 
         assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
@@ -50,9 +50,12 @@ class LsfgVkManagerTest {
             ".local/share/vulkan/implicit_layer.d",
         ).absolutePath
         assertEquals(
-            "/existing/implicit:$expectedLayerDir",
-            envVars["VK_IMPLICIT_LAYER_PATH"],
+            "/existing/layers:$expectedLayerDir",
+            envVars["VK_LAYER_PATH"],
         )
-        assertEquals("/existing/explicit", envVars["VK_LAYER_PATH"])
+        assertEquals(
+            "VK_LAYER_EXISTING:VK_LAYER_LS_frame_generation",
+            envVars["VK_INSTANCE_LAYERS"],
+        )
     }
 }

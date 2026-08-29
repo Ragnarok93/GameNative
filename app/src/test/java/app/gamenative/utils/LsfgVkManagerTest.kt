@@ -104,6 +104,7 @@ class LsfgVkManagerTest {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf(1))
         }
+        File(rootDir, ".config/lsfg-vk").mkdirs()
         val container = Container("lsfg-long-name").apply {
             setRootDir(rootDir)
             setContainerVariant(Container.BIONIC)

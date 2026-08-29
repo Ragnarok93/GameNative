@@ -8,8 +8,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
-import org.mockito.kotlin.mock
-import org.mockito.kotlin.whenever
 
 class LsfgCompatibilityDiagnosticsTest {
     private lateinit var rootDir: File
@@ -99,7 +97,7 @@ class LsfgCompatibilityDiagnosticsTest {
     }
 
     private fun writeHealthyRuntime(freshStats: Boolean) {
-        val layerLib = File(rootDir, ".local/lib/liblsfg-vk-layer.so").apply {
+        File(rootDir, ".local/lib/liblsfg-vk-layer.so").apply {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf(1, 2, 3))
         }
@@ -148,22 +146,17 @@ class LsfgCompatibilityDiagnosticsTest {
             writeText("fps=60.0\n")
             setLastModified(if (freshStats) nowMs - 500L else nowMs - 10_000L)
         }
-        // Keep a reference so the compiler/test clearly exercises the intended file.
-        check(layerLib.isFile)
     }
 
-    private fun container(armed: Boolean): Container {
-        val container = mock<Container>()
-        whenever(container.id).thenReturn("CUSTOM_GAME_42")
-        whenever(container.rootDir).thenReturn(rootDir)
-        whenever(container.containerVariant).thenReturn(Container.BIONIC)
-        whenever(container.getExtra(LsfgVkManager.EXTRA_ARMED, "false")).thenReturn(armed.toString())
-        whenever(container.getExtra(LsfgVkManager.EXTRA_MULTIPLIER, "2")).thenReturn("2")
-        whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80")).thenReturn("0.80")
-        whenever(container.getExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, "true")).thenReturn("false")
-        whenever(container.getExtra(LsfgVkManager.EXTRA_PRESENT_MODE, "mailbox")).thenReturn("mailbox")
-        whenever(container.getExtra("fpsLimiterEnabled", "false")).thenReturn("true")
-        whenever(container.getExtra("fpsLimiterTarget", "0")).thenReturn("30")
-        return container
+    private fun container(armed: Boolean): Container = Container("CUSTOM_GAME_42").apply {
+        setRootDir(rootDir)
+        setContainerVariant(Container.BIONIC)
+        putExtra(LsfgVkManager.EXTRA_ARMED, armed)
+        putExtra(LsfgVkManager.EXTRA_MULTIPLIER, 2)
+        putExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80")
+        putExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, false)
+        putExtra(LsfgVkManager.EXTRA_PRESENT_MODE, "mailbox")
+        putExtra("fpsLimiterEnabled", true)
+        putExtra("fpsLimiterTarget", 30)
     }
 }

@@ -54,6 +54,30 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun writeConfig_addsLinuxCommAliasForLongExecutableNames() {
+        File(rootDir, ".local/share/lsfg-vk/Lossless.dll").apply {
+            parentFile?.mkdirs()
+            writeBytes(byteArrayOf(1))
+        }
+        val container = Container("lsfg-long-name").apply {
+            setRootDir(rootDir)
+            setContainerVariant(Container.BIONIC)
+            setExecutablePath("bin/FFVIII_LAUNCHER.exe")
+            putExtra(LsfgVkManager.EXTRA_ARMED, "true")
+            putExtra(LsfgVkManager.EXTRA_MULTIPLIER, "2")
+            putExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80")
+            putExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, "true")
+            putExtra(LsfgVkManager.EXTRA_PRESENT_MODE, "mailbox")
+            putExtra("fpsLimiterEnabled", "false")
+        }
+
+        assertTrue(LsfgVkManager.writeConfig(container))
+        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
+        assertTrue(text.contains("exe = \"FFVIII_LAUNCHER.exe\""))
+        assertTrue(text.contains("exe = \"FFVIII_LAUNCHER\""))
+    }
+
+    @Test
     fun applyLaunchEnv_clearsOnlyLsfgEnvironmentWhenDisabled() {
         val container = container(armed = false)
         val envVars = EnvVars().apply {

@@ -570,14 +570,24 @@ object LsfgVkManager {
 
         if (!dllPath.isNullOrBlank() && !processExecutable.isNullOrBlank()) {
             val effectiveMultiplier = if (enabled) multiplier.coerceIn(2, 4) else 1
-            appendLine("[[game]]")
-            appendLine("exe = ${tomlString(processExecutable)}")
-            appendLine("multiplier = $effectiveMultiplier")
-            appendLine("flow_scale = ${formatFlowScale(flowScale)}")
-            appendLine("performance_mode = ${if (enabled && performanceMode) "true" else "false"}")
-            appendLine("hdr_mode = false")
-            appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
-            appendLine("experimental_present_mode = ${tomlString(if (enabled) presentMode else "fifo")}")
+            // Wine/Linux process names exposed through /proc/self/comm are limited
+            // to TASK_COMM_LEN (16 bytes including NUL). Keep the full basename for
+            // /proc/self/exe-style matching and add the 15-character comm alias when
+            // needed so long Windows executable names still activate LSFG.
+            val processNames = listOf(
+                processExecutable,
+                processExecutable.take(15),
+            ).distinct()
+            processNames.forEach { processName ->
+                appendLine("[[game]]")
+                appendLine("exe = ${tomlString(processName)}")
+                appendLine("multiplier = $effectiveMultiplier")
+                appendLine("flow_scale = ${formatFlowScale(flowScale)}")
+                appendLine("performance_mode = ${if (enabled && performanceMode) "true" else "false"}")
+                appendLine("hdr_mode = false")
+                appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
+                appendLine("experimental_present_mode = ${tomlString(if (enabled) presentMode else "fifo")}")
+            }
         }
     }
 

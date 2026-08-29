@@ -51,7 +51,6 @@ object LsfgVkManager {
     private const val LIB_FILENAME = "liblsfg-vk-layer.so"
     private const val MANIFEST_FILENAME = "VkLayer_LS_frame_generation.json"
     private const val VERSION_FILENAME = ".lsfg_vk_runtime_version"
-    private const val LAYER_NAME = "VK_LAYER_LS_frame_generation"
 
     // Relative path from implicit_layer.d back to lib/
     private const val MANIFEST_LIBRARY_PATH = "../../../lib/$LIB_FILENAME"
@@ -76,12 +75,10 @@ object LsfgVkManager {
     private const val STATS_RELATIVE_PATH = ".config/lsfg-vk/stats.txt"
     private const val STATS_FRESHNESS_MS = 2000L
 
-    // Environment variables consumed by the lsfg-vk layer / Vulkan loader
+    // Environment variables consumed by the lsfg-vk layer
     private const val ENV_DISABLE = "DISABLE_LSFG"
     private const val ENV_CONFIG = "LSFG_CONFIG"
     private const val ENV_PROCESS = "LSFG_PROCESS"
-    private const val ENV_LAYER_PATH = "VK_LAYER_PATH"
-    private const val ENV_INSTANCE_LAYERS = "VK_INSTANCE_LAYERS"
 
     // Current runtime version (bumped when the bundled .so changes)
     private const val RUNTIME_VERSION = "v1.3.3-android-arm64-v8a"
@@ -382,21 +379,14 @@ object LsfgVkManager {
      * Apply LSFG-related environment variables to the launch environment.
      * Called during container startup in BionicProgramLauncherComponent.
      *
-     * The container runtime exposes this private manifest directory through
-     * VK_LAYER_PATH. Vulkan loaders treat layers discovered there as explicit,
-     * so the LSFG layer must also be named in VK_INSTANCE_LAYERS to activate it.
-     *
      * @return true if LSFG is armed and env vars were applied
      */
     @JvmStatic
     fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean {
-        // Clear any stale LSFG-specific env vars first. If the same EnvVars instance
-        // is reused after LSFG is disabled, remove only our forced layer and preserve
-        // every unrelated layer requested by the caller.
+        // Clear any stale env vars first
         envVars.remove(ENV_DISABLE)
         envVars.remove(ENV_CONFIG)
         envVars.remove(ENV_PROCESS)
-        removeColonSeparatedValue(envVars, ENV_INSTANCE_LAYERS, LAYER_NAME)
 
         if (!isSupported(container)) {
             // Remove the manifest so the Vulkan loader can't find the layer
@@ -418,15 +408,22 @@ object LsfgVkManager {
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
         envVars.put(ENV_PROCESS, PROCESS_EXE_IDENTIFIER)
 
+        // Add the container's implicit_layer.d to VK_LAYER_PATH so the
+        // Vulkan loader discovers the lsfg-vk layer installed there.
+        // The static VK_LAYER_PATH only covers /usr/share/vulkan/implicit_layer.d,
+        // but we install the layer into the container's ~/.local/share/vulkan/.
         val containerLayerDir = File(container.rootDir, LAYER_RELATIVE_DIR)
-        appendColonSeparatedUnique(envVars, ENV_LAYER_PATH, containerLayerDir.absolutePath)
-        appendColonSeparatedUnique(envVars, ENV_INSTANCE_LAYERS, LAYER_NAME)
+        val existingLayerPath = envVars["VK_LAYER_PATH"] ?: ""
+        if (existingLayerPath.isNotEmpty()) {
+            envVars.put("VK_LAYER_PATH", "$existingLayerPath:${containerLayerDir.absolutePath}")
+        } else {
+            envVars.put("VK_LAYER_PATH", containerLayerDir.absolutePath)
+        }
 
         Timber.tag(TAG).i(
-            "LSFG armed: dll=%s, multiplier=%d, flowScale=%.2f, perf=%s, layer=%s",
+            "LSFG armed: dll=%s, multiplier=%d, flowScale=%.2f, perf=%s",
             dllPath, multiplier(container), flowScale(container),
-            if (performanceMode(container)) "on" else "off",
-            LAYER_NAME,
+            if (performanceMode(container)) "on" else "off"
         )
         return true
     }
@@ -508,26 +505,6 @@ object LsfgVkManager {
 
     private fun configFile(container: Container): File =
         File(container.rootDir, CONFIG_RELATIVE_PATH)
-
-    private fun appendColonSeparatedUnique(envVars: EnvVars, name: String, value: String) {
-        val values = envVars[name]
-            .split(':')
-            .filter { it.isNotBlank() }
-            .toMutableList()
-        if (value !in values) values += value
-        envVars.put(name, values.joinToString(":"))
-    }
-
-    private fun removeColonSeparatedValue(envVars: EnvVars, name: String, value: String) {
-        val values = envVars[name]
-            .split(':')
-            .filter { it.isNotBlank() && it != value }
-        if (values.isEmpty()) {
-            envVars.remove(name)
-        } else {
-            envVars.put(name, values.joinToString(":"))
-        }
-    }
 
     // The layer rereads conf.toml on mtime change and must never observe a
     // half-written file.

@@ -32,7 +32,7 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun applyLaunchEnv_usesStandardImplicitDiscoveryWithoutRewritingLayerPath() {
+    fun applyLaunchEnv_explicitlyDiscoversAndEnablesLsfgWithoutDroppingCallerLayers() {
         val container = container(armed = true)
         val envVars = EnvVars().apply {
             put("VK_LAYER_PATH", "/existing/explicit-layers")
@@ -41,15 +41,42 @@ class LsfgVkManagerTest {
 
         assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
 
-        // The active container is exposed through HOME=/.../home/xuser, where xuser
-        // symlinks to this container root. Its .local/share/vulkan/implicit_layer.d
-        // is therefore already a standard implicit-layer discovery location.
-        assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
-        assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
+        val containerLayerDir =
+            File(rootDir, ".local/share/vulkan/implicit_layer.d").absolutePath
+        assertEquals(
+            "/existing/explicit-layers:$containerLayerDir",
+            envVars["VK_LAYER_PATH"],
+        )
+        assertEquals(
+            "VK_LAYER_existing:VK_LAYER_LS_frame_generation",
+            envVars["VK_INSTANCE_LAYERS"],
+        )
         assertFalse(envVars.has("LSFG_PROCESS"))
         assertEquals(
             File(rootDir, ".config/lsfg-vk/conf.toml").absolutePath,
             envVars["LSFG_CONFIG"],
+        )
+    }
+
+    @Test
+    fun applyLaunchEnv_doesNotDuplicateLayerDiscoveryOrActivationEntries() {
+        val container = container(armed = true)
+        val containerLayerDir =
+            File(rootDir, ".local/share/vulkan/implicit_layer.d").absolutePath
+        val envVars = EnvVars().apply {
+            put("VK_LAYER_PATH", "/existing/explicit-layers:$containerLayerDir")
+            put("VK_INSTANCE_LAYERS", "VK_LAYER_LS_frame_generation:VK_LAYER_existing")
+        }
+
+        assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
+
+        assertEquals(
+            "/existing/explicit-layers:$containerLayerDir",
+            envVars["VK_LAYER_PATH"],
+        )
+        assertEquals(
+            "VK_LAYER_LS_frame_generation:VK_LAYER_existing",
+            envVars["VK_INSTANCE_LAYERS"],
         )
     }
 

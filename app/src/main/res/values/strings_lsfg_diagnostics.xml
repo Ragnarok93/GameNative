@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_lsfg_diagnostics_title">Run LSFG compatibility test</string>
+    <string name="settings_lsfg_diagnostics_subtitle">Read-only checks for runtime, implicit layer, config, active HOME, vsync, stats, and recent Vulkan logs.</string>
+    <string name="settings_lsfg_diagnostics_running">Running read-only LSFG checks…</string>
+    <string name="settings_lsfg_diagnostics_last_focus">Last result: %1$s</string>
+    <string name="settings_lsfg_diagnostics_failed">LSFG diagnostics failed: %1$s</string>
+    <string name="settings_lsfg_diagnostics_export_failed">Failed to export LSFG compatibility report.</string>
+</resources>

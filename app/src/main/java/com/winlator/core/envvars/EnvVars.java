@@ -11,6 +11,7 @@ import java.util.Set;
 public class EnvVars implements Iterable<String> {
     private static final String VK_INSTANCE_LAYERS = "VK_INSTANCE_LAYERS";
     private static final String VK_LOADER_LAYERS_ENABLE = "VK_LOADER_LAYERS_ENABLE";
+    private static final String VK_LOADER_DEBUG = "VK_LOADER_DEBUG";
 
     private final LinkedHashMap<String, String> data = new LinkedHashMap<>();
 
@@ -24,14 +25,13 @@ public class EnvVars implements Iterable<String> {
         String stringValue = String.valueOf(value);
         data.put(name, stringValue);
 
-        // Vulkan loader 1.3.234+ added the loader-filter environment controls and
-        // deprecated VK_INSTANCE_LAYERS. GameNative still needs the legacy variable
-        // for older Wine/Vulkan-loader builds, so mirror that selection forward rather
-        // than choosing one loader generation. This is layer-name based, not GPU/vendor
-        // based, and therefore applies to LSFG as well as any other explicitly enabled
-        // Vulkan layer.
+        // Bridge explicit Vulkan-layer selection across loader generations. Older
+        // Wine/Vulkan loader builds honor VK_INSTANCE_LAYERS while loader 1.3.234+
+        // also provides VK_LOADER_LAYERS_ENABLE. Keep both so applications do not
+        // depend on a particular loader revision or GPU vendor.
         if (VK_INSTANCE_LAYERS.equals(name)) {
             mirrorLegacyVulkanLayersToModernFilter(stringValue);
+            enableVulkanLoaderDiagnosticsForExplicitLayers(stringValue);
         }
     }
 
@@ -74,7 +74,6 @@ public class EnvVars implements Iterable<String> {
         return data.isEmpty();
     }
 
-    // canonical persistence form: escape so putAll round-trips losslessly
     @NonNull
     @Override
     public String toString() {
@@ -86,12 +85,10 @@ public class EnvVars implements Iterable<String> {
         return sb.toString();
     }
 
-    // for shell composition (env KEY=val ... cmd) — same escape rules
     public String toEscapedString() {
         return toString();
     }
 
-    // for execve envp — values must be raw, no escaping
     public String[] toStringArray() {
         String[] stringArray = new String[data.size()];
         int index = 0;
@@ -114,6 +111,14 @@ public class EnvVars implements Iterable<String> {
         }
     }
 
+    private void enableVulkanLoaderDiagnosticsForExplicitLayers(String legacyLayers) {
+        if (legacyLayers == null || legacyLayers.trim().isEmpty() || data.containsKey(VK_LOADER_DEBUG)) return;
+        // Keep this concise enough for production compatibility reports. The loader
+        // reports manifest discovery, layer loading and interface failures without the
+        // very noisy full "all" trace.
+        data.put(VK_LOADER_DEBUG, "error,warn,layer");
+    }
+
     private static void addSeparatedValues(Set<String> target, String values, String separatorRegex) {
         if (values == null || values.isEmpty()) return;
         for (String value : values.split(separatorRegex)) {
@@ -123,7 +128,6 @@ public class EnvVars implements Iterable<String> {
     }
 
     private static String escape(String s) {
-        // escape backslash FIRST so we don't double-escape the slashes we add for spaces
         return s.replace("\\", "\\\\").replace(" ", "\\ ");
     }
 

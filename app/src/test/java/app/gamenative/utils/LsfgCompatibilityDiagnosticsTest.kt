@@ -26,10 +26,7 @@ class LsfgCompatibilityDiagnosticsTest {
     @Test
     fun healthyRuntime_passesAllBlockingChecks() {
         writeHealthyRuntime(freshStats = true)
-        val snapshot = LsfgCompatibilityDiagnostics.inspectContainer(
-            container = container(armed = true),
-            activeHome = rootDir,
-            nowMs = nowMs,
+        val snapshot = inspect(
             logs = "LSFG armed VK_LAYER_LS_frame_generation liblsfg-vk-layer.so ExynosToolsShim",
         )
 
@@ -50,28 +47,61 @@ class LsfgCompatibilityDiagnosticsTest {
         writeHealthyRuntime(freshStats = true)
         File(rootDir, ".local/lib/liblsfg-vk-layer.so").delete()
 
-        val snapshot = LsfgCompatibilityDiagnostics.inspectContainer(
-            container = container(armed = true),
-            activeHome = rootDir,
-            nowMs = nowMs,
-            logs = "LSFG armed",
-        )
+        val snapshot = inspect(logs = "LSFG armed")
 
         assertEquals(LsfgCompatibilityDiagnostics.Status.FAIL, snapshot.check("runtime_library")?.status)
         assertEquals("RUNTIME_PACKAGE", snapshot.nextFocus)
     }
 
     @Test
-    fun staleStats_identifiesPresentationEvidenceBarrier() {
+    fun missingLayerEvidence_identifiesDiscoveryBarrier() {
         writeHealthyRuntime(freshStats = false)
 
-        val snapshot = LsfgCompatibilityDiagnostics.inspectContainer(
-            container = container(armed = true),
-            activeHome = rootDir,
-            nowMs = nowMs,
-            logs = "LSFG armed VK_LAYER_LS_frame_generation liblsfg-vk-layer.so",
-        )
+        val snapshot = inspect(logs = "DXVK device created ExynosToolsShim")
 
+        assertEquals(LsfgCompatibilityDiagnostics.Status.WARN, snapshot.check("layer_log_evidence")?.status)
+        assertEquals("LAYER_DISCOVERY", snapshot.nextFocus)
+    }
+
+    @Test
+    fun layerFoundWithoutNativeDeviceEntry_identifiesFramegenInitBarrier() {
+        writeHealthyRuntime(freshStats = false)
+
+        val snapshot = inspect(logs = "Vulkan loader: VK_LAYER_LS_frame_generation liblsfg-vk-layer.so")
+
+        assertEquals(LsfgCompatibilityDiagnostics.Status.PASS, snapshot.check("layer_log_evidence")?.status)
+        assertEquals(LsfgCompatibilityDiagnostics.Status.WARN, snapshot.check("native_framegen_entry")?.status)
+        assertEquals("FRAMEGEN_INIT", snapshot.nextFocus)
+    }
+
+    @Test
+    fun missingStorageImageFeature_identifiesDeviceCapabilityBarrier() {
+        writeHealthyRuntime(freshStats = false)
+        val logs = """
+            VK_LAYER_LS_frame_generation liblsfg-vk-layer.so
+            lsfg-vk-framegen Entering Device::Device — framegen build stamp: test
+            lsfg-vk-framegen Device features probe: storageImageExtendedFormats=1, storageImageReadWithoutFormat=0, storageImageWriteWithoutFormat=1, shaderInt16=1, shaderFloat16=1, robustness2=0, vulkanMemoryModel(core)=1, timelineSemaphore(core)=1, sync2(core)=1
+        """.trimIndent()
+
+        val snapshot = inspect(logs = logs)
+
+        assertEquals(LsfgCompatibilityDiagnostics.Status.FAIL, snapshot.check("framegen_device_features")?.status)
+        assertEquals("FRAMEGEN_DEVICE_CAPABILITIES", snapshot.nextFocus)
+    }
+
+    @Test
+    fun staleStatsAfterNativeFramegenEntry_identifiesPresentationEvidenceBarrier() {
+        writeHealthyRuntime(freshStats = false)
+        val logs = """
+            VK_LAYER_LS_frame_generation liblsfg-vk-layer.so
+            lsfg-vk-framegen Entering Device::Device — framegen build stamp: test
+            lsfg-vk-framegen Device features probe: storageImageExtendedFormats=1, storageImageReadWithoutFormat=1, storageImageWriteWithoutFormat=1, shaderInt16=1, shaderFloat16=1, robustness2=0, vulkanMemoryModel(core)=1, timelineSemaphore(core)=1, sync2(core)=1
+        """.trimIndent()
+
+        val snapshot = inspect(logs = logs)
+
+        assertEquals(LsfgCompatibilityDiagnostics.Status.PASS, snapshot.check("native_framegen_entry")?.status)
+        assertEquals(LsfgCompatibilityDiagnostics.Status.PASS, snapshot.check("framegen_device_features")?.status)
         assertEquals(LsfgCompatibilityDiagnostics.Status.FAIL, snapshot.check("stats_fresh")?.status)
         assertEquals("PRESENTATION_STATS", snapshot.nextFocus)
     }
@@ -95,6 +125,14 @@ class LsfgCompatibilityDiagnosticsTest {
             otherHome.deleteRecursively()
         }
     }
+
+    private fun inspect(logs: String): LsfgCompatibilityDiagnostics.ContainerSnapshot =
+        LsfgCompatibilityDiagnostics.inspectContainer(
+            container = container(armed = true),
+            activeHome = rootDir,
+            nowMs = nowMs,
+            logs = logs,
+        )
 
     private fun writeHealthyRuntime(freshStats: Boolean) {
         File(rootDir, ".local/lib/liblsfg-vk-layer.so").apply {

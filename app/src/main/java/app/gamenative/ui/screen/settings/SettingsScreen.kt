@@ -146,6 +146,7 @@ private fun SettingsScreenContent(
                     icon = Icons.Default.Palette,
                     iconTint = PluviaTheme.colors.accentPurple,
                 ) {
+                    SettingsMaterialYou()
                     SettingsGroupInterface(
                         appTheme = appTheme,
                         paletteStyle = paletteStyle,

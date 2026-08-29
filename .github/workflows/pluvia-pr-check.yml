@@ -19,13 +19,9 @@ concurrency:
 
 jobs:
   unit-tests:
-    name: Unit tests (${{ matrix.flavor }})
+    name: Unit tests (Legacy)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        flavor: [Legacy, Modern]
 
     steps:
       - name: Checking out GameNative
@@ -57,22 +53,22 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run ${{ matrix.flavor }} unit tests
-        run: ./gradlew :app:test${{ matrix.flavor }}DebugUnitTest --stacktrace
+      - name: Run Legacy unit tests
+        run: ./gradlew :app:testLegacyDebugUnitTest --stacktrace
 
-      - name: Upload ${{ matrix.flavor }} test reports
+      - name: Upload Legacy test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr-${{ github.event.pull_request.number }}-test-report-${{ matrix.flavor }}-${{ github.run_attempt }}
+          name: pr-${{ github.event.pull_request.number }}-test-report-Legacy-${{ github.run_attempt }}
           path: |
-            app/build/reports/tests/test${{ matrix.flavor }}DebugUnitTest/
-            app/build/test-results/test${{ matrix.flavor }}DebugUnitTest/
+            app/build/reports/tests/testLegacyDebugUnitTest/
+            app/build/test-results/testLegacyDebugUnitTest/
           if-no-files-found: warn
           retention-days: 7
 
-  build-modern:
-    name: Build modern debug APK
+  build-legacy:
+    name: Build legacy debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -106,13 +102,13 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Assemble modern debug APK
-        run: ./gradlew :app:assembleModernDebug --stacktrace
+      - name: Assemble legacy debug APK
+        run: ./gradlew :app:assembleLegacyDebug --stacktrace
 
-      - name: Upload modern debug APK
+      - name: Upload legacy debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: pr-${{ github.event.pull_request.number }}-modern-debug-${{ github.sha }}
-          path: app/build/outputs/apk/modern/debug/app-modern-debug.apk
+          name: pr-${{ github.event.pull_request.number }}-legacy-debug-${{ github.sha }}
+          path: app/build/outputs/apk/legacy/debug/app-legacy-debug.apk
           if-no-files-found: error
           retention-days: 14

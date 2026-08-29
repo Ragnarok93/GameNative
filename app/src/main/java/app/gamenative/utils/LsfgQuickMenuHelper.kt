@@ -12,8 +12,16 @@ object LsfgQuickMenuHelper {
         val performanceMode: Boolean,
     )
 
+    /**
+     * Hot UI path: never rescan Steam libraries here. The launch/install path is
+     * responsible for copying Lossless.dll into the container. Once copied, a
+     * single local file check is sufficient to decide whether LSFG controls can
+     * be exposed for this session.
+     */
     fun isAvailable(container: Container): Boolean =
-        LsfgVkManager.isSupported(container) && LsfgVkManager.isArmed(container)
+        LsfgVkManager.isSupported(container) &&
+            parseArmed(container.getExtra(LsfgVkManager.EXTRA_ARMED, "false")) &&
+            LsfgVkManager.containerDllPath(container) != null
 
     fun readSettings(container: Container): Settings = Settings(
         multiplier = LsfgVkManager.multiplier(container),
@@ -76,4 +84,7 @@ object LsfgQuickMenuHelper {
             settings.performanceMode,
         )
     }
+
+    private fun parseArmed(value: String): Boolean =
+        value.equals("true", ignoreCase = true) || value == "1"
 }

@@ -78,6 +78,7 @@ object LsfgVkManager {
     private const val ENV_DISABLE = "DISABLE_LSFG"
     private const val ENV_CONFIG = "LSFG_CONFIG"
     private const val ENV_PROCESS = "LSFG_PROCESS"
+    private const val ENV_PROCESS_EXE = "LSFG_PROCESS_EXE"
     private const val ENV_VK_LAYER_PATH = "VK_LAYER_PATH"
     private const val ENV_VK_INSTANCE_LAYERS = "VK_INSTANCE_LAYERS"
 
@@ -411,6 +412,7 @@ object LsfgVkManager {
         envVars.remove(ENV_DISABLE)
         envVars.remove(ENV_CONFIG)
         envVars.remove(ENV_PROCESS)
+        envVars.remove(ENV_PROCESS_EXE)
 
         if (!isSupported(container)) {
             disableLayerInContainer(container)
@@ -437,15 +439,18 @@ object LsfgVkManager {
         }
 
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
+        envVars.put(ENV_PROCESS_EXE, processExecutable)
 
         val containerLayerDir = File(container.rootDir, LAYER_RELATIVE_DIR).absolutePath
         appendUniqueEnvEntry(envVars, ENV_VK_LAYER_PATH, containerLayerDir)
         appendUniqueEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME)
 
-        // Do not set LSFG_PROCESS. It overrides process identity inside lsfg-vk
-        // and is inherited by every Wine/Zink helper. With normal process identity,
-        // unmatched helpers use the disabled global config and return before native
-        // framegen/shader initialization; only the configured executable is enabled.
+        // Do not set LSFG_PROCESS: it overrides process identity globally and is
+        // inherited by every Wine/Zink helper. The Android lsfg-vk fork provides
+        // LSFG_PROCESS_EXE specifically for GameNative/Wine, where /proc/self/exe
+        // names the Wine loader rather than the Windows game. Supplying only the
+        // target executable preserves per-game config selection without turning
+        // helper processes into fake LSFG game processes.
         Timber.tag(TAG).i(
             "LSFG armed: dll=%s, target=%s, multiplier=%d, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
             dllPath,

@@ -11,6 +11,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
@@ -29,7 +31,7 @@ class LsfgVkManagerTest {
 
     @Test
     fun applyLaunchEnv_doesNotForceOrReplaceInstanceLayers() {
-        val container = armedContainer()
+        val container = container(armed = true)
         val envVars = EnvVars().apply {
             put("VK_LAYER_PATH", "/existing/layers")
             put("VK_INSTANCE_LAYERS", "VK_LAYER_existing")
@@ -50,9 +52,7 @@ class LsfgVkManagerTest {
 
     @Test
     fun applyLaunchEnv_leavesInstanceLayerEnvironmentUntouchedWhenDisabled() {
-        val container = armedContainer().apply {
-            putExtra(LsfgVkManager.EXTRA_ARMED, "false")
-        }
+        val container = container(armed = false)
         val envVars = EnvVars().apply {
             put("VK_INSTANCE_LAYERS", "VK_LAYER_existing")
         }
@@ -61,15 +61,23 @@ class LsfgVkManagerTest {
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
     }
 
-    private fun armedContainer(): Container {
+    private fun container(armed: Boolean): Container {
         File(rootDir, ".local/share/lsfg-vk/Lossless.dll").apply {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf(1))
         }
-        return Container("lsfg-test").apply {
-            setRootDir(rootDir)
-            setContainerVariant(Container.BIONIC)
-            putExtra(LsfgVkManager.EXTRA_ARMED, "true")
-        }
+
+        val container = mock<Container>()
+        whenever(container.rootDir).thenReturn(rootDir)
+        whenever(container.containerVariant).thenReturn(Container.BIONIC)
+        whenever(container.getExtra(LsfgVkManager.EXTRA_ARMED, "false"))
+            .thenReturn(armed.toString())
+        whenever(container.getExtra(LsfgVkManager.EXTRA_MULTIPLIER, "2"))
+            .thenReturn("2")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80"))
+            .thenReturn("0.80")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, "true"))
+            .thenReturn("true")
+        return container
     }
 }

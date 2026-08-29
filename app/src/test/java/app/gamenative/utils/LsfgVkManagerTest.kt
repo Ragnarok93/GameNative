@@ -8,7 +8,6 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -67,8 +66,10 @@ class LsfgVkManagerTest {
         assertFalse(LsfgVkManager.applyLaunchEnv(container, envVars))
         assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
-        assertNull(envVars["LSFG_PROCESS"])
-        assertNull(envVars["LSFG_CONFIG"])
+        // EnvVars.get() intentionally returns an empty string for absent keys; use
+        // has() to distinguish removal from an explicitly stored empty value.
+        assertFalse(envVars.has("LSFG_PROCESS"))
+        assertFalse(envVars.has("LSFG_CONFIG"))
     }
 
     @Test

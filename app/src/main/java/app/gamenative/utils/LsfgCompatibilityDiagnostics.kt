@@ -137,7 +137,7 @@ object LsfgCompatibilityDiagnostics {
         checks += fileCheck("lossless_dll", dll)
 
         val config = File(root, CONFIG_RELATIVE)
-        checks += configCheck(config, dll, armed)
+        checks += configCheck(config, dll, armed, targetExecutable(container))
 
         val rootCanonical = runCatching { root.canonicalFile }.getOrNull()
         val activeCanonical = runCatching { activeHome?.canonicalFile }.getOrNull()
@@ -228,8 +228,8 @@ object LsfgCompatibilityDiagnostics {
                     add("api_version=${layer.optString("api_version")}")
                 }
                 if (resolvedLibrary != expectedLibrary.canonicalFile) add("library_path resolves to $resolvedLibrary")
-                if (layer.optJSONObject("enable_environment")?.optString("LSFG_PROCESS") != PROCESS_ID) {
-                    add("enable_environment.LSFG_PROCESS mismatch")
+                if (layer.has("enable_environment")) {
+                    add("enable_environment must be absent; LSFG activation is config/process targeted")
                 }
                 if (layer.optJSONObject("disable_environment")?.optString("DISABLE_LSFG") != "1") {
                     add("disable_environment.DISABLE_LSFG mismatch")
@@ -243,7 +243,12 @@ object LsfgCompatibilityDiagnostics {
         }.getOrElse { Check("manifest_contract", Status.FAIL, "manifest parse failed: ${it.message}") }
     }
 
-    private fun configCheck(config: File, dll: File, armed: Boolean): Check {
+    private fun configCheck(
+        config: File,
+        dll: File,
+        armed: Boolean,
+        expectedExecutable: String?,
+    ): Check {
         if (!config.isFile) return Check("config_contract", Status.FAIL, "missing: ${config.absolutePath}")
         return runCatching {
             val text = config.readText()
@@ -257,7 +262,10 @@ object LsfgCompatibilityDiagnostics {
                 if (dllValue == null || runCatching { File(dllValue).canonicalFile }.getOrNull() != dll.canonicalFile) {
                     add("dll path does not resolve to copied Lossless.dll")
                 }
-                if (exe != PROCESS_ID) add("exe=$exe")
+                if (expectedExecutable == null) add("container executable is unresolved")
+                else if (!exe.equals(expectedExecutable, ignoreCase = true)) {
+                    add("exe=$exe expected=$expectedExecutable")
+                }
                 if (armed && (multiplier == null || multiplier < 2)) add("multiplier=$multiplier while LSFG is armed")
             }
             val detail = "dll=${dllValue ?: "missing"}, exe=${exe ?: "missing"}, multiplier=${multiplier ?: "missing"}, " +
@@ -269,11 +277,13 @@ object LsfgCompatibilityDiagnostics {
 
     private fun layerLogCheck(logs: String): Check {
         if (logs.isBlank()) return Check("layer_log_evidence", Status.WARN, "no relevant logs captured")
-        val found = logs.contains("lsfg-vk-framegen", ignoreCase = true) ||
-            logs.contains(LAYER_NAME, ignoreCase = true) ||
-            logs.contains("liblsfg-vk-layer.so", ignoreCase = true)
-        return if (found) Check("layer_log_evidence", Status.PASS, "LSFG layer marker found in recent logs")
-        else Check("layer_log_evidence", Status.WARN, "no LSFG layer marker in captured log window")
+        // Install/chmod/path messages mentioning the .so are not attachment proof.
+        val found = logs.lineSequence().any { line ->
+            line.contains("lsfg-vk:", ignoreCase = true) ||
+                line.contains("lsfg-vk-framegen", ignoreCase = true)
+        }
+        return if (found) Check("layer_log_evidence", Status.PASS, "native LSFG layer output found in recent logs")
+        else Check("layer_log_evidence", Status.WARN, "no native lsfg-vk runtime output in captured log window")
     }
 
     private fun nativeFramegenEntryCheck(logs: String): Check {
@@ -362,7 +372,8 @@ object LsfgCompatibilityDiagnostics {
             val keywords = listOf(
                 "lsfg", LAYER_NAME, "liblsfg-vk-layer.so", "Device features probe",
                 "DEVICE_LOST", "VK_ERROR", "ExynosTools", "VortekXclipse",
-                "vkCreateDevice", "DXVK", "Winlator_Renderer",
+                "vkCreateDevice", "DXVK", "Winlator_Renderer", "AndroidRuntime",
+                "FATAL EXCEPTION", "Fatal signal", "SIGSEGV", "SIGABRT", "has died", "tombstone",
             )
             val relevant = all.asSequence()
                 .filter { line -> keywords.any { line.contains(it, ignoreCase = true) } }
@@ -384,6 +395,15 @@ object LsfgCompatibilityDiagnostics {
         }
         return buffer.toList()
     }
+
+    private fun targetExecutable(container: Container): String? =
+        container.executablePath
+            .trim()
+            .trim('"')
+            .replace('\\', '/')
+            .substringAfterLast('/')
+            .trim()
+            .takeIf { it.isNotEmpty() }
 
     private fun MutableList<Check>.failed(id: String): Boolean =
         firstOrNull { it.id == id }?.status == Status.FAIL

@@ -84,7 +84,7 @@ object LsfgVkManager {
     // Current runtime package revision. The native binary is still lsfg-vk
     // v1.3.3; the suffix forces existing containers to receive the corrected
     // implicit-layer manifest on the next launch.
-    private const val RUNTIME_VERSION = "v1.3.3-android-arm64-v8a-gamenative-implicit-r1"
+    private const val RUNTIME_VERSION = "v1.3.3-android-arm64-v8a-gamenative-targeted-r2"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -97,12 +97,17 @@ object LsfgVkManager {
     fun isSupported(container: Container): Boolean =
         container.containerVariant.equals(Container.BIONIC, ignoreCase = true)
 
-    /** Whether LSFG is armed (enabled + Lossless.dll available in Steam dir) for this container. The DLL is copied into the container at launch time by ensureRuntimeInstalled(). */
+    /**
+     * Whether LSFG is armed for this container.
+     *
+     * This is a UI/runtime hot path. Never rescan Steam libraries here: launch
+     * setup owns discovery/copying, so the container-local DLL is authoritative.
+     */
     @JvmStatic
     fun isArmed(container: Container): Boolean =
         isSupported(container) &&
             parseBool(container.getExtra(EXTRA_ARMED, "false")) &&
-            isDllAvailable()
+            containerDllPath(container) != null
 
     /** Whether Lossless Scaling is installed (Lossless.dll exists in Steam dir). */
     @JvmStatic
@@ -362,12 +367,14 @@ object LsfgVkManager {
 
         return try {
             val dllPath = containerDllPath(container)
+            val processExecutable = targetExecutable(container)
             val savedMultiplier = multiplier(container)
             val frameGenActive = parseBool(container.getExtra(EXTRA_ARMED, "false")) &&
-                dllPath != null && savedMultiplier >= 2
+                dllPath != null && processExecutable != null && savedMultiplier >= 2
             val configFile = File(container.rootDir, CONFIG_RELATIVE_PATH)
             val configText = buildConfigToml(
                 dllPath = dllPath,
+                processExecutable = processExecutable,
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) savedMultiplier else 1,
                 flowScale = flowScale(container),
@@ -424,18 +431,21 @@ object LsfgVkManager {
         }
 
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
-        // The manifest uses this same variable/value as its enable_environment
-        // gate, so only GameNative-launched processes with LSFG armed activate it.
-        envVars.put(ENV_PROCESS, PROCESS_EXE_IDENTIFIER)
 
+        // Do not set LSFG_PROCESS. It overrides process identity inside lsfg-vk
+        // and is inherited by every Wine/Zink helper. With normal process identity,
+        // unmatched helpers use the disabled global config and return before native
+        // framegen/shader initialization; only the configured executable is enabled.
+        val processExecutable = targetExecutable(container)
         Timber.tag(TAG).i(
-            "LSFG armed: dll=%s, multiplier=%d, flowScale=%.2f, perf=%s, discovery=implicit-home",
+            "LSFG armed: dll=%s, target=%s, multiplier=%d, flowScale=%.2f, perf=%s, discovery=implicit-home-targeted",
             dllPath,
+            processExecutable ?: "unresolved",
             multiplier(container),
             flowScale(container),
             if (performanceMode(container)) "on" else "off",
         )
-        return true
+        return processExecutable != null
     }
 
     /**
@@ -516,6 +526,15 @@ object LsfgVkManager {
     private fun configFile(container: Container): File =
         File(container.rootDir, CONFIG_RELATIVE_PATH)
 
+    internal fun targetExecutable(container: Container): String? =
+        container.executablePath
+            .trim()
+            .trim('"')
+            .replace('\\', '/')
+            .substringAfterLast('/')
+            .trim()
+            .takeIf { it.isNotEmpty() }
+
     // The layer rereads conf.toml on mtime change and must never observe a
     // half-written file.
     private fun writeConfigAtomic(file: File, text: String): Boolean {
@@ -532,6 +551,7 @@ object LsfgVkManager {
 
     private fun buildConfigToml(
         dllPath: String?,
+        processExecutable: String?,
         enabled: Boolean,
         multiplier: Int,
         flowScale: Float,
@@ -548,10 +568,10 @@ object LsfgVkManager {
         appendLine("no_fp16 = false")
         appendLine()
 
-        if (!dllPath.isNullOrBlank()) {
+        if (!dllPath.isNullOrBlank() && !processExecutable.isNullOrBlank()) {
             val effectiveMultiplier = if (enabled) multiplier.coerceIn(2, 4) else 1
             appendLine("[[game]]")
-            appendLine("exe = ${tomlString(PROCESS_EXE_IDENTIFIER)}")
+            appendLine("exe = ${tomlString(processExecutable)}")
             appendLine("multiplier = $effectiveMultiplier")
             appendLine("flow_scale = ${formatFlowScale(flowScale)}")
             appendLine("performance_mode = ${if (enabled && performanceMode) "true" else "false"}")
@@ -639,9 +659,11 @@ object LsfgVkManager {
         }
 
         return try {
-            val frameGenActive = enabled && dllPath != null
+            val processExecutable = targetExecutable(container)
+            val frameGenActive = enabled && dllPath != null && processExecutable != null
             val configText = buildConfigToml(
                 dllPath = dllPath,
+                processExecutable = processExecutable,
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) multiplier.coerceIn(2, 4) else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),

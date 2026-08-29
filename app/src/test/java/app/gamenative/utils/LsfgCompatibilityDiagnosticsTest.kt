@@ -30,7 +30,7 @@ class LsfgCompatibilityDiagnosticsTest {
     fun healthyRuntime_passesAllBlockingChecks() {
         writeHealthyRuntime(freshStats = true)
         val snapshot = inspect(
-            logs = "LSFG armed VK_LAYER_LS_frame_generation liblsfg-vk-layer.so ExynosToolsShim",
+            logs = "lsfg-vk: Loaded configuration for game.exe ExynosToolsShim",
         )
 
         assertEquals(LsfgCompatibilityDiagnostics.Status.PASS, snapshot.check("runtime_library")?.status)
@@ -57,6 +57,18 @@ class LsfgCompatibilityDiagnosticsTest {
     }
 
     @Test
+    fun installPathMentionAlone_doesNotCountAsLayerAttachment() {
+        writeHealthyRuntime(freshStats = false)
+
+        val snapshot = inspect(
+            logs = "LsfgVkManager: Installed liblsfg-vk-layer.so into container",
+        )
+
+        assertEquals(LsfgCompatibilityDiagnostics.Status.WARN, snapshot.check("layer_log_evidence")?.status)
+        assertEquals("LAYER_DISCOVERY", snapshot.nextFocus)
+    }
+
+    @Test
     fun missingLayerEvidence_identifiesDiscoveryBarrier() {
         writeHealthyRuntime(freshStats = false)
 
@@ -70,7 +82,7 @@ class LsfgCompatibilityDiagnosticsTest {
     fun layerFoundWithoutNativeDeviceEntry_identifiesFramegenInitBarrier() {
         writeHealthyRuntime(freshStats = false)
 
-        val snapshot = inspect(logs = "Vulkan loader: VK_LAYER_LS_frame_generation liblsfg-vk-layer.so")
+        val snapshot = inspect(logs = "lsfg-vk: Loaded configuration for game.exe")
 
         assertEquals(LsfgCompatibilityDiagnostics.Status.PASS, snapshot.check("layer_log_evidence")?.status)
         assertEquals(LsfgCompatibilityDiagnostics.Status.WARN, snapshot.check("native_framegen_entry")?.status)
@@ -81,7 +93,7 @@ class LsfgCompatibilityDiagnosticsTest {
     fun missingStorageImageFeature_identifiesDeviceCapabilityBarrier() {
         writeHealthyRuntime(freshStats = false)
         val logs = """
-            VK_LAYER_LS_frame_generation liblsfg-vk-layer.so
+            lsfg-vk: Loaded configuration for game.exe
             lsfg-vk-framegen Entering Device::Device — framegen build stamp: test
             lsfg-vk-framegen Device features probe: storageImageExtendedFormats=1, storageImageReadWithoutFormat=0, storageImageWriteWithoutFormat=1, shaderInt16=1, shaderFloat16=1, robustness2=0, vulkanMemoryModel(core)=1, timelineSemaphore(core)=1, sync2(core)=1
         """.trimIndent()
@@ -96,7 +108,7 @@ class LsfgCompatibilityDiagnosticsTest {
     fun staleStatsAfterNativeFramegenEntry_identifiesPresentationEvidenceBarrier() {
         writeHealthyRuntime(freshStats = false)
         val logs = """
-            VK_LAYER_LS_frame_generation liblsfg-vk-layer.so
+            lsfg-vk: Loaded configuration for game.exe
             lsfg-vk-framegen Entering Device::Device — framegen build stamp: test
             lsfg-vk-framegen Device features probe: storageImageExtendedFormats=1, storageImageReadWithoutFormat=1, storageImageWriteWithoutFormat=1, shaderInt16=1, shaderFloat16=1, robustness2=0, vulkanMemoryModel(core)=1, timelineSemaphore(core)=1, sync2(core)=1
         """.trimIndent()
@@ -156,7 +168,6 @@ class LsfgCompatibilityDiagnosticsTest {
                     "type":"GLOBAL",
                     "api_version":"1.3.0",
                     "library_path":"../../../lib/liblsfg-vk-layer.so",
-                    "enable_environment":{"LSFG_PROCESS":"gamenative-lsfg"},
                     "disable_environment":{"DISABLE_LSFG":"1"}
                   }
                 }""".trimIndent(),
@@ -170,7 +181,7 @@ class LsfgCompatibilityDiagnosticsTest {
                 [global]
                 dll = "$dllPath"
                 [[game]]
-                exe = "gamenative-lsfg"
+                exe = "game.exe"
                 multiplier = 2
                 flow_scale = 0.80
                 performance_mode = false
@@ -192,6 +203,7 @@ class LsfgCompatibilityDiagnosticsTest {
     private fun container(armed: Boolean): Container = Container("CUSTOM_GAME_42").apply {
         setRootDir(this@LsfgCompatibilityDiagnosticsTest.rootDir)
         setContainerVariant(Container.BIONIC)
+        setExecutablePath("bin/game.exe")
         putExtra(LsfgVkManager.EXTRA_ARMED, armed)
         putExtra(LsfgVkManager.EXTRA_MULTIPLIER, 2)
         putExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80")

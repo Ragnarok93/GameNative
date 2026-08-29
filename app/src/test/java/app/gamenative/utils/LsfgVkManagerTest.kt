@@ -46,7 +46,7 @@ class LsfgVkManagerTest {
         // is therefore already a standard implicit-layer discovery location.
         assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
-        assertEquals("gamenative-lsfg", envVars["LSFG_PROCESS"])
+        assertFalse(envVars.has("LSFG_PROCESS"))
         assertEquals(
             File(rootDir, ".config/lsfg-vk/conf.toml").absolutePath,
             envVars["LSFG_CONFIG"],
@@ -84,10 +84,7 @@ class LsfgVkManagerTest {
         assertEquals("VK_LAYER_LS_frame_generation", layer.getString("name"))
         assertEquals("GLOBAL", layer.getString("type"))
         assertEquals("1.3.0", layer.getString("api_version"))
-        assertEquals(
-            "gamenative-lsfg",
-            layer.getJSONObject("enable_environment").getString("LSFG_PROCESS"),
-        )
+        assertFalse(layer.has("enable_environment"))
         assertEquals(
             "1",
             layer.getJSONObject("disable_environment").getString("DISABLE_LSFG"),
@@ -103,6 +100,7 @@ class LsfgVkManagerTest {
         val container = mock<Container>()
         whenever(container.rootDir).thenReturn(rootDir)
         whenever(container.containerVariant).thenReturn(Container.BIONIC)
+        whenever(container.executablePath).thenReturn("bin/game.exe")
         whenever(container.getExtra(LsfgVkManager.EXTRA_ARMED, "false"))
             .thenReturn(armed.toString())
         whenever(container.getExtra(LsfgVkManager.EXTRA_MULTIPLIER, "2"))

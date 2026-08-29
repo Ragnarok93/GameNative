@@ -6,8 +6,10 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -172,27 +174,34 @@ fun PluviaTheme(
 ) {
     val context = LocalContext.current
     val useMaterialYou = MaterialYouThemePreference.isEnabled(context)
-    val colorScheme = if (useMaterialYou) dynamicDarkColorScheme(context) else DarkColorScheme
-    val pluviaColors = if (useMaterialYou) {
-        DarkPluviaColors.copy(
-            accentCyan = colorScheme.primary,
-            accentPurple = colorScheme.secondary,
-            accentPink = colorScheme.tertiary,
-            surfacePanel = colorScheme.surfaceContainer,
-            surfaceElevated = colorScheme.surfaceContainerHigh,
-            borderDefault = colorScheme.outline,
-            textMuted = colorScheme.onSurfaceVariant,
-        )
-    } else {
-        DarkPluviaColors
+    val colorScheme = remember(context, useMaterialYou) {
+        if (useMaterialYou) dynamicDarkColorScheme(context) else DarkColorScheme
+    }
+    val pluviaColors = remember(useMaterialYou, colorScheme) {
+        if (useMaterialYou) {
+            DarkPluviaColors.copy(
+                accentCyan = colorScheme.primary,
+                accentPurple = colorScheme.secondary,
+                accentPink = colorScheme.tertiary,
+                surfacePanel = colorScheme.surfaceContainer,
+                surfaceElevated = colorScheme.surfaceContainerHigh,
+                borderDefault = colorScheme.outline,
+                textMuted = colorScheme.onSurfaceVariant,
+            )
+        } else {
+            DarkPluviaColors
+        }
     }
 
     val view = LocalView.current
-    if (!view.isInEditMode) {
-        val window = (view.context as Activity).window
-        val insetsController = WindowCompat.getInsetsController(window, view)
-        insetsController.isAppearanceLightStatusBars = false
-        insetsController.isAppearanceLightNavigationBars = false
+    DisposableEffect(view) {
+        if (!view.isInEditMode) {
+            val window = (view.context as Activity).window
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = false
+            insetsController.isAppearanceLightNavigationBars = false
+        }
+        onDispose { }
     }
 
     CompositionLocalProvider(LocalPluviaColors provides pluviaColors) {

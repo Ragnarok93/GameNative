@@ -339,6 +339,15 @@ android {
     // }
 }
 
+// This fork distributes the full-featured direct APK. The upstream `modern`
+// flavor is the Play Store / feature-stripped build and must not be compiled
+// by broad Gradle commands in this fork. Keep modernXr available for Quest.
+androidComponents {
+    beforeVariants(selector().withFlavor("androidApi" to "modern")) { variantBuilder ->
+        variantBuilder.enable = false
+    }
+}
+
 dependencies {
     implementation(libs.material)
 

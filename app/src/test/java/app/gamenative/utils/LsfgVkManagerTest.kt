@@ -52,6 +52,7 @@ class LsfgVkManagerTest {
             envVars["VK_INSTANCE_LAYERS"],
         )
         assertFalse(envVars.has("LSFG_PROCESS"))
+        assertEquals("game.exe", envVars["LSFG_PROCESS_EXE"])
         assertEquals(
             File(rootDir, ".config/lsfg-vk/conf.toml").absolutePath,
             envVars["LSFG_CONFIG"],
@@ -111,6 +112,7 @@ class LsfgVkManagerTest {
             put("VK_LAYER_PATH", "/existing/explicit-layers")
             put("VK_INSTANCE_LAYERS", "VK_LAYER_existing")
             put("LSFG_PROCESS", "stale")
+            put("LSFG_PROCESS_EXE", "stale.exe")
             put("LSFG_CONFIG", "/stale/conf.toml")
         }
 
@@ -118,6 +120,7 @@ class LsfgVkManagerTest {
         assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
         assertFalse(envVars.has("LSFG_PROCESS"))
+        assertFalse(envVars.has("LSFG_PROCESS_EXE"))
         assertFalse(envVars.has("LSFG_CONFIG"))
     }
 

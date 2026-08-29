@@ -16,7 +16,8 @@ object LsfgQuickMenuHelper {
      * Hot UI path: never rescan Steam libraries here. The launch/install path is
      * responsible for copying Lossless.dll into the container. Once copied, a
      * single local file check is sufficient to decide whether LSFG controls can
-     * be exposed for this session.
+     * be exposed for this session. Keep this O(1): it is reached from Compose
+     * recomposition and was previously responsible for repeated main-thread scans.
      */
     fun isAvailable(container: Container): Boolean =
         LsfgVkManager.isSupported(container) &&

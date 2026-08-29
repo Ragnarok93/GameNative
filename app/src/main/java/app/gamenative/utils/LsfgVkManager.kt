@@ -564,16 +564,15 @@ object LsfgVkManager {
             .trim()
             .takeIf { it.isNotEmpty() }
 
-    // The layer rereads conf.toml on mtime change and must never observe a
-    // half-written file.
+    // FileUtils.writeString() already writes through a sibling temporary file
+    // and atomically replaces the destination. Do not stack a second rename
+    // around it: that can report success while leaving conf.toml absent.
     private fun writeConfigAtomic(file: File, text: String): Boolean {
-        val tmp = File(file.parentFile, file.name + ".tmp")
         return try {
-            if (!FileUtils.writeString(tmp, text)) return false
-            FileUtils.chmod(tmp, 0b110100100)
-            tmp.renameTo(file)
+            if (!FileUtils.writeString(file, text) || !file.isFile) return false
+            FileUtils.chmod(file, 0b110100100)
+            file.isFile
         } catch (t: Throwable) {
-            tmp.delete()
             false
         }
     }

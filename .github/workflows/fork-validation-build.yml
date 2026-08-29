@@ -29,10 +29,10 @@ jobs:
       - name: Configure non-production build values
         run: |
           cat <<'EOF' > local.properties
-          POSTHOG_API_KEY=
+          POSTHOG_API_KEY=dummy
           POSTHOG_HOST=https://us.i.posthog.com
-          STEAMGRIDDB_API_KEY=
-          CLOUD_PROJECT_NUMBER=
+          STEAMGRIDDB_API_KEY=dummy
+          CLOUD_PROJECT_NUMBER=dummy
           EOF
 
       - name: Run affected unit-test suites

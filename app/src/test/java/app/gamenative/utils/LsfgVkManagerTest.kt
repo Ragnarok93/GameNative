@@ -4,6 +4,7 @@ import com.winlator.container.Container
 import com.winlator.core.envvars.EnvVars
 import java.io.File
 import java.nio.file.Files
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,6 +16,7 @@ import org.junit.runner.RunWith
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class LsfgVkManagerTest {
@@ -67,6 +69,28 @@ class LsfgVkManagerTest {
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
         assertNull(envVars["LSFG_PROCESS"])
         assertNull(envVars["LSFG_CONFIG"])
+    }
+
+    @Test
+    fun bundledManifest_isVulkan13ImplicitLayerGatedToGameNativeProcess() {
+        val context = RuntimeEnvironment.getApplication()
+        val json = context.assets
+            .open("lsfg_vk/android_arm64_v8a/VkLayer_LS_frame_generation.json")
+            .bufferedReader()
+            .use { JSONObject(it.readText()) }
+        val layer = json.getJSONObject("layer")
+
+        assertEquals("VK_LAYER_LS_frame_generation", layer.getString("name"))
+        assertEquals("GLOBAL", layer.getString("type"))
+        assertEquals("1.3.0", layer.getString("api_version"))
+        assertEquals(
+            "gamenative-lsfg",
+            layer.getJSONObject("enable_environment").getString("LSFG_PROCESS"),
+        )
+        assertEquals(
+            "1",
+            layer.getJSONObject("disable_environment").getString("DISABLE_LSFG"),
+        )
     }
 
     private fun container(armed: Boolean): Container {

@@ -28,7 +28,7 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun applyLaunchEnv_explicitlyEnablesLsfgLayerWithoutDroppingExistingLayers() {
+    fun applyLaunchEnv_doesNotForceOrReplaceInstanceLayers() {
         val container = armedContainer()
         val envVars = EnvVars().apply {
             put("VK_LAYER_PATH", "/existing/layers")
@@ -45,39 +45,17 @@ class LsfgVkManagerTest {
             "/existing/layers:$expectedLayerDir",
             envVars["VK_LAYER_PATH"],
         )
-        assertEquals(
-            "VK_LAYER_existing:VK_LAYER_LS_frame_generation",
-            envVars["VK_INSTANCE_LAYERS"],
-        )
+        assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
     }
 
     @Test
-    fun applyLaunchEnv_doesNotDuplicateLsfgEntriesWhenAppliedTwice() {
-        val container = armedContainer()
-        val envVars = EnvVars()
-
-        assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
-        assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
-
-        val expectedLayerDir = File(
-            rootDir,
-            ".local/share/vulkan/implicit_layer.d",
-        ).absolutePath
-        assertEquals(expectedLayerDir, envVars["VK_LAYER_PATH"])
-        assertEquals(
-            "VK_LAYER_LS_frame_generation",
-            envVars["VK_INSTANCE_LAYERS"],
-        )
-    }
-
-    @Test
-    fun applyLaunchEnv_removesStaleForcedLayerWhenLsfgIsDisabled() {
-        val container = armedContainer()
-        val envVars = EnvVars().apply {
-            put("VK_INSTANCE_LAYERS", "VK_LAYER_existing:VK_LAYER_LS_frame_generation")
+    fun applyLaunchEnv_leavesInstanceLayerEnvironmentUntouchedWhenDisabled() {
+        val container = armedContainer().apply {
+            putExtra(LsfgVkManager.EXTRA_ARMED, "false")
         }
-
-        container.putExtra(LsfgVkManager.EXTRA_ARMED, "false")
+        val envVars = EnvVars().apply {
+            put("VK_INSTANCE_LAYERS", "VK_LAYER_existing")
+        }
 
         assertFalse(LsfgVkManager.applyLaunchEnv(container, envVars))
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
@@ -91,7 +69,6 @@ class LsfgVkManagerTest {
         return Container("lsfg-test").apply {
             setRootDir(rootDir)
             setContainerVariant(Container.BIONIC)
-            // Container extras are persisted/read through the string-based getExtra contract.
             putExtra(LsfgVkManager.EXTRA_ARMED, "true")
         }
     }

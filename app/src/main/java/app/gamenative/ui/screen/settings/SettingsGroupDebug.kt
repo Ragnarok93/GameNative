@@ -54,9 +54,11 @@ fun SettingsGroupDebug() {
     // Load Wine debug channels and prepare selection state
     var allWineChannels by remember { mutableStateOf<List<String>>(emptyList()) }
     var showChannelsDialog by remember { mutableStateOf(false) }
-    var selectedWineChannels by remember { mutableStateOf(
-        if (isPreview) emptyList() else PrefManager.wineDebugChannels.split(",")
-    ) }
+    var selectedWineChannels by remember {
+        mutableStateOf(
+            if (isPreview) emptyList() else PrefManager.wineDebugChannels.split(","),
+        )
+    }
     LaunchedEffect(Unit) {
         // Read the list of channels from assets
         val json = context.assets.open("wine_debug_channels.json").bufferedReader().use { it.readText() }
@@ -75,7 +77,7 @@ fun SettingsGroupDebug() {
             }
             showChannelsDialog = false
         },
-        onDismiss = { showChannelsDialog = false }
+        onDismiss = { showChannelsDialog = false },
     )
 
     /* Crash Log stuff */
@@ -84,9 +86,11 @@ fun SettingsGroupDebug() {
     var enableWineDebugPref by rememberSaveable {
         mutableStateOf(if (isPreview) false else PrefManager.enableWineDebug)
     }
-    var enableBox86Logs by rememberSaveable { mutableStateOf(
-        if (isPreview) false else WinlatorPrefManager.getBoolean("enable_box86_64_logs", false)
-    ) }
+    var enableBox86Logs by rememberSaveable {
+        mutableStateOf(
+            if (isPreview) false else WinlatorPrefManager.getBoolean("enable_box86_64_logs", false),
+        )
+    }
     var latestCrashFile: File? by rememberSaveable { mutableStateOf(null) }
     LaunchedEffect(Unit) {
         val crashDir = File(context.getExternalFilesDir(null), "crash_logs")
@@ -184,16 +188,21 @@ fun SettingsGroupDebug() {
             subtitle = { Text(text = stringResource(R.string.settings_save_logcat_subtitle)) },
             onClick = { saveLogCat.launch("app_logs_${CrashHandler.timestamp}.txt") },
         )
+
+        // Read-only LSFG runtime/layer/presentation compatibility suite.
+        SettingsLsfgDiagnostics()
+
         // Link to open channel selector
         SettingsMenuLink(
             colors = settingsTileColors(),
             title = { Text(text = stringResource(R.string.settings_debug_wine_channels_title)) },
             subtitle = {
                 Text(
-                    text = if (selectedWineChannels.isNotEmpty() && selectedWineChannels.any { it.isNotBlank() })
+                    text = if (selectedWineChannels.isNotEmpty() && selectedWineChannels.any { it.isNotBlank() }) {
                         selectedWineChannels.filter { it.isNotBlank() }.joinToString(",")
-                    else
+                    } else {
                         stringResource(R.string.settings_debug_no_channels_selected)
+                    },
                 )
             },
             onClick = { showChannelsDialog = true },
@@ -227,10 +236,11 @@ fun SettingsGroupDebug() {
             title = { Text(text = stringResource(R.string.settings_debug_view_crash_title)) },
             subtitle = {
                 Text(
-                    text = if (latestCrashFile != null)
+                    text = if (latestCrashFile != null) {
                         stringResource(R.string.settings_debug_view_crash_subtitle)
-                    else
+                    } else {
                         stringResource(R.string.settings_debug_no_crash_logs)
+                    },
                 )
             },
             enabled = latestCrashFile != null,
@@ -242,10 +252,11 @@ fun SettingsGroupDebug() {
             title = { Text(text = stringResource(R.string.settings_debug_view_log_title)) },
             subtitle = {
                 Text(
-                    text = if (latestWineLogFile != null)
+                    text = if (latestWineLogFile != null) {
                         stringResource(R.string.settings_debug_view_log_subtitle)
-                    else
+                    } else {
                         stringResource(R.string.settings_debug_no_wine_logs)
+                    },
                 )
             },
             enabled = latestWineLogFile != null,

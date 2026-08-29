@@ -51,14 +51,12 @@ object LsfgVkManager {
     private const val LIB_FILENAME = "liblsfg-vk-layer.so"
     private const val MANIFEST_FILENAME = "VkLayer_LS_frame_generation.json"
     private const val VERSION_FILENAME = ".lsfg_vk_runtime_version"
+    private const val VULKAN_LAYER_NAME = "VK_LAYER_LS_frame_generation"
 
     // Relative path from implicit_layer.d back to lib/
     private const val MANIFEST_LIBRARY_PATH = "../../../lib/$LIB_FILENAME"
 
-    // Process identifier written to conf.toml [[game]] exe field and also used
-    // by the implicit-layer manifest's enable_environment gate.
-    // Under Wine, /proc/self/exe points to the Wine loader, so we use this
-    // stable identifier instead. Set via LSFG_PROCESS env var.
+    // Process identifier retained for compatibility with older generated config.
     private const val PROCESS_EXE_IDENTIFIER = "gamenative-lsfg"
 
     // Container extra keys
@@ -80,6 +78,8 @@ object LsfgVkManager {
     private const val ENV_DISABLE = "DISABLE_LSFG"
     private const val ENV_CONFIG = "LSFG_CONFIG"
     private const val ENV_PROCESS = "LSFG_PROCESS"
+    private const val ENV_VK_LAYER_PATH = "VK_LAYER_PATH"
+    private const val ENV_VK_INSTANCE_LAYERS = "VK_INSTANCE_LAYERS"
 
     // Current runtime package revision. The native binary is still lsfg-vk
     // v1.3.3; the suffix forces existing containers to receive the corrected
@@ -252,8 +252,9 @@ object LsfgVkManager {
      *
      * The active container is exposed at HOME=/.../home/xuser by
      * ContainerManager.activateContainer(), which symlinks xuser to the
-     * per-container root. That means the manifest above is already in the
-     * Vulkan loader's standard $HOME/.local/share/vulkan/implicit_layer.d path.
+     * per-container root. That still permits standard implicit discovery, while
+     * applyLaunchEnv also exposes this manifest as an explicit layer so loader
+     * builds with differing implicit-layer behavior activate LSFG deterministically.
      *
      * Uses versioned caching to skip redundant copies.
      *
@@ -394,24 +395,24 @@ object LsfgVkManager {
      * Apply LSFG-related environment variables to the launch environment.
      * Called during container startup in BionicProgramLauncherComponent.
      *
-     * The Vulkan loader already discovers the manifest as an implicit layer
-     * through $HOME/.local/share/vulkan/implicit_layer.d. Do not add that
-     * directory to VK_LAYER_PATH: Khronos defines VK_LAYER_PATH as an explicit
-     * layer search path, so doing so can cause the same manifest to be classified
-     * as explicit and the real implicit occurrence to be discarded as a duplicate.
+     * Do not rely on implicit-layer discovery alone. Vulkan loader builds used
+     * by Android/Wine environments vary in which implicit search mechanisms they
+     * expose, while VK_LAYER_PATH + VK_INSTANCE_LAYERS is the long-standing
+     * explicit discovery/activation path. We therefore expose the container's
+     * manifest as an explicit layer and name it explicitly, preserving any paths
+     * or layers supplied by the renderer, driver wrapper, or caller.
      *
      * @return true if LSFG is armed and env vars were applied
      */
     @JvmStatic
     fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean {
         // Clear only LSFG-owned variables. Preserve caller-provided Vulkan layer
-        // search paths and enabled layers verbatim.
+        // search paths and enabled layers.
         envVars.remove(ENV_DISABLE)
         envVars.remove(ENV_CONFIG)
         envVars.remove(ENV_PROCESS)
 
         if (!isSupported(container)) {
-            // Remove the manifest so the Vulkan loader can't find the layer
             disableLayerInContainer(container)
             return false
         }
@@ -420,7 +421,6 @@ object LsfgVkManager {
         val armed = parseBool(container.getExtra(EXTRA_ARMED, "false")) && dllPath != null
 
         if (!armed) {
-            // Remove the manifest so the Vulkan loader can't find the layer
             disableLayerInContainer(container)
             Timber.tag(TAG).i(
                 "LSFG disabled (enabled=%s, dll=%s)",
@@ -430,22 +430,46 @@ object LsfgVkManager {
             return false
         }
 
+        val processExecutable = targetExecutable(container)
+        if (processExecutable == null) {
+            Timber.tag(TAG).w("LSFG armed but target executable could not be resolved")
+            return false
+        }
+
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
+
+        val containerLayerDir = File(container.rootDir, LAYER_RELATIVE_DIR).absolutePath
+        appendUniqueEnvEntry(envVars, ENV_VK_LAYER_PATH, containerLayerDir)
+        appendUniqueEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME)
 
         // Do not set LSFG_PROCESS. It overrides process identity inside lsfg-vk
         // and is inherited by every Wine/Zink helper. With normal process identity,
         // unmatched helpers use the disabled global config and return before native
         // framegen/shader initialization; only the configured executable is enabled.
-        val processExecutable = targetExecutable(container)
         Timber.tag(TAG).i(
-            "LSFG armed: dll=%s, target=%s, multiplier=%d, flowScale=%.2f, perf=%s, discovery=implicit-home-targeted",
+            "LSFG armed: dll=%s, target=%s, multiplier=%d, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
             dllPath,
-            processExecutable ?: "unresolved",
+            processExecutable,
             multiplier(container),
             flowScale(container),
             if (performanceMode(container)) "on" else "off",
         )
-        return processExecutable != null
+        return true
+    }
+
+    /**
+     * Append one Linux Vulkan environment entry without replacing caller state
+     * or adding duplicate path/layer entries.
+     */
+    private fun appendUniqueEnvEntry(envVars: EnvVars, key: String, value: String) {
+        val current = envVars[key].orEmpty()
+        val entries = current
+            .split(':', ';')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (entries.none { it == value }) {
+            envVars.put(key, if (current.isBlank()) value else "$current:$value")
+        }
     }
 
     /**

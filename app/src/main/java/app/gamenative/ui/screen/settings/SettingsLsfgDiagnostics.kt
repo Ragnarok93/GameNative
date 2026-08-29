@@ -6,6 +6,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -33,9 +34,11 @@ import kotlinx.coroutines.withContext
 fun SettingsLsfgDiagnostics() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var running by rememberSaveable { mutableStateOf(false) }
-    var showReport by rememberSaveable { mutableStateOf(false) }
-    var reportText by rememberSaveable { mutableStateOf<String?>(null) }
+    var running by remember { mutableStateOf(false) }
+    var showReport by remember { mutableStateOf(false) }
+    // Report text may contain hundreds of log lines. Keep it out of saved-instance
+    // state to avoid Binder/state-size pressure when Settings is recreated.
+    var reportText by remember { mutableStateOf<String?>(null) }
     var reportPath by rememberSaveable { mutableStateOf<String?>(null) }
     var lastFocus by rememberSaveable { mutableStateOf<String?>(null) }
 

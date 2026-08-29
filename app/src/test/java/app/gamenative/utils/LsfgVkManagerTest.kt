@@ -77,7 +77,7 @@ class LsfgVkManagerTest {
             put("VK_INSTANCE_LAYERS", "VK_LAYER_existing:VK_LAYER_LS_frame_generation")
         }
 
-        container.putExtra(LsfgVkManager.EXTRA_ARMED, false)
+        container.putExtra(LsfgVkManager.EXTRA_ARMED, "false")
 
         assertFalse(LsfgVkManager.applyLaunchEnv(container, envVars))
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
@@ -91,7 +91,8 @@ class LsfgVkManagerTest {
         return Container("lsfg-test").apply {
             setRootDir(rootDir)
             setContainerVariant(Container.BIONIC)
-            putExtra(LsfgVkManager.EXTRA_ARMED, true)
+            // Container extras are persisted/read through the string-based getExtra contract.
+            putExtra(LsfgVkManager.EXTRA_ARMED, "true")
         }
     }
 }

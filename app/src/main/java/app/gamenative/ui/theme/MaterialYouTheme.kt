@@ -37,8 +37,12 @@ object MaterialYouThemePreference {
                 val persisted = withContext(Dispatchers.IO) {
                     readPersisted(appContext)
                 }
-                runtimeEnabled = persisted && isMaterialYouSupported(Build.VERSION.SDK_INT)
-                initialized = true
+                // A user may toggle the setting while the background read is in flight.
+                // Never let that stale persisted value overwrite the newer in-memory choice.
+                if (!initialized) {
+                    runtimeEnabled = persisted && isMaterialYouSupported(Build.VERSION.SDK_INT)
+                    initialized = true
+                }
             }
         }
         return runtimeEnabled && isMaterialYouSupported(Build.VERSION.SDK_INT)

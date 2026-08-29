@@ -3,12 +3,14 @@ package app.gamenative.ui.theme
 import android.app.Activity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import com.alorma.compose.settings.ui.base.internal.SettingsTileColors
@@ -168,8 +170,22 @@ fun PluviaTheme(
     style: PaletteStyle = PaletteStyle.TonalSpot,
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = DarkColorScheme
-    val pluviaColors = if (isDark) DarkPluviaColors else DarkPluviaColors // We can use LightPluviaColors when ready
+    val context = LocalContext.current
+    val useMaterialYou = MaterialYouThemePreference.isEnabled(context)
+    val colorScheme = if (useMaterialYou) dynamicDarkColorScheme(context) else DarkColorScheme
+    val pluviaColors = if (useMaterialYou) {
+        DarkPluviaColors.copy(
+            accentCyan = colorScheme.primary,
+            accentPurple = colorScheme.secondary,
+            accentPink = colorScheme.tertiary,
+            surfacePanel = colorScheme.surfaceContainer,
+            surfaceElevated = colorScheme.surfaceContainerHigh,
+            borderDefault = colorScheme.outline,
+            textMuted = colorScheme.onSurfaceVariant,
+        )
+    } else {
+        DarkPluviaColors
+    }
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -243,20 +259,20 @@ object DarkColors {
 // Settings tile color helpers
 @Composable
 fun settingsTileColors(): SettingsTileColors = SettingsTileDefaults.colors(
-    titleColor = PluviaForeground,
-    subtitleColor = PluviaForegroundMuted,
-    actionColor = PluviaCyan,
+    titleColor = MaterialTheme.colorScheme.onSurface,
+    subtitleColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    actionColor = MaterialTheme.colorScheme.primary,
 )
 
 @Composable
 fun settingsTileColorsAlt(): SettingsTileColors = SettingsTileDefaults.colors(
-    titleColor = PluviaForeground,
-    subtitleColor = PluviaForegroundMuted,
+    titleColor = MaterialTheme.colorScheme.onSurface,
+    subtitleColor = MaterialTheme.colorScheme.onSurfaceVariant,
 )
 
 @Composable
 fun settingsTileColorsDebug(): SettingsTileColors = SettingsTileDefaults.colors(
     titleColor = PluviaDestructive,
-    subtitleColor = PluviaForegroundMuted,
-    actionColor = PluviaCyan,
+    subtitleColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    actionColor = MaterialTheme.colorScheme.primary,
 )

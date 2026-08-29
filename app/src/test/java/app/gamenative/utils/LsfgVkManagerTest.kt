@@ -60,6 +60,23 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun applyLaunchEnv_isDriverAgnosticAndPreservesSelectedIcd() {
+        val container = container(armed = true)
+        val envVars = EnvVars().apply {
+            put("VK_ICD_FILENAMES", "/driver/selected_icd.json")
+            put("WRAPPER_CUSTOM_OPTION", "keep")
+        }
+
+        assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
+
+        assertEquals("/driver/selected_icd.json", envVars["VK_ICD_FILENAMES"])
+        assertEquals("keep", envVars["WRAPPER_CUSTOM_OPTION"])
+        assertEquals("VK_LAYER_LS_frame_generation", envVars["VK_INSTANCE_LAYERS"])
+        assertEquals("VK_LAYER_LS_frame_generation", envVars["VK_LOADER_LAYERS_ENABLE"])
+        assertFalse(envVars.has("LSFG_PROCESS"))
+    }
+
+    @Test
     fun applyLaunchEnv_doesNotDuplicateLayerDiscoveryOrActivationEntries() {
         val container = container(armed = true)
         val containerLayerDir =

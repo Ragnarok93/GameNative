@@ -229,7 +229,7 @@ class LsfgVkManagerTest {
         assertTrue(text.contains("multiplier = 4"))
         assertTrue(text.contains("adaptive_framegen = true"))
         assertTrue(text.contains("fps_limit = 90"))
-        assertFalse(text.contains("fps_limit = 30"))
+        assertFalse(text.lineSequence().any { it == "fps_limit = 30" })
     }
 
     @Test
@@ -264,7 +264,7 @@ class LsfgVkManagerTest {
         val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
         assertTrue(text.contains("adaptive_framegen = false"))
         assertTrue(text.contains("fps_limit = 0"))
-        assertFalse(text.contains("fps_limit = 30"))
+        assertFalse(text.lineSequence().any { it == "fps_limit = 30" })
     }
 
     @Test

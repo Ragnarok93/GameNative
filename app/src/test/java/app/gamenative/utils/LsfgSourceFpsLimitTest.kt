@@ -84,7 +84,7 @@ class LsfgSourceFpsLimitTest {
         val text = configText()
         assertTrue(text.contains("fps_limit = 120"))
         assertTrue(text.contains("source_fps_limit = 45"))
-        assertFalse(text.contains("fps_limit = 45"))
+        assertFalse(text.lineSequence().any { it == "fps_limit = 45" })
     }
 
     private fun configText(): String =

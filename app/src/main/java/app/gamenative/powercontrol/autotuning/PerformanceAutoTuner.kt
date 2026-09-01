@@ -207,7 +207,7 @@ class PerformanceAutoTuner(
         if (!skipWarmupCycles && ++warmUpCycles < WARMUP_CYCLES) return
 
         val targetFps = PowerManager.targetFps.toDouble()
-        val currentFps = PowerManager.currentFps.toDouble()
+        val currentFps = PowerManager.currentTuningFps().toDouble()
 
         // Skip tuning when targetFps is 0 (FPS limiter disabled) or currentFps is 0
         if (targetFps == 0.0 || currentFps == 0.0) {

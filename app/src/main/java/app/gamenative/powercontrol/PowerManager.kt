@@ -102,6 +102,14 @@ object PowerManager {
             field = value.coerceAtLeast(0f)
         }
 
+    /** Optional source-FPS feedback for systems that add displayed frames downstream. */
+    @Volatile
+    var tuningFpsProvider: (() -> Float?)? = null
+
+    fun currentTuningFps(): Float = tuningFpsProvider?.invoke()
+        ?.takeIf { it.isFinite() && it >= 0f }
+        ?: currentFps
+
     var currentCpuUsage: Float = 0f
         set(value) {
             // Enforce 0-100% range

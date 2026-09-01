@@ -92,9 +92,9 @@ class LsfgVkManagerTest {
 
         val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
         assertTrue(text.contains("enabled = false"))
-        assertTrue(text.contains("multiplier = 1"))
-        assertTrue(text.contains("performance_mode = false"))
-        assertTrue(text.contains("experimental_present_mode = \"fifo\""))
+        assertTrue(text.contains("multiplier = 2"))
+        assertTrue(text.contains("performance_mode = true"))
+        assertTrue(text.contains("experimental_present_mode = \"mailbox\""))
     }
 
     @Test
@@ -174,7 +174,7 @@ class LsfgVkManagerTest {
 
         assertTrue(loaderLib.readBytes().contentEquals(containerLib.readBytes()))
         assertEquals(containerManifest.readText(), loaderManifest.readText())
-        assertTrue(loaderVersion.readText().contains("66e44446"))
+        assertTrue(loaderVersion.readText().contains("0afae418"))
         val loaderLayerDir = loaderManifest.parentFile!!.absolutePath
         assertEquals(loaderLayerDir, envVars["VK_LAYER_PATH"])
     }
@@ -226,7 +226,7 @@ class LsfgVkManagerTest {
 
         val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
         assertTrue(text.contains("enabled = true"))
-        assertTrue(text.contains("multiplier = 4"))
+        assertTrue(text.contains("multiplier = 2"))
         assertTrue(text.contains("adaptive_framegen = true"))
         assertTrue(text.contains("fps_limit = 90"))
         assertFalse(text.lineSequence().any { it == "fps_limit = 30" })

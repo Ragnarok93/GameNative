@@ -19,6 +19,34 @@ import timber.log.Timber
 import kotlin.jvm.JvmStatic
 import kotlin.math.roundToInt
 
+internal data class LsfgRuntimeStats(
+    val outputFps: Float,
+    val sourceFps: Float,
+    val generatedFps: Float,
+) {
+    companion object {
+        fun parse(text: String): LsfgRuntimeStats? {
+            val values = text.lineSequence()
+                .mapNotNull { line ->
+                    val separator = line.indexOf('=')
+                    if (separator <= 0) null
+                    else line.substring(0, separator) to line.substring(separator + 1)
+                }
+                .toMap()
+            if (values["active"] != "1") return null
+
+            fun fps(name: String): Float? = values[name]?.toFloatOrNull()
+                ?.takeIf { it.isFinite() && it >= 0f }
+
+            return LsfgRuntimeStats(
+                outputFps = fps("fps") ?: return null,
+                sourceFps = fps("source_fps") ?: return null,
+                generatedFps = fps("generated_fps") ?: 0f,
+            )
+        }
+    }
+}
+
 /**
  * Manages the lsfg-vk Vulkan implicit layer for frame generation.
  *
@@ -94,7 +122,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "v1.3.6-android-arm64-v8a-gamenative-adaptive-66e44446-r11"
+        "v1.3.7-android-arm64-v8a-gamenative-adaptive-0afae418-r12"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -216,9 +244,10 @@ object LsfgVkManager {
      * to the display instead of free-running against it. Choreographer frame
      * timestamps are CLOCK_MONOTONIC, the clock the layer paces with.
      *
-     * The same clock resolves a missing Adaptive output target from the actual
-     * active display refresh. That migration is one-way: once a target exists,
-     * changing the source FPS limiter cannot overwrite it.
+     * The same clock resolves a missing LSFG output-cadence target from the
+     * active display refresh. Fixed and Adaptive generation both need that
+     * cadence so mailbox cannot replace intermediary frames before scanout.
+     * The migration is one-way: source-limiter changes never overwrite it.
      */
     @JvmStatic
     fun startVsyncClock(context: Context, container: Container) {
@@ -236,14 +265,14 @@ object LsfgVkManager {
                             ?.defaultDisplay?.refreshRate
                     }.getOrNull()?.takeIf { it > 1f } ?: 60f
                     val periodNs = (1_000_000_000.0 / refreshRate).toLong()
-                    val resolveAdaptiveTarget =
-                        adaptiveFrameGen(container) && adaptiveOutputTarget(container) <= 0
+                    val resolveOutputTarget =
+                        multiplier(container) >= 2 && adaptiveOutputTarget(container) <= 0
                     vsyncWriteExecutor.execute {
                         runCatching {
                             file.parentFile?.mkdirs()
                             file.writeText("vsync_ns=$frameTimeNanos\nperiod_ns=$periodNs\n")
 
-                            if (resolveAdaptiveTarget && adaptiveOutputTarget(container) <= 0) {
+                            if (resolveOutputTarget && adaptiveOutputTarget(container) <= 0) {
                                 val outputTarget = refreshRate.roundToInt().coerceAtLeast(5)
                                 setAdaptiveOutputTarget(container, outputTarget)
                                 val selectedMultiplier = multiplier(container)
@@ -253,11 +282,11 @@ object LsfgVkManager {
                                     multiplier = if (selectedMultiplier >= 2) selectedMultiplier else 2,
                                     flowScale = flowScale(container),
                                     performanceMode = performanceMode(container),
-                                    adaptiveFrameGen = true,
+                                    adaptiveFrameGen = adaptiveFrameGen(container),
                                     fpsLimitOverride = outputTarget,
                                 )
                                 Timber.tag(TAG).i(
-                                    "Adaptive output target initialized from display refresh: %d fps",
+                                    "LSFG output cadence initialized from display refresh: %d fps",
                                     outputTarget,
                                 )
                             }
@@ -284,24 +313,30 @@ object LsfgVkManager {
      * in which case callers should fall back to their own estimate.
      */
     @JvmStatic
-    @Volatile private var cachedMeasuredFps: Float? = null
+    @Volatile private var cachedRuntimeStats: LsfgRuntimeStats? = null
     @Volatile private var lastStatsReadMs: Long = 0L
 
     /** Served from a cache refreshed off the main thread; callers poll ~1/s. */
     fun readMeasuredFps(container: Container): Float? {
+        return readRuntimeStats(container)?.outputFps
+    }
+
+    /** Source/game FPS for power-control feedback; generated output must not downclock the game. */
+    fun readMeasuredSourceFps(container: Container): Float? {
+        return readRuntimeStats(container)?.sourceFps
+    }
+
+    private fun readRuntimeStats(container: Container): LsfgRuntimeStats? {
         val now = System.currentTimeMillis()
         if (now - lastStatsReadMs >= 500L) {
             lastStatsReadMs = now
             vsyncWriteExecutor.execute {
-                cachedMeasuredFps = try {
+                cachedRuntimeStats = try {
                     val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
                     if (statsFile.isFile &&
                         System.currentTimeMillis() - statsFile.lastModified() <= STATS_FRESHNESS_MS
                     ) {
-                        statsFile.readLines()
-                            .firstOrNull { it.startsWith("fps=") }
-                            ?.substringAfter("fps=")
-                            ?.toFloatOrNull()
+                        LsfgRuntimeStats.parse(statsFile.readText())
                     } else {
                         null
                     }
@@ -310,7 +345,7 @@ object LsfgVkManager {
                 }
             }
         }
-        return cachedMeasuredFps
+        return cachedRuntimeStats
     }
 
     /**
@@ -424,9 +459,11 @@ object LsfgVkManager {
                 dllPath = dllPath,
                 processExecutable = processExecutable,
                 enabled = frameGenActive,
-                multiplier = if (frameGenActive) savedMultiplier else 1,
+                multiplier = savedMultiplier,
                 flowScale = flowScale(container),
-                performanceMode = performanceMode(container) && frameGenActive,
+                // Preserve backend selection while disabled. Enable/disable is
+                // a pass-through switch, not a request to mutate the context.
+                performanceMode = performanceMode(container),
                 adaptiveFrameGen = adaptiveEffective,
                 fpsLimit = outputTarget,
                 presentMode = presentMode(container),
@@ -777,11 +814,10 @@ object LsfgVkManager {
 
         if (!dllPath.isNullOrBlank() && !processExecutable.isNullOrBlank()) {
             val adaptiveEffective = enabled && adaptiveFrameGen && fpsLimit > 0
-            val effectiveMultiplier = when {
-                !enabled -> 1
-                adaptiveEffective -> 4 // provision the native 0..3 generation ceiling
-                else -> multiplier.coerceIn(2, 4)
-            }
+            // The selected multiplier is Adaptive's maximum probe ceiling too.
+            // Raising it to 4 behind a 2x UI selection overcommits swapchain
+            // headroom and makes hot Adaptive toggles recreate the game swapchain.
+            val effectiveMultiplier = multiplier.coerceIn(2, 4)
             val processNames = listOf(processExecutable, processExecutable.take(15)).distinct()
             processNames.forEach { processName ->
                 appendLine("[[game]]")
@@ -789,12 +825,12 @@ object LsfgVkManager {
                 appendLine("enabled = $enabled")
                 appendLine("multiplier = $effectiveMultiplier")
                 appendLine("flow_scale = ${formatFlowScale(flowScale)}")
-                appendLine("performance_mode = ${if (enabled && performanceMode) "true" else "false"}")
+                appendLine("performance_mode = $performanceMode")
                 appendLine("hdr_mode = false")
                 appendLine("adaptive_framegen = $adaptiveEffective")
                 appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
                 appendLine("source_fps_limit = 0")
-                appendLine("experimental_present_mode = ${tomlString(if (enabled) presentMode else "fifo")}")
+                appendLine("experimental_present_mode = ${tomlString(presentMode)}")
             }
         }
     }
@@ -821,7 +857,8 @@ object LsfgVkManager {
 
     /**
      * Update conf.toml while the container is running. The layer observes the
-     * timestamp change and recreates its swapchain context with the new values.
+     * timestamp change and applies safe runtime fields without invalidating the
+     * game's swapchain. Context-bound fields take effect at natural creation.
      * [fpsLimitOverride] is an Adaptive output-target override only; it is never
      * sourced from or written back to GameNative's real/source FPS limiter.
      */
@@ -859,9 +896,9 @@ object LsfgVkManager {
                 dllPath = dllPath,
                 processExecutable = processExecutable,
                 enabled = frameGenActive,
-                multiplier = if (frameGenActive) multiplier.coerceIn(2, 4) else 1,
+                multiplier = multiplier.coerceIn(2, 4),
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
-                performanceMode = performanceMode && frameGenActive,
+                performanceMode = performanceMode,
                 adaptiveFrameGen = adaptiveEffective,
                 fpsLimit = effectiveOutputTarget,
                 presentMode = presentMode(container),

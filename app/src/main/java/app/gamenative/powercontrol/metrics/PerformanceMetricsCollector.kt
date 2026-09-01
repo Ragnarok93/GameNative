@@ -131,9 +131,15 @@ object PerformanceMetricsCollector {
         val cpu = cpuSampler.sample()
         val gpu = gpuSampler.sample()
 
+        // Generated presents are downstream display work, not additional game
+        // throughput. Feed every tuner the layer's source FPS when available;
+        // otherwise a multiplied event stream creates false headroom and
+        // aggressively downclocks CPU/GPU/bus after LSFG is disabled.
+        val sourceFpsFeedback = PowerManager.tuningFpsProvider?.invoke()
+            ?.takeIf { it.isFinite() && it >= 0f }
         val snapshot = MetricsSnapshot(
             timestampMs = System.currentTimeMillis(),
-            fps = frameStats.fps,
+            fps = sourceFpsFeedback ?: frameStats.fps,
             frameTimeP50Ms = frameStats.p50Ms,
             frameTimeP95Ms = frameStats.p95Ms,
             frameTimeMaxMs = frameStats.maxMs,

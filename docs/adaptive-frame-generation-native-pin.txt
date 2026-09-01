@@ -1,1 +1,1 @@
-Intended lsfg-vk-android Adaptive-Frame-Generation revision: 66e44446886977ed86ca4838921fe86fdbae00d5
+Intended lsfg-vk-android Adaptive-Frame-Generation revision: 91c241e7a64a445e93f314674ba160d9318565e6

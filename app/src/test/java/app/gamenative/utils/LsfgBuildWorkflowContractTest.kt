@@ -84,6 +84,20 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
+    fun runtimeMarkerRewriteIsIndependentOfFeatureLabel() {
+        val source = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
+
+        assertTrue(
+            "runtime provenance rewriting must accept feature labels while still replacing only the gitlink SHA token",
+            source.contains("gamenative-[a-z0-9-]+-"),
+        )
+        assertFalse(
+            "runtime provenance must not be coupled to the historical presentsync feature label",
+            source.contains("gamenative-presentsync-)[0-9a-f]{8}"),
+        )
+    }
+
+    @Test
     fun sharedNativePreparationRegeneratesAndroidManifestFromPinnedNativeMetadata() {
         val source = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
         listOf(

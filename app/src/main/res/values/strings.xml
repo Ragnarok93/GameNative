@@ -340,8 +340,8 @@
     <string name="performance_hud_fps_limiter_target">Target FPS</string>
     <string name="performance_hud_fps_limiter_off">Unlimited</string>
     <string name="performance_hud_fps_limiter_value">%1$d FPS</string>
-    <string name="performance_hud_fps_limiter_lsfg_base">Caps the base rate. On-screen rate is the cap times the LSFG multiplier.</string>
-    <string name="performance_hud_fps_limiter_lsfg_adaptive">Sets LSFG’s final output target. Adaptive FrameGen generates only the frames needed to approach this cap.</string>
+    <string name="performance_hud_fps_limiter_lsfg_base">Caps the real/source frame rate before LSFG. Adaptive output target is configured separately in the LSFG tab.</string>
+    <string name="performance_hud_fps_limiter_lsfg_adaptive">Adaptive output target is configured separately in the LSFG tab.</string>
     <string name="performance_hud_presets">Presets</string>
     <string name="performance_hud_presets_description">Quickly switch between common HUD layouts.</string>
     <string name="performance_hud_preset_fps_only">1</string>
@@ -2169,7 +2169,9 @@
     <string name="lsfg_installing">Downloading Lossless Scaling…</string>
     <string name="lsfg_performance_mode_desc">Reduces quality for higher throughput</string>
     <string name="lsfg_adaptive_framegen">Adaptive FrameGen</string>
-    <string name="lsfg_adaptive_framegen_desc">Uses the Framerate Cap as the final output target and varies between 0–3 generated frames per source frame.</string>
+    <string name="lsfg_adaptive_framegen_desc">Dynamically varies generated frames to approach an independent final display target.</string>
+    <string name="lsfg_adaptive_output_target">Adaptive output target</string>
+    <string name="lsfg_adaptive_output_target_desc">Final display FPS target for Adaptive FrameGen. Independent of the source FPS limiter.</string>
     <!-- Bionic FG (AI) Frame Generation -->
     <string name="steam_invite_tab_title">Invite</string>
     <string name="steam_invite_header">%1$d friends</string>

@@ -607,6 +607,13 @@ fun XServerScreen(
     var lsfgFlowScale by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.flowScale) }
     var lsfgPerformanceMode by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.performanceMode) }
     var lsfgAdaptiveFrameGen by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.adaptiveFrameGen) }
+    var lsfgAdaptiveOutputTarget by rememberSaveable(container.id) {
+        mutableIntStateOf(
+            initialLsfgSettings.adaptiveOutputTargetFps
+                .takeIf { it > 0 }
+                ?: detectedMaxRefreshRateHz,
+        )
+    }
 
     fun persistFpsLimiterState() {
         container.putExtra(FPS_LIMITER_ENABLED_EXTRA, fpsLimiterEnabled)
@@ -685,8 +692,8 @@ fun XServerScreen(
 
     fun applyFpsLimiterToEngines(limit: Int) {
         // With LSFG active the native layer owns Vulkan presentation pacing.
-        // In Adaptive FrameGen mode it treats this as the final-output cap and
-        // generates only the intermediate frames required to reach it. Both
+        // This limit remains the real/source-game cap; Adaptive FrameGen has
+        // its own independent final-output target inside the LSFG config. Both
         // the renderer's SurfaceControl frame-rate hint and the
         // PresentExtension's scheduled idle-release pacing must stay off. The
         // hint would clamp the display to the base rate, while the extension's
@@ -720,20 +727,15 @@ fun XServerScreen(
                 lsfgFlowScale,
                 lsfgPerformanceMode,
                 lsfgAdaptiveFrameGen,
+                lsfgAdaptiveOutputTarget,
             ),
         )
     }
 
     fun applyFpsLimiterEnabled(enabled: Boolean) {
         fpsLimiterEnabled = enabled
-        if (!enabled && lsfgAdaptiveFrameGen) {
-            lsfgAdaptiveFrameGen = false
-        }
         applyFpsLimiterToEngines(effectiveFpsLimit())
         persistFpsLimiterState()
-        if (isLsfgAvailable && lsfgMultiplier >= 2) {
-            applyLsfgSettings()
-        }
     }
 
     fun applyFpsLimiterTarget(target: Int) {
@@ -743,9 +745,6 @@ fun XServerScreen(
             applyFpsLimiterToEngines(effectiveFpsLimit())
         }
         persistFpsLimiterState()
-        if (isLsfgAvailable && lsfgMultiplier >= 2) {
-            applyLsfgSettings()
-        }
     }
 
     fun applyLsfgMultiplier(mult: Int) {
@@ -766,17 +765,20 @@ fun XServerScreen(
 
     fun applyLsfgAdaptiveFrameGen(enabled: Boolean) {
         lsfgAdaptiveFrameGen = enabled
-        if (enabled && !fpsLimiterEnabled) {
-            fpsLimiterEnabled = true
-            persistFpsLimiterState()
-        }
         applyLsfgSettings()
         applyFpsLimiterToEngines(effectiveFpsLimit())
     }
 
+    fun applyLsfgAdaptiveOutputTarget(target: Int) {
+        val sanitized = target.coerceAtLeast(5).coerceAtMost(detectedMaxRefreshRateHz)
+        if (sanitized == lsfgAdaptiveOutputTarget) return
+        lsfgAdaptiveOutputTarget = sanitized
+        LsfgQuickMenuHelper.applyAdaptiveOutputTarget(container, sanitized)
+    }
+
     LaunchedEffect(xServerView) {
-        // Adaptive-cap steps route through the LSFG limiter; the X-server
-        // limiters must stay at 0 under LSFG.
+        // PowerManager Adaptive FPS Cap controls the real/source rate only.
+        // LSFG's Adaptive final-output objective remains independently persisted.
         PowerManager.fpsCapApplier = applier@{ capFps: Int ->
             if (!isLsfgAvailable || lsfgMultiplier < 2) return@applier false
             PowerManager.targetFps = capFps
@@ -789,6 +791,13 @@ fun XServerScreen(
         val clampedTarget = fpsLimiterTarget.coerceAtMost(detectedMax).coerceAtLeast(5)
         if (clampedTarget != fpsLimiterTarget) {
             fpsLimiterTarget = clampedTarget
+        }
+        val clampedAdaptiveTarget = lsfgAdaptiveOutputTarget.coerceAtMost(detectedMax).coerceAtLeast(5)
+        if (clampedAdaptiveTarget != lsfgAdaptiveOutputTarget) {
+            lsfgAdaptiveOutputTarget = clampedAdaptiveTarget
+            if (lsfgAdaptiveFrameGen) {
+                LsfgQuickMenuHelper.applyAdaptiveOutputTarget(container, clampedAdaptiveTarget)
+            }
         }
         applyFpsLimiterToEngines(effectiveFpsLimit())
     }
@@ -2867,10 +2876,13 @@ fun XServerScreen(
                 flowScale = lsfgFlowScale,
                 performanceMode = lsfgPerformanceMode,
                 adaptiveFrameGen = lsfgAdaptiveFrameGen,
+                adaptiveOutputTarget = lsfgAdaptiveOutputTarget,
+                adaptiveOutputTargetMax = detectedMaxRefreshRateHz,
                 onMultiplierChanged = ::applyLsfgMultiplier,
                 onFlowScaleChanged = ::applyLsfgFlowScale,
                 onPerformanceModeChanged = ::applyLsfgPerformanceMode,
                 onAdaptiveFrameGenChanged = ::applyLsfgAdaptiveFrameGen,
+                onAdaptiveOutputTargetChanged = ::applyLsfgAdaptiveOutputTarget,
             ),
             onRequestOpen = { showQuickMenu = true },
             // Immersive tab (tab only visible when hosted by ImmersiveXrActivity)

@@ -326,10 +326,13 @@ class LsfgQuickMenuState(
     val flowScale: Float = 0.80f,
     val performanceMode: Boolean = true,
     val adaptiveFrameGen: Boolean = false,
+    val adaptiveOutputTarget: Int = 60,
+    val adaptiveOutputTargetMax: Int = 60,
     val onMultiplierChanged: (Int) -> Unit = {},
     val onFlowScaleChanged: (Float) -> Unit = {},
     val onPerformanceModeChanged: (Boolean) -> Unit = {},
     val onAdaptiveFrameGenChanged: (Boolean) -> Unit = {},
+    val onAdaptiveOutputTargetChanged: (Int) -> Unit = {},
 )
 
 @Composable
@@ -372,10 +375,13 @@ fun QuickMenu(
     val lsfgFlowScale = lsfg.flowScale
     val lsfgPerformanceMode = lsfg.performanceMode
     val lsfgAdaptiveFrameGen = lsfg.adaptiveFrameGen
+    val lsfgAdaptiveOutputTarget = lsfg.adaptiveOutputTarget
+    val lsfgAdaptiveOutputTargetMax = lsfg.adaptiveOutputTargetMax
     val onLsfgMultiplierChanged = lsfg.onMultiplierChanged
     val onLsfgFlowScaleChanged = lsfg.onFlowScaleChanged
     val onLsfgPerformanceModeChanged = lsfg.onPerformanceModeChanged
     val onLsfgAdaptiveFrameGenChanged = lsfg.onAdaptiveFrameGenChanged
+    val onLsfgAdaptiveOutputTargetChanged = lsfg.onAdaptiveOutputTargetChanged
     val focusManager = LocalFocusManager.current
     LaunchedEffect(immersiveHooks) {
         immersiveHooks?.registerFocusManager?.invoke(focusManager)
@@ -899,7 +905,6 @@ fun QuickMenu(
                                             fpsLimiterTarget = fpsLimiterTarget,
                                             fpsLimiterMax = fpsLimiterMax,
                                             lsfgMultiplier = if (isLsfgAvailable) lsfgMultiplier else 0,
-                                            lsfgAdaptiveFrameGen = isLsfgAvailable && lsfgAdaptiveFrameGen,
                                             onTogglePerformanceHud = {
                                                 onItemSelected(QuickMenuAction.PERFORMANCE_HUD)
                                             },
@@ -918,10 +923,13 @@ fun QuickMenu(
                                             flowScale = lsfgFlowScale,
                                             performanceMode = lsfgPerformanceMode,
                                             adaptiveFrameGen = lsfgAdaptiveFrameGen,
+                                            adaptiveOutputTarget = lsfgAdaptiveOutputTarget,
+                                            adaptiveOutputTargetMax = lsfgAdaptiveOutputTargetMax,
                                             onMultiplierChanged = onLsfgMultiplierChanged,
                                             onFlowScaleChanged = onLsfgFlowScaleChanged,
                                             onPerformanceModeChanged = onLsfgPerformanceModeChanged,
                                             onAdaptiveFrameGenChanged = onLsfgAdaptiveFrameGenChanged,
+                                            onAdaptiveOutputTargetChanged = onLsfgAdaptiveOutputTargetChanged,
                                             presentMode = lsfgPresentMode,
                                             onPresentModeChanged = { mode ->
                                                 lsfgPresentMode = mode
@@ -1201,7 +1209,6 @@ private fun PerformanceHudQuickMenuTab(
     fpsLimiterTarget: Int,
     fpsLimiterMax: Int,
     lsfgMultiplier: Int,
-    lsfgAdaptiveFrameGen: Boolean,
     onTogglePerformanceHud: () -> Unit,
     onPerformanceHudConfigChanged: (PerformanceHudConfig) -> Unit,
     onFpsLimiterEnabledChanged: (Boolean) -> Unit,
@@ -1222,9 +1229,7 @@ private fun PerformanceHudQuickMenuTab(
         val lsfgActive = lsfgMultiplier >= 2
         QuickMenuToggleRow(
             title = stringResource(R.string.performance_hud_fps_limiter),
-            subtitle = if (lsfgAdaptiveFrameGen) {
-                stringResource(R.string.performance_hud_fps_limiter_lsfg_adaptive)
-            } else if (lsfgActive) {
+            subtitle = if (lsfgActive) {
                 stringResource(R.string.performance_hud_fps_limiter_lsfg_base)
             } else null,
             enabled = fpsLimiterEnabled,
@@ -1578,10 +1583,13 @@ private fun LsfgQuickMenuTab(
     flowScale: Float,
     performanceMode: Boolean,
     adaptiveFrameGen: Boolean,
+    adaptiveOutputTarget: Int,
+    adaptiveOutputTargetMax: Int,
     onMultiplierChanged: (Int) -> Unit,
     onFlowScaleChanged: (Float) -> Unit,
     onPerformanceModeChanged: (Boolean) -> Unit,
     onAdaptiveFrameGenChanged: (Boolean) -> Unit,
+    onAdaptiveOutputTargetChanged: (Int) -> Unit,
     presentMode: String,
     onPresentModeChanged: (String) -> Unit,
     scrollState: ScrollState,
@@ -1666,6 +1674,33 @@ private fun LsfgQuickMenuTab(
                     onToggle = { onAdaptiveFrameGenChanged(!adaptiveFrameGen) },
                     accentColor = accentColor,
                 )
+
+                AnimatedVisibility(
+                    visible = adaptiveFrameGen,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut(),
+                ) {
+                    QuickMenuAdjustmentRow(
+                        title = stringResource(R.string.lsfg_adaptive_output_target),
+                        subtitle = stringResource(R.string.lsfg_adaptive_output_target_desc),
+                        valueText = stringResource(
+                            R.string.performance_hud_fps_limiter_value,
+                            adaptiveOutputTarget,
+                        ),
+                        progress = fpsLimiterProgress(adaptiveOutputTarget, adaptiveOutputTargetMax),
+                        onDecrease = {
+                            onAdaptiveOutputTargetChanged(
+                                previousFpsLimiterValue(adaptiveOutputTarget, adaptiveOutputTargetMax),
+                            )
+                        },
+                        onIncrease = {
+                            onAdaptiveOutputTargetChanged(
+                                nextFpsLimiterValue(adaptiveOutputTarget, adaptiveOutputTargetMax),
+                            )
+                        },
+                        accentColor = accentColor,
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(4.dp))
 

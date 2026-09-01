@@ -17,6 +17,7 @@ import java.security.MessageDigest
 import java.util.Locale
 import timber.log.Timber
 import kotlin.jvm.JvmStatic
+import kotlin.math.roundToInt
 
 /**
  * Manages the lsfg-vk Vulkan implicit layer for frame generation.
@@ -67,10 +68,7 @@ object LsfgVkManager {
     const val EXTRA_PERFORMANCE_MODE = "lsfgPerformanceMode"
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
     const val EXTRA_ADAPTIVE_FRAMEGEN = "lsfgAdaptiveFrameGen"
-
-    // FPS limiter extras (owned by XServerScreen)
-    private const val EXTRA_FPS_LIMITER_ENABLED = "fpsLimiterEnabled"
-    private const val EXTRA_FPS_LIMITER_TARGET = "fpsLimiterTarget"
+    const val EXTRA_ADAPTIVE_OUTPUT_TARGET = "lsfgAdaptiveOutputTarget"
 
     // Written by the layer next to conf.toml; measured presented/base fps
     private const val STATS_RELATIVE_PATH = ".config/lsfg-vk/stats.txt"
@@ -94,7 +92,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "v1.3.6-android-arm64-v8a-gamenative-presentsync-f0caa75a-r10"
+        "v1.3.6-android-arm64-v8a-gamenative-adaptive-66e44446-r11"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -156,9 +154,34 @@ object LsfgVkManager {
     fun performanceMode(container: Container): Boolean =
         parseBool(container.getExtra(EXTRA_PERFORMANCE_MODE, "true"))
 
-    /** Whether LSFG should vary its generated frame count to meet [fpsLimit]. */
+    /** Whether LSFG should vary its generated frame count to meet the output target. */
     fun adaptiveFrameGen(container: Container): Boolean =
         parseBool(container.getExtra(EXTRA_ADAPTIVE_FRAMEGEN, "false"))
+
+    /**
+     * Independent final-output objective for Adaptive FrameGen. This value is
+     * deliberately not derived from GameNative's real/source FPS limiter.
+     * Zero means that no output target has been resolved yet.
+     */
+    fun adaptiveOutputTarget(container: Container): Int =
+        container.getExtra(EXTRA_ADAPTIVE_OUTPUT_TARGET, "0")
+            ?.toIntOrNull()
+            ?.coerceAtLeast(0)
+            ?: 0
+
+    /** Persist an explicit Adaptive FrameGen output target. */
+    fun setAdaptiveOutputTarget(container: Container, targetFps: Int): Int {
+        val sanitized = targetFps.coerceAtLeast(0)
+        container.putExtra(EXTRA_ADAPTIVE_OUTPUT_TARGET, sanitized.toString())
+        container.saveData()
+        return sanitized
+    }
+
+    /**
+     * Compatibility alias retained for existing call sites. It now refers only
+     * to Adaptive FrameGen's independent output target, never the source limiter.
+     */
+    fun fpsLimit(container: Container): Int = adaptiveOutputTarget(container)
 
     /**
      * Swapchain present mode while frame generation runs ("mailbox" or
@@ -168,16 +191,6 @@ object LsfgVkManager {
     fun presentMode(container: Container): String =
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
-
-    /**
-     * Final-output fps cap supplied to the native layer (0 = uncapped).
-     * Adaptive FrameGen uses this as its target and generates only the
-     * intermediate frames needed to reach it.
-     */
-    fun fpsLimit(container: Container): Int {
-        if (!parseBool(container.getExtra(EXTRA_FPS_LIMITER_ENABLED, "false"))) return 0
-        return container.getExtra(EXTRA_FPS_LIMITER_TARGET, "0").toIntOrNull()?.coerceAtLeast(0) ?: 0
-    }
 
     // ---- Vsync clock ------------------------------------------------------
 
@@ -191,6 +204,10 @@ object LsfgVkManager {
      * conf.toml, once a second, so the layer can phase-lock its frame limiter
      * to the display instead of free-running against it. Choreographer frame
      * timestamps are CLOCK_MONOTONIC, the clock the layer paces with.
+     *
+     * The same clock resolves a missing Adaptive output target from the actual
+     * active display refresh. That migration is one-way: once a target exists,
+     * changing the source FPS limiter cannot overwrite it.
      */
     @JvmStatic
     fun startVsyncClock(context: Context, container: Container) {
@@ -208,10 +225,33 @@ object LsfgVkManager {
                             ?.defaultDisplay?.refreshRate
                     }.getOrNull()?.takeIf { it > 1f } ?: 60f
                     val periodNs = (1_000_000_000.0 / refreshRate).toLong()
+                    val resolveAdaptiveTarget =
+                        adaptiveFrameGen(container) && adaptiveOutputTarget(container) <= 0
                     vsyncWriteExecutor.execute {
                         runCatching {
                             file.parentFile?.mkdirs()
                             file.writeText("vsync_ns=$frameTimeNanos\nperiod_ns=$periodNs\n")
+
+                            if (resolveAdaptiveTarget && adaptiveOutputTarget(container) <= 0) {
+                                val outputTarget = refreshRate.roundToInt().coerceAtLeast(5)
+                                setAdaptiveOutputTarget(container, outputTarget)
+                                val selectedMultiplier = multiplier(container)
+                                updateConfigAtRuntime(
+                                    container = container,
+                                    enabled = selectedMultiplier >= 2,
+                                    multiplier = if (selectedMultiplier >= 2) selectedMultiplier else 2,
+                                    flowScale = flowScale(container),
+                                    performanceMode = performanceMode(container),
+                                    adaptiveFrameGen = true,
+                                    fpsLimitOverride = outputTarget,
+                                )
+                                Timber.tag(TAG).i(
+                                    "Adaptive output target initialized from display refresh: %d fps",
+                                    outputTarget,
+                                )
+                            }
+                        }.onFailure {
+                            Timber.tag(TAG).w(it, "Failed to publish LSFG vsync/Adaptive target state")
                         }
                     }
                 }
@@ -366,8 +406,8 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val savedMultiplier = multiplier(container)
             val frameGenActive = frameGenerationActive(container) && processExecutable != null
-            val outputCap = fpsLimit(container)
-            val adaptiveEffective = frameGenActive && adaptiveFrameGen(container) && outputCap > 0
+            val outputTarget = adaptiveOutputTarget(container)
+            val adaptiveEffective = frameGenActive && adaptiveFrameGen(container) && outputTarget > 0
             val configFile = File(container.rootDir, CONFIG_RELATIVE_PATH)
             val configText = buildConfigToml(
                 dllPath = dllPath,
@@ -377,7 +417,7 @@ object LsfgVkManager {
                 flowScale = flowScale(container),
                 performanceMode = performanceMode(container) && frameGenActive,
                 adaptiveFrameGen = adaptiveEffective,
-                fpsLimit = outputCap,
+                fpsLimit = outputTarget,
                 presentMode = presentMode(container),
             )
             writeConfigAtomic(configFile, configText)
@@ -440,14 +480,15 @@ object LsfgVkManager {
         // loader path is the differentiator.
         if (BuildConfig.DEBUG) probeAndroidLinker(container)
 
+        val outputTarget = adaptiveOutputTarget(container)
         Timber.tag(TAG).i(
-            "LSFG layer armed: dll=%s, target=%s, selectedMultiplier=%d, framegen=%s, adaptive=%s, cap=%d, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
+            "LSFG layer armed: dll=%s, target=%s, selectedMultiplier=%d, framegen=%s, adaptive=%s, outputTarget=%d, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
             dllPath,
             processExecutable,
             multiplier(container),
             if (frameGenerationActive(container)) "on" else "off",
-            if (adaptiveFrameGen(container) && fpsLimit(container) > 0) "on" else "off",
-            fpsLimit(container),
+            if (adaptiveFrameGen(container) && outputTarget > 0) "on" else "off",
+            outputTarget,
             flowScale(container),
             if (performanceMode(container)) "on" else "off",
         )
@@ -766,8 +807,8 @@ object LsfgVkManager {
     /**
      * Update conf.toml while the container is running. The layer observes the
      * timestamp change and recreates its swapchain context with the new values.
-     * A temporary fpsLimitOverride is deliberately not persisted in container
-     * extras, so adaptive caps can be applied without rewriting user settings.
+     * [fpsLimitOverride] is an Adaptive output-target override only; it is never
+     * sourced from or written back to GameNative's real/source FPS limiter.
      */
     @JvmStatic
     fun updateConfigAtRuntime(
@@ -792,8 +833,10 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val frameGenActive = enabled && multiplier >= 2 &&
                 dllPath != null && processExecutable != null
-            val effectiveFpsLimit = (fpsLimitOverride ?: fpsLimit(container)).coerceAtLeast(0)
-            val adaptiveEffective = frameGenActive && adaptiveFrameGen && effectiveFpsLimit > 0
+            val effectiveOutputTarget =
+                (fpsLimitOverride ?: adaptiveOutputTarget(container)).coerceAtLeast(0)
+            val adaptiveEffective =
+                frameGenActive && adaptiveFrameGen && effectiveOutputTarget > 0
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,
@@ -802,20 +845,20 @@ object LsfgVkManager {
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
                 performanceMode = performanceMode && frameGenActive,
                 adaptiveFrameGen = adaptiveEffective,
-                fpsLimit = effectiveFpsLimit,
+                fpsLimit = effectiveOutputTarget,
                 presentMode = presentMode(container),
             )
 
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
                 Timber.tag(TAG).i(
-                    "Hot-reloaded conf.toml: enabled=%s, multiplier=%d, adaptive=%s, flowScale=%.2f, perf=%s, fpsLimit=%d",
+                    "Hot-reloaded conf.toml: enabled=%s, multiplier=%d, adaptive=%s, flowScale=%.2f, perf=%s, outputTarget=%d",
                     frameGenActive,
                     multiplier,
                     adaptiveEffective,
                     flowScale,
                     performanceMode,
-                    effectiveFpsLimit,
+                    effectiveOutputTarget,
                 )
             }
             ok

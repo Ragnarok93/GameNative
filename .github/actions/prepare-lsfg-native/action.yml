@@ -38,6 +38,9 @@ runs:
         # CI replaces only its native SHA token (and the matching assertion) after
         # resolving the gitlink, so every prepared APK identifies the exact native
         # revision it actually packages without a second manually maintained SHA.
+        # The feature label between `gamenative-` and the SHA is intentionally not
+        # part of the provenance contract: branches may evolve that label without
+        # weakening the authoritative gitlink-derived revision check.
         python3 - "$runtime_manager" "$runtime_test" "$expected_prefix" <<'PY'
         import pathlib
         import re
@@ -48,7 +51,9 @@ runs:
         expected_prefix = sys.argv[3]
 
         manager_text = manager.read_text(encoding="utf-8")
-        manager_pattern = re.compile(r"(gamenative-presentsync-)[0-9a-f]{8}(-r[0-9]+)")
+        manager_pattern = re.compile(
+            r"(gamenative-[a-z0-9-]+-)[0-9a-f]{8}(-r[0-9]+)"
+        )
         manager_text, manager_count = manager_pattern.subn(
             rf"\g<1>{expected_prefix}\g<2>", manager_text, count=1
         )

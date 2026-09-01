@@ -174,7 +174,7 @@ class LsfgVkManagerTest {
 
         assertTrue(loaderLib.readBytes().contentEquals(containerLib.readBytes()))
         assertEquals(containerManifest.readText(), loaderManifest.readText())
-        assertTrue(loaderVersion.readText().contains("f0caa75a"))
+        assertTrue(loaderVersion.readText().contains("66e44446"))
         val loaderLayerDir = loaderManifest.parentFile!!.absolutePath
         assertEquals(loaderLayerDir, envVars["VK_LAYER_PATH"])
     }
@@ -212,13 +212,14 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun writeConfig_adaptiveFrameGenPinsFinalOutputToFpsLimiterCap() {
+    fun writeConfig_adaptiveFrameGenUsesIndependentOutputTarget() {
         val container = container(
             armed = true,
             multiplier = "2",
             adaptive = "true",
+            adaptiveTarget = "90",
             limiterEnabled = "true",
-            limiterTarget = "90",
+            limiterTarget = "30",
         )
 
         assertTrue(LsfgVkManager.writeConfig(container))
@@ -228,6 +229,42 @@ class LsfgVkManagerTest {
         assertTrue(text.contains("multiplier = 4"))
         assertTrue(text.contains("adaptive_framegen = true"))
         assertTrue(text.contains("fps_limit = 90"))
+        assertFalse(text.contains("fps_limit = 30"))
+    }
+
+    @Test
+    fun writeConfig_adaptiveFrameGenDoesNotRequireSourceLimiter() {
+        val container = container(
+            armed = true,
+            adaptive = "true",
+            adaptiveTarget = "120",
+            limiterEnabled = "false",
+            limiterTarget = "30",
+        )
+
+        assertTrue(LsfgVkManager.writeConfig(container))
+
+        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
+        assertTrue(text.contains("adaptive_framegen = true"))
+        assertTrue(text.contains("fps_limit = 120"))
+    }
+
+    @Test
+    fun writeConfig_adaptiveFrameGenDoesNotFallBackToSourceLimiterWhenTargetIsUnresolved() {
+        val container = container(
+            armed = true,
+            adaptive = "true",
+            adaptiveTarget = "0",
+            limiterEnabled = "true",
+            limiterTarget = "30",
+        )
+
+        assertTrue(LsfgVkManager.writeConfig(container))
+
+        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
+        assertTrue(text.contains("adaptive_framegen = false"))
+        assertTrue(text.contains("fps_limit = 0"))
+        assertFalse(text.contains("fps_limit = 30"))
     }
 
     @Test
@@ -244,17 +281,6 @@ class LsfgVkManagerTest {
         assertFalse(Files.isSymbolicLink(configFile.toPath()))
         assertTrue(configFile.readText().contains("version = 1"))
         assertFalse(configFile.parentFile!!.listFiles().orEmpty().any { it.name.endsWith(".tmp") })
-    }
-
-    @Test
-    fun writeConfig_disablesAdaptiveFrameGenWhenFpsLimiterIsOff() {
-        val container = container(armed = true, adaptive = "true")
-
-        assertTrue(LsfgVkManager.writeConfig(container))
-
-        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
-        assertTrue(text.contains("adaptive_framegen = false"))
-        assertTrue(text.contains("fps_limit = 0"))
     }
 
     @Test
@@ -340,6 +366,7 @@ class LsfgVkManagerTest {
         armed: Boolean,
         multiplier: String = "2",
         adaptive: String = "false",
+        adaptiveTarget: String = "0",
         limiterEnabled: String = "false",
         limiterTarget: String = "0",
     ): Container {
@@ -362,6 +389,8 @@ class LsfgVkManagerTest {
             .thenReturn("true")
         whenever(container.getExtra(LsfgVkManager.EXTRA_ADAPTIVE_FRAMEGEN, "false"))
             .thenReturn(adaptive)
+        whenever(container.getExtra(LsfgVkManager.EXTRA_ADAPTIVE_OUTPUT_TARGET, "0"))
+            .thenReturn(adaptiveTarget)
         whenever(container.getExtra(LsfgVkManager.EXTRA_PRESENT_MODE, "mailbox"))
             .thenReturn("mailbox")
         whenever(container.getExtra("fpsLimiterEnabled", "false"))

@@ -69,6 +69,8 @@ object LsfgVkManager {
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
     const val EXTRA_ADAPTIVE_FRAMEGEN = "lsfgAdaptiveFrameGen"
     const val EXTRA_ADAPTIVE_OUTPUT_TARGET = "lsfgAdaptiveOutputTarget"
+    private const val EXTRA_SOURCE_FPS_LIMITER_ENABLED = "fpsLimiterEnabled"
+    private const val EXTRA_SOURCE_FPS_LIMITER_TARGET = "fpsLimiterTarget"
 
     // Written by the layer next to conf.toml; measured presented/base fps
     private const val STATS_RELATIVE_PATH = ".config/lsfg-vk/stats.txt"
@@ -182,6 +184,15 @@ object LsfgVkManager {
      * to Adaptive FrameGen's independent output target, never the source limiter.
      */
     fun fpsLimit(container: Container): Int = adaptiveOutputTarget(container)
+
+    /** Real/source Vulkan present ceiling, independent from Adaptive output FPS. */
+    fun sourceFpsLimit(container: Container): Int {
+        if (!parseBool(container.getExtra(EXTRA_SOURCE_FPS_LIMITER_ENABLED, "false"))) return 0
+        return container.getExtra(EXTRA_SOURCE_FPS_LIMITER_TARGET, "0")
+            .toIntOrNull()
+            ?.coerceAtLeast(0)
+            ?: 0
+    }
 
     /**
      * Swapchain present mode while frame generation runs ("mailbox" or
@@ -419,6 +430,9 @@ object LsfgVkManager {
                 adaptiveFrameGen = adaptiveEffective,
                 fpsLimit = outputTarget,
                 presentMode = presentMode(container),
+            ).replace(
+                "source_fps_limit = 0",
+                "source_fps_limit = ${sourceFpsLimit(container)}",
             )
             writeConfigAtomic(configFile, configText)
         } catch (t: Throwable) {
@@ -779,6 +793,7 @@ object LsfgVkManager {
                 appendLine("hdr_mode = false")
                 appendLine("adaptive_framegen = $adaptiveEffective")
                 appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
+                appendLine("source_fps_limit = 0")
                 appendLine("experimental_present_mode = ${tomlString(if (enabled) presentMode else "fifo")}")
             }
         }
@@ -819,6 +834,7 @@ object LsfgVkManager {
         performanceMode: Boolean,
         adaptiveFrameGen: Boolean,
         fpsLimitOverride: Int? = null,
+        sourceFpsLimitOverride: Int? = null,
     ): Boolean {
         if (!isSupported(container)) return false
 
@@ -835,6 +851,8 @@ object LsfgVkManager {
                 dllPath != null && processExecutable != null
             val effectiveOutputTarget =
                 (fpsLimitOverride ?: adaptiveOutputTarget(container)).coerceAtLeast(0)
+            val effectiveSourceFpsLimit =
+                (sourceFpsLimitOverride ?: sourceFpsLimit(container)).coerceAtLeast(0)
             val adaptiveEffective =
                 frameGenActive && adaptiveFrameGen && effectiveOutputTarget > 0
             val configText = buildConfigToml(
@@ -847,6 +865,9 @@ object LsfgVkManager {
                 adaptiveFrameGen = adaptiveEffective,
                 fpsLimit = effectiveOutputTarget,
                 presentMode = presentMode(container),
+            ).replace(
+                "source_fps_limit = 0",
+                "source_fps_limit = $effectiveSourceFpsLimit",
             )
 
             val ok = writeConfigAtomic(configFile, configText)

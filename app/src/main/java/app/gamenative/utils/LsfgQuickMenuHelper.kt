@@ -43,11 +43,26 @@ object LsfgQuickMenuHelper {
      * pacing pieces that are safe while LSFG owns Vulkan presentation.
      */
     fun applyLiveFpsCap(container: Container, capFps: Int) {
-        Timber.tag(TAG).d(
-            "Source FPS cap changed to %d; preserving LSFG output target %d",
-            capFps.coerceAtLeast(0),
-            LsfgVkManager.adaptiveOutputTarget(container),
-        )
+        applyExecutor.execute {
+            val sourceLimit = capFps.coerceAtLeast(0)
+            val settings = readSettings(container)
+            val applied = LsfgVkManager.updateConfigAtRuntime(
+                container = container,
+                enabled = settings.multiplier >= 2,
+                multiplier = if (settings.multiplier >= 2) settings.multiplier else 2,
+                flowScale = settings.flowScale,
+                performanceMode = settings.performanceMode,
+                adaptiveFrameGen = settings.adaptiveFrameGen,
+                fpsLimitOverride = null,
+                sourceFpsLimitOverride = sourceLimit,
+            )
+            Timber.tag(TAG).d(
+                "Source FPS cap hot-reload: source=%d output=%d applied=%s",
+                sourceLimit,
+                LsfgVkManager.adaptiveOutputTarget(container),
+                applied,
+            )
+        }
     }
 
     /** Persist and hot-apply an explicit Adaptive FrameGen output objective. */

@@ -711,6 +711,9 @@ fun XServerScreen(
         // otherwise run uncapped whenever LSFG is armed.
         ShmFramePacer.setFrameRateLimit(limit)
         PowerManager.targetFps = limit
+        if (lsfgActive) {
+            LsfgQuickMenuHelper.applyLiveFpsCap(container, limit)
+        }
         // keeps frame stats in base units while generated frames tick the ring
         PowerManager.frameSampleStride =
             if (lsfgActive && !lsfgAdaptiveFrameGen) lsfgMultiplier else 1

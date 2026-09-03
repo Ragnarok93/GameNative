@@ -3,6 +3,7 @@ name: Adaptive LSFG Legacy build
 on:
   push:
     branches:
+      - Adaptive-Frame-Generation
       - feat/adaptive-lsfg-cap
       - fix/lsfg-transition-stability-20260831
       - fix/lsfg-log-regressions-20260901

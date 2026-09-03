@@ -90,26 +90,30 @@ public class PresentExtension implements Extension {
     }
 
     /**
-     * Record the requested pacing owner. LSFG does not actually receive pacing
-     * ownership until its fresh native stats state confirms a ready swapchain
-     * context; until then the normal X Present limiter remains active.
+     * Record LSFG presentation ownership without becoming a second FPS limiter.
+     * GameNative already owns source pacing through ShmFramePacer (with the
+     * renderer receiving only a frame-rate hint). X Present therefore remains
+     * unpaced in both native and LSFG modes; fresh native LSFG readiness only
+     * controls eager idle release.
      */
     public void transitionFramePacing(boolean lsfgOwnsPacing, int limit) {
+        final boolean ownershipRequestChanged = this.lsfgPacingRequested != lsfgOwnsPacing;
         this.lsfgPacingRequested = lsfgOwnsPacing;
         this.localFrameRateLimit = Math.max(0, limit);
+        if (ownershipRequestChanged) windowTimings.clear();
         applyEffectivePacing(lsfgOwnsPacing && LsfgRuntimeGate.isGenerationReady());
     }
 
     private void refreshLsfgPacingState() {
         final boolean lsfgReady = lsfgPacingRequested && LsfgRuntimeGate.isGenerationReady();
-        final int desiredLimit = lsfgReady ? 0 : localFrameRateLimit;
+        final int desiredLimit = 0;
         if (this.eagerIdleRelease == lsfgReady && this.frameRateLimit == desiredLimit)
             return;
         applyEffectivePacing(lsfgReady);
     }
 
     private synchronized void applyEffectivePacing(boolean lsfgReady) {
-        final int nextLimit = lsfgReady ? 0 : localFrameRateLimit;
+        final int nextLimit = 0;
         if (this.eagerIdleRelease == lsfgReady && this.frameRateLimit == nextLimit)
             return;
 

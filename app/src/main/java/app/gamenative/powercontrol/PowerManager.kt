@@ -21,7 +21,6 @@ import app.gamenative.powercontrol.profiles.PerformancePreset
 import com.winlator.container.Container
 import com.winlator.core.ProcessHelper
 import com.winlator.winhandler.WinHandler
-import com.winlator.xserver.extensions.PresentExtension
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -490,12 +489,12 @@ object PowerManager {
     internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
         fpsCapApplier?.let { if (it(limitFps)) return true }
         val xServerView = PluviaApp.xServerView ?: return false
-        val presentExtension = xServerView.getxServer()
-            ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
 
         val apply = Runnable {
+            // One source-pacing authority only: SHM pacing owns the real cap and
+            // the renderer receives its platform frame-rate hint. Present idle
+            // notification pacing is intentionally not used as a second limiter.
             xServerView.setFrameRateLimit(limitFps)
-            presentExtension?.setFrameRateLimit(limitFps)
             com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {

@@ -8,6 +8,7 @@ import timber.log.Timber
 /** Helpers for Quick Menu LSFG state persistence and runtime hot-reload. */
 object LsfgQuickMenuHelper {
     private const val TAG = "LsfgAdaptive"
+    private const val SETTINGS_APPLY_DEBOUNCE_MS = 400L
 
     data class Settings(
         val multiplier: Int,
@@ -32,7 +33,9 @@ object LsfgQuickMenuHelper {
     )
 
     private val applyExecutor =
-        Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-apply").apply { isDaemon = true } }
+        Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "lsfg-apply").apply { isDaemon = true } }
+    private val settingsApplyDebouncer =
+        LsfgRuntimeUpdateDebouncer(applyExecutor, SETTINGS_APPLY_DEBOUNCE_MS)
 
     fun presentMode(container: Container): String = LsfgVkManager.presentMode(container)
 
@@ -83,7 +86,7 @@ object LsfgQuickMenuHelper {
         }
     }
 
-    /** Persist the present mode and hot-apply it. */
+    /** Persist the present mode and hot-apply it after the current adjustment burst settles. */
     fun applyPresentMode(container: Container, mode: String) {
         applyExecutor.execute {
             container.putExtra(LsfgVkManager.EXTRA_PRESENT_MODE, mode)
@@ -103,6 +106,10 @@ object LsfgQuickMenuHelper {
         val flowScale = sanitizeFlowScale(settings.flowScale)
         val explicitOutputTarget = settings.adaptiveOutputTargetFps.takeIf { it > 0 }
 
+        // Persist immediately so the UI remains authoritative, but do not publish
+        // every intermediate button-repeat value to the Vulkan layer. Multiplier,
+        // enable and present-mode changes may require swapchain recreation, and a
+        // burst of OUT_OF_DATE transitions is hostile to some games/X clients.
         container.putExtra(LsfgVkManager.EXTRA_MULTIPLIER, multiplier.toString())
         container.putExtra(LsfgVkManager.EXTRA_FLOW_SCALE, String.format(Locale.US, "%.2f", flowScale))
         container.putExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, settings.performanceMode.toString())
@@ -112,16 +119,32 @@ object LsfgQuickMenuHelper {
         }
         container.saveData()
 
-        val effectiveEnabled = multiplier >= 2
-        val effectiveMultiplier = if (effectiveEnabled) multiplier else 2
-        LsfgVkManager.updateConfigAtRuntime(
-            container = container,
-            enabled = effectiveEnabled,
-            multiplier = effectiveMultiplier,
-            flowScale = flowScale,
-            performanceMode = settings.performanceMode,
-            adaptiveFrameGen = settings.adaptiveFrameGen,
-            fpsLimitOverride = explicitOutputTarget,
-        )
+        settingsApplyDebouncer.submit {
+            // Re-read after the settle window so a burst always publishes the
+            // newest persisted snapshot rather than a stale captured Settings.
+            val latest = readSettings(container)
+            val latestMultiplier = sanitizeMultiplier(latest.multiplier)
+            val effectiveEnabled = latestMultiplier >= 2
+            val effectiveMultiplier = if (effectiveEnabled) latestMultiplier else 2
+            val latestOutputTarget = latest.adaptiveOutputTargetFps.takeIf { it > 0 }
+
+            val applied = LsfgVkManager.updateConfigAtRuntime(
+                container = container,
+                enabled = effectiveEnabled,
+                multiplier = effectiveMultiplier,
+                flowScale = sanitizeFlowScale(latest.flowScale),
+                performanceMode = latest.performanceMode,
+                adaptiveFrameGen = latest.adaptiveFrameGen,
+                fpsLimitOverride = latestOutputTarget,
+            )
+            Timber.tag(TAG).d(
+                "Settled LSFG settings hot-reload: enabled=%s multiplier=%d adaptive=%s output=%s applied=%s",
+                effectiveEnabled,
+                effectiveMultiplier,
+                latest.adaptiveFrameGen,
+                latestOutputTarget?.toString() ?: "preserve",
+                applied,
+            )
+        }
     }
 }

@@ -1,11 +1,13 @@
 package com.winlator.xserver.extensions
 
 import app.gamenative.utils.LsfgRuntimeGate
+import com.winlator.renderer.VulkanRenderer
 import com.winlator.xserver.Pixmap
 import com.winlator.xserver.Window
 import java.nio.file.Files
 import java.nio.file.attribute.FileTime
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.PriorityBlockingQueue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
@@ -92,6 +94,41 @@ class PresentExtensionPacingTransitionTest {
 
         extension.releaseSupersededIdle(superseded)
 
+        verify(sync).setTriggered(101)
+    }
+
+    @Test
+    fun cpuFallbackPacer_coalescesSameWindowPresentsAtLocalLimit() {
+        val root = Files.createTempDirectory("lsfg-cpu-mailbox")
+        LsfgRuntimeGate.configure(root.toFile())
+        val extension = PresentExtension()
+        val sync = mock(SyncExtension::class.java)
+        setPrivateField(extension, "syncExtension", sync)
+        setPrivateField(extension, "choreographerChecked", true)
+
+        val schedule = PresentExtension::class.java.getDeclaredMethod(
+            "scheduleIdleNotify",
+            Window::class.java,
+            Pixmap::class.java,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            VulkanRenderer::class.java,
+        ).apply { isAccessible = true }
+        val window = Window(7, null, 0, 0, 1, 1, null)
+        val firstPixmap = mock(Pixmap::class.java)
+        val replacementPixmap = mock(Pixmap::class.java)
+
+        schedule.invoke(extension, window, firstPixmap, 1, 101, 30, null)
+        schedule.invoke(extension, window, replacementPixmap, 2, 102, 30, null)
+
+        @Suppress("UNCHECKED_CAST")
+        val queue = privateField(extension, "cpuQueue") as PriorityBlockingQueue<PresentExtension.PendingIdle>
+        assertEquals(
+            "The CPU fallback must preserve mailbox semantics instead of turning PRESENT into a FIFO",
+            1,
+            queue.size,
+        )
         verify(sync).setTriggered(101)
     }
 

@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.attribute.FileTime
 import java.util.concurrent.ConcurrentHashMap
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -92,6 +93,38 @@ class PresentExtensionPacingTransitionTest {
         extension.releaseSupersededIdle(superseded)
 
         verify(sync).setTriggered(101)
+    }
+
+    @Test
+    fun cpuFallbackPacer_blocksWithoutPollingOrMaxPriorityWhenIdle() {
+        val extension = PresentExtension()
+        val start = PresentExtension::class.java
+            .getDeclaredMethod("startCpuPacer")
+            .apply { isAccessible = true }
+
+        try {
+            start.invoke(extension)
+            val thread = privateField(extension, "cpuPacerThread") as Thread
+
+            // Give the newly-started worker a chance to enter its no-work wait.
+            repeat(40) {
+                if (thread.state == Thread.State.WAITING) return@repeat
+                Thread.sleep(1)
+            }
+
+            assertEquals(
+                "An empty fallback pacer must block until work arrives instead of waking repeatedly",
+                Thread.State.WAITING,
+                thread.state,
+            )
+            assertNotEquals(
+                "The fallback pacing worker must not compete with render/present work at MAX_PRIORITY",
+                Thread.MAX_PRIORITY,
+                thread.priority,
+            )
+        } finally {
+            extension.close()
+        }
     }
 
     private fun privateField(instance: Any, name: String): Any? =

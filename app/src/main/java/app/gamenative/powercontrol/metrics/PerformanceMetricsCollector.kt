@@ -3,8 +3,10 @@ package app.gamenative.powercontrol.metrics
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.view.Display
+import app.gamenative.diagnostics.LsfgDiagnosticSession
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
+import com.winlator.xenvironment.ImageFs
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -59,6 +61,19 @@ object PerformanceMetricsCollector {
         if (isRunning) return
 
         val appContext = context.applicationContext
+        val activeContainerRoot = runCatching {
+            File(ImageFs.find(appContext).rootDir, "home/${ImageFs.USER}").canonicalFile
+        }.getOrNull()?.takeIf(File::isDirectory)
+        if (activeContainerRoot != null) {
+            runCatching {
+                LsfgDiagnosticSession.start(appContext, activeContainerRoot, sessionStartMillis)
+            }.onFailure {
+                Timber.tag(TAG).w(it, "Unable to start LSFG diagnostic session manifest")
+            }
+        } else {
+            Timber.tag(TAG).w("Unable to resolve active container root for LSFG diagnostic session")
+        }
+
         displayRefreshRate = readDisplayRefreshRate(appContext)
         cpuSampler.reset()
         gpuSampler.reset()
@@ -100,6 +115,8 @@ object PerformanceMetricsCollector {
         samplingJob = null
         FrameTimeRing.stop()
         closeLog()
+        runCatching { LsfgDiagnosticSession.stop() }
+            .onFailure { Timber.tag(TAG).w(it, "Unable to close LSFG diagnostic session manifest") }
         PowerManager.latestMetrics = null
         Timber.tag(TAG).i("Collector stopped after %d samples", sampleCount)
     }

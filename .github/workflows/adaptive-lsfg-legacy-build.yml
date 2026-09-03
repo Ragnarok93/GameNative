@@ -9,6 +9,9 @@ on:
       - fix/lsfg-log-regressions-20260901
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: adaptive-lsfg-legacy-${{ github.ref }}
   cancel-in-progress: true
@@ -70,12 +73,18 @@ jobs:
           sha256sum gamenative-adaptive-lsfg-legacy-debug.apk \
             | tee gamenative-adaptive-lsfg-legacy-debug.apk.sha256
 
-      - name: Upload Adaptive LSFG LegacyDebug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: gamenative-adaptive-lsfg-legacy-debug
-          path: |
-            gamenative-adaptive-lsfg-legacy-debug.apk
+      - name: Publish quota-independent temporary test release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: adaptive-lsfg-test
+        run: |
+          set -euo pipefail
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag -y 2>/dev/null || true
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Adaptive LSFG LegacyDebug test build" \
+            --notes "Temporary LegacyDebug test build from $GITHUB_SHA (workflow run $GITHUB_RUN_ID). This release is intended for device validation and does not consume GitHub Actions artifact storage." \
+            --prerelease \
+            gamenative-adaptive-lsfg-legacy-debug.apk \
             gamenative-adaptive-lsfg-legacy-debug.apk.sha256
-          if-no-files-found: error
-          compression-level: 0

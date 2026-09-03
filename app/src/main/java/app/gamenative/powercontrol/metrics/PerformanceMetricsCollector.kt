@@ -33,6 +33,7 @@ object PerformanceMetricsCollector {
     private const val MAX_LOG_BYTES = 20L * 1024L * 1024L
     private const val MAX_SESSION_FILES = 5
     private const val DEFAULT_REFRESH_RATE = 60f
+    private const val METRICS_PREFIX = "metrics-"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var samplingJob: Job? = null
@@ -43,7 +44,7 @@ object PerformanceMetricsCollector {
     private val frameScratch = LongArray(FrameTimeRing.capacity())
     private val deltaScratch = LongArray(FrameTimeRing.capacity())
 
-    private val sessionLog = JsonlSessionLog(TAG, "metrics-", MAX_LOG_BYTES, MAX_SESSION_FILES)
+    private val sessionLog = JsonlSessionLog(TAG, METRICS_PREFIX, MAX_LOG_BYTES, MAX_SESSION_FILES)
     private var sampleCount = 0L
     private var displayRefreshRate = DEFAULT_REFRESH_RATE
 
@@ -115,6 +116,19 @@ object PerformanceMetricsCollector {
         gpuSampler.reset()
         paused = false
         Timber.tag(TAG).i("Collector resumed")
+    }
+
+    /**
+     * Return the rolling metrics file that corresponds to the diagnostic session timestamp.
+     * Falls back to the newest retained metrics session for older/pre-manifest captures.
+     */
+    fun diagnosticLogFor(context: Context, sessionStartMillis: Long): File? {
+        val directory = metricsDirectory(context.applicationContext)
+        val exact = File(directory, "$METRICS_PREFIX$sessionStartMillis.jsonl")
+        if (exact.isFile) return exact
+        return directory.listFiles { file ->
+            file.isFile && file.name.startsWith(METRICS_PREFIX) && file.name.endsWith(".jsonl")
+        }?.maxByOrNull { it.lastModified() }
     }
 
     private fun sampleOnce() {

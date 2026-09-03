@@ -74,7 +74,7 @@ public class PresentExtension implements Extension {
     private volatile boolean choreographerChecked = false;
     private final Object choreographerLock = new Object();
 
-    private Thread cpuPacerThread = null;
+    private volatile Thread cpuPacerThread = null;
     private final java.util.concurrent.PriorityBlockingQueue<PendingIdle> cpuQueue =
             new java.util.concurrent.PriorityBlockingQueue<>(11,
                     java.util.Comparator.comparingLong(p -> p.targetNs));
@@ -131,6 +131,7 @@ public class PresentExtension implements Extension {
         while ((queued = cpuQueue.poll()) != null) {
             sendIdleNotify(queued.window, queued.pixmap, queued.serial, queued.idleFence);
         }
+        wakeCpuPacer();
 
         windowTimings.clear();
     }
@@ -167,26 +168,31 @@ public class PresentExtension implements Extension {
             while (!Thread.interrupted()) {
                 PendingIdle p = cpuQueue.peek();
                 if (p == null) {
-                    java.util.concurrent.locks.LockSupport.parkNanos(500_000L);
+                    java.util.concurrent.locks.LockSupport.park();
                     continue;
                 }
-                long now = System.nanoTime();
-                if (now >= p.targetNs) {
-                    if (cpuQueue.remove(p)) {
-                        sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
-                    }
-                } else {
-                    long diff = p.targetNs - now;
-                    if (diff > 2_000_000L)
-                        java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L);
-                    else
-                        Thread.yield();
+
+                long diff = p.targetNs - System.nanoTime();
+                if (diff > 0) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(diff);
+                    continue;
+                }
+
+                if (cpuQueue.remove(p)) {
+                    sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
                 }
             }
         }, "PresentPacer-CPU");
         cpuPacerThread.setDaemon(true);
-        cpuPacerThread.setPriority(Thread.MAX_PRIORITY);
+        cpuPacerThread.setPriority(Thread.NORM_PRIORITY);
         cpuPacerThread.start();
+    }
+
+    private void wakeCpuPacer() {
+        Thread thread = cpuPacerThread;
+        if (thread != null) {
+            java.util.concurrent.locks.LockSupport.unpark(thread);
+        }
     }
 
     private volatile boolean choreographerPosted = false;
@@ -264,6 +270,7 @@ public class PresentExtension implements Extension {
                 }
             }
             cpuQueue.offer(new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0));
+            wakeCpuPacer();
         }
     }
 

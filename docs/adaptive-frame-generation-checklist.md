@@ -2,18 +2,27 @@
 
 - [x] Isolated branches created in both repositories.
 - [x] Native source-only warmup and fractional scheduler.
-- [x] Incremental generation-level probing and throughput-based fallback.
-- [x] Probe cooldown and stall/config reset behavior.
-- [x] Native controller diagnostics.
+- [x] Incremental generation-level probing with measured stage-cost feedback.
+- [x] Probe cooldown/stall reset behavior scaled to measured source cadence.
+- [x] Native controller diagnostics with probe accept/reject reasons and stage-cost ratios.
 - [x] Independent GameNative Adaptive output-target storage.
 - [x] Display-refresh automatic output-target resolution.
 - [x] PowerManager source-cap callback isolated from LSFG `fps_limit`.
 - [x] Source/output separation regression tests.
 - [x] Expose output target in the LSFG Quick Menu.
 - [x] Stop the LSFG Adaptive toggle from implicitly enabling the normal FPS limiter.
-- [x] Pin GameNative's LSFG gitlink to the current Adaptive native revision.
-- [x] Pace generated and source frames on one visible-output timeline.
-- [x] Keep runtime enable/multiplier changes independent from swapchain recreation.
+- [x] Pace generated and source frames on one drift-corrected visible-output timeline.
+- [x] Move native config polling/parsing and stats publication off `vkQueuePresentKHR`.
+- [x] Canonicalize user Off as `enabled=false` and keep Adaptive-zero distinct.
+- [x] Restore game WSI provenance through one recreate when enable/multiplier/present-mode requirements change.
+- [x] Ensure sustained Off reaches native present before `LsContext`, adaptive scheduling, or pacers.
+- [x] Track Android source-AHB first-use layout per shared image.
+- [x] Keep bounded fence + framegen completion waits as the common Xclipse/A6xx safe path.
 - [x] Feed source FPS, not generated output FPS, to power and performance tuning.
-- [ ] Run Legacy debug unit/build verification.
-- [ ] Run on-device controller/log validation.
+- [x] Native arm64-v8a build verification for `dc958e14`.
+- [x] Native x86_64 build verification for `dc958e14`.
+- [x] Native Android capability/portability and scheduler/pacer policy tests for `dc958e14`.
+- [ ] Pin GameNative's gitlink and installed-runtime marker to `dc958e14` and run LegacyDebug verification.
+- [ ] Validate sustained AFG + on→off WSI restoration on Exynos 2400 / Xclipse 940.
+- [ ] Validate sustained AFG + on→off WSI restoration on A6xx (stock/Turnip path used by GameNative).
+- [ ] Capture dual-target validation logs with source/generated/output FPS, stage averages, successful generated presents, capability decisions, and sustained-Off evidence.

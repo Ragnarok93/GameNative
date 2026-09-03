@@ -64,6 +64,32 @@ class CrashHandler(
                 process?.destroy()
             }
         }
+
+        /**
+         * Export-time tag snapshot used by the unified LSFG diagnostic report.
+         * Unlike [getAppLogs], this intentionally does not constrain by the UI process PID:
+         * the Vulkan layer runs in the launched game process, so its LSFG-tag records would
+         * otherwise be excluded. This is only invoked on explicit user export, never polled.
+         */
+        fun getTaggedLogs(tag: String, lineCount: Int = LOG_CAT_COUNT): String {
+            require(tag.matches(Regex("[A-Za-z0-9_.-]{1,64}"))) { "Invalid logcat tag" }
+            var process: Process? = null
+            return try {
+                process = ProcessBuilder(
+                    "logcat",
+                    "-d",
+                    "-t",
+                    lineCount.coerceAtLeast(1).toString(),
+                    "$tag:I",
+                    "*:S",
+                ).redirectErrorStream(true).start()
+                process.inputStream.bufferedReader().use { it.readText() }
+            } catch (e: Exception) {
+                "Failed to capture tagged logs: ${e.message}"
+            } finally {
+                process?.destroy()
+            }
+        }
     }
 
     private val crashFileDir by lazy {

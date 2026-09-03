@@ -68,21 +68,17 @@ object LsfgQuickMenuHelper {
         }
     }
 
-    /** Persist and hot-apply an explicit Adaptive FrameGen output objective. */
+    /**
+     * Persist an explicit Adaptive FrameGen output objective immediately, but
+     * publish only the settled value to the Vulkan layer. Holding a Quick Menu
+     * adjustment button can otherwise rewrite conf.toml every repeat and force
+     * the native watcher to process a burst of intermediate controller targets.
+     */
     fun applyAdaptiveOutputTarget(container: Container, targetFps: Int) {
         applyExecutor.execute {
             val sanitized = targetFps.coerceAtLeast(5)
             LsfgVkManager.setAdaptiveOutputTarget(container, sanitized)
-            val settings = readSettings(container)
-            LsfgVkManager.updateConfigAtRuntime(
-                container = container,
-                enabled = settings.multiplier >= 2,
-                multiplier = if (settings.multiplier >= 2) settings.multiplier else 2,
-                flowScale = settings.flowScale,
-                performanceMode = settings.performanceMode,
-                adaptiveFrameGen = settings.adaptiveFrameGen,
-                fpsLimitOverride = sanitized,
-            )
+            scheduleSettledRuntimePublish(container)
         }
     }
 
@@ -91,7 +87,7 @@ object LsfgQuickMenuHelper {
         applyExecutor.execute {
             container.putExtra(LsfgVkManager.EXTRA_PRESENT_MODE, mode)
             container.saveData()
-            applySettings(container, readSettings(container))
+            scheduleSettledRuntimePublish(container)
         }
     }
 
@@ -119,9 +115,13 @@ object LsfgQuickMenuHelper {
         }
         container.saveData()
 
+        scheduleSettledRuntimePublish(container)
+    }
+
+    private fun scheduleSettledRuntimePublish(container: Container) {
         settingsApplyDebouncer.submit {
-            // Re-read after the settle window so a burst always publishes the
-            // newest persisted snapshot rather than a stale captured Settings.
+            // Re-read after the settle window so every adjustment path publishes
+            // one coherent newest snapshot rather than a stale captured value.
             val latest = readSettings(container)
             val latestMultiplier = sanitizeMultiplier(latest.multiplier)
             val effectiveEnabled = latestMultiplier >= 2

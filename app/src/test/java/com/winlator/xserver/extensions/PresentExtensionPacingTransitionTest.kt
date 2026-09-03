@@ -11,6 +11,7 @@ import java.util.concurrent.PriorityBlockingQueue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -21,7 +22,7 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class PresentExtensionPacingTransitionTest {
     @Test
-    fun transitionFramePacing_keepsLocalLimitUntilNativeLsfgIsReady() {
+    fun transitionFramePacing_keepsPresentUnpacedUntilNativeLsfgIsReady() {
         val root = Files.createTempDirectory("lsfg-not-ready")
         LsfgRuntimeGate.configure(root.toFile())
         val extension = PresentExtension()
@@ -44,7 +45,11 @@ class PresentExtensionPacingTransitionTest {
         transition!!.invoke(extension, true, 60)
 
         assertTrue(timings.isEmpty())
-        assertEquals(60, privateField(extension, "frameRateLimit"))
+        assertEquals(
+            "X Present must not become a second local FPS limiter while SHM/renderer pacing already own the source cap",
+            0,
+            privateField(extension, "frameRateLimit"),
+        )
         assertEquals(false, privateField(extension, "eagerIdleRelease"))
     }
 
@@ -64,7 +69,7 @@ class PresentExtensionPacingTransitionTest {
     }
 
     @Test
-    fun transitionFramePacing_rejectsStaleNativeReadyState() {
+    fun transitionFramePacing_rejectsStaleNativeReadyStateWithoutReenablingPresentLimiter() {
         val root = Files.createTempDirectory("lsfg-stale")
         val stats = root.resolve(".config/lsfg-vk/stats.txt")
         Files.createDirectories(stats.parent)
@@ -78,8 +83,23 @@ class PresentExtensionPacingTransitionTest {
         val extension = PresentExtension()
         extension.transitionFramePacing(true, 60)
 
-        assertEquals(60, privateField(extension, "frameRateLimit"))
+        assertEquals(0, privateField(extension, "frameRateLimit"))
         assertEquals(false, privateField(extension, "eagerIdleRelease"))
+    }
+
+    @Test
+    fun localFrameRateLimit_doesNotStartPresentCpuPacer() {
+        val root = Files.createTempDirectory("lsfg-present-unpaced")
+        LsfgRuntimeGate.configure(root.toFile())
+        val extension = PresentExtension()
+
+        extension.setFrameRateLimit(30)
+
+        assertEquals(0, privateField(extension, "frameRateLimit"))
+        assertNull(
+            "Normal GameNative FPS limiting must not create a second Present pacing worker",
+            privateField(extension, "cpuPacerThread"),
+        )
     }
 
     @Test

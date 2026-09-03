@@ -18,7 +18,7 @@ jobs:
           ref: Adaptive-Frame-Generation
           fetch-depth: 0
           submodules: false
-      - name: Apply Present mailbox and atomic config fixes
+      - name: Apply single-authority pacing fix
         shell: bash
         run: |
           python3 - <<'PY'
@@ -26,131 +26,37 @@ jobs:
 
           present_path = Path('app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java')
           present = present_path.read_text()
-          if 'cpuPendingIdles' in present:
-              raise SystemExit('Present mailbox fix already present; refusing duplicate patch')
 
-          queue_anchor = '    private static final long FIRE_EARLY_NS = 700_000L; // 0.7 ms\n'
-          queue_pos = present.index(queue_anchor)
-          present = present[:queue_pos] + '''    private final java.util.concurrent.ConcurrentHashMap<Integer, PendingIdle> cpuPendingIdles =
-              new java.util.concurrent.ConcurrentHashMap<>();
-
-          '''.replace('          ', '    ') + present[queue_pos:]
-
-          flush_start = present.index('        PendingIdle queued;')
-          flush_end = present.index('        windowTimings.clear();', flush_start)
-          flush = '''        PendingIdle queued;
-          while ((queued = cpuQueue.poll()) != null) {
-              cpuPendingIdles.remove(queued.window.id, queued);
-              sendIdleNotify(queued.window, queued.pixmap, queued.serial, queued.idleFence);
-          }
-          cpuPendingIdles.clear();
-          wakeCpuPacer();
-
-          '''.replace('          ', '    ')
-          present = present[:flush_start] + flush + present[flush_end:]
-
-          worker_start = present.index('                if (cpuQueue.remove(p)) {')
-          worker_send = present.index('                    sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);', worker_start)
-          worker_end = present.index('                }', worker_send) + len('                }')
-          worker = '''                if (cpuQueue.remove(p)) {
-                  cpuPendingIdles.remove(p.window.id, p);
-                  sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
-              }'''.replace('              ', '        ')
-          present = present[:worker_start] + worker + present[worker_end:]
-
-          branch_start = present.index('        if (ch != null) {', present.index('android.view.Choreographer ch = tryGetChoreographer(renderer);'))
-          branch_end = present.index('\n    }\n\n    private static abstract class ClientOpcodes', branch_start)
-          branch = '''        if (ch != null) {
-              PendingIdle replacement =
-                      new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
-              PendingIdle superseded = pendingIdles.put(window.id, replacement);
-              if (superseded != null) {
-                  // PRESENT is mailbox-like: a replacement inherits the already
-                  // reserved deadline rather than pushing the window another frame
-                  // into the future while the client is back-pressured.
-                  replacement.targetNs = superseded.targetNs;
-                  wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
-                  releaseSupersededIdle(superseded);
-              }
-              postChoreographerCallback();
-          } else {
-              PendingIdle replacement =
-                      new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
-              PendingIdle superseded = cpuPendingIdles.put(window.id, replacement);
-              if (superseded != null && cpuQueue.remove(superseded)) {
-                  replacement.targetNs = superseded.targetNs;
-                  wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
-                  releaseSupersededIdle(superseded);
-              }
-              cpuQueue.offer(replacement);
-              wakeCpuPacer();
-          }
-          '''.replace('          ', '    ')
-          present = present[:branch_start] + branch + present[branch_end:]
+          old_transition = '''    /**\n     * Record the requested pacing owner. LSFG does not actually receive pacing\n     * ownership until its fresh native stats state confirms a ready swapchain\n     * context; until then the normal X Present limiter remains active.\n     */\n    public void transitionFramePacing(boolean lsfgOwnsPacing, int limit) {\n        this.lsfgPacingRequested = lsfgOwnsPacing;\n        this.localFrameRateLimit = Math.max(0, limit);\n        applyEffectivePacing(lsfgOwnsPacing && LsfgRuntimeGate.isGenerationReady());\n    }\n\n    private void refreshLsfgPacingState() {\n        final boolean lsfgReady = lsfgPacingRequested && LsfgRuntimeGate.isGenerationReady();\n        final int desiredLimit = lsfgReady ? 0 : localFrameRateLimit;\n        if (this.eagerIdleRelease == lsfgReady && this.frameRateLimit == desiredLimit)\n            return;\n        applyEffectivePacing(lsfgReady);\n    }\n\n    private synchronized void applyEffectivePacing(boolean lsfgReady) {\n        final int nextLimit = lsfgReady ? 0 : localFrameRateLimit;'''
+          new_transition = '''    /**\n     * Record LSFG presentation ownership without becoming a second FPS limiter.\n     * GameNative already owns source pacing through ShmFramePacer (with the\n     * renderer receiving only a frame-rate hint). X Present therefore remains\n     * unpaced in both native and LSFG modes; fresh native LSFG readiness only\n     * controls eager idle release.\n     */\n    public void transitionFramePacing(boolean lsfgOwnsPacing, int limit) {\n        final boolean ownershipRequestChanged = this.lsfgPacingRequested != lsfgOwnsPacing;\n        this.lsfgPacingRequested = lsfgOwnsPacing;\n        this.localFrameRateLimit = Math.max(0, limit);\n        if (ownershipRequestChanged) windowTimings.clear();\n        applyEffectivePacing(lsfgOwnsPacing && LsfgRuntimeGate.isGenerationReady());\n    }\n\n    private void refreshLsfgPacingState() {\n        final boolean lsfgReady = lsfgPacingRequested && LsfgRuntimeGate.isGenerationReady();\n        final int desiredLimit = 0;\n        if (this.eagerIdleRelease == lsfgReady && this.frameRateLimit == desiredLimit)\n            return;\n        applyEffectivePacing(lsfgReady);\n    }\n\n    private synchronized void applyEffectivePacing(boolean lsfgReady) {\n        final int nextLimit = 0;'''
+          if old_transition not in present:
+              raise SystemExit('Present ownership transition anchor not found')
+          present = present.replace(old_transition, new_transition, 1)
           present_path.write_text(present)
 
-          manager_path = Path('app/src/main/java/app/gamenative/utils/LsfgVkManager.kt')
-          manager = manager_path.read_text()
-          if 'configWriteLock' in manager:
-              raise SystemExit('atomic config fix already present; refusing duplicate patch')
-          manager = manager.replace(
-              'import java.io.File\n',
-              'import java.io.File\nimport java.nio.file.AtomicMoveNotSupportedException\nimport java.nio.file.Files\nimport java.nio.file.LinkOption\nimport java.nio.file.StandardCopyOption.ATOMIC_MOVE\nimport java.nio.file.StandardCopyOption.REPLACE_EXISTING\n',
-              1,
-          )
-
-          writer_start = manager.index('    private fun writeConfigAtomic(file: File, text: String): Boolean {')
-          writer_end = manager.index('    private fun buildConfigToml(', writer_start)
-          writer = '''    private val configWriteLock = Any()
-
-          private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(configWriteLock) {
-              val parent = file.parentFile ?: return@synchronized false
-              val target = file.toPath()
-              var temp: java.nio.file.Path? = null
-              try {
-                  parent.mkdirs()
-                  if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
-                      !Files.isSymbolicLink(target) &&
-                      runCatching { file.readText() }.getOrNull() == text
-                  ) {
-                      return@synchronized true
-                  }
-
-                  temp = Files.createTempFile(parent.toPath(), ".${file.name}.", ".tmp")
-                  temp.toFile().writeText(text)
-                  FileUtils.chmod(temp.toFile(), 0b110100100)
-                  try {
-                      Files.move(temp, target, ATOMIC_MOVE, REPLACE_EXISTING)
-                  } catch (_: AtomicMoveNotSupportedException) {
-                      Files.move(temp, target, REPLACE_EXISTING)
-                  }
-                  temp = null
-                  FileUtils.chmod(file, 0b110100100)
-                  Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
-                      !Files.isSymbolicLink(target)
-              } catch (t: Throwable) {
-                  Timber.tag(TAG).w(t, "Failed to atomically publish LSFG conf.toml")
-                  false
-              } finally {
-                  temp?.let { runCatching { Files.deleteIfExists(it) } }
-              }
-          }
-
-          '''.replace('          ', '    ')
-          manager = manager[:writer_start] + writer + manager[writer_end:]
-          annotation = '    @JvmStatic\n    fun updateConfigAtRuntime('
-          if annotation not in manager:
-              raise SystemExit('updateConfigAtRuntime annotation baseline not found')
-          manager = manager.replace(annotation, '    @JvmStatic\n    @Synchronized\n    fun updateConfigAtRuntime(', 1)
-          manager_path.write_text(manager)
+          power_path = Path('app/src/main/java/app/gamenative/powercontrol/PowerManager.kt')
+          power = power_path.read_text()
+          old_apply = '''        val xServerView = PluviaApp.xServerView ?: return false\n        val presentExtension = xServerView.getxServer()\n            ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())\n\n        val apply = Runnable {\n            xServerView.setFrameRateLimit(limitFps)\n            presentExtension?.setFrameRateLimit(limitFps)\n            com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)\n        }'''
+          new_apply = '''        val xServerView = PluviaApp.xServerView ?: return false\n\n        val apply = Runnable {\n            // One source-pacing authority only: SHM pacing owns the real cap and\n            // the renderer receives its platform frame-rate hint. Present idle\n            // notification pacing is intentionally not used as a second limiter.\n            xServerView.setFrameRateLimit(limitFps)\n            com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)\n        }'''
+          if old_apply not in power:
+              raise SystemExit('PowerManager pacing anchor not found')
+          power = power.replace(old_apply, new_apply, 1)
+          if 'PresentExtension' not in power.replace('import com.winlator.xserver.extensions.PresentExtension\n', ''):
+              power = power.replace('import com.winlator.xserver.extensions.PresentExtension\n', '', 1)
+          power_path.write_text(power)
           PY
-      - name: Run focused Adaptive contract tests
+      - name: Run focused Adaptive regression tests
         run: |
-          ./gradlew :app:testLegacyDebugUnitTest --tests 'com.winlator.xserver.extensions.PresentExtensionPacingTransitionTest' --tests 'app.gamenative.utils.LsfgVkManagerTest' --no-daemon
+          ./gradlew :app:testLegacyDebugUnitTest \
+            --tests 'com.winlator.xserver.extensions.PresentExtensionPacingTransitionTest' \
+            --tests 'app.gamenative.utils.LsfgVkManagerTest' \
+            --no-daemon
       - name: Commit production fix
+        shell: bash
         run: |
+          rm .github/workflows/apply-adaptive-runtime-fix.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
-          git commit -m "fix(lsfg): stabilize pacing and runtime config transitions"
+          git add -A
+          git commit -m "fix(lsfg): use a single source pacing authority"
           git push origin HEAD:Adaptive-Frame-Generation

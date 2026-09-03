@@ -114,4 +114,20 @@ class LsfgBuildWorkflowContractTest {
             )
         }
     }
+
+    @Test
+    fun xServerScreenKeepsLocalLimiterUntilNativeGenerationIsReady() {
+        val source = repoFile(
+            "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt",
+        ).readText()
+
+        assertTrue(
+            "LSFG pacing ownership must go through XServerView's native-readiness gate",
+            source.contains("xServerView?.transitionLsfgFramePacing(lsfgActive, limit)"),
+        )
+        assertFalse(
+            "menu/config state alone must never disable the renderer limiter before native generation is ready",
+            source.contains("xServerView?.setFrameRateLimit(if (lsfgActive) 0 else limit)"),
+        )
+    }
 }

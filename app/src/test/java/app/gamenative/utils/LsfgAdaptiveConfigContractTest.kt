@@ -6,7 +6,7 @@ import org.junit.Test
 
 class LsfgAdaptiveConfigContractTest {
     @Test
-    fun sourceCapAndOutputTargetRemainIndependentAcrossCommonRatios() {
+    fun sourceTargetAndOutputTargetRemainIndependentAcrossCommonRatios() {
         val cases = listOf(
             Triple(30, 60, 60),
             Triple(30, 90, 90),
@@ -15,31 +15,35 @@ class LsfgAdaptiveConfigContractTest {
             Triple(60, 120, 120),
         )
 
-        cases.forEach { (sourceCap, requestedOutput, expectedOutput) ->
+        cases.forEach { (sourceTarget, requestedOutput, expectedOutput) ->
             val resolved = LsfgAdaptiveTargetPolicy.resolve(
                 adaptiveEnabled = true,
                 sourceLimiterEnabled = true,
-                sourceLimiterTargetFps = sourceCap,
+                sourceLimiterTargetFps = sourceTarget,
                 requestedOutputTargetFps = requestedOutput,
                 displayRefreshRateFps = 120,
             )
-            assertEquals(sourceCap, resolved.sourceLimitFps)
-            assertEquals(expectedOutput, resolved.outputTargetFps)
+            assertEquals(sourceTarget, resolved.sourceFpsTarget)
+            assertEquals(expectedOutput, resolved.outputFpsTarget)
+            assertEquals(expectedOutput, resolved.resolvedOutputFpsTarget)
         }
     }
 
     @Test
-    fun adaptiveOutputMayRunWithoutAnySourceLimiter() {
+    fun adaptiveWithoutPersistedLimiterUsesEphemeralRefreshSourceTarget() {
         val resolved = LsfgAdaptiveTargetPolicy.resolve(
             adaptiveEnabled = true,
             sourceLimiterEnabled = false,
             sourceLimiterTargetFps = 30,
-            requestedOutputTargetFps = 120,
+            requestedOutputTargetFps = 90,
             displayRefreshRateFps = 120,
         )
 
-        assertEquals(0, resolved.sourceLimitFps)
-        assertEquals(120, resolved.outputTargetFps)
+        // Adaptive gets a session-only source target without mutating the user's
+        // persisted source-limiter preference.
+        assertEquals(120, resolved.sourceFpsTarget)
+        assertEquals(90, resolved.outputFpsTarget)
+        assertEquals(90, resolved.resolvedOutputFpsTarget)
     }
 
     @Test
@@ -52,8 +56,26 @@ class LsfgAdaptiveConfigContractTest {
             displayRefreshRateFps = 120,
         )
 
-        assertEquals(30, resolved.sourceLimitFps)
-        assertEquals(120, resolved.outputTargetFps)
-        assertTrue(resolved.outputTargetFps > resolved.sourceLimitFps)
+        assertEquals(30, resolved.sourceFpsTarget)
+        assertEquals(120, resolved.outputFpsTarget)
+        assertEquals(120, resolved.resolvedOutputFpsTarget)
+        assertTrue(resolved.resolvedOutputFpsTarget > resolved.sourceFpsTarget)
+    }
+
+    @Test
+    fun thermalCeilingConstrainsOutputWithoutChangingUserOrSourceTargets() {
+        val resolved = LsfgAdaptiveTargetPolicy.resolve(
+            adaptiveEnabled = true,
+            sourceLimiterEnabled = true,
+            sourceLimiterTargetFps = 30,
+            requestedOutputTargetFps = 120,
+            displayRefreshRateFps = 120,
+            outputFpsCeiling = 90,
+        )
+
+        assertEquals(30, resolved.sourceFpsTarget)
+        assertEquals(120, resolved.outputFpsTarget)
+        assertEquals(90, resolved.outputFpsCeiling)
+        assertEquals(90, resolved.resolvedOutputFpsTarget)
     }
 }

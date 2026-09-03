@@ -28,6 +28,9 @@ internal data class LsfgRuntimeStats(
     val outputFps: Float,
     val sourceFps: Float,
     val generatedFps: Float,
+    val sourceFrames: Int,
+    val generatedFrames: Int,
+    val generatedPerSource: Float,
 ) {
     companion object {
         fun parse(text: String): LsfgRuntimeStats? {
@@ -42,11 +45,21 @@ internal data class LsfgRuntimeStats(
 
             fun fps(name: String): Float? = values[name]?.toFloatOrNull()
                 ?.takeIf { it.isFinite() && it >= 0f }
+            fun count(name: String): Int = values[name]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+
+            val sourceFrames = count("source_frames")
+            val generatedFrames = count("generated_frames")
+            val measuredRatio = values["generated_per_source"]?.toFloatOrNull()
+                ?.takeIf { it.isFinite() && it >= 0f }
+                ?: if (sourceFrames > 0) generatedFrames.toFloat() / sourceFrames.toFloat() else 0f
 
             return LsfgRuntimeStats(
                 outputFps = fps("fps") ?: return null,
                 sourceFps = fps("source_fps") ?: return null,
                 generatedFps = fps("generated_fps") ?: 0f,
+                sourceFrames = sourceFrames,
+                generatedFrames = generatedFrames,
+                generatedPerSource = measuredRatio,
             )
         }
     }
@@ -102,6 +115,7 @@ object LsfgVkManager {
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
     const val EXTRA_ADAPTIVE_FRAMEGEN = "lsfgAdaptiveFrameGen"
     const val EXTRA_ADAPTIVE_OUTPUT_TARGET = "lsfgAdaptiveOutputTarget"
+    const val EXTRA_ADAPTIVE_OUTPUT_CEILING = "lsfgAdaptiveOutputCeiling"
     private const val EXTRA_SOURCE_FPS_LIMITER_ENABLED = "fpsLimiterEnabled"
     private const val EXTRA_SOURCE_FPS_LIMITER_TARGET = "fpsLimiterTarget"
 
@@ -204,6 +218,23 @@ object LsfgVkManager {
             ?.coerceAtLeast(0)
             ?: 0
 
+    /** Thermal/power ceiling for the final displayed-frame target. Zero means unconstrained. */
+    fun adaptiveOutputCeiling(container: Container): Int =
+        container.getExtra(EXTRA_ADAPTIVE_OUTPUT_CEILING, "0")
+            ?.toIntOrNull()
+            ?.coerceAtLeast(0)
+            ?: 0
+
+    fun resolvedAdaptiveOutputTarget(container: Container): Int {
+        val target = adaptiveOutputTarget(container)
+        val ceiling = adaptiveOutputCeiling(container)
+        return when {
+            target <= 0 -> ceiling
+            ceiling <= 0 -> target
+            else -> minOf(target, ceiling)
+        }
+    }
+
     /** Persist an explicit Adaptive FrameGen output target. */
     fun setAdaptiveOutputTarget(container: Container, targetFps: Int): Int {
         val sanitized = targetFps.coerceAtLeast(0)
@@ -280,18 +311,8 @@ object LsfgVkManager {
                             if (resolveOutputTarget && adaptiveOutputTarget(container) <= 0) {
                                 val outputTarget = refreshRate.roundToInt().coerceAtLeast(5)
                                 setAdaptiveOutputTarget(container, outputTarget)
-                                val selectedMultiplier = multiplier(container)
-                                updateConfigAtRuntime(
-                                    container = container,
-                                    enabled = selectedMultiplier >= 2,
-                                    multiplier = if (selectedMultiplier >= 2) selectedMultiplier else 2,
-                                    flowScale = flowScale(container),
-                                    performanceMode = performanceMode(container),
-                                    adaptiveFrameGen = adaptiveFrameGen(container),
-                                    fpsLimitOverride = outputTarget,
-                                )
                                 Timber.tag(TAG).i(
-                                    "LSFG output cadence initialized from display refresh: %d fps",
+                                    "LSFG output target initialized from display refresh: %d fps",
                                     outputTarget,
                                 )
                             }
@@ -329,6 +350,28 @@ object LsfgVkManager {
     /** Source/game FPS for power-control feedback; generated output must not downclock the game. */
     fun readMeasuredSourceFps(container: Container): Float? {
         return readRuntimeStats(container)?.sourceFps
+    }
+
+    /** Measured generated frames per real/source frame for the latest native interval. */
+    fun readMeasuredGeneratedPerSource(container: Container): Float? =
+        readRuntimeStats(container)?.generatedPerSource
+
+    /**
+     * Integer stride for the X-window timestamp ring. Source FPS itself comes
+     * from native telemetry; this stride only prevents generated sub-frame
+     * timestamps from corrupting p50/p95/slow-frame calculations.
+     */
+    fun readMeasuredFrameSampleStride(container: Container): Int? {
+        val ratio = readRuntimeStats(container)?.generatedPerSource ?: return null
+        if (!ratio.isFinite() || ratio < 0f) return null
+        return kotlin.math.ceil(1.0 + ratio.toDouble()).toInt().coerceIn(1, 4)
+    }
+
+    /** Approximate LSFG compute pressure (0..100) from real generation work and flow scale. */
+    fun readMeasuredFrameGenLoadPercent(container: Container): Float? {
+        val ratio = readRuntimeStats(container)?.generatedPerSource ?: return null
+        if (!ratio.isFinite() || ratio < 0f) return null
+        return ((ratio.coerceAtMost(3f) / 3f) * flowScale(container) * 100f).coerceIn(0f, 100f)
     }
 
     private fun readRuntimeStats(container: Container): LsfgRuntimeStats? {
@@ -457,7 +500,7 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val savedMultiplier = multiplier(container)
             val frameGenActive = frameGenerationActive(container) && processExecutable != null
-            val outputTarget = adaptiveOutputTarget(container)
+            val outputTarget = resolvedAdaptiveOutputTarget(container)
             val adaptiveEffective = frameGenActive && adaptiveFrameGen(container) && outputTarget > 0
             val configFile = File(container.rootDir, CONFIG_RELATIVE_PATH)
             val configText = buildConfigToml(
@@ -536,7 +579,7 @@ object LsfgVkManager {
         // loader path is the differentiator.
         if (BuildConfig.DEBUG) probeAndroidLinker(container)
 
-        val outputTarget = adaptiveOutputTarget(container)
+        val outputTarget = resolvedAdaptiveOutputTarget(container)
         Timber.tag(TAG).i(
             "LSFG layer armed: dll=%s, target=%s, selectedMultiplier=%d, framegen=%s, adaptive=%s, outputTarget=%d, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
             dllPath,

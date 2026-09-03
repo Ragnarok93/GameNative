@@ -5,21 +5,24 @@ import org.junit.Test
 
 class LsfgAdaptiveTargetsTest {
     @Test
-    fun adaptiveOutputTargetDoesNotBecomeSourceLimiter() {
+    fun userTargetThermalCeilingAndSourceTargetHaveIndependentOwnership() {
         val targets = LsfgAdaptiveTargetPolicy.resolve(
             adaptiveEnabled = true,
             sourceLimiterEnabled = true,
             sourceLimiterTargetFps = 30,
             requestedOutputTargetFps = 120,
             displayRefreshRateFps = 120,
+            outputFpsCeiling = 90,
         )
 
-        assertEquals(30, targets.sourceLimitFps)
-        assertEquals(120, targets.outputTargetFps)
+        assertEquals(30, targets.sourceFpsTarget)
+        assertEquals(120, targets.outputFpsTarget)
+        assertEquals(90, targets.outputFpsCeiling)
+        assertEquals(90, targets.resolvedOutputFpsTarget)
     }
 
     @Test
-    fun adaptiveWithoutSourceLimiterLeavesGameUncapped() {
+    fun adaptiveWithoutSourceLimiterGetsEphemeralSourceTargetWithoutChangingPreference() {
         val targets = LsfgAdaptiveTargetPolicy.resolve(
             adaptiveEnabled = true,
             sourceLimiterEnabled = false,
@@ -28,12 +31,12 @@ class LsfgAdaptiveTargetsTest {
             displayRefreshRateFps = 120,
         )
 
-        assertEquals(0, targets.sourceLimitFps)
-        assertEquals(90, targets.outputTargetFps)
+        assertEquals(120, targets.sourceFpsTarget)
+        assertEquals(90, targets.resolvedOutputFpsTarget)
     }
 
     @Test
-    fun missingAdaptiveTargetDefaultsToDisplayRefresh() {
+    fun missingOutputTargetDefaultsToDisplayRefresh() {
         val targets = LsfgAdaptiveTargetPolicy.resolve(
             adaptiveEnabled = true,
             sourceLimiterEnabled = true,
@@ -41,27 +44,13 @@ class LsfgAdaptiveTargetsTest {
             requestedOutputTargetFps = 0,
             displayRefreshRateFps = 120,
         )
-
-        assertEquals(40, targets.sourceLimitFps)
-        assertEquals(120, targets.outputTargetFps)
+        assertEquals(40, targets.sourceFpsTarget)
+        assertEquals(120, targets.outputFpsTarget)
+        assertEquals(120, targets.resolvedOutputFpsTarget)
     }
 
     @Test
-    fun adaptiveTargetIsClampedToDisplayRefreshWithoutChangingSourceCap() {
-        val targets = LsfgAdaptiveTargetPolicy.resolve(
-            adaptiveEnabled = true,
-            sourceLimiterEnabled = true,
-            sourceLimiterTargetFps = 30,
-            requestedOutputTargetFps = 165,
-            displayRefreshRateFps = 120,
-        )
-
-        assertEquals(30, targets.sourceLimitFps)
-        assertEquals(120, targets.outputTargetFps)
-    }
-
-    @Test
-    fun disablingAdaptiveOnlyClearsTheOutputObjective() {
+    fun disablingAdaptiveDoesNotDestroyTheIndependentOutputPreference() {
         val targets = LsfgAdaptiveTargetPolicy.resolve(
             adaptiveEnabled = false,
             sourceLimiterEnabled = true,
@@ -69,8 +58,8 @@ class LsfgAdaptiveTargetsTest {
             requestedOutputTargetFps = 120,
             displayRefreshRateFps = 120,
         )
-
-        assertEquals(45, targets.sourceLimitFps)
-        assertEquals(0, targets.outputTargetFps)
+        assertEquals(45, targets.sourceFpsTarget)
+        assertEquals(120, targets.outputFpsTarget)
+        assertEquals(120, targets.resolvedOutputFpsTarget)
     }
 }

@@ -79,6 +79,9 @@ public class PresentExtension implements Extension {
             new java.util.concurrent.PriorityBlockingQueue<>(11,
                     java.util.Comparator.comparingLong(p -> p.targetNs));
 
+    private final java.util.concurrent.ConcurrentHashMap<Integer, PendingIdle> cpuPendingIdles =
+    new java.util.concurrent.ConcurrentHashMap<>();
+
     private static final long FIRE_EARLY_NS = 700_000L; // 0.7 ms
 
     public void setFrameRateLimit(int limit) {
@@ -128,10 +131,12 @@ public class PresentExtension implements Extension {
         }
 
         PendingIdle queued;
-        while ((queued = cpuQueue.poll()) != null) {
-            sendIdleNotify(queued.window, queued.pixmap, queued.serial, queued.idleFence);
-        }
-        wakeCpuPacer();
+while ((queued = cpuQueue.poll()) != null) {
+    cpuPendingIdles.remove(queued.window.id, queued);
+    sendIdleNotify(queued.window, queued.pixmap, queued.serial, queued.idleFence);
+}
+cpuPendingIdles.clear();
+wakeCpuPacer();
 
         windowTimings.clear();
     }
@@ -178,9 +183,10 @@ public class PresentExtension implements Extension {
                     continue;
                 }
 
-                if (cpuQueue.remove(p)) {
-                    sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
-                }
+          if (cpuQueue.remove(p)) {
+        cpuPendingIdles.remove(p.window.id, p);
+        sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
+    }
             }
         }, "PresentPacer-CPU");
         cpuPacerThread.setDaemon(true);
@@ -251,27 +257,31 @@ public class PresentExtension implements Extension {
 
         android.view.Choreographer ch = tryGetChoreographer(renderer);
         if (ch != null) {
-            PendingIdle superseded = pendingIdles.put(window.id,
-                    new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0));
-            if (superseded != null) {
-                // ConcurrentHashMap.put transfers this window's mailbox slot to
-                // the replacement. The previous pixmap/fence is no longer
-                // scheduled, so it must be released regardless of who owns
-                // pacing; dropping it can stall the client after LSFG turns off.
-                releaseSupersededIdle(superseded);
-            }
-            postChoreographerCallback();
-        } else {
-            if (eagerIdleRelease) {
-                for (PendingIdle q : cpuQueue) {
-                    if (q.window == window && cpuQueue.remove(q)) {
-                        sendIdleNotify(q.window, q.pixmap, q.serial, q.idleFence);
-                    }
-                }
-            }
-            cpuQueue.offer(new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0));
-            wakeCpuPacer();
-        }
+    PendingIdle replacement =
+      new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
+    PendingIdle superseded = pendingIdles.put(window.id, replacement);
+    if (superseded != null) {
+        // PRESENT is mailbox-like: a replacement inherits the already
+        // reserved deadline rather than pushing the window another frame
+        // into the future while the client is back-pressured.
+        replacement.targetNs = superseded.targetNs;
+        wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
+        releaseSupersededIdle(superseded);
+    }
+    postChoreographerCallback();
+} else {
+    PendingIdle replacement =
+      new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
+    PendingIdle superseded = cpuPendingIdles.put(window.id, replacement);
+    if (superseded != null && cpuQueue.remove(superseded)) {
+        replacement.targetNs = superseded.targetNs;
+        wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
+        releaseSupersededIdle(superseded);
+    }
+    cpuQueue.offer(replacement);
+    wakeCpuPacer();
+}
+
     }
 
     private static abstract class ClientOpcodes {

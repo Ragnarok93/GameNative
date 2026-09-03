@@ -13,6 +13,11 @@ import com.winlator.container.Container
 import com.winlator.core.FileUtils
 import com.winlator.core.envvars.EnvVars
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.security.MessageDigest
 import java.util.Locale
 import timber.log.Timber
@@ -784,15 +789,40 @@ object LsfgVkManager {
             .trim()
             .takeIf { it.isNotEmpty() }
 
-    private fun writeConfigAtomic(file: File, text: String): Boolean {
-        return try {
-            if (!FileUtils.writeString(file, text) || !file.isFile) return false
-            FileUtils.chmod(file, 0b110100100)
-            file.isFile
-        } catch (t: Throwable) {
-            false
+    private val configWriteLock = Any()
+
+private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(configWriteLock) {
+    val parent = file.parentFile ?: return@synchronized false
+    val target = file.toPath()
+    var temp: java.nio.file.Path? = null
+    try {
+        parent.mkdirs()
+        if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
+      !Files.isSymbolicLink(target) &&
+      runCatching { file.readText() }.getOrNull() == text
+        ) {
+      return@synchronized true
         }
+
+        temp = Files.createTempFile(parent.toPath(), ".${file.name}.", ".tmp")
+        temp.toFile().writeText(text)
+        FileUtils.chmod(temp.toFile(), 0b110100100)
+        try {
+      Files.move(temp, target, ATOMIC_MOVE, REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+      Files.move(temp, target, REPLACE_EXISTING)
+        }
+        temp = null
+        FileUtils.chmod(file, 0b110100100)
+        Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
+      !Files.isSymbolicLink(target)
+    } catch (t: Throwable) {
+        Timber.tag(TAG).w(t, "Failed to atomically publish LSFG conf.toml")
+        false
+    } finally {
+        temp?.let { runCatching { Files.deleteIfExists(it) } }
     }
+}
 
     private fun buildConfigToml(
         dllPath: String?,
@@ -863,6 +893,7 @@ object LsfgVkManager {
      * sourced from or written back to GameNative's real/source FPS limiter.
      */
     @JvmStatic
+    @Synchronized
     fun updateConfigAtRuntime(
         container: Container,
         enabled: Boolean,

@@ -15,6 +15,15 @@ public interface XServerRendererView {
     void queueEvent(Runnable r);
     void requestRender();
     void setFrameRateLimit(int limit);
+
+    /**
+     * Request LSFG presentation ownership while retaining local pacing until
+     * the native layer reports a live generation-ready swapchain. Renderers
+     * that do not participate in LSFG keep their ordinary local limiter.
+     */
+    default void transitionLsfgFramePacing(boolean lsfgRequested, int localLimit) {
+        setFrameRateLimit(localLimit);
+    }
     void onResume();
     void onPause();
     XServer getxServer();

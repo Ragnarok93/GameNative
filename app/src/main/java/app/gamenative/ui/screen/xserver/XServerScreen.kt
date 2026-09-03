@@ -715,7 +715,7 @@ fun XServerScreen(
         // (measured as constant multi-exposure ghosting on the X11/turnip
         // present path).
         val lsfgActive = isLsfgAvailable && lsfgMultiplier >= 2
-        xServerView?.setFrameRateLimit(if (lsfgActive) 0 else limit)
+        xServerView?.transitionLsfgFramePacing(lsfgActive, limit)
         xServerView?.getxServer()
             ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
             ?.transitionFramePacing(lsfgActive, limit)

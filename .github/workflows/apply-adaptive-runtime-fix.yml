@@ -1,0 +1,211 @@
+name: Apply Adaptive GameNative fix
+
+on:
+  push:
+    branches:
+      - Adaptive-Frame-Generation
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: contains(github.event.head_commit.message, 'stage GameNative production patch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: Adaptive-Frame-Generation
+          fetch-depth: 0
+          submodules: false
+      - name: Apply Present mailbox and atomic config fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          present_path = Path('app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java')
+          present = present_path.read_text()
+
+          replacements = []
+          replacements.append((
+          '''    private final java.util.concurrent.PriorityBlockingQueue<PendingIdle> cpuQueue =
+                  new java.util.concurrent.PriorityBlockingQueue<>(11,
+                          java.util.Comparator.comparingLong(p -> p.targetNs));
+          ''',
+          '''    private final java.util.concurrent.PriorityBlockingQueue<PendingIdle> cpuQueue =
+                  new java.util.concurrent.PriorityBlockingQueue<>(11,
+                          java.util.Comparator.comparingLong(p -> p.targetNs));
+              private final java.util.concurrent.ConcurrentHashMap<Integer, PendingIdle> cpuPendingIdles =
+                  new java.util.concurrent.ConcurrentHashMap<>();
+          '''))
+          replacements.append((
+          '''        PendingIdle queued;
+              while ((queued = cpuQueue.poll()) != null) {
+                  sendIdleNotify(queued.window, queued.pixmap, queued.serial, queued.idleFence);
+              }
+              wakeCpuPacer();
+          ''',
+          '''        PendingIdle queued;
+              while ((queued = cpuQueue.poll()) != null) {
+                  cpuPendingIdles.remove(queued.window.id, queued);
+                  sendIdleNotify(queued.window, queued.pixmap, queued.serial, queued.idleFence);
+              }
+              cpuPendingIdles.clear();
+              wakeCpuPacer();
+          '''))
+          replacements.append((
+          '''                if (cpuQueue.remove(p)) {
+                      sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
+                  }
+          ''',
+          '''                if (cpuQueue.remove(p)) {
+                      cpuPendingIdles.remove(p.window.id, p);
+                      sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
+                  }
+          '''))
+          replacements.append((
+          '''        if (ch != null) {
+                  PendingIdle superseded = pendingIdles.put(window.id,
+                          new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0));
+                  if (superseded != null) {
+                      // ConcurrentHashMap.put transfers this window's mailbox slot to
+                      // the replacement. The previous pixmap/fence is no longer
+                      // scheduled, so it must be released regardless of who owns
+                      // pacing; dropping it can stall the client after LSFG turns off.
+                      releaseSupersededIdle(superseded);
+                  }
+                  postChoreographerCallback();
+              } else {
+                  if (eagerIdleRelease) {
+                      for (PendingIdle q : cpuQueue) {
+                          if (q.window == window && cpuQueue.remove(q)) {
+                              sendIdleNotify(q.window, q.pixmap, q.serial, q.idleFence);
+                          }
+                      }
+                  }
+                  cpuQueue.offer(new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0));
+                  wakeCpuPacer();
+              }
+          ''',
+          '''        if (ch != null) {
+                  PendingIdle replacement =
+                          new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
+                  PendingIdle superseded = pendingIdles.put(window.id, replacement);
+                  if (superseded != null) {
+                      // PRESENT behaves like a mailbox, not a FIFO. A replacement
+                      // inherits the already-reserved deadline instead of pushing
+                      // the window one frame farther into the future.
+                      replacement.targetNs = superseded.targetNs;
+                      wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
+                      releaseSupersededIdle(superseded);
+                  }
+                  postChoreographerCallback();
+              } else {
+                  PendingIdle replacement =
+                          new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
+                  PendingIdle superseded = cpuPendingIdles.put(window.id, replacement);
+                  if (superseded != null && cpuQueue.remove(superseded)) {
+                      replacement.targetNs = superseded.targetNs;
+                      wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
+                      releaseSupersededIdle(superseded);
+                  }
+                  cpuQueue.offer(replacement);
+                  wakeCpuPacer();
+              }
+          '''))
+
+          for old, new in replacements:
+              if old not in present:
+                  raise SystemExit('PresentExtension baseline did not match; refusing unsafe patch')
+              present = present.replace(old, new, 1)
+          present_path.write_text(present)
+
+          manager_path = Path('app/src/main/java/app/gamenative/utils/LsfgVkManager.kt')
+          manager = manager_path.read_text()
+          old_import = 'import java.io.File\n'
+          new_import = '''import java.io.File
+          import java.nio.file.AtomicMoveNotSupportedException
+          import java.nio.file.Files
+          import java.nio.file.LinkOption
+          import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+          import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+          '''
+          if old_import not in manager:
+              raise SystemExit('LsfgVkManager import baseline did not match')
+          manager = manager.replace(old_import, new_import, 1)
+
+          old_writer = '''    private fun writeConfigAtomic(file: File, text: String): Boolean {
+                  return try {
+                      if (!FileUtils.writeString(file, text) || !file.isFile) return false
+                      FileUtils.chmod(file, 0b110100100)
+                      file.isFile
+                  } catch (t: Throwable) {
+                      false
+                  }
+              }
+          '''
+          new_writer = '''    private val configWriteLock = Any()
+
+              private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(configWriteLock) {
+                  val parent = file.parentFile ?: return@synchronized false
+                  val target = file.toPath()
+                  var temp: java.nio.file.Path? = null
+                  try {
+                      parent.mkdirs()
+                      // Duplicate UI/source-cap updates are common. Do not bump
+                      // mtime when the complete, non-symlink target is unchanged;
+                      // that avoids unnecessary native reload/recreate decisions.
+                      if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
+                          !Files.isSymbolicLink(target) &&
+                          runCatching { file.readText() }.getOrNull() == text
+                      ) {
+                          return@synchronized true
+                      }
+
+                      temp = Files.createTempFile(parent.toPath(), ".${file.name}.", ".tmp")
+                      temp.toFile().writeText(text)
+                      FileUtils.chmod(temp.toFile(), 0b110100100)
+                      try {
+                          Files.move(temp, target, ATOMIC_MOVE, REPLACE_EXISTING)
+                      } catch (_: AtomicMoveNotSupportedException) {
+                          Files.move(temp, target, REPLACE_EXISTING)
+                      }
+                      temp = null
+                      FileUtils.chmod(file, 0b110100100)
+                      Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
+                          !Files.isSymbolicLink(target)
+                  } catch (t: Throwable) {
+                      Timber.tag(TAG).w(t, "Failed to atomically publish LSFG conf.toml")
+                      false
+                  } finally {
+                      temp?.let { runCatching { Files.deleteIfExists(it) } }
+                  }
+              }
+          '''
+          if old_writer not in manager:
+              raise SystemExit('writeConfigAtomic baseline did not match; refusing unsafe patch')
+          manager = manager.replace(old_writer, new_writer, 1)
+
+          old_update = '''    @JvmStatic
+              fun updateConfigAtRuntime(
+          '''
+          new_update = '''    @JvmStatic
+              @Synchronized
+              fun updateConfigAtRuntime(
+          '''
+          if old_update not in manager:
+              raise SystemExit('updateConfigAtRuntime baseline did not match')
+          manager = manager.replace(old_update, new_update, 1)
+          manager_path.write_text(manager)
+          PY
+      - name: Run focused Adaptive contract tests
+        run: |
+          ./gradlew :app:testLegacyDebugUnitTest --tests 'com.winlator.xserver.extensions.PresentExtensionPacingTransitionTest' --tests 'app.gamenative.utils.LsfgVkManagerTest' --no-daemon
+      - name: Commit production fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+          git commit -m "fix(lsfg): stabilize pacing and runtime config transitions"
+          git push origin HEAD:Adaptive-Frame-Generation

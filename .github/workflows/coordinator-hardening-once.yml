@@ -1,0 +1,373 @@
+name: Source pacing coordinator hardening (one shot)
+
+on:
+  push:
+    branches:
+      - Adaptive-Frame-Generation
+    paths:
+      - .github/workflows/coordinator-hardening-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  harden-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out Adaptive Frame Generation branch
+        uses: actions/checkout@v5
+        with:
+          ref: Adaptive-Frame-Generation
+          submodules: recursive
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Verify and build pinned LSFG native runtime
+        uses: ./.github/actions/prepare-lsfg-native
+
+      - name: Configure build credentials
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: |
+          printf 'POSTHOG_API_KEY=%s\n' "${POSTHOG_API_KEY:-dummy}" > local.properties
+          printf 'POSTHOG_HOST=%s\n' "${POSTHOG_HOST:-https://us.i.posthog.com}" >> local.properties
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Apply reviewed coordinator hardening patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          coordinator_path = Path('app/src/main/java/app/gamenative/powercontrol/SourceFramePacingCoordinator.kt')
+          coordinator_path.write_text('''package app.gamenative.powercontrol
+
+/**
+ * Serializes writes to GameNative's source-frame pacing sinks.
+ *
+ * Native frame generation never owns source pacing. Callers resolve the desired source cap first,
+ * then reserve an application ticket for the live renderer/view. A ticket is only considered
+ * applied after both pacing sinks accept it. New requests, renderer replacement, lifecycle
+ * invalidation, failed dispatch, and failed writes all make older tickets safely retryable/stale.
+ */
+internal class SourceFramePacingCoordinator {
+    internal class ApplyTicket internal constructor(
+        val limitFps: Int,
+        internal val target: Any,
+    )
+
+    private var lastAppliedLimit: Int? = null
+    private var lastAppliedTarget: Any? = null
+    private var pendingTicket: ApplyTicket? = null
+
+    /**
+     * Reserve the current source-pacing update. Null means the same request is already pending or
+     * has already been applied successfully to this exact live target.
+     *
+     * Reserving a different request immediately supersedes the previous pending ticket. The stale
+     * ticket can still reach its queued Runnable, but [applyIfCurrent] will refuse to execute it.
+     */
+    @Synchronized
+    fun beginApply(limitFps: Int, target: Any): ApplyTicket? {
+        val resolvedLimit = limitFps.coerceAtLeast(0)
+        val pending = pendingTicket
+        if (pending != null && pending.limitFps == resolvedLimit && pending.target === target) {
+            return null
+        }
+        if (pending == null && lastAppliedLimit == resolvedLimit && lastAppliedTarget === target) {
+            return null
+        }
+
+        return ApplyTicket(resolvedLimit, target).also { pendingTicket = it }
+    }
+
+    /**
+     * Execute [apply] only while [ticket] is still the newest request. The coordinator lock stays
+     * held through the short sink writes so a newer reservation cannot overtake a ticket between
+     * its freshness check and the physical pacing update.
+     *
+     * Successful completion becomes the new de-duplication baseline. If [apply] throws, the ticket
+     * is released without being marked successful so the same cap can be retried.
+     */
+    @Synchronized
+    fun applyIfCurrent(ticket: ApplyTicket, apply: () -> Unit): Boolean {
+        if (pendingTicket !== ticket) return false
+
+        return try {
+            apply()
+            lastAppliedLimit = ticket.limitFps
+            lastAppliedTarget = ticket.target
+            true
+        } finally {
+            if (pendingTicket === ticket) {
+                pendingTicket = null
+            }
+        }
+    }
+
+    /** Release a rejected/aborted dispatch without disturbing a newer pending request. */
+    @Synchronized
+    fun markApplyFailed(ticket: ApplyTicket) {
+        if (pendingTicket === ticket) {
+            pendingTicket = null
+        }
+    }
+
+    /** Invalidate both queued and successfully-applied state at a renderer/session boundary. */
+    @Synchronized
+    fun invalidate() {
+        pendingTicket = null
+        lastAppliedLimit = null
+        lastAppliedTarget = null
+    }
+}
+''')
+
+          test_path = Path('app/src/test/java/app/gamenative/powercontrol/SourceFramePacingCoordinatorTest.kt')
+          test_path.write_text('''package app.gamenative.powercontrol
+
+import java.nio.file.Files
+import java.nio.file.Paths
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SourceFramePacingCoordinatorTest {
+    @Test
+    fun sameResolvedCapAndTarget_isCoalescedWhilePendingAndAfterSuccess() {
+        val coordinator = SourceFramePacingCoordinator()
+        val target = Any()
+        val ticket = coordinator.beginApply(30, target)
+
+        assertNotNull(ticket)
+        assertNull(coordinator.beginApply(30, target))
+        assertTrue(coordinator.applyIfCurrent(ticket!!) {})
+        assertNull(coordinator.beginApply(30, target))
+    }
+
+    @Test
+    fun failedDispatch_releasesReservationForRetry() {
+        val coordinator = SourceFramePacingCoordinator()
+        val target = Any()
+        val ticket = coordinator.beginApply(30, target)!!
+
+        coordinator.markApplyFailed(ticket)
+
+        assertNotNull(coordinator.beginApply(30, target))
+    }
+
+    @Test
+    fun changedCap_supersedesQueuedOlderTicket() {
+        val coordinator = SourceFramePacingCoordinator()
+        val target = Any()
+        val staleTicket = coordinator.beginApply(30, target)!!
+        val currentTicket = coordinator.beginApply(24, target)!!
+        var staleWriteRan = false
+        var currentWriteRan = false
+
+        assertFalse(coordinator.applyIfCurrent(staleTicket) { staleWriteRan = true })
+        assertFalse(staleWriteRan)
+        assertTrue(coordinator.applyIfCurrent(currentTicket) { currentWriteRan = true })
+        assertTrue(currentWriteRan)
+        assertNull(coordinator.beginApply(24, target))
+    }
+
+    @Test
+    fun replacementRenderer_supersedesQueuedOlderTarget() {
+        val coordinator = SourceFramePacingCoordinator()
+        val oldTarget = Any()
+        val newTarget = Any()
+        val staleTicket = coordinator.beginApply(30, oldTarget)!!
+        val currentTicket = coordinator.beginApply(30, newTarget)!!
+
+        assertFalse(coordinator.applyIfCurrent(staleTicket) {})
+        assertTrue(coordinator.applyIfCurrent(currentTicket) {})
+        assertNull(coordinator.beginApply(30, newTarget))
+    }
+
+    @Test
+    fun explicitLifecycleInvalidation_blocksQueuedWriteAndAllowsRetry() {
+        val coordinator = SourceFramePacingCoordinator()
+        val target = Any()
+        val staleTicket = coordinator.beginApply(30, target)!!
+        var staleWriteRan = false
+
+        coordinator.invalidate()
+
+        assertFalse(coordinator.applyIfCurrent(staleTicket) { staleWriteRan = true })
+        assertFalse(staleWriteRan)
+        assertNotNull(coordinator.beginApply(30, target))
+    }
+
+    @Test
+    fun sinkFailure_doesNotPoisonDeduplicationState() {
+        val coordinator = SourceFramePacingCoordinator()
+        val target = Any()
+        val ticket = coordinator.beginApply(30, target)!!
+        var threw = false
+
+        try {
+            coordinator.applyIfCurrent(ticket) { error("sink failed") }
+        } catch (_: IllegalStateException) {
+            threw = true
+        }
+
+        assertTrue(threw)
+        assertNotNull(coordinator.beginApply(30, target))
+    }
+
+    @Test
+    fun powerManager_keepsLimiterAuthorityAndGuardsQueuedDispatch() {
+        val root = if (Files.isDirectory(Paths.get("src/main/java"))) {
+            Paths.get("src/main/java")
+        } else {
+            Paths.get("app/src/main/java")
+        }
+        val source = Files.readString(root.resolve("app/gamenative/powercontrol/PowerManager.kt"))
+
+        assertFalse(source.contains("fpsCapApplier?.let { if (it(limitFps)) return true }"))
+        assertFalse(source.contains("System.identityHashCode(xServerView)"))
+        assertTrue(source.contains("sourceFramePacingCoordinator.beginApply"))
+        assertTrue(source.contains("sourceFramePacingCoordinator.applyIfCurrent(ticket)"))
+        assertTrue(source.contains("sourceFramePacingCoordinator.markApplyFailed(ticket)"))
+        assertTrue(source.contains("PluviaApp.xServerView !== xServerView"))
+        assertTrue(source.contains("val posted = Handler(Looper.getMainLooper()).post(apply)"))
+        assertTrue(source.contains("xServerView.setFrameRateLimit(resolvedLimit)"))
+        assertTrue(source.contains("ShmFramePacer.setFrameRateLimit(resolvedLimit)"))
+    }
+}
+''')
+
+          power_path = Path('app/src/main/java/app/gamenative/powercontrol/PowerManager.kt')
+          power = power_path.read_text()
+          old = '''    internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
+        val resolvedLimit = limitFps.coerceAtLeast(0)
+        val xServerView = PluviaApp.xServerView ?: return false
+
+        targetFps = resolvedLimit
+        val targetToken = System.identityHashCode(xServerView)
+        if (!sourceFramePacingCoordinator.shouldApply(resolvedLimit, targetToken)) {
+            return true
+        }
+
+        val apply = Runnable {
+            // GameNative permanently owns source pacing. SHM is the real limiter;
+            // XServerView receives the same resolved source cap as a renderer hint.
+            xServerView.setFrameRateLimit(resolvedLimit)
+            ShmFramePacer.setFrameRateLimit(resolvedLimit)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            apply.run()
+        } else {
+            Handler(Looper.getMainLooper()).post(apply)
+        }
+
+        return true
+    }
+'''
+          new = '''    internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
+        val resolvedLimit = limitFps.coerceAtLeast(0)
+        val xServerView = PluviaApp.xServerView ?: return false
+
+        targetFps = resolvedLimit
+        val ticket = sourceFramePacingCoordinator.beginApply(resolvedLimit, xServerView) ?: return true
+
+        val apply = Runnable {
+            // A renderer can disappear or be replaced after a background thread queued this work.
+            // Never let that stale callback mutate either source-pacing sink.
+            if (PluviaApp.xServerView !== xServerView) {
+                sourceFramePacingCoordinator.markApplyFailed(ticket)
+                return@Runnable
+            }
+
+            try {
+                sourceFramePacingCoordinator.applyIfCurrent(ticket) {
+                    // GameNative permanently owns source pacing. SHM is the real limiter;
+                    // XServerView receives the same resolved source cap as a renderer hint.
+                    xServerView.setFrameRateLimit(resolvedLimit)
+                    ShmFramePacer.setFrameRateLimit(resolvedLimit)
+                }
+            } catch (e: Exception) {
+                Timber.tag("PowerManager").e(
+                    e,
+                    "Failed to apply source frame pacing limit $resolvedLimit FPS"
+                )
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            apply.run()
+        } else {
+            val posted = Handler(Looper.getMainLooper()).post(apply)
+            if (!posted) {
+                sourceFramePacingCoordinator.markApplyFailed(ticket)
+                Timber.tag("PowerManager").w(
+                    "Main-thread source pacing dispatch rejected for $resolvedLimit FPS"
+                )
+                return false
+            }
+        }
+
+        return true
+    }
+'''
+          if power.count(old) != 1:
+              raise SystemExit(f'PowerManager reviewed block match count was {power.count(old)}, refusing patch')
+          power_path.write_text(power.replace(old, new))
+
+          workflow_path = Path('.github/workflows/adaptive-lsfg-legacy-build.yml')
+          workflow = workflow_path.read_text()
+          needle = '          --tests app.gamenative.utils.LsfgRuntimeUpdateDebouncerTest\n'
+          addition = needle + '          --tests app.gamenative.powercontrol.SourceFramePacingCoordinatorTest\n'
+          if 'SourceFramePacingCoordinatorTest' not in workflow:
+              if workflow.count(needle) != 1:
+                  raise SystemExit('Adaptive workflow test insertion point changed, refusing patch')
+              workflow = workflow.replace(needle, addition)
+              workflow_path.write_text(workflow)
+          PY
+
+          git diff --check
+          git diff -- app/src/main/java/app/gamenative/powercontrol/SourceFramePacingCoordinator.kt \
+            app/src/main/java/app/gamenative/powercontrol/PowerManager.kt \
+            app/src/test/java/app/gamenative/powercontrol/SourceFramePacingCoordinatorTest.kt \
+            .github/workflows/adaptive-lsfg-legacy-build.yml
+
+      - name: Run coordinator and Adaptive LSFG contract tests
+        run: >-
+          ./gradlew :app:testLegacyDebugUnitTest --no-daemon
+          --tests app.gamenative.powercontrol.SourceFramePacingCoordinatorTest
+          --tests app.gamenative.utils.LsfgVkManagerTest
+          --tests app.gamenative.utils.LsfgAdaptiveTargetsContractTest
+          --tests app.gamenative.utils.LsfgBuildWorkflowContractTest
+          --tests app.gamenative.utils.LsfgRuntimeUpdateDebouncerTest
+          --tests com.winlator.xserver.extensions.PresentExtensionPacingTransitionTest
+
+      - name: Assemble LegacyDebug APK
+        run: ./gradlew :app:assembleLegacyDebug --no-daemon
+
+      - name: Commit verified hardening patch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            app/src/main/java/app/gamenative/powercontrol/SourceFramePacingCoordinator.kt \
+            app/src/main/java/app/gamenative/powercontrol/PowerManager.kt \
+            app/src/test/java/app/gamenative/powercontrol/SourceFramePacingCoordinatorTest.kt \
+            .github/workflows/adaptive-lsfg-legacy-build.yml
+          git diff --cached --check
+          git commit -m 'fix(lsfg): harden source pacing coordinator dispatch'
+          git push origin HEAD:Adaptive-Frame-Generation

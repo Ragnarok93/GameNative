@@ -2,7 +2,7 @@
 
 Adaptive Frame Generation is owned by the native LSFG scheduler. GameNative supplies configuration, user intent, and display context only.
 
-The GameNative FPS limiter is the single frame-rate authority for Adaptive Frame Generation. Its active cap is applied to the real/source pacing path and is also the Adaptive controller's final-output target. Adaptive cannot retain, infer, or restore a second independent output target; when the limiter is disabled, native configuration resolves Adaptive generation inactive until a positive limiter cap is available again. Fixed multiplication still derives its output cadence from the source cap and configured multiplier.
+The GameNative FPS limiter is the single frame-rate authority for Adaptive Frame Generation. Its active cap is applied to the real/source pacing path and is also the Adaptive controller's final-output target. Adaptive cannot retain, infer, or restore a second independent output target; when the limiter is disabled, Adaptive remains in a zero-generation state until a positive limiter cap is available again and does not fall back to fixed multiplication. Fixed multiplication still derives its output cadence from the source cap and configured multiplier.
 
 The native scheduler never intentionally delays real source frames to hit the Adaptive target. Its controller consumes game/source cadence measured outside the previous LSFG handoff/wait/generated-present cycle, and combines that cadence with measured AHB handoff, framegen dispatch/completion, and generated-present cost. Probe thresholds are expressed relative to the measured source budget rather than to a Samsung- or Adreno-specific millisecond constant.
 

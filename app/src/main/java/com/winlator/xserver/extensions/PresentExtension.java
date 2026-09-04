@@ -42,16 +42,16 @@ public class PresentExtension implements Extension {
     private byte firstEventId = 0;
     private byte firstErrorId = 0;
 
-    // Effective Target FPS for the back-pressure limiter. 0 means LSFG owns
-    // pacing and native readiness has been confirmed.
+    // X Present is not a source FPS limiter. GameNative owns the resolved source
+    // cap through its source-pacing path; this remains zero in all LSFG states.
     private volatile int frameRateLimit = 0;
     private volatile int localFrameRateLimit = 0;
     private volatile boolean lsfgPacingRequested = false;
 
     // Mailbox semantics for the pacing scheduler: when a new present supersedes a
     // still-pending pixmap on the same window, release the superseded one
-    // immediately instead of holding it to the schedule. This becomes active
-    // only after the native LSFG context has published readiness.
+    // immediately instead of holding it to the schedule. Native readiness may
+    // enable this optimization only through explicit coordinator transitions.
     private volatile boolean eagerIdleRelease = false;
 
     public void setEagerIdleRelease(boolean eager) {
@@ -90,11 +90,11 @@ public class PresentExtension implements Extension {
     }
 
     /**
-     * Record LSFG presentation ownership without becoming a second FPS limiter.
+     * Record LSFG presentation state without becoming a second FPS limiter.
      * GameNative already owns source pacing through ShmFramePacer (with the
      * renderer receiving only a frame-rate hint). X Present therefore remains
      * unpaced in both native and LSFG modes; fresh native LSFG readiness only
-     * controls eager idle release.
+     * controls eager idle release at explicit transition points.
      */
     public void transitionFramePacing(boolean lsfgOwnsPacing, int limit) {
         final boolean ownershipRequestChanged = this.lsfgPacingRequested != lsfgOwnsPacing;
@@ -389,10 +389,6 @@ wakeCpuPacer();
         final XServerRenderer xr = client.xServer.getRenderer();
         final VulkanRenderer vr = (xr instanceof VulkanRenderer) ? (VulkanRenderer) xr : null;
         final ASurfaceRenderer asr = (xr instanceof ASurfaceRenderer) ? (ASurfaceRenderer) xr : null;
-        refreshLsfgPacingState();
-        if (vr != null) {
-            vr.xServerView.transitionLsfgFramePacing(lsfgPacingRequested, localFrameRateLimit);
-        }
         final int targetFps = this.frameRateLimit;
 
         long ust = System.nanoTime() / 1000;

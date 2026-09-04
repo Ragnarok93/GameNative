@@ -2,11 +2,11 @@
 
 Adaptive Frame Generation is owned by the native LSFG scheduler. GameNative supplies configuration, user intent, and display context only.
 
-The normal FPS limiter and LSFG output target are separate values. The normal limiter may constrain real/source presentation paths. `lsfgAdaptiveOutputTarget` describes the desired final presented rate. Adaptive mode treats it as an objective; fixed multiplication uses it only as the output cadence. If no target has been saved, GameNative resolves the active display refresh rate when LSFG starts.
+The GameNative FPS limiter is the single frame-rate authority for Adaptive Frame Generation. Its active cap is applied to the real/source pacing path and is also the Adaptive controller's final-output target. Adaptive cannot retain, infer, or restore a second independent output target; when the limiter is disabled, native configuration resolves Adaptive generation inactive until a positive limiter cap is available again. Fixed multiplication still derives its output cadence from the source cap and configured multiplier.
 
-The native scheduler never intentionally delays real source frames to hit the target. Its controller consumes game/source cadence measured outside the previous LSFG handoff/wait/generated-present cycle, and combines that cadence with measured AHB handoff, framegen dispatch/completion, and generated-present cost. Probe thresholds are expressed relative to the measured source budget rather than to a Samsung- or Adreno-specific millisecond constant.
+The native scheduler never intentionally delays real source frames to hit the Adaptive target. Its controller consumes game/source cadence measured outside the previous LSFG handoff/wait/generated-present cycle, and combines that cadence with measured AHB handoff, framegen dispatch/completion, and generated-present cost. Probe thresholds are expressed relative to the measured source budget rather than to a Samsung- or Adreno-specific millisecond constant.
 
-When generation is useful, the native output pacer places each generated frame and the following source frame on one drift-corrected monotonic timeline. This prevents mailbox/compositor replacement of a back-to-back present burst. When Adaptive decides that zero generated frames are required, this is an adaptive-zero state rather than user-facing Off: the current FG-capable swapchain remains valid and the source frame is presented directly.
+When generation is useful, the native output pacer places each generated frame and the following source frame on one drift-corrected monotonic timeline. When Adaptive decides that zero generated frames are required, this is an adaptive-zero state rather than user-facing Off: the current FG-capable swapchain remains valid and the source frame is presented directly.
 
 ## Off and WSI transitions
 
@@ -20,6 +20,10 @@ The layer records the game's original `minImageCount` and present mode separatel
 
 Native telemetry reports final output, source, and generated FPS separately. The HUD may display final output FPS, but GameNative power, cluster, CPU, GPU, and bus tuning consume source FPS. Generated events therefore cannot masquerade as extra game throughput or trigger a false downclock.
 
+## Coordinator ownership
+
+GameNative permanently owns source pacing. `SourceFramePacingCoordinator` coalesces identical cap writes for the same live renderer, re-applies the current cap once when the renderer instance changes, and invalidates its cache at session teardown. Both source pacing sinks receive the same resolved limiter value: `XServerView.setFrameRateLimit()` for the renderer/platform hint and `ShmFramePacer.setFrameRateLimit()` for the actual source limiter. LSFG callbacks do not replace this ownership path.
+
 ## Validation contract
 
-Physical acceptance requires separate logs from Xclipse 940 and A6xx. Each run must prove non-zero successful generated presents when the target requires generation, stable source cadence and stage-cost metrics while AFG is active, and a clean sustained-Off interval after an on→off transition. CI/static contracts establish code-path correctness but do not substitute for either device run.
+Physical acceptance requires separate logs from Xclipse 940 and A6xx. Each run must prove non-zero successful generated presents when the limiter target requires generation, stable source cadence and stage-cost metrics while AFG is active, and a clean sustained-Off interval after an on→off transition. CI/static contracts establish code-path correctness but do not substitute for either device run.

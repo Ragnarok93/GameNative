@@ -8,8 +8,6 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 
-import app.gamenative.utils.LsfgRuntimeGate;
-
 import com.winlator.renderer.ASurfaceRenderer;
 import com.winlator.renderer.VulkanRenderer;
 import com.winlator.renderer.XServerRenderer;
@@ -26,7 +24,6 @@ public class XServerView extends SurfaceView implements SurfaceHolder.Callback, 
     private final ExecutorService eventExecutor = Executors.newSingleThreadExecutor();
     private volatile int frameRateLimit = 0;
     private volatile int localFrameRateLimit = 0;
-    private volatile boolean lsfgPacingRequested = false;
 
     public XServerView(Context context, XServer xServer, String selectedRenderer) {
         super(context);
@@ -92,25 +89,18 @@ public class XServerView extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     public void setFrameRateLimit(int frameRateLimit) {
-        this.lsfgPacingRequested = false;
         this.localFrameRateLimit = Math.max(0, frameRateLimit);
         applyEffectiveFrameRateLimit(this.localFrameRateLimit);
     }
 
     /**
-     * Request pacing ownership for LSFG while retaining the ordinary renderer
-     * limiter until the native layer publishes a fresh ready swapchain context.
+     * Compatibility entry point for LSFG state transitions. GameNative always
+     * retains source-frame pacing authority, so LSFG readiness must never zero
+     * or otherwise replace the resolved local source limit.
      */
     public void transitionLsfgFramePacing(boolean lsfgRequested, int localLimit) {
-        this.lsfgPacingRequested = lsfgRequested;
         this.localFrameRateLimit = Math.max(0, localLimit);
-        refreshLsfgFramePacing();
-    }
-
-    /** Re-evaluate native readiness from a hot Present path. */
-    public void refreshLsfgFramePacing() {
-        final boolean nativeReady = lsfgPacingRequested && LsfgRuntimeGate.isGenerationReady();
-        applyEffectiveFrameRateLimit(nativeReady ? 0 : localFrameRateLimit);
+        applyEffectiveFrameRateLimit(this.localFrameRateLimit);
     }
 
     private synchronized void applyEffectiveFrameRateLimit(int limit) {
@@ -123,7 +113,6 @@ public class XServerView extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     public void requestRender() {
-        refreshLsfgFramePacing();
         if (renderer instanceof VulkanRenderer vkRenderer) {
             vkRenderer.queueSceneUpdate();
         }

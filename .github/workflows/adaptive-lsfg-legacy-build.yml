@@ -1,5 +1,7 @@
 name: Adaptive LSFG Legacy build
 
+# Push-triggered validation keeps the published LegacyDebug APK tied to the exact
+# GameNative commit and pinned lsfg-vk-android revision under test.
 on:
   push:
     branches:

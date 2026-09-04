@@ -21,6 +21,7 @@ import app.gamenative.powercontrol.profiles.PerformancePreset
 import com.winlator.container.Container
 import com.winlator.core.ProcessHelper
 import com.winlator.winhandler.WinHandler
+import com.winlator.xserver.ShmFramePacer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,6 +69,7 @@ object PowerManager {
     private lateinit var driver: PerformanceDriver
     private var autoTuner: PerformanceAutoTuner? = null
     private var clusterTuner: ClusterTuner? = null
+    private val sourceFramePacingCoordinator = SourceFramePacingCoordinator()
 
     /**
      * Flag to track if a game has been started.
@@ -284,6 +286,7 @@ object PowerManager {
         stopPowerControl()
         isGameStarted = false
         fpsCapApplier = null
+        sourceFramePacingCoordinator.invalidate()
         frameSampleStride = 1
         containerDir = null
         pinnedGameProcessName = null
@@ -471,13 +474,16 @@ object PowerManager {
     }
 
     /**
-     * Pushes an FPS cap into the live frame-limiting engines, the same ones the quick menu
-     * limiter drives. The container's stored limiter value is left untouched, so the user's
-     * setting stays the ceiling.
-     * @return true when the cap reached a running X server view
+     * Pushes an already-resolved source FPS cap into the only two GameNative source-pacing sinks:
+     * SHM pacing (the real limiter) and XServerView (the renderer/platform frame-rate hint).
+     * LSFG output-target callbacks never consume or replace this source-pacing path.
+     *
+     * Repeated writes of the same cap to the same live XServerView are coalesced so unrelated
+     * LSFG, thermal, or output-target state changes cannot reset source pacing phase. A replacement
+     * XServerView receives the current cap once even when the numeric limit is unchanged.
+     *
+     * @return true when a running X server view exists and owns the resolved cap
      */
-    /** Reroutes cap changes while frame generation owns pacing; declining
-     *  falls through to the engine path. Installed by XServerScreen. */
     @Volatile
     var fpsCapApplier: ((Int) -> Boolean)? = null
 
@@ -487,15 +493,20 @@ object PowerManager {
     var frameSampleStride: Int = 1
 
     internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
-        fpsCapApplier?.let { if (it(limitFps)) return true }
+        val resolvedLimit = limitFps.coerceAtLeast(0)
         val xServerView = PluviaApp.xServerView ?: return false
 
+        targetFps = resolvedLimit
+        val targetToken = System.identityHashCode(xServerView)
+        if (!sourceFramePacingCoordinator.shouldApply(resolvedLimit, targetToken)) {
+            return true
+        }
+
         val apply = Runnable {
-            // One source-pacing authority only: SHM pacing owns the real cap and
-            // the renderer receives its platform frame-rate hint. Present idle
-            // notification pacing is intentionally not used as a second limiter.
-            xServerView.setFrameRateLimit(limitFps)
-            com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)
+            // GameNative permanently owns source pacing. SHM is the real limiter;
+            // XServerView receives the same resolved source cap as a renderer hint.
+            xServerView.setFrameRateLimit(resolvedLimit)
+            ShmFramePacer.setFrameRateLimit(resolvedLimit)
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
             apply.run()
@@ -503,7 +514,6 @@ object PowerManager {
             Handler(Looper.getMainLooper()).post(apply)
         }
 
-        targetFps = limitFps
         return true
     }
 

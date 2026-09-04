@@ -22,7 +22,6 @@ import java.security.MessageDigest
 import java.util.Locale
 import timber.log.Timber
 import kotlin.jvm.JvmStatic
-import kotlin.math.roundToInt
 
 internal data class LsfgRuntimeStats(
     val outputFps: Float,
@@ -87,11 +86,9 @@ internal data class LsfgRuntimeStats(
 object LsfgVkManager {
     private const val TAG = "LsfgVkManager"
 
-    // Steam app ID for Lossless Scaling (used to auto-find the DLL)
     const val LOSSLESS_SCALING_APP_ID = 993090
     private const val LOSSLESS_DLL_NAME = "Lossless.dll"
 
-    // Paths inside the container's HOME (relative to rootDir)
     private const val CONFIG_RELATIVE_PATH = ".config/lsfg-vk/conf.toml"
     private const val LIB_RELATIVE_DIR = ".local/lib"
     private const val LAYER_RELATIVE_DIR = ".local/share/vulkan/implicit_layer.d"
@@ -100,12 +97,7 @@ object LsfgVkManager {
     private const val MANIFEST_FILENAME = "VkLayer_LS_frame_generation.json"
     private const val VERSION_FILENAME = ".lsfg_vk_runtime_version"
     private const val VULKAN_LAYER_NAME = "VK_LAYER_LS_frame_generation"
-
-    // Relative path from implicit_layer.d back to lib/
     private const val MANIFEST_LIBRARY_PATH = "../../../lib/$LIB_FILENAME"
-
-    // Process identifier retained for compatibility with older generated config.
-    private const val PROCESS_EXE_IDENTIFIER = "gamenative-lsfg"
 
     // Container extra keys
     const val EXTRA_ARMED = "lsfgEnabled"
@@ -114,16 +106,18 @@ object LsfgVkManager {
     const val EXTRA_PERFORMANCE_MODE = "lsfgPerformanceMode"
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
     const val EXTRA_ADAPTIVE_FRAMEGEN = "lsfgAdaptiveFrameGen"
+
+    // Retained so older UI/state call sites continue to deserialize safely. The
+    // runtime no longer consumes either value as an independent Adaptive target.
     const val EXTRA_ADAPTIVE_OUTPUT_TARGET = "lsfgAdaptiveOutputTarget"
     const val EXTRA_ADAPTIVE_OUTPUT_CEILING = "lsfgAdaptiveOutputCeiling"
+
     private const val EXTRA_SOURCE_FPS_LIMITER_ENABLED = "fpsLimiterEnabled"
     private const val EXTRA_SOURCE_FPS_LIMITER_TARGET = "fpsLimiterTarget"
 
-    // Written by the layer next to conf.toml; measured presented/base fps
     private const val STATS_RELATIVE_PATH = ".config/lsfg-vk/stats.txt"
     private const val STATS_FRESHNESS_MS = 2000L
 
-    // Environment variables consumed by the lsfg-vk layer / Vulkan loader.
     private const val ENV_DISABLE = "DISABLE_LSFG"
     private const val ENV_CONFIG = "LSFG_CONFIG"
     private const val ENV_PROCESS = "LSFG_PROCESS"
@@ -138,52 +132,35 @@ object LsfgVkManager {
     private const val ENV_ADRENOTOOLS_DRIVER_PATH = "ADRENOTOOLS_DRIVER_PATH"
     private const val ENV_LD_LIBRARY_PATH = "LD_LIBRARY_PATH"
 
-    // Current runtime package revision. Keep the exact native gitlink revision
-    // in the marker so loader-visible copies cannot masquerade as another build.
+    // Keep the exact native gitlink revision in the marker so loader-visible
+    // copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "v1.3.7-android-arm64-v8a-gamenative-adaptive-7910aa0f-r13"
+        "v1.3.7-android-arm64-v8a-gamenative-adaptive-917b04db-r14"
 
-    // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
     private const val ASSET_MANIFEST = "$ASSET_DIR/$MANIFEST_FILENAME"
 
-    // ---- Public API --------------------------------------------------------
-
-    /** Whether LSFG is supported for this container's runtime variant. */
     @JvmStatic
     fun isSupported(container: Container): Boolean =
         container.containerVariant.equals(Container.BIONIC, ignoreCase = true)
 
-    /**
-     * Whether the LSFG layer is armed/resident for this container.
-     *
-     * This deliberately does not require multiplier >= 2. A selected multiplier
-     * of 0 means frame generation is currently off, but the layer must remain
-     * resident so a Quick Menu config hot-reload can enable it without restart.
-     */
     @JvmStatic
     fun isArmed(container: Container): Boolean =
-        isSupported(container) &&
-            layerRequested(container) &&
-            containerDllPath(container) != null
+        isSupported(container) && layerRequested(container) && containerDllPath(container) != null
 
-    /** Whether Lossless Scaling is installed (Lossless.dll exists in Steam dir). */
     @JvmStatic
     fun isDllAvailable(): Boolean = findSteamDll() != null
 
-    /** Whether the user owns Lossless Scaling in their Steam library. */
     @JvmStatic
     fun ownsLosslessScaling(): Boolean =
         SteamService.getAppInfoOf(LOSSLESS_SCALING_APP_ID) != null
 
-    /** Get the DLL path inside the container, or null if the copy doesn't exist. */
     @JvmStatic
     fun containerDllPath(container: Container): String? {
         val dllFile = File(container.rootDir, "$DLL_RELATIVE_DIR/$LOSSLESS_DLL_NAME")
         return dllFile.absolutePath.takeIf { dllFile.isFile }
     }
 
-    /** Get the multiplier (0=Off, 2-4, default 2). */
     fun multiplier(container: Container): Int {
         val raw = container.getExtra(EXTRA_MULTIPLIER, "2").toIntOrNull() ?: 2
         return if (raw == 0) 0 else raw.coerceIn(2, 4)
@@ -195,74 +172,57 @@ object LsfgVkManager {
     private fun frameGenerationActive(container: Container): Boolean =
         isArmed(container) && multiplier(container) >= 2
 
-    /** Get the flow scale (0.25-1.0, default 0.80). */
     fun flowScale(container: Container): Float =
         container.getExtra(EXTRA_FLOW_SCALE, "0.80").toFloatOrNull()?.coerceIn(0.25f, 1.0f) ?: 0.80f
 
-    /** Get whether performance mode is enabled (default true). */
     fun performanceMode(container: Container): Boolean =
         parseBool(container.getExtra(EXTRA_PERFORMANCE_MODE, "true"))
 
-    /** Whether LSFG should vary its generated frame count to meet the output target. */
     fun adaptiveFrameGen(container: Container): Boolean =
         parseBool(container.getExtra(EXTRA_ADAPTIVE_FRAMEGEN, "false"))
 
-    /**
-     * Independent final-output objective for Adaptive FrameGen. This value is
-     * deliberately not derived from GameNative's real/source FPS limiter.
-     * Zero means that no output target has been resolved yet.
-     */
-    fun adaptiveOutputTarget(container: Container): Int =
-        container.getExtra(EXTRA_ADAPTIVE_OUTPUT_TARGET, "0")
-            ?.toIntOrNull()
+    /** Saved GameNative limiter target, regardless of whether the limiter is enabled. */
+    private fun savedFpsLimiterTarget(container: Container): Int =
+        container.getExtra(EXTRA_SOURCE_FPS_LIMITER_TARGET, "0")
+            .toIntOrNull()
             ?.coerceAtLeast(0)
             ?: 0
 
-    /** Thermal/power ceiling for the final displayed-frame target. Zero means unconstrained. */
+    /**
+     * Compatibility accessor for older LSFG UI call sites. Adaptive no longer
+     * owns a second target; this mirrors the GameNative FPS limiter setting.
+     */
+    fun adaptiveOutputTarget(container: Container): Int = savedFpsLimiterTarget(container)
+
+    /** Legacy value retained for migration/diagnostics only; it does not cap Adaptive. */
     fun adaptiveOutputCeiling(container: Container): Int =
         container.getExtra(EXTRA_ADAPTIVE_OUTPUT_CEILING, "0")
-            ?.toIntOrNull()
+            .toIntOrNull()
             ?.coerceAtLeast(0)
             ?: 0
 
-    fun resolvedAdaptiveOutputTarget(container: Container): Int {
-        val target = adaptiveOutputTarget(container)
-        val ceiling = adaptiveOutputCeiling(container)
-        return when {
-            target <= 0 -> ceiling
-            ceiling <= 0 -> target
-            else -> minOf(target, ceiling)
-        }
-    }
+    /** Active Adaptive objective. Zero means the GameNative limiter is disabled. */
+    fun resolvedAdaptiveOutputTarget(container: Container): Int = sourceFpsLimit(container)
 
-    /** Persist an explicit Adaptive FrameGen output target. */
+    /**
+     * Compatibility setter for the former LSFG output-target control. It now
+     * updates the same persisted target used by the GameNative FPS limiter.
+     */
     fun setAdaptiveOutputTarget(container: Container, targetFps: Int): Int {
         val sanitized = targetFps.coerceAtLeast(0)
-        container.putExtra(EXTRA_ADAPTIVE_OUTPUT_TARGET, sanitized.toString())
+        container.putExtra(EXTRA_SOURCE_FPS_LIMITER_TARGET, sanitized.toString())
         container.saveData()
         return sanitized
     }
 
-    /**
-     * Compatibility alias retained for existing call sites. It now refers only
-     * to Adaptive FrameGen's independent output target, never the source limiter.
-     */
-    fun fpsLimit(container: Container): Int = adaptiveOutputTarget(container)
+    fun fpsLimit(container: Container): Int = resolvedAdaptiveOutputTarget(container)
 
-    /** Real/source Vulkan present ceiling, independent from Adaptive output FPS. */
+    /** GameNative's authoritative real/source Vulkan present ceiling. */
     fun sourceFpsLimit(container: Container): Int {
         if (!parseBool(container.getExtra(EXTRA_SOURCE_FPS_LIMITER_ENABLED, "false"))) return 0
-        return container.getExtra(EXTRA_SOURCE_FPS_LIMITER_TARGET, "0")
-            .toIntOrNull()
-            ?.coerceAtLeast(0)
-            ?: 0
+        return savedFpsLimiterTarget(container)
     }
 
-    /**
-     * Swapchain present mode while frame generation runs ("mailbox" or
-     * "fifo"). Mailbox is the default: the layer already paces vsync-locked,
-     * and mesa's FIFO queue underneath it breaks the display cadence.
-     */
     fun presentMode(container: Container): String =
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
@@ -276,14 +236,8 @@ object LsfgVkManager {
 
     /**
      * Publish the display's vsync timestamp and period to vsync.txt next to
-     * conf.toml, once a second, so the layer can phase-lock its frame limiter
-     * to the display instead of free-running against it. Choreographer frame
-     * timestamps are CLOCK_MONOTONIC, the clock the layer paces with.
-     *
-     * The same clock resolves a missing LSFG output-cadence target from the
-     * active display refresh. Fixed and Adaptive generation both need that
-     * cadence so mailbox cannot replace intermediary frames before scanout.
-     * The migration is one-way: source-limiter changes never overwrite it.
+     * conf.toml once a second. Display refresh is timing information only: it
+     * must never invent or overwrite Adaptive's limiter-pegged FPS target.
      */
     @JvmStatic
     fun startVsyncClock(context: Context, container: Container) {
@@ -301,23 +255,12 @@ object LsfgVkManager {
                             ?.defaultDisplay?.refreshRate
                     }.getOrNull()?.takeIf { it > 1f } ?: 60f
                     val periodNs = (1_000_000_000.0 / refreshRate).toLong()
-                    val resolveOutputTarget =
-                        multiplier(container) >= 2 && adaptiveOutputTarget(container) <= 0
                     vsyncWriteExecutor.execute {
                         runCatching {
                             file.parentFile?.mkdirs()
                             file.writeText("vsync_ns=$frameTimeNanos\nperiod_ns=$periodNs\n")
-
-                            if (resolveOutputTarget && adaptiveOutputTarget(container) <= 0) {
-                                val outputTarget = refreshRate.roundToInt().coerceAtLeast(5)
-                                setAdaptiveOutputTarget(container, outputTarget)
-                                Timber.tag(TAG).i(
-                                    "LSFG output target initialized from display refresh: %d fps",
-                                    outputTarget,
-                                )
-                            }
                         }.onFailure {
-                            Timber.tag(TAG).w(it, "Failed to publish LSFG vsync/Adaptive target state")
+                            Timber.tag(TAG).w(it, "Failed to publish LSFG vsync state")
                         }
                     }
                 }
@@ -333,41 +276,23 @@ object LsfgVkManager {
         vsyncClockHandler = null
     }
 
-    /**
-     * Read the fps the layer actually presented, measured on-device.
-     * Returns null when the stats file is missing or stale (layer not running),
-     * in which case callers should fall back to their own estimate.
-     */
     @JvmStatic
     @Volatile private var cachedRuntimeStats: LsfgRuntimeStats? = null
     @Volatile private var lastStatsReadMs: Long = 0L
 
-    /** Served from a cache refreshed off the main thread; callers poll ~1/s. */
-    fun readMeasuredFps(container: Container): Float? {
-        return readRuntimeStats(container)?.outputFps
-    }
+    fun readMeasuredFps(container: Container): Float? = readRuntimeStats(container)?.outputFps
 
-    /** Source/game FPS for power-control feedback; generated output must not downclock the game. */
-    fun readMeasuredSourceFps(container: Container): Float? {
-        return readRuntimeStats(container)?.sourceFps
-    }
+    fun readMeasuredSourceFps(container: Container): Float? = readRuntimeStats(container)?.sourceFps
 
-    /** Measured generated frames per real/source frame for the latest native interval. */
     fun readMeasuredGeneratedPerSource(container: Container): Float? =
         readRuntimeStats(container)?.generatedPerSource
 
-    /**
-     * Integer stride for the X-window timestamp ring. Source FPS itself comes
-     * from native telemetry; this stride only prevents generated sub-frame
-     * timestamps from corrupting p50/p95/slow-frame calculations.
-     */
     fun readMeasuredFrameSampleStride(container: Container): Int? {
         val ratio = readRuntimeStats(container)?.generatedPerSource ?: return null
         if (!ratio.isFinite() || ratio < 0f) return null
         return kotlin.math.ceil(1.0 + ratio.toDouble()).toInt().coerceIn(1, 4)
     }
 
-    /** Approximate LSFG compute pressure (0..100) from real generation work and flow scale. */
     fun readMeasuredFrameGenLoadPercent(container: Container): Float? {
         val ratio = readRuntimeStats(container)?.generatedPerSource ?: return null
         if (!ratio.isFinite() || ratio < 0f) return null
@@ -396,15 +321,6 @@ object LsfgVkManager {
         return cachedRuntimeStats
     }
 
-    /**
-     * Install the layer runtime + DLL into the container's filesystem.
-     * Called during container startup in BionicProgramLauncherComponent.
-     *
-     * Installs:
-     * - liblsfg-vk-layer.so → ~/.local/lib/
-     * - VkLayer_LS_frame_generation.json → ~/.local/share/vulkan/implicit_layer.d/
-     * - Lossless.dll → ~/.local/share/lsfg-vk/  (copied from Steam install dir)
-     */
     @JvmStatic
     fun ensureRuntimeInstalled(context: Context, container: Container): Boolean {
         if (!isSupported(container)) return false
@@ -465,8 +381,6 @@ object LsfgVkManager {
             Timber.tag(TAG).d("Runtime %s already installed in %s", RUNTIME_VERSION, rootDir)
         }
 
-        // Runtime installation must not delete or mutate unrelated containers.
-        // Legacy cleanup is intentionally left to the normal container-management UI.
         val dllFile = File(dllDir, LOSSLESS_DLL_NAME)
         val steamDll = findSteamDll()
         if (steamDll != null) {
@@ -500,8 +414,8 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val savedMultiplier = multiplier(container)
             val frameGenActive = frameGenerationActive(container) && processExecutable != null
-            val outputTarget = resolvedAdaptiveOutputTarget(container)
-            val adaptiveEffective = frameGenActive && adaptiveFrameGen(container) && outputTarget > 0
+            val limiterTarget = sourceFpsLimit(container)
+            val adaptiveEffective = frameGenActive && adaptiveFrameGen(container) && limiterTarget > 0
             val configFile = File(container.rootDir, CONFIG_RELATIVE_PATH)
             val configText = buildConfigToml(
                 dllPath = dllPath,
@@ -509,15 +423,13 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = savedMultiplier,
                 flowScale = flowScale(container),
-                // Preserve backend selection while disabled. Enable/disable is
-                // a pass-through switch, not a request to mutate the context.
                 performanceMode = performanceMode(container),
                 adaptiveFrameGen = adaptiveEffective,
-                fpsLimit = outputTarget,
+                fpsLimit = limiterTarget,
                 presentMode = presentMode(container),
             ).replace(
                 "source_fps_limit = 0",
-                "source_fps_limit = ${sourceFpsLimit(container)}",
+                "source_fps_limit = $limiterTarget",
             )
             writeConfigAtomic(configFile, configText)
         } catch (t: Throwable) {
@@ -526,10 +438,6 @@ object LsfgVkManager {
         }
     }
 
-    /**
-     * Apply LSFG-related environment variables to the launch environment.
-     * Called during container startup in BionicProgramLauncherComponent.
-     */
     @JvmStatic
     fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean {
         envVars.remove(ENV_DISABLE)
@@ -571,36 +479,23 @@ object LsfgVkManager {
 
         logLaunchPreflight(container, envVars)
 
-        // A DEBUG-only direct Android-linker probe deliberately runs before the
-        // guest Vulkan loader. It is diagnostic, not a support gate: failures are
-        // logged and launch continues. If this fails with the same unresolved
-        // symbol as the Vulkan loader, the fault is in Android namespace/dependency
-        // resolution; if it succeeds while Vulkan later fails, the guest Vulkan
-        // loader path is the differentiator.
         if (BuildConfig.DEBUG) probeAndroidLinker(container)
 
-        val outputTarget = resolvedAdaptiveOutputTarget(container)
+        val limiterTarget = sourceFpsLimit(container)
         Timber.tag(TAG).i(
-            "LSFG layer armed: dll=%s, target=%s, selectedMultiplier=%d, framegen=%s, adaptive=%s, outputTarget=%d, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
+            "LSFG layer armed: dll=%s, target=%s, selectedMultiplier=%d, framegen=%s, adaptive=%s, limiterTarget=%d, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
             dllPath,
             processExecutable,
             multiplier(container),
             if (frameGenerationActive(container)) "on" else "off",
-            if (adaptiveFrameGen(container) && outputTarget > 0) "on" else "off",
-            outputTarget,
+            if (adaptiveFrameGen(container) && limiterTarget > 0) "on" else "off",
+            limiterTarget,
             flowScale(container),
             if (performanceMode(container)) "on" else "off",
         )
         return true
     }
 
-    /**
-     * Bionic launches with a loader HOME that may differ from the per-game
-     * container root used by GameNative. Vulkan searches HOME implicit layers
-     * before our explicit path and duplicate layer names are resolved by the
-     * first manifest, so a stale base-HOME copy can shadow the verified runtime.
-     * Keep the loader-visible copy byte-identical to the per-game source.
-     */
     private fun synchronizeLoaderVisibleRuntime(container: Container, envVars: EnvVars): File? {
         val loaderHomePath = envVars[ENV_HOME]?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val loaderHome = File(loaderHomePath)
@@ -756,8 +651,6 @@ object LsfgVkManager {
         }
     }
 
-    // ---- DLL discovery -----------------------------------------------------
-
     private fun findSteamDll(): File? = findSteamDllDirect()
 
     private fun findSteamDllDirect(): File? {
@@ -792,8 +685,6 @@ object LsfgVkManager {
         return null
     }
 
-    // ---- Helpers -----------------------------------------------------------
-
     private fun filesHaveSameContents(leftFile: File, rightFile: File): Boolean {
         if (!leftFile.isFile || !rightFile.isFile || leftFile.length() != rightFile.length()) {
             return false
@@ -820,8 +711,7 @@ object LsfgVkManager {
         return digest.digest()
     }
 
-    private fun configFile(container: Container): File =
-        File(container.rootDir, CONFIG_RELATIVE_PATH)
+    private fun configFile(container: Container): File = File(container.rootDir, CONFIG_RELATIVE_PATH)
 
     internal fun targetExecutable(container: Container): String? =
         container.executablePath
@@ -834,38 +724,37 @@ object LsfgVkManager {
 
     private val configWriteLock = Any()
 
-private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(configWriteLock) {
-    val parent = file.parentFile ?: return@synchronized false
-    val target = file.toPath()
-    var temp: java.nio.file.Path? = null
-    try {
-        parent.mkdirs()
-        if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
-      !Files.isSymbolicLink(target) &&
-      runCatching { file.readText() }.getOrNull() == text
-        ) {
-      return@synchronized true
-        }
-
-        temp = Files.createTempFile(parent.toPath(), ".${file.name}.", ".tmp")
-        temp.toFile().writeText(text)
-        FileUtils.chmod(temp.toFile(), 0b110100100)
+    private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(configWriteLock) {
+        val parent = file.parentFile ?: return@synchronized false
+        val target = file.toPath()
+        var temp: java.nio.file.Path? = null
         try {
-      Files.move(temp, target, ATOMIC_MOVE, REPLACE_EXISTING)
-        } catch (_: AtomicMoveNotSupportedException) {
-      Files.move(temp, target, REPLACE_EXISTING)
+            parent.mkdirs()
+            if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
+                !Files.isSymbolicLink(target) &&
+                runCatching { file.readText() }.getOrNull() == text
+            ) {
+                return@synchronized true
+            }
+
+            temp = Files.createTempFile(parent.toPath(), ".${file.name}.", ".tmp")
+            temp.toFile().writeText(text)
+            FileUtils.chmod(temp.toFile(), 0b110100100)
+            try {
+                Files.move(temp, target, ATOMIC_MOVE, REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temp, target, REPLACE_EXISTING)
+            }
+            temp = null
+            FileUtils.chmod(file, 0b110100100)
+            Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(target)
+        } catch (t: Throwable) {
+            Timber.tag(TAG).w(t, "Failed to atomically publish LSFG conf.toml")
+            false
+        } finally {
+            temp?.let { runCatching { Files.deleteIfExists(it) } }
         }
-        temp = null
-        FileUtils.chmod(file, 0b110100100)
-        Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
-      !Files.isSymbolicLink(target)
-    } catch (t: Throwable) {
-        Timber.tag(TAG).w(t, "Failed to atomically publish LSFG conf.toml")
-        false
-    } finally {
-        temp?.let { runCatching { Files.deleteIfExists(it) } }
     }
-}
 
     private fun buildConfigToml(
         dllPath: String?,
@@ -887,9 +776,6 @@ private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(
 
         if (!dllPath.isNullOrBlank() && !processExecutable.isNullOrBlank()) {
             val adaptiveEffective = enabled && adaptiveFrameGen && fpsLimit > 0
-            // The selected multiplier is Adaptive's maximum probe ceiling too.
-            // Raising it to 4 behind a 2x UI selection overcommits swapchain
-            // headroom and makes hot Adaptive toggles recreate the game swapchain.
             val effectiveMultiplier = multiplier.coerceIn(2, 4)
             val processNames = listOf(processExecutable, processExecutable.take(15)).distinct()
             processNames.forEach { processName ->
@@ -926,14 +812,10 @@ private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(
     private fun parseBool(value: String?): Boolean =
         value.equals("true", ignoreCase = true) || value == "1"
 
-    // ---- Runtime hot-reload -----------------------------------------------
-
     /**
-     * Update conf.toml while the container is running. The layer observes the
-     * timestamp change and applies safe runtime fields without invalidating the
-     * game's swapchain. Context-bound fields take effect at natural creation.
-     * [fpsLimitOverride] is an Adaptive output-target override only; it is never
-     * sourced from or written back to GameNative's real/source FPS limiter.
+     * Update conf.toml while the container is running. Adaptive has no independent
+     * runtime target: both legacy override parameters collapse to the same source
+     * limiter value, with sourceFpsLimitOverride taking precedence.
      */
     @JvmStatic
     @Synchronized
@@ -960,12 +842,11 @@ private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(
             val processExecutable = targetExecutable(container)
             val frameGenActive = enabled && multiplier >= 2 &&
                 dllPath != null && processExecutable != null
-            val effectiveOutputTarget =
-                (fpsLimitOverride ?: adaptiveOutputTarget(container)).coerceAtLeast(0)
-            val effectiveSourceFpsLimit =
-                (sourceFpsLimitOverride ?: sourceFpsLimit(container)).coerceAtLeast(0)
+            val effectiveLimiterTarget =
+                (sourceFpsLimitOverride ?: fpsLimitOverride ?: sourceFpsLimit(container))
+                    .coerceAtLeast(0)
             val adaptiveEffective =
-                frameGenActive && adaptiveFrameGen && effectiveOutputTarget > 0
+                frameGenActive && adaptiveFrameGen && effectiveLimiterTarget > 0
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,
@@ -974,23 +855,23 @@ private fun writeConfigAtomic(file: File, text: String): Boolean = synchronized(
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
                 performanceMode = performanceMode,
                 adaptiveFrameGen = adaptiveEffective,
-                fpsLimit = effectiveOutputTarget,
+                fpsLimit = effectiveLimiterTarget,
                 presentMode = presentMode(container),
             ).replace(
                 "source_fps_limit = 0",
-                "source_fps_limit = $effectiveSourceFpsLimit",
+                "source_fps_limit = $effectiveLimiterTarget",
             )
 
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
                 Timber.tag(TAG).i(
-                    "Hot-reloaded conf.toml: enabled=%s, multiplier=%d, adaptive=%s, flowScale=%.2f, perf=%s, outputTarget=%d",
+                    "Hot-reloaded conf.toml: enabled=%s, multiplier=%d, adaptive=%s, flowScale=%.2f, perf=%s, limiterTarget=%d",
                     frameGenActive,
                     multiplier,
                     adaptiveEffective,
                     flowScale,
                     performanceMode,
-                    effectiveOutputTarget,
+                    effectiveLimiterTarget,
                 )
             }
             ok

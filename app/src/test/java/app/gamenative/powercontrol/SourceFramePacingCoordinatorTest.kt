@@ -110,7 +110,10 @@ class SourceFramePacingCoordinatorTest {
         } else {
             Paths.get("app/src/main/java")
         }
-        val source = Files.readString(root.resolve("app/gamenative/powercontrol/PowerManager.kt"))
+        val source = String(
+            Files.readAllBytes(root.resolve("app/gamenative/powercontrol/PowerManager.kt")),
+            Charsets.UTF_8,
+        )
 
         assertFalse(source.contains("fpsCapApplier?.let { if (it(limitFps)) return true }"))
         assertTrue(source.contains("sourceFramePacingCoordinator.shouldApply"))

@@ -59,7 +59,7 @@ class SourceFramePacingCoordinatorTest {
 
         coordinator = SourceFramePacingCoordinator(
             isApplyThread = { onApplyThread },
-            postToApplyThread = { queued.addLast(it) },
+            postToApplyThread = { queued.add(it) },
             applyPendingOnApplyThread = { forwarded.add(it) },
         )
 
@@ -83,7 +83,7 @@ class SourceFramePacingCoordinatorTest {
 
         coordinator = SourceFramePacingCoordinator(
             isApplyThread = { onApplyThread },
-            postToApplyThread = { queued.addLast(it) },
+            postToApplyThread = { queued.add(it) },
             applyPendingOnApplyThread = { limit ->
                 onApplyThread = true
                 if (coordinator.shouldApply(limit, targetToken = 1)) {

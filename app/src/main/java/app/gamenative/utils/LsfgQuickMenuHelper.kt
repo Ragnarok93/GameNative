@@ -9,13 +9,15 @@ import timber.log.Timber
 object LsfgQuickMenuHelper {
     private const val TAG = "LsfgAdaptive"
     private const val SETTINGS_APPLY_DEBOUNCE_MS = 400L
+    private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
+    private const val FPS_LIMITER_TARGET_EXTRA = "fpsLimiterTarget"
 
     data class Settings(
         val multiplier: Int,
         val flowScale: Float,
         val performanceMode: Boolean,
         val adaptiveFrameGen: Boolean,
-        /** Zero means preserve/auto-resolve the existing Adaptive output target. */
+        /** Compatibility mirror of GameNative's FPS limiter target. */
         val adaptiveOutputTargetFps: Int = 0,
     )
 
@@ -29,7 +31,10 @@ object LsfgQuickMenuHelper {
         flowScale = LsfgVkManager.flowScale(container),
         performanceMode = LsfgVkManager.performanceMode(container),
         adaptiveFrameGen = LsfgVkManager.adaptiveFrameGen(container),
-        adaptiveOutputTargetFps = LsfgVkManager.adaptiveOutputTarget(container),
+        adaptiveOutputTargetFps = container.getExtra(FPS_LIMITER_TARGET_EXTRA, "60")
+            .toIntOrNull()
+            ?.coerceAtLeast(5)
+            ?: 60,
     )
 
     private val applyExecutor =
@@ -40,14 +45,13 @@ object LsfgQuickMenuHelper {
     fun presentMode(container: Container): String = LsfgVkManager.presentMode(container)
 
     /**
-     * GameNative's Adaptive FPS Cap controls the real/source limiter. LSFG's
-     * Adaptive output objective is independent, so a PowerManager cap probe must
-     * never rewrite native fps_limit. XServerScreen still applies the source-side
-     * pacing pieces that are safe while LSFG owns Vulkan presentation.
+     * The GameNative FPS limiter is the single frame-rate authority. The same
+     * resolved cap is sent to source pacing and to Adaptive's target field so a
+     * stale legacy LSFG output-target value cannot diverge from the limiter.
      */
     fun applyLiveFpsCap(container: Container, capFps: Int) {
         applyExecutor.execute {
-            val sourceLimit = capFps.coerceAtLeast(0)
+            val resolvedLimit = capFps.coerceAtLeast(0)
             val settings = readSettings(container)
             val applied = LsfgVkManager.updateConfigAtRuntime(
                 container = container,
@@ -56,29 +60,34 @@ object LsfgQuickMenuHelper {
                 flowScale = settings.flowScale,
                 performanceMode = settings.performanceMode,
                 adaptiveFrameGen = settings.adaptiveFrameGen,
-                fpsLimitOverride = null,
-                sourceFpsLimitOverride = sourceLimit,
+                fpsLimitOverride = resolvedLimit,
+                sourceFpsLimitOverride = resolvedLimit,
             )
             Timber.tag(TAG).d(
-                "Source FPS cap hot-reload: source=%d output=%d applied=%s",
-                sourceLimit,
-                LsfgVkManager.adaptiveOutputTarget(container),
+                "FPS limiter hot-reload: source=%d adaptiveTarget=%d applied=%s",
+                resolvedLimit,
+                resolvedLimit,
                 applied,
             )
         }
     }
 
     /**
-     * Persist an explicit Adaptive FrameGen output objective immediately, but
-     * publish only the settled value to the Vulkan layer. Holding a Quick Menu
-     * adjustment button can otherwise rewrite conf.toml every repeat and force
-     * the native watcher to process a burst of intermediate controller targets.
+     * Compatibility path for the older LSFG Adaptive-target control. It now
+     * updates GameNative's FPS limiter target, rather than a second LSFG target.
      */
     fun applyAdaptiveOutputTarget(container: Container, targetFps: Int) {
         applyExecutor.execute {
             val sanitized = targetFps.coerceAtLeast(5)
-            LsfgVkManager.setAdaptiveOutputTarget(container, sanitized)
-            scheduleSettledRuntimePublish(container)
+            container.putExtra(FPS_LIMITER_TARGET_EXTRA, sanitized.toString())
+            container.saveData()
+
+            val limiterEnabled = container.getExtra(FPS_LIMITER_ENABLED_EXTRA, "false")
+                .let { it.equals("true", ignoreCase = true) || it == "1" }
+            publishSettledRuntimeSnapshot(
+                container,
+                if (limiterEnabled) sanitized else 0,
+            )
         }
     }
 
@@ -100,7 +109,6 @@ object LsfgQuickMenuHelper {
     fun applySettings(container: Container, settings: Settings) {
         val multiplier = sanitizeMultiplier(settings.multiplier)
         val flowScale = sanitizeFlowScale(settings.flowScale)
-        val explicitOutputTarget = settings.adaptiveOutputTargetFps.takeIf { it > 0 }
 
         // Persist immediately so the UI remains authoritative, but do not publish
         // every intermediate button-repeat value to the Vulkan layer. Multiplier,
@@ -110,9 +118,6 @@ object LsfgQuickMenuHelper {
         container.putExtra(LsfgVkManager.EXTRA_FLOW_SCALE, String.format(Locale.US, "%.2f", flowScale))
         container.putExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, settings.performanceMode.toString())
         container.putExtra(LsfgVkManager.EXTRA_ADAPTIVE_FRAMEGEN, settings.adaptiveFrameGen.toString())
-        explicitOutputTarget?.let {
-            container.putExtra(LsfgVkManager.EXTRA_ADAPTIVE_OUTPUT_TARGET, it.toString())
-        }
         container.saveData()
 
         scheduleSettledRuntimePublish(container)
@@ -120,31 +125,36 @@ object LsfgQuickMenuHelper {
 
     private fun scheduleSettledRuntimePublish(container: Container) {
         settingsApplyDebouncer.submit {
-            // Re-read after the settle window so every adjustment path publishes
-            // one coherent newest snapshot rather than a stale captured value.
-            val latest = readSettings(container)
-            val latestMultiplier = sanitizeMultiplier(latest.multiplier)
-            val effectiveEnabled = latestMultiplier >= 2
-            val effectiveMultiplier = if (effectiveEnabled) latestMultiplier else 2
-            val latestOutputTarget = latest.adaptiveOutputTargetFps.takeIf { it > 0 }
-
-            val applied = LsfgVkManager.updateConfigAtRuntime(
-                container = container,
-                enabled = effectiveEnabled,
-                multiplier = effectiveMultiplier,
-                flowScale = sanitizeFlowScale(latest.flowScale),
-                performanceMode = latest.performanceMode,
-                adaptiveFrameGen = latest.adaptiveFrameGen,
-                fpsLimitOverride = latestOutputTarget,
-            )
-            Timber.tag(TAG).d(
-                "Settled LSFG settings hot-reload: enabled=%s multiplier=%d adaptive=%s output=%s applied=%s",
-                effectiveEnabled,
-                effectiveMultiplier,
-                latest.adaptiveFrameGen,
-                latestOutputTarget?.toString() ?: "preserve",
-                applied,
-            )
+            publishSettledRuntimeSnapshot(container, LsfgVkManager.sourceFpsLimit(container))
         }
+    }
+
+    private fun publishSettledRuntimeSnapshot(container: Container, resolvedLimit: Int) {
+        // Re-read after the settle window so every adjustment path publishes one
+        // coherent newest snapshot rather than a stale captured LSFG setting.
+        val latest = readSettings(container)
+        val latestMultiplier = sanitizeMultiplier(latest.multiplier)
+        val effectiveEnabled = latestMultiplier >= 2
+        val effectiveMultiplier = if (effectiveEnabled) latestMultiplier else 2
+        val limiterTarget = resolvedLimit.coerceAtLeast(0)
+
+        val applied = LsfgVkManager.updateConfigAtRuntime(
+            container = container,
+            enabled = effectiveEnabled,
+            multiplier = effectiveMultiplier,
+            flowScale = sanitizeFlowScale(latest.flowScale),
+            performanceMode = latest.performanceMode,
+            adaptiveFrameGen = latest.adaptiveFrameGen,
+            fpsLimitOverride = limiterTarget,
+            sourceFpsLimitOverride = limiterTarget,
+        )
+        Timber.tag(TAG).d(
+            "Settled LSFG settings hot-reload: enabled=%s multiplier=%d adaptive=%s limiterTarget=%d applied=%s",
+            effectiveEnabled,
+            effectiveMultiplier,
+            latest.adaptiveFrameGen,
+            limiterTarget,
+            applied,
+        )
     }
 }

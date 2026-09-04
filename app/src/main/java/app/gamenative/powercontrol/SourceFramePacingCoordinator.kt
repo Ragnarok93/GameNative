@@ -24,6 +24,10 @@ internal class SourceFramePacingCoordinator(
         Unit
     },
     private val applyPendingOnApplyThread: (Int) -> Unit = { limit ->
+        // The optional session callback mirrors the same effective limiter into
+        // LSFG's hot-reload config. It does not replace GameNative's source-pacing
+        // ownership; PowerManager immediately re-enters below and writes both sinks.
+        PowerManager.fpsCapApplier?.invoke(limit)
         PowerManager.applyFpsCapToEngines(limit)
     },
 ) {

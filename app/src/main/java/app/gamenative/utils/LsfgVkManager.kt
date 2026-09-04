@@ -64,25 +64,7 @@ internal data class LsfgRuntimeStats(
     }
 }
 
-/**
- * Manages the lsfg-vk Vulkan implicit layer for frame generation.
- *
- * The layer works by intercepting vkQueuePresentKHR inside the container's
- * Vulkan driver and running Lossless Scaling frame generation (LSFG_3_1 /
- * LSFG_3_1P) transparently. No overlay, no MediaProjection — it hooks the
- * real swapchain presentation path.
- *
- * Flow:
- * 1. At launch time: install the layer .so + manifest into the active
- *    container HOME where the Vulkan loader discovers implicit layers.
- * 2. Copy Lossless.dll from the Steam install dir (app 993090) into the
- *    container's ~/.local/share/lsfg-vk/ directory.
- * 3. Write conf.toml with the DLL path, multiplier, flow scale, and
- *    performance mode. Set env vars so the layer finds its config.
- * 4. At runtime: the Vulkan loader loads the layer, which hooks
- *    vkCreateSwapchainKHR / vkQueuePresentKHR and runs framegen on the
- *    game's actual swapchain images.
- */
+/** Manages the lsfg-vk Vulkan implicit layer for frame generation. */
 object LsfgVkManager {
     private const val TAG = "LsfgVkManager"
 
@@ -99,7 +81,6 @@ object LsfgVkManager {
     private const val VULKAN_LAYER_NAME = "VK_LAYER_LS_frame_generation"
     private const val MANIFEST_LIBRARY_PATH = "../../../lib/$LIB_FILENAME"
 
-    // Container extra keys
     const val EXTRA_ARMED = "lsfgEnabled"
     const val EXTRA_MULTIPLIER = "lsfgMultiplier"
     const val EXTRA_FLOW_SCALE = "lsfgFlowScale"
@@ -107,8 +88,7 @@ object LsfgVkManager {
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
     const val EXTRA_ADAPTIVE_FRAMEGEN = "lsfgAdaptiveFrameGen"
 
-    // Retained so older UI/state call sites continue to deserialize safely. The
-    // runtime no longer consumes either value as an independent Adaptive target.
+    // Legacy keys retained only so old persisted state/call sites deserialize safely.
     const val EXTRA_ADAPTIVE_OUTPUT_TARGET = "lsfgAdaptiveOutputTarget"
     const val EXTRA_ADAPTIVE_OUTPUT_CEILING = "lsfgAdaptiveOutputCeiling"
 
@@ -132,10 +112,8 @@ object LsfgVkManager {
     private const val ENV_ADRENOTOOLS_DRIVER_PATH = "ADRENOTOOLS_DRIVER_PATH"
     private const val ENV_LD_LIBRARY_PATH = "LD_LIBRARY_PATH"
 
-    // Keep the exact native gitlink revision in the marker so loader-visible
-    // copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "v1.3.7-android-arm64-v8a-gamenative-adaptive-917b04db-r14"
+        "v1.3.7-android-arm64-v8a-gamenative-adaptive-603933b2-r15"
 
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
     private const val ASSET_MANIFEST = "$ASSET_DIR/$MANIFEST_FILENAME"
@@ -181,20 +159,16 @@ object LsfgVkManager {
     fun adaptiveFrameGen(container: Container): Boolean =
         parseBool(container.getExtra(EXTRA_ADAPTIVE_FRAMEGEN, "false"))
 
-    /** Saved GameNative limiter target, regardless of whether the limiter is enabled. */
     private fun savedFpsLimiterTarget(container: Container): Int =
         container.getExtra(EXTRA_SOURCE_FPS_LIMITER_TARGET, "0")
             .toIntOrNull()
             ?.coerceAtLeast(0)
             ?: 0
 
-    /**
-     * Compatibility accessor for older LSFG UI call sites. Adaptive no longer
-     * owns a second target; this mirrors the GameNative FPS limiter setting.
-     */
+    /** Compatibility mirror of the GameNative FPS limiter setting. */
     fun adaptiveOutputTarget(container: Container): Int = savedFpsLimiterTarget(container)
 
-    /** Legacy value retained for migration/diagnostics only; it does not cap Adaptive. */
+    /** Legacy diagnostic value only; it no longer constrains Adaptive. */
     fun adaptiveOutputCeiling(container: Container): Int =
         container.getExtra(EXTRA_ADAPTIVE_OUTPUT_CEILING, "0")
             .toIntOrNull()
@@ -204,10 +178,7 @@ object LsfgVkManager {
     /** Active Adaptive objective. Zero means the GameNative limiter is disabled. */
     fun resolvedAdaptiveOutputTarget(container: Container): Int = sourceFpsLimit(container)
 
-    /**
-     * Compatibility setter for the former LSFG output-target control. It now
-     * updates the same persisted target used by the GameNative FPS limiter.
-     */
+    /** Compatibility setter for the former LSFG target control; now writes the limiter target. */
     fun setAdaptiveOutputTarget(container: Container, targetFps: Int): Int {
         val sanitized = targetFps.coerceAtLeast(0)
         container.putExtra(EXTRA_SOURCE_FPS_LIMITER_TARGET, sanitized.toString())
@@ -227,18 +198,12 @@ object LsfgVkManager {
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
 
-    // ---- Vsync clock ------------------------------------------------------
-
     private var vsyncClockHandler: Handler? = null
     private val vsyncWriteExecutor by lazy {
         Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-vsync").apply { isDaemon = true } }
     }
 
-    /**
-     * Publish the display's vsync timestamp and period to vsync.txt next to
-     * conf.toml once a second. Display refresh is timing information only: it
-     * must never invent or overwrite Adaptive's limiter-pegged FPS target.
-     */
+    /** Display refresh is timing information only; it never invents an Adaptive target. */
     @JvmStatic
     fun startVsyncClock(context: Context, container: Container) {
         stopVsyncClock()
@@ -415,7 +380,9 @@ object LsfgVkManager {
             val savedMultiplier = multiplier(container)
             val frameGenActive = frameGenerationActive(container) && processExecutable != null
             val limiterTarget = sourceFpsLimit(container)
-            val adaptiveEffective = frameGenActive && adaptiveFrameGen(container) && limiterTarget > 0
+            // Preserve Adaptive mode at a zero limiter target so the native scheduler
+            // returns zero generation instead of falling through to fixed multiplier.
+            val adaptiveEffective = frameGenActive && adaptiveFrameGen(container)
             val configFile = File(container.rootDir, CONFIG_RELATIVE_PATH)
             val configText = buildConfigToml(
                 dllPath = dllPath,
@@ -478,7 +445,6 @@ object LsfgVkManager {
         appendUniqueEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME)
 
         logLaunchPreflight(container, envVars)
-
         if (BuildConfig.DEBUG) probeAndroidLinker(container)
 
         val limiterTarget = sourceFpsLimit(container)
@@ -488,7 +454,7 @@ object LsfgVkManager {
             processExecutable,
             multiplier(container),
             if (frameGenerationActive(container)) "on" else "off",
-            if (adaptiveFrameGen(container) && limiterTarget > 0) "on" else "off",
+            if (adaptiveFrameGen(container)) "on" else "off",
             limiterTarget,
             flowScale(container),
             if (performanceMode(container)) "on" else "off",
@@ -689,7 +655,6 @@ object LsfgVkManager {
         if (!leftFile.isFile || !rightFile.isFile || leftFile.length() != rightFile.length()) {
             return false
         }
-
         return try {
             digestFile(leftFile).contentEquals(digestFile(rightFile))
         } catch (t: Throwable) {
@@ -775,7 +740,7 @@ object LsfgVkManager {
         appendLine()
 
         if (!dllPath.isNullOrBlank() && !processExecutable.isNullOrBlank()) {
-            val adaptiveEffective = enabled && adaptiveFrameGen && fpsLimit > 0
+            val adaptiveEffective = enabled && adaptiveFrameGen
             val effectiveMultiplier = multiplier.coerceIn(2, 4)
             val processNames = listOf(processExecutable, processExecutable.take(15)).distinct()
             processNames.forEach { processName ->
@@ -812,11 +777,7 @@ object LsfgVkManager {
     private fun parseBool(value: String?): Boolean =
         value.equals("true", ignoreCase = true) || value == "1"
 
-    /**
-     * Update conf.toml while the container is running. Adaptive has no independent
-     * runtime target: both legacy override parameters collapse to the same source
-     * limiter value, with sourceFpsLimitOverride taking precedence.
-     */
+    /** Both legacy override parameters collapse to the same authoritative limiter target. */
     @JvmStatic
     @Synchronized
     fun updateConfigAtRuntime(
@@ -845,8 +806,7 @@ object LsfgVkManager {
             val effectiveLimiterTarget =
                 (sourceFpsLimitOverride ?: fpsLimitOverride ?: sourceFpsLimit(container))
                     .coerceAtLeast(0)
-            val adaptiveEffective =
-                frameGenActive && adaptiveFrameGen && effectiveLimiterTarget > 0
+            val adaptiveEffective = frameGenActive && adaptiveFrameGen
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,

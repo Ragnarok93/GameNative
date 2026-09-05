@@ -1,0 +1,98 @@
+name: LegacyDebug GameDb capture
+
+on:
+  push:
+    branches:
+      - diag/legacydebug-gamedb-capture-20260904
+    paths-ignore:
+      - 'diagnostics/**'
+
+permissions:
+  contents: write
+
+jobs:
+  capture-gamedb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify production base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "591410951330545c7f543edabc1a9a58e41d52bd"
+          test "$(git -C app/src/main/cpp/lsfg-vk-android rev-parse HEAD)" = "881986c0721fac07bc600ad929fa9d065be0b19d"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Inject credentials
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        shell: bash
+        run: |
+          printf 'POSTHOG_API_KEY=%s\n' "${POSTHOG_API_KEY:-dummy}" > local.properties
+          printf 'POSTHOG_HOST=%s\n' "${POSTHOG_HOST:-https://us.i.posthog.com}" >> local.properties
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Compile LegacyDebug and persist provenance
+        shell: bash
+        run: |
+          set +e
+          ./gradlew :app:compileLegacyDebugKotlin --no-daemon > /tmp/legacydebug-compile.log 2>&1
+          compile_status=$?
+          set -e
+
+          mkdir -p diagnostics
+          target='app/src/main/java/app/gamenative/data/gamedb/GameDbManager.kt'
+          {
+            echo "compile_status=$compile_status"
+            echo '=== COMPILE ERROR EXCERPTS ==='
+            grep -n -E '(^e:|GameDbManager|Unresolved reference|FAILURE:|What went wrong)' /tmp/legacydebug-compile.log | tail -n 400 || true
+            echo '=== PRE/POST TRACKED GAMEDB MATCHES ==='
+            git ls-tree -r --name-only HEAD | grep -i 'gamedb' || true
+            echo '=== WORKTREE GAMEDB PATHS ==='
+            find app -type f \( -iname '*GameDb*' -o -ipath '*gamedb*' \) -print 2>/dev/null || true
+            if [ -f "$target" ]; then
+              echo '=== GAMEDBMANAGER CONTENT ==='
+              nl -ba "$target" | sed -n '1,320p'
+              echo '=== GAMEDBMANAGER GIT STATUS ==='
+              git status --short -- "$target" || true
+              echo '=== GAMEDBMANAGER LS-FILES ==='
+              git ls-files --stage "$target" || true
+              echo '=== GAMEDBMANAGER CHECK-IGNORE ==='
+              git check-ignore -v "$target" || true
+              echo '=== GAMEDBMANAGER STAT ==='
+              stat "$target" || true
+            fi
+            echo '=== BUILD-GENERATED GAMEDB PATHS ==='
+            find app/build -type f \( -iname '*GameDb*' -o -ipath '*gamedb*' \) -print 2>/dev/null || true
+            echo '=== HELPER / GAMEDB / MATERIALIZATION REFERENCES ==='
+            grep -R -n -E '\bhelper\b|class GameDbManager|object GameDbManager|GameDbManager|GameDbHelper|getSteamGameInfo|getPublisherSummary|getSteamPlaytime|gamedb|generated.*source|sourceSets' app build.gradle* settings.gradle* gradle 2>/dev/null | head -n 4000 || true
+            echo '=== WHOLE GIT STATUS ==='
+            git status --short || true
+          } > diagnostics/legacydebug-gamedb.txt 2>&1
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f diagnostics/legacydebug-gamedb.txt
+          git commit -m 'ci: capture GameDb diagnostic [skip ci]'
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+          exit "$compile_status"

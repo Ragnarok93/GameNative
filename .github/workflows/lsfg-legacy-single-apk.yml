@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - fix/lsfg-transition-stability-20260831
+      - fix/lsfg-prerelease-debug
 
 jobs:
   legacy-debug:

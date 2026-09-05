@@ -45,12 +45,33 @@ jobs:
       - name: Assemble LegacyDebug only
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 
-      - name: Prepare single LegacyDebug APK
+      - name: Prepare and verify single LegacyDebug APK
         run: |
           set -euo pipefail
           mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
           test ${#apks[@]} -eq 1
           cp "${apks[0]}" gamenative-legacy-debug.apk
+
+          expected_native=app/src/main/jniLibs/arm64-v8a/liblsfg-vk-layer.so
+          packaged_native=/tmp/liblsfg-vk-layer.packaged.so
+          test -s "$expected_native"
+          unzip -p gamenative-legacy-debug.apk lib/arm64-v8a/liblsfg-vk-layer.so > "$packaged_native"
+          test -s "$packaged_native"
+
+          expected_hash="$(sha256sum "$expected_native" | awk '{print $1}')"
+          packaged_hash="$(sha256sum "$packaged_native" | awk '{print $1}')"
+          expected_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
+          expected_prefix="${expected_commit:0:8}"
+
+          echo "LSFG gitlink:          $expected_commit"
+          echo "LSFG prepared SHA256: $expected_hash"
+          echo "LSFG packaged SHA256: $packaged_hash"
+          test "$expected_hash" = "$packaged_hash"
+
+          marker_hits="$(for dex in $(zipinfo -1 gamenative-legacy-debug.apk | grep -E '^classes[0-9]*\.dex$'); do unzip -p gamenative-legacy-debug.apk "$dex" | strings; done | grep -F -c "$expected_prefix" || true)"
+          echo "LSFG runtime marker hits for $expected_prefix: $marker_hits"
+          test "$marker_hits" -ge 1
+
           sha256sum gamenative-legacy-debug.apk
           ls -lh gamenative-legacy-debug.apk
 

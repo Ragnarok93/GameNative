@@ -1,4 +1,4 @@
-name: Temporary LSFG runtime/off-path correction
+name: Temporary LSFG upstream off-path restoration
 on:
   push:
     branches: [fix/lsfg-prerelease-debug]
@@ -13,44 +13,90 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
-      - name: Apply corrections
+      - name: Restore upstream Present path and harden native provenance
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+
+          present=app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java
+          screen=app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt
+          legacy=.github/workflows/lsfg-legacy-single-apk.yml
+
+          # OFF must be behaviorally identical to original GameNative. Pull the
+          # exact current upstream Present implementation instead of maintaining
+          # another forked scheduler in the LSFG branch.
+          curl -fsSL \
+            https://raw.githubusercontent.com/utkarshdalal/GameNative/master/app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java \
+            -o "$present"
+
+          # Preserve our LSFG controls/settings, but restore the upstream pacing
+          # ownership function verbatim so no LSFG transition state machine is
+          # consulted from the Present hot path.
+          curl -fsSL \
+            https://raw.githubusercontent.com/utkarshdalal/GameNative/master/app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt \
+            -o /tmp/XServerScreen.upstream.kt
+          python3 - "$screen" /tmp/XServerScreen.upstream.kt <<'PY'
           from pathlib import Path
-          p=Path('app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java')
-          s=p.read_text()
-          old=s
-          s=s.replace('        refreshLsfgPacingState();\n', '')
-          lines=s.splitlines(True)
-          out=[]
-          for line in lines:
-              if 'transitionLsfgFramePacing(' in line and line.startswith('        '):
-                  continue
-              out.append(line)
-          s=''.join(out)
-          block='''        // Re-arming the normal Present limiter after LSFG relinquishes pacing must\n        // not inject a full-frame bubble. Let the first idle through immediately,\n        // then seed the normal cadence for subsequent presents.\n        if (wt.nextIdleNs == 0) {\n            wt.nextIdleNs = now + frameNs;\n            sendIdleNotify(window, pixmap, serial, idleFence);\n            return;\n        }\n'''
-          s=s.replace(block, '')
-          if s==old:
-              raise SystemExit('PresentExtension patch made no changes')
-          p.write_text(s)
+          import sys
+
+          target = Path(sys.argv[1])
+          upstream = Path(sys.argv[2])
+          start = '    fun applyFpsLimiterToEngines(limit: Int) {'
+          end = '    fun effectiveFpsLimit(): Int ='
+
+          def block(text):
+              a = text.index(start)
+              b = text.index(end, a)
+              return a, b, text[a:b]
+
+          dst = target.read_text()
+          src = upstream.read_text()
+          a, b, _ = block(dst)
+          _, _, replacement = block(src)
+          target.write_text(dst[:a] + replacement + dst[b:])
           PY
 
+          # Keep the native runtime pinned to the validated telemetry/off-path
+          # revision. Never silently fall back to a checked-in stale binary.
           git -C app/src/main/cpp/lsfg-vk-android fetch origin optimize/a6xx-transport
           git -C app/src/main/cpp/lsfg-vk-android checkout d3abf6f7829e17d2e21a7f74f75812b68c72ba0b
 
-          echo '--- Present hot-path checks ---'
-          if grep -n 'refreshLsfgPacingState();\|transitionLsfgFramePacing(\|nextIdleNs == 0' app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java; then
-            echo 'unexpected LSFG/pacing hook remains in Present hot path'
+          # Make LegacyDebug prove that the library inside the final APK is byte-
+          # identical to the freshly built GameNative-pinned library. This catches
+          # Gradle/jniLibs/prebuilt overwrite regressions before an artifact ships.
+          python3 - "$legacy" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          anchor = '''          cp "${apks[0]}" gamenative-legacy-debug.apk\n          sha256sum gamenative-legacy-debug.apk\n          ls -lh gamenative-legacy-debug.apk\n'''
+          replacement = '''          cp "${apks[0]}" gamenative-legacy-debug.apk\n\n          expected_native=app/src/main/jniLibs/arm64-v8a/liblsfg-vk-layer.so\n          packaged_native=/tmp/liblsfg-vk-layer.packaged.so\n          test -s "$expected_native"\n          unzip -p gamenative-legacy-debug.apk lib/arm64-v8a/liblsfg-vk-layer.so > "$packaged_native"\n          test -s "$packaged_native"\n          expected_hash="$(sha256sum "$expected_native" | awk '{print $1}')"\n          packaged_hash="$(sha256sum "$packaged_native" | awk '{print $1}')"\n          expected_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"\n          expected_prefix="${expected_commit:0:8}"\n          echo "LSFG gitlink:          $expected_commit"\n          echo "LSFG prepared SHA256: $expected_hash"\n          echo "LSFG packaged SHA256: $packaged_hash"\n          test "$expected_hash" = "$packaged_hash"\n\n          # The runtime marker is compiled into classes.dex. Require the exact\n          # native SHA prefix to be present in the assembled APK as well.\n          marker_hits="$(for dex in $(zipinfo -1 gamenative-legacy-debug.apk | grep -E '^classes[0-9]*\\.dex$'); do unzip -p gamenative-legacy-debug.apk "$dex" | strings; done | grep -F -c "$expected_prefix" || true)"\n          echo "LSFG runtime marker hits for $expected_prefix: $marker_hits"\n          test "$marker_hits" -ge 1\n\n          sha256sum gamenative-legacy-debug.apk\n          ls -lh gamenative-legacy-debug.apk\n'''
+          if 'LSFG packaged SHA256:' not in s:
+              if anchor not in s:
+                  raise SystemExit('Legacy APK packaging anchor not found')
+              s = s.replace(anchor, replacement, 1)
+          p.write_text(s)
+          PY
+
+          echo '--- upstream equivalence checks ---'
+          cmp "$present" <(curl -fsSL https://raw.githubusercontent.com/utkarshdalal/GameNative/master/app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java)
+          if grep -n 'transitionLsfgFramePacing\|transitionFramePacing\|refreshLsfgPacingState' "$present"; then
+            echo 'ERROR: LSFG transition machinery remains in PresentExtension' >&2
             exit 1
           fi
-          echo '--- submodule ---'
+          grep -Fq 'xServerView?.setFrameRateLimit(if (isLsfgAvailable && lsfgMultiplier >= 2) 0 else limit)' "$screen"
+          grep -Fq '?.setFrameRateLimit(if (isLsfgAvailable && lsfgMultiplier >= 2) 0 else limit)' "$screen"
+          if grep -A20 -F 'fun applyFpsLimiterToEngines(limit: Int)' "$screen" | grep -q 'transitionLsfgFramePacing\|transitionFramePacing'; then
+            echo 'ERROR: LSFG transition call remains in limiter ownership function' >&2
+            exit 1
+          fi
           test "$(git -C app/src/main/cpp/lsfg-vk-android rev-parse HEAD)" = d3abf6f7829e17d2e21a7f74f75812b68c72ba0b
-          git submodule status app/src/main/cpp/lsfg-vk-android
+          grep -Fq 'LSFG packaged SHA256:' "$legacy"
+          git diff --check
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java app/src/main/cpp/lsfg-vk-android
-          git commit -m 'fix(lsfg): restore upstream off-path and pin corrected runtime'
+          git add "$present" "$screen" "$legacy" app/src/main/cpp/lsfg-vk-android
+          git commit -m 'fix(lsfg): make disabled presentation upstream-equivalent'
           git push origin HEAD:fix/lsfg-prerelease-debug

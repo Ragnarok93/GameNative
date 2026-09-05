@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - fix/lsfg-transition-stability-20260831
+      - ci/lsfg-pacing-legacydebug-20260904
 
 jobs:
   legacy-debug:

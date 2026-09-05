@@ -15,6 +15,15 @@ public interface XServerRendererView {
     void queueEvent(Runnable r);
     void requestRender();
     void setFrameRateLimit(int limit);
+
+    /**
+     * Transfer frame-pacing ownership to LSFG when the renderer supports it.
+     * Non-LSFG renderers retain the ordinary local limiter.
+     */
+    default void transitionLsfgFramePacing(boolean lsfgRequested, int localLimit) {
+        setFrameRateLimit(Math.max(0, localLimit));
+    }
+
     void onResume();
     void onPause();
     XServer getxServer();

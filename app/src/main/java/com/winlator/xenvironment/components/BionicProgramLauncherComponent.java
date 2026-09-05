@@ -274,7 +274,6 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         envVars.put("WINE_NO_DUPLICATE_EXPLORER", "1");
         envVars.put("PREFIX", rootDir.getPath() + "/usr");
         envVars.put("WINE_DISABLE_FULLSCREEN_HACK", "1");
-        envVars.put("ENABLE_UTIL_LAYER", "1");
         envVars.put("GST_PLUGIN_FEATURE_RANK", "ximagesink:3000");
         envVars.put("ALSA_CONFIG_PATH", rootDir.getPath() + "/usr/share/alsa/alsa.conf" + ":" + rootDir.getPath() + "/usr/etc/alsa/conf.d/android_aserver.conf");
         envVars.put("ALSA_PLUGIN_DIR", rootDir.getPath() + "/usr/lib/alsa-lib");
@@ -332,6 +331,28 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         // Merge any additional environment variables from external sources
         if (this.envVars != null) {
             envVars.putAll(this.envVars);
+        }
+
+        // The utility Vulkan layer is optional. Only advertise it when its
+        // backing library is actually present; otherwise the Vulkan loader
+        // repeatedly probes a missing libutil_layer.so on process/swapchain setup.
+        File utilLayer = new File(imageFs.getLibDir(), "libutil_layer.so");
+        if (utilLayer.isFile()) {
+            envVars.put("ENABLE_UTIL_LAYER", "1");
+        } else {
+            envVars.remove("ENABLE_UTIL_LAYER");
+        }
+
+        // Vulkan loader diagnostics are intentionally opt-in. Some presets or
+        // inherited launch environments carry VK_LOADER_DEBUG forward, which
+        // produces heavy loader logging around LSFG swapchain transitions.
+        String loaderDebugOptIn = envVars.get("GAMENATIVE_VK_LOADER_DEBUG");
+        if ("1".equals(loaderDebugOptIn) || "true".equalsIgnoreCase(loaderDebugOptIn)) {
+            if (envVars.get("VK_LOADER_DEBUG").isEmpty()) {
+                envVars.put("VK_LOADER_DEBUG", "all");
+            }
+        } else {
+            envVars.remove("VK_LOADER_DEBUG");
         }
 
         if (BuildConfig.XR_BUILD) {

@@ -1,0 +1,58 @@
+name: Temporary LSFG off pacing patch
+
+on:
+  push:
+    branches: [fix/lsfg-prerelease-debug]
+    paths:
+      - scripts/tmp_lsfg_off_pacing_patch.py
+      - .github/workflows/tmp-lsfg-off-pacing.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/lsfg-prerelease-debug
+          fetch-depth: 0
+          submodules: false
+
+      - name: Record RED pacing contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q 'wt.nextIdleNs == 0' app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java; then
+            echo 'Expected pre-patch source not to contain the re-arm fast path'
+            exit 1
+          fi
+          echo 'RED confirmed'
+
+      - name: Apply pacing patch and pin LSFG runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/tmp_lsfg_off_pacing_patch.py
+          git update-index --add --cacheinfo 160000,d3abf6f7829e17d2e21a7f74f75812b68c72ba0b,lsfg-vk-android
+
+      - name: Record GREEN pacing contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'wt.nextIdleNs == 0' app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java
+          grep -q 'sendIdleNotify(window, pixmap, serial, idleFence);' app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java
+          test "$(git ls-files -s lsfg-vk-android | awk '{print $2}')" = "d3abf6f7829e17d2e21a7f74f75812b68c72ba0b"
+          git diff --check
+
+      - name: Commit source only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java lsfg-vk-android
+          git commit -m 'fix(lsfg): restore native pacing cleanly after disable'
+          git push origin HEAD:fix/lsfg-prerelease-debug

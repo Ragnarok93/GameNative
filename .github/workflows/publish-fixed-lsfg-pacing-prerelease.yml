@@ -1,0 +1,55 @@
+name: Publish fixed LSFG pacing prerelease
+
+on:
+  push:
+    branches:
+      - ci/publish-lsfg-pacing-prerelease-20260904
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download validated LegacyDebug artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          gh run download 33936071729 \
+            --repo Ragnarok93/GameNative \
+            --name gamenative-legacy-debug \
+            --dir artifact
+          apk="$(find artifact -type f -name 'gamenative-legacy-debug.apk' -print -quit)"
+          test -n "$apk"
+          sha256sum "$apk"
+          ls -lh "$apk"
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk="$(find artifact -type f -name 'gamenative-legacy-debug.apk' -print -quit)"
+          gh release create fixed-lsfg-pacing-test-20260904 "$apk" \
+            --repo Ragnarok93/GameNative \
+            --target 4c0cc2863c8cab6cee7585dd52aa9dafd11c106f \
+            --title "Fixed LSFG LegacyDebug test build" \
+            --notes "LegacyDebug validation build for the fixed-mode LSFG pacing handoff repair.
+
+          GameNative base: 591410951330545c7f543edabc1a9a58e41d52bd
+          Repair: 4c0cc2863c8cab6cee7585dd52aa9dafd11c106f
+          LSFG native pin: 881986c0721fac07bc600ad929fa9d065be0b19d
+          Validation workflow run: 33936071729" \
+            --prerelease
+
+      - name: Verify prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view fixed-lsfg-pacing-test-20260904 \
+            --repo Ragnarok93/GameNative \
+            --json tagName,isPrerelease,targetCommitish,assets,url

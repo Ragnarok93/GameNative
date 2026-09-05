@@ -94,6 +94,8 @@ object LsfgVkManager {
     private const val ENV_ADRENOTOOLS_DRIVER_NAME = "ADRENOTOOLS_DRIVER_NAME"
     private const val ENV_ADRENOTOOLS_DRIVER_PATH = "ADRENOTOOLS_DRIVER_PATH"
     private const val ENV_LD_LIBRARY_PATH = "LD_LIBRARY_PATH"
+    private const val ENV_NPU_ACCELERATION = "LSFG_NPU_ACCELERATION"
+    private const val ENV_QNN_RUNTIME_DIR = "LSFG_QNN_RUNTIME_DIR"
 
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
@@ -103,6 +105,9 @@ object LsfgVkManager {
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
     private const val ASSET_MANIFEST = "$ASSET_DIR/$MANIFEST_FILENAME"
+
+    @Volatile
+    private var appNativeLibraryDir: String? = null
 
     // ---- Public API --------------------------------------------------------
 
@@ -275,6 +280,10 @@ object LsfgVkManager {
     fun ensureRuntimeInstalled(context: Context, container: Container): Boolean {
         if (!isSupported(container)) return false
 
+        appNativeLibraryDir = context.applicationInfo.nativeLibraryDir
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && File(it).isDirectory }
+
         val rootDir = container.rootDir
         val localLibDir = File(rootDir, LIB_RELATIVE_DIR)
         val layerDir = File(rootDir, LAYER_RELATIVE_DIR)
@@ -394,6 +403,7 @@ object LsfgVkManager {
         envVars.remove(ENV_CONFIG)
         envVars.remove(ENV_PROCESS)
         envVars.remove(ENV_PROCESS_EXE)
+        envVars.remove(ENV_QNN_RUNTIME_DIR)
 
         if (!isSupported(container)) {
             disableLayerInContainer(container)
@@ -417,6 +427,24 @@ object LsfgVkManager {
         if (processExecutable == null) {
             Timber.tag(TAG).w("LSFG layer armed but target executable could not be resolved")
             return false
+        }
+
+        if (parseBool(envVars[ENV_NPU_ACCELERATION])) {
+            val runtimeDir = appNativeLibraryDir
+                ?.let(::File)
+                ?.takeIf { it.isDirectory }
+                ?.absolutePath
+            if (runtimeDir != null) {
+                envVars.put(ENV_QNN_RUNTIME_DIR, runtimeDir)
+                Timber.tag(TAG).i(
+                    "LSFG accelerator runtime dir enabled path=%s source=app-native-library-dir",
+                    runtimeDir,
+                )
+            } else {
+                Timber.tag(TAG).w(
+                    "LSFG accelerator eligibility enabled but app native library dir is unavailable; app-local QNN fallback disabled",
+                )
+            }
         }
 
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
@@ -559,6 +587,11 @@ object LsfgVkManager {
             envVars[ENV_LD_LIBRARY_PATH],
             envVars[ENV_ADRENOTOOLS_DRIVER_NAME],
             envVars[ENV_ADRENOTOOLS_DRIVER_PATH],
+        )
+        Timber.tag(TAG).i(
+            "LSFG preflight accelerator env LSFG_NPU_ACCELERATION=%s LSFG_QNN_RUNTIME_DIR=%s",
+            envVars[ENV_NPU_ACCELERATION],
+            envVars[ENV_QNN_RUNTIME_DIR],
         )
     }
 

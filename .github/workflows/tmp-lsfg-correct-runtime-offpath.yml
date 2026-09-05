@@ -22,9 +22,7 @@ jobs:
           p=Path('app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java')
           s=p.read_text()
           old=s
-          # Keep LSFG ownership APIs, but do not poll/transition them from every guest Present request.
           s=s.replace('        refreshLsfgPacingState();\n', '')
-          # Remove the per-present renderer ownership callback if present.
           lines=s.splitlines(True)
           out=[]
           for line in lines:
@@ -32,43 +30,27 @@ jobs:
                   continue
               out.append(line)
           s=''.join(out)
-          # Restore upstream Present scheduler semantics; remove the previous cold-start special case.
           block='''        // Re-arming the normal Present limiter after LSFG relinquishes pacing must\n        // not inject a full-frame bubble. Let the first idle through immediately,\n        // then seed the normal cadence for subsequent presents.\n        if (wt.nextIdleNs == 0) {\n            wt.nextIdleNs = now + frameNs;\n            sendIdleNotify(window, pixmap, serial, idleFence);\n            return;\n        }\n'''
           s=s.replace(block, '')
           if s==old:
               raise SystemExit('PresentExtension patch made no changes')
           p.write_text(s)
-
-          # Force runtime synchronization to distinguish this corrected native revision from 6f41122f-r9.
-          replacements=0
-          for q in Path('app').rglob('*'):
-              if not q.is_file():
-                  continue
-              try: txt=q.read_text()
-              except (UnicodeDecodeError, OSError): continue
-              if 'gamenative-presentsync-6f41122f-r9' in txt:
-                  q.write_text(txt.replace('gamenative-presentsync-6f41122f-r9','gamenative-presentsync-d3abf6f-r10'))
-                  replacements += 1
-          print('runtime marker replacements', replacements)
-          if replacements == 0:
-              # A marker may be assembled from constants; report matching locations rather than silently proceeding.
-              import subprocess
-              subprocess.run(['grep','-R','-n','6f41122f','app'], check=False)
-              raise SystemExit('old runtime marker not found')
           PY
 
           git -C app/src/main/cpp/lsfg-vk-android fetch origin optimize/a6xx-transport
           git -C app/src/main/cpp/lsfg-vk-android checkout d3abf6f7829e17d2e21a7f74f75812b68c72ba0b
 
           echo '--- Present hot-path checks ---'
-          grep -n 'refreshLsfgPacingState\|transitionLsfgFramePacing\|nextIdleNs == 0' app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java || true
-          echo '--- runtime markers ---'
-          grep -R -n 'gamenative-presentsync-' app --exclude='*.so' --exclude='*.apk' | head -20 || true
+          if grep -n 'refreshLsfgPacingState();\|transitionLsfgFramePacing(\|nextIdleNs == 0' app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java; then
+            echo 'unexpected LSFG/pacing hook remains in Present hot path'
+            exit 1
+          fi
           echo '--- submodule ---'
+          test "$(git -C app/src/main/cpp/lsfg-vk-android rev-parse HEAD)" = d3abf6f7829e17d2e21a7f74f75812b68c72ba0b
           git submodule status app/src/main/cpp/lsfg-vk-android
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java app/src/main/cpp/lsfg-vk-android app
+          git add app/src/main/java/com/winlator/xserver/extensions/PresentExtension.java app/src/main/cpp/lsfg-vk-android
           git commit -m 'fix(lsfg): restore upstream off-path and pin corrected runtime'
           git push origin HEAD:fix/lsfg-prerelease-debug

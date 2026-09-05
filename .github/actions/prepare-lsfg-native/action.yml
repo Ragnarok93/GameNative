@@ -38,6 +38,8 @@ runs:
         # CI replaces only its native SHA token (and the matching assertion) after
         # resolving the gitlink, so every prepared APK identifies the exact native
         # revision it actually packages without a second manually maintained SHA.
+        # Keep the feature label flexible so provenance follows the gitlink rather
+        # than a branch-specific runtime marker name.
         python3 - "$runtime_manager" "$runtime_test" "$expected_prefix" <<'PY'
         import pathlib
         import re
@@ -48,7 +50,9 @@ runs:
         expected_prefix = sys.argv[3]
 
         manager_text = manager.read_text(encoding="utf-8")
-        manager_pattern = re.compile(r"(gamenative-presentsync-)[0-9a-f]{8}(-r[0-9]+)")
+        manager_pattern = re.compile(
+            r"(gamenative-[a-z0-9-]+-)[0-9a-f]{8}(-r[0-9]+)"
+        )
         manager_text, manager_count = manager_pattern.subn(
             rf"\g<1>{expected_prefix}\g<2>", manager_text, count=1
         )
@@ -72,9 +76,15 @@ runs:
         grep -Fq "$expected_prefix" "$runtime_test"
         git diff --check -- "$runtime_manager" "$runtime_test"
 
-        if [[ -f "$native_dir/tests/android_runtime_stability_test.py" ]]; then
-          python3 "$native_dir/tests/android_runtime_stability_test.py"
-        fi
+        python3 "$native_dir/tests/android_ahb_portability_test.py"
+        python3 "$native_dir/tests/android_wsi_loader_bridge_test.py"
+        python3 "$native_dir/tests/android_wsi_provenance_test.py"
+        python3 "$native_dir/tests/android_runtime_stability_test.py"
+        python3 "$native_dir/tests/android_capability_architecture_test.py"
+        python3 "$native_dir/tests/android_fixed_mode_failopen_test.py"
+        python3 "$native_dir/tests/android_fixed_mode_recreate_test.py"
+        python3 "$native_dir/tests/android_fixed_mode_readiness_timeout_test.py"
+        python3 "$native_dir/tests/android_fixed_mode_source_history_warmup_test.py"
 
         sudo apt-get update -qq
         sudo apt-get install -y cmake ninja-build file

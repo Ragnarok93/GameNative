@@ -14,8 +14,10 @@ public class ShmFramePacer {
 
     private static final int MAX_TRACKED_DRAWABLES = 128;
 
-    public static void setFrameRateLimit(int limit) {
-        frameRateLimit = Math.max(0, limit);
+    public static synchronized void setFrameRateLimit(int limit) {
+        final int nextLimit = Math.max(0, limit);
+        if (frameRateLimit == nextLimit) return;
+        frameRateLimit = nextLimit;
         if (frameRateLimit == 0) timings.clear();
     }
 

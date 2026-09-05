@@ -691,11 +691,10 @@ fun XServerScreen(
         // releases mix stale pixmaps under multiplied present traffic
         // (measured as constant multi-exposure ghosting on the X11/turnip
         // present path).
-        val lsfgActive = isLsfgAvailable && lsfgMultiplier >= 2
-        xServerView?.transitionLsfgFramePacing(lsfgActive, limit)
+        xServerView?.setFrameRateLimit(if (isLsfgAvailable && lsfgMultiplier >= 2) 0 else limit)
         xServerView?.getxServer()
             ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
-            ?.transitionFramePacing(lsfgActive, limit)
+            ?.setFrameRateLimit(if (isLsfgAvailable && lsfgMultiplier >= 2) 0 else limit)
         // Not disarmed with LSFG: the layer only multiplies Vulkan-swapchain
         // presents, so SHM-presenting games never pass through it and would
         // otherwise run uncapped whenever LSFG is armed.
@@ -703,7 +702,7 @@ fun XServerScreen(
         PowerManager.targetFps = limit
         // keeps frame stats in base units while generated frames tick the ring
         PowerManager.frameSampleStride =
-            if (lsfgActive) lsfgMultiplier else 1
+            if (isLsfgAvailable && lsfgMultiplier >= 2) lsfgMultiplier else 1
     }
 
     fun effectiveFpsLimit(): Int =

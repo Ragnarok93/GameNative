@@ -45,19 +45,19 @@ jobs:
       - name: Assemble LegacyDebug only
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 
-      - name: Prepare single LegacyDebug APK
+      - name: Prepare NPU Experimental LegacyDebug APK
         run: |
           set -euo pipefail
           mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
           test ${#apks[@]} -eq 1
-          cp "${apks[0]}" gamenative-legacy-debug.apk
-          sha256sum gamenative-legacy-debug.apk
-          ls -lh gamenative-legacy-debug.apk
+          cp "${apks[0]}" GameNative-NPU-Experimental-LegacyDebug.apk
+          sha256sum GameNative-NPU-Experimental-LegacyDebug.apk
+          ls -lh GameNative-NPU-Experimental-LegacyDebug.apk
 
-      - name: Upload single LegacyDebug APK
+      - name: Upload NPU Experimental LegacyDebug APK
         uses: actions/upload-artifact@v4
         with:
-          name: gamenative-legacy-debug
-          path: gamenative-legacy-debug.apk
+          name: gamenative-npu-experimental-legacy-debug
+          path: GameNative-NPU-Experimental-LegacyDebug.apk
           if-no-files-found: error
           compression-level: 0

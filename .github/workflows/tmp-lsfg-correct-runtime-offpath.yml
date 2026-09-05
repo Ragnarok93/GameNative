@@ -1,3 +1,4 @@
+# final source-only restoration trigger
 name: Temporary LSFG upstream off-path restoration
 on:
   push:

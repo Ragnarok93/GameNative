@@ -20,6 +20,8 @@ import app.gamenative.ui.component.settings.SettingsMultiListDropdown
 import app.gamenative.ui.theme.settingsTileColors
 import app.gamenative.ui.theme.settingsTileColorsAlt
 import app.gamenative.utils.LsfgVkManager
+import app.gamenative.utils.npuAccelerationEnabled
+import app.gamenative.utils.withNpuAccelerationEnabled
 import com.alorma.compose.settings.ui.SettingsGroup
 import com.alorma.compose.settings.ui.SettingsSwitch
 import com.winlator.contents.ContentProfile
@@ -543,6 +545,16 @@ private fun LsfgSection(state: ContainerConfigState) {
     val ownsApp = LsfgVkManager.ownsLosslessScaling()
 
     SettingsGroup {
+        SettingsSwitch(
+            colors = settingsTileColorsAlt(),
+            title = { Text(text = stringResource(R.string.lsfg_npu_acceleration)) },
+            subtitle = { Text(text = stringResource(R.string.lsfg_npu_acceleration_description)) },
+            state = config.npuAccelerationEnabled,
+            onCheckedChange = { enabled ->
+                state.config.value = config.withNpuAccelerationEnabled(enabled)
+            },
+        )
+
         when {
             dllAvailable -> {
                 // State 1: DLL found — toggle works normally
@@ -593,4 +605,3 @@ private fun LsfgSection(state: ContainerConfigState) {
         }
     }
 }
-

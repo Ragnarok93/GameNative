@@ -247,6 +247,14 @@ public class PresentExtension implements Extension {
         long now = System.nanoTime();
 
         WindowTiming wt = windowTimings.computeIfAbsent(window.id, k -> new WindowTiming());
+        // Re-arming the normal Present limiter after LSFG relinquishes pacing must
+        // not inject a full-frame bubble. Let the first idle through immediately,
+        // then seed the normal cadence for subsequent presents.
+        if (wt.nextIdleNs == 0) {
+            wt.nextIdleNs = now + frameNs;
+            sendIdleNotify(window, pixmap, serial, idleFence);
+            return;
+        }
         if (wt.nextIdleNs <= now - frameNs) {
             wt.nextIdleNs = now + frameNs;
         } else {

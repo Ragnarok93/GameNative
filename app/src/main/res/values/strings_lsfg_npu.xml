@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lsfg_npu_acceleration">NPU Acceleration</string>
+    <string name="lsfg_npu_acceleration_description">Allow compatible device AI acceleration to reduce LSFG GPU load.</string>
+</resources>

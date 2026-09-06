@@ -98,9 +98,7 @@ runs:
         export ANDROID_NDK_ROOT="${sdk_root}/ndk/${ANDROID_NDK_VERSION}"
         export ANDROID_NDK="$ANDROID_NDK_ROOT"
         readelf_bin="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-        strings_bin="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strings"
         test -x "$readelf_bin"
-        test -x "$strings_bin"
 
         (
           cd "$native_dir"
@@ -109,7 +107,7 @@ runs:
 
         built="$native_dir/build-android-arm64-v8a/dist/liblsfg-vk-arm64-v8a.so"
         test -s "$built"
-        if ! "$strings_bin" "$built" | grep -Fq "$expected_build_id"; then
+        if ! grep -aFq "$expected_build_id" "$built"; then
           echo "ERROR: built LSFG layer does not contain build identity ${expected_build_id}" >&2
           exit 1
         fi

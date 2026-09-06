@@ -24,6 +24,7 @@ runs:
         runtime_test=app/src/test/java/app/gamenative/utils/LsfgVkManagerTest.kt
         expected_commit="$(git rev-parse HEAD:${native_dir})"
         expected_prefix="${expected_commit:0:8}"
+        expected_build_id="${expected_commit:0:12}"
 
         git submodule sync -- "$native_dir"
         git submodule update --init --recursive -- "$native_dir"
@@ -62,7 +63,7 @@ runs:
 
         test_text = test.read_text(encoding="utf-8")
         test_pattern = re.compile(
-            r'(loaderVersion\.readText\(\)\.contains\(")[0-9a-f]{8}("\))'
+            r'(loaderVersion\.readText\(\)\.contains(")[0-9a-f]{8}("\))'
         )
         test_text, test_count = test_pattern.subn(
             rf"\g<1>{expected_prefix}\g<2>", test_text, count=1
@@ -97,7 +98,9 @@ runs:
         export ANDROID_NDK_ROOT="${sdk_root}/ndk/${ANDROID_NDK_VERSION}"
         export ANDROID_NDK="$ANDROID_NDK_ROOT"
         readelf_bin="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+        strings_bin="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strings"
         test -x "$readelf_bin"
+        test -x "$strings_bin"
 
         (
           cd "$native_dir"
@@ -106,6 +109,11 @@ runs:
 
         built="$native_dir/build-android-arm64-v8a/dist/liblsfg-vk-arm64-v8a.so"
         test -s "$built"
+        if ! "$strings_bin" "$built" | grep -Fq "$expected_build_id"; then
+          echo "ERROR: built LSFG layer does not contain build identity ${expected_build_id}" >&2
+          exit 1
+        fi
+        echo "Verified LSFG native build identity ${expected_build_id}"
         cp "$built" "$layer"
         test -s "$layer"
         file "$layer"

@@ -34,12 +34,6 @@ runs:
         fi
         echo "Building GameNative-pinned LSFG native revision ${actual_commit}"
 
-        # The checked-in Kotlin marker describes the checked-in jniLibs payload.
-        # CI replaces only its native SHA token (and the matching assertion) after
-        # resolving the gitlink, so every prepared APK identifies the exact native
-        # revision it actually packages without a second manually maintained SHA.
-        # Keep the feature label flexible so provenance follows the gitlink rather
-        # than a branch-specific runtime marker name.
         python3 - "$runtime_manager" "$runtime_test" "$expected_prefix" <<'PY'
         import pathlib
         import re
@@ -76,16 +70,16 @@ runs:
         grep -Fq "$expected_prefix" "$runtime_test"
         git diff --check -- "$runtime_manager" "$runtime_test"
 
-        # Keep packaging validation aligned with the contracts that exist in the
-        # pinned runtime. Obsolete fixed-mode test files were removed upstream;
-        # running stale filenames made otherwise valid prerelease builds fail.
+        # Mirror the validation set shipped by the pinned fixed-runtime branch.
         python3 "$native_dir/tests/android_ahb_portability_test.py"
         python3 "$native_dir/tests/android_wsi_loader_bridge_test.py"
         python3 "$native_dir/tests/android_wsi_provenance_test.py"
         python3 "$native_dir/tests/android_runtime_stability_test.py"
         python3 "$native_dir/tests/android_capability_architecture_test.py"
-        python3 "$native_dir/tests/android_lifecycle_regression_test.py"
-        python3 "$native_dir/tests/android_present_io_contract_test.py"
+        python3 "$native_dir/tests/android_fixed_mode_failopen_test.py"
+        python3 "$native_dir/tests/android_fixed_mode_recreate_test.py"
+        python3 "$native_dir/tests/android_fixed_mode_readiness_timeout_test.py"
+        python3 "$native_dir/tests/android_fixed_mode_source_history_warmup_test.py"
 
         sudo apt-get update -qq
         sudo apt-get install -y cmake ninja-build file

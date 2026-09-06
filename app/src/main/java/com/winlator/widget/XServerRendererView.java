@@ -15,6 +15,16 @@ public interface XServerRendererView {
     void queueEvent(Runnable r);
     void requestRender();
     void setFrameRateLimit(int limit);
+
+    /**
+     * Transfer frame-pacing ownership to LSFG when the implementation supports
+     * native LSFG readiness tracking. Renderer paths that cannot be driven by
+     * the Vulkan LSFG layer keep their ordinary local limiter.
+     */
+    default void transitionLsfgFramePacing(boolean lsfgRequested, int localLimit) {
+        setFrameRateLimit(localLimit);
+    }
+
     void onResume();
     void onPause();
     XServer getxServer();

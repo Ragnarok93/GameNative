@@ -10,6 +10,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.IBinder
 import android.util.Base64
+import app.gamenative.ui.data.Achievement
 import app.gamenative.ui.util.GameInviteNotificationManager
 import app.gamenative.ui.util.SnackbarManager
 import app.gamenative.service.callback.GameInviteCallback
@@ -168,6 +169,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 import app.gamenative.data.DownloadingAppInfo
@@ -1725,21 +1727,17 @@ class SteamService : Service(), IChallengeUrlChanged {
                 } else {
                     kv["Action Manifest"]
                 }
-                if (actionManifest === KeyValue.INVALID) return null
+                if (actionManifest === KeyValue.INVALID) {
+                    return findSiblingControllerConfig(manifestDirPath)
+                }
 
                 val configs = actionManifest["configurations"]
                 if (configs === KeyValue.INVALID || configs.children.isEmpty()) {
-                    throw IllegalStateException("No configurations found in Action Manifest")
+                    return findSiblingControllerConfig(manifestDirPath)
+                        ?: throw IllegalStateException("No configurations found in Action Manifest")
                 }
 
-                val preferredControllers = listOf(
-                    "controller_xboxone",
-                    "controller_steamcontroller_gordon",
-                    "controller_generic",
-                    "controller_xbox360",
-                )
-
-                for (controllerType in preferredControllers) {
+                for (controllerType in PREFERRED_CONTROLLER_TYPES) {
                     val controllerBlock = configs[controllerType]
                     if (controllerBlock === KeyValue.INVALID) continue
 
@@ -1754,11 +1752,28 @@ class SteamService : Service(), IChallengeUrlChanged {
                     }
                 }
 
-                throw IllegalStateException("No valid controller configuration found in Action Manifest")
+                findSiblingControllerConfig(manifestDirPath)
+                    ?: throw IllegalStateException("No valid controller configuration found in Action Manifest")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to parse Steam Input manifest config")
                 null
             }
+        }
+
+        private val PREFERRED_CONTROLLER_TYPES = listOf(
+            "controller_xboxone",
+            "controller_steamcontroller_gordon",
+            "controller_generic",
+            "controller_xbox360",
+        )
+
+        private fun findSiblingControllerConfig(manifestDirPath: String): String? {
+            for (controllerType in PREFERRED_CONTROLLER_TYPES) {
+                val configFile = FileUtils.findFileCaseInsensitive(File(manifestDirPath), "$controllerType.vdf")
+                    ?: continue
+                return configFile.readText(Charsets.UTF_8)
+            }
+            return null
         }
 
         private fun readBuiltInSteamInputTemplate(fileName: String): String? {
@@ -1998,7 +2013,11 @@ class SteamService : Service(), IChallengeUrlChanged {
                         }
 
                         calculatedDlcAppIds.forEach { dlcAppId ->
-                            val dlcDepots = selectedDepots.filter { it.value.dlcAppId == dlcAppId }
+                            val dlcAppDepotIds = getAppInfoOf(dlcAppId)?.depots?.keys.orEmpty()
+                            val dlcDepots = selectedDepots.filter { (depotId, depot) ->
+                                depot.dlcAppId == dlcAppId &&
+                                    (depotId !in mainAppDepots || depotId in dlcAppDepotIds)
+                            }
                             val dlcDepotIds = dlcDepots.keys.sorted()
 
                             val dlcAppItem = AppItem(
@@ -2174,7 +2193,11 @@ class SteamService : Service(), IChallengeUrlChanged {
 
                         // Complete dlc app download
                         calculatedDlcAppIds.forEach { dlcAppId ->
-                            val dlcDepots = selectedDepots.filter { it.value.dlcAppId == dlcAppId }
+                            val dlcAppDepotIds = getAppInfoOf(dlcAppId)?.depots?.keys.orEmpty()
+                            val dlcDepots = selectedDepots.filter { (depotId, depot) ->
+                                depot.dlcAppId == dlcAppId &&
+                                    (depotId !in mainAppDepots || depotId in dlcAppDepotIds)
+                            }
                             val dlcDepotIds = dlcDepots.keys.sorted()
                             completeAppDownload(
                                 downloadInfo = di,
@@ -3192,6 +3215,61 @@ class SteamService : Service(), IChallengeUrlChanged {
             } catch (e: Exception) {
                 Timber.e(e, "Failed to check DLC ownership via PICS batch for ${dlcAppIds.size} appIds")
                 return emptySet()
+            }
+        }
+
+        suspend fun fetchAchievementsForDisplay(appId: Int): List<Achievement>? {
+            if (!isConnected) return null
+            return try {
+                withTimeout(15_000) {
+                val steamUser = instance?._steamUser ?: return@withTimeout null
+                val userStats = instance?._steamUserStats?.getUserStats(appId, steamUser.steamID!!)?.await() ?: return@withTimeout null
+                // Failed fetch (e.g. transient CM error): return null so the caller can retry.
+                if (userStats.result != EResult.OK) return@withTimeout null
+                val baseIconUrl = SteamUtils.getBaseAchievementIconUrl(appId)
+                val appLanguage = SteamUtils.steamLanguageForAppLocale()
+                val localized = userStats.getExpandedAchievements(appLanguage)
+                // Parse the English schema lazily: only achievements missing a localized name or
+                // description need it, so fully-localized games never pay for the extra parse.
+                val englishByName by lazy {
+                    if (appLanguage == "english") {
+                        emptyMap()
+                    } else {
+                        // A nameless block can't be matched, and its null key would swallow
+                        // every lookup.
+                        userStats.getExpandedAchievements("english")
+                            .associateBy { it.name }
+                            .filterKeys { it != null }
+                    }
+                }
+                localized.map { block ->
+                    fun english() = englishByName[block.name]
+                    Achievement(
+                        displayName = block.displayName?.takeIf { it.isNotBlank() }
+                            ?: english()?.displayName?.takeIf { it.isNotBlank() }
+                            ?: block.name ?: "",
+                        name = block.name,
+                        isUnlocked = block.isUnlocked,
+                        description = block.description?.takeIf { it.isNotBlank() }
+                            ?: english()?.description?.takeIf { it.isNotBlank() }
+                            ?: "",
+                        unlockTimestamp = block.unlockTimestamp,
+                        hidden = block.hidden,
+                        icon = if (!block.icon.isNullOrEmpty()) "$baseIconUrl${block.icon}" else "",
+                        iconGray = if (!block.iconGray.isNullOrEmpty()) "$baseIconUrl${block.iconGray}" else null,
+                        progressCurrent = block.progressCurrent,
+                        progressMax = block.progressMax,
+                    )
+                }
+                }
+            } catch (e: TimeoutCancellationException) {
+                Timber.w("fetchAchievementsForDisplay timed out for appId=$appId")
+                null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "fetchAchievementsForDisplay failed for appId=$appId")
+                null
             }
         }
 

@@ -38,7 +38,11 @@ jobs:
                 await github.rest.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
                 core.info(`Deleted stale branch: ${branch}`);
               } catch (error) {
-                if (error.status !== 404) throw error;
+                if ([404, 422].includes(error.status)) {
+                  core.info(`Branch already absent: ${branch}`);
+                } else {
+                  throw error;
+                }
               }
             }
 
@@ -64,4 +68,4 @@ jobs:
               }
             }
 
-            core.notice(`Repository cleanup deleted ${staleBranches.size} targeted stale branch refs where present and ${deletedRuns} stale workflow runs.`);
+            core.notice(`Deleted ${deletedRuns} stale workflow runs after pruning targeted branches.`);

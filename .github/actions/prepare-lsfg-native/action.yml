@@ -63,7 +63,7 @@ runs:
 
         test_text = test.read_text(encoding="utf-8")
         test_pattern = re.compile(
-            r'(loaderVersion\.readText\(\)\.contains(")[0-9a-f]{8}("\))'
+            r'(loaderVersion\.readText\(\)\.contains\(")[0-9a-f]{8}("\))'
         )
         test_text, test_count = test_pattern.subn(
             rf"\g<1>{expected_prefix}\g<2>", test_text, count=1

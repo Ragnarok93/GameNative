@@ -16,6 +16,7 @@ object FrameTimeRing {
 
     private val timestampsNs = LongArray(CAPACITY)
     private val writeIndex = AtomicLong(0L)
+    private val epochGeneration = AtomicLong(0L)
 
     @Volatile
     private var epochStartIndex = 0L
@@ -32,6 +33,7 @@ object FrameTimeRing {
 
     fun start() {
         writeIndex.set(0L)
+        epochGeneration.set(0L)
         epochStartIndex = 0L
         java.util.Arrays.fill(timestampsNs, 0L)
         recording = true
@@ -45,6 +47,9 @@ object FrameTimeRing {
 
     fun capacity(): Int = CAPACITY
 
+    /** Current metrics epoch generation for rejecting in-flight stale samples. */
+    fun generation(): Long = epochGeneration.get()
+
     /**
      * Starts a fresh metrics epoch without stopping timestamp recording or clearing
      * the ring. Samples written before this boundary are ignored by future readers.
@@ -52,6 +57,7 @@ object FrameTimeRing {
      */
     fun resetEpoch() {
         epochStartIndex = writeIndex.get()
+        epochGeneration.incrementAndGet()
     }
 
     /**

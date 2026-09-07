@@ -130,6 +130,7 @@ object PerformanceMetricsCollector {
     }
 
     private fun sampleOnce() {
+        val frameGeneration = FrameTimeRing.generation()
         val now = System.nanoTime()
         val frameCount = FrameTimeRing.copySince(now - FRAME_WINDOW_MS * 1_000_000L, frameScratch)
         val frameStats = computeFrameWindowStats(
@@ -139,6 +140,10 @@ object PerformanceMetricsCollector {
             deltaScratch,
             PowerManager.frameSampleStride,
         )
+
+        // A pacing transition can race this 500 ms collector. Never publish a
+        // sample that began before the epoch boundary.
+        if (frameGeneration != FrameTimeRing.generation()) return
 
         val cpu = cpuSampler.sample()
         val gpu = gpuSampler.sample()
@@ -158,7 +163,8 @@ object PerformanceMetricsCollector {
             gpuTempC = SystemMetricsSources.readTemperatureC(SystemMetricsSources.gpuTempPaths()),
         )
 
-        publish(snapshot)
+        publish(snapshot, frameGeneration)
+        if (frameGeneration != FrameTimeRing.generation()) return
         appendLog(snapshot)
 
         sampleCount++
@@ -178,11 +184,16 @@ object PerformanceMetricsCollector {
         }
     }
 
-    private fun publish(snapshot: MetricsSnapshot) {
+    private fun publish(snapshot: MetricsSnapshot, frameGeneration: Long) {
+        if (frameGeneration != FrameTimeRing.generation()) return
         PowerManager.latestMetrics = snapshot
         PowerManager.currentFps = snapshot.fps
         PowerManager.currentCpuUsage = snapshot.cpuUsagePercent ?: 0f
         PowerManager.currentGpuUsage = snapshot.gpuUsagePercent ?: 0f
+        if (frameGeneration != FrameTimeRing.generation()) {
+            PowerManager.latestMetrics = null
+            PowerManager.currentFps = 0f
+        }
     }
 
     private fun slowFrameThresholdNs(): Long {

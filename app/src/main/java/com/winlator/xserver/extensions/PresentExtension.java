@@ -4,6 +4,7 @@ import static com.winlator.xserver.XClientRequestHandler.RESPONSE_CODE_SUCCESS;
 
 import android.util.SparseArray;
 
+import app.gamenative.powercontrol.metrics.PerformanceMetricsCollector;
 import app.gamenative.utils.LsfgRuntimeGate;
 
 import com.winlator.renderer.ASurfaceRenderer;
@@ -72,6 +73,7 @@ public class PresentExtension implements Extension {
 
     private volatile android.view.Choreographer choreographer = null;
     private volatile boolean choreographerChecked = false;
+    private volatile boolean choreographerInitPosted = false;
     private final Object choreographerLock = new Object();
 
     private volatile Thread cpuPacerThread = null;
@@ -94,6 +96,10 @@ public class PresentExtension implements Extension {
      * context; until then the normal X Present limiter remains active.
      */
     public void transitionFramePacing(boolean lsfgOwnsPacing, int limit) {
+        final boolean pacingRegimeChanged = this.lsfgPacingRequested != lsfgOwnsPacing;
+        if (pacingRegimeChanged) {
+            PerformanceMetricsCollector.resetFrameEpoch();
+        }
         this.lsfgPacingRequested = lsfgOwnsPacing;
         this.localFrameRateLimit = Math.max(0, limit);
         applyEffectivePacing(lsfgOwnsPacing && LsfgRuntimeGate.isGenerationReady());
@@ -148,25 +154,61 @@ public class PresentExtension implements Extension {
     }
 
     private android.view.Choreographer tryGetChoreographer(VulkanRenderer renderer) {
-        if (choreographerChecked) return choreographer;
-        synchronized (choreographerLock) {
-            if (choreographerChecked) return choreographer;
-            choreographerChecked = true;
-            try {
-                if (renderer != null && renderer.xServerView != null) {
-                    choreographer = android.view.Choreographer.getInstance();
-                }
-            } catch (Exception ignored) {
-                android.util.Log.w("PresentExtension", "Choreographer unavailable, using CPU pacer");
-            }
-            if (choreographer == null) {
-                startCpuPacer();
-            }
-            return choreographer;
+        android.view.Choreographer current = choreographer;
+        if (current != null || choreographerChecked) {
+            if (current == null) startCpuPacer();
+            return current;
         }
+        if (renderer == null || renderer.xServerView == null) {
+            startCpuPacer();
+            return null;
+        }
+
+        synchronized (choreographerLock) {
+            current = choreographer;
+            if (current != null || choreographerChecked) {
+                if (current == null) startCpuPacer();
+                return current;
+            }
+            if (!choreographerInitPosted) {
+                choreographerInitPosted = true;
+                final boolean posted = renderer.xServerView.post(() -> {
+                    android.view.Choreographer resolved = null;
+                    try {
+                        resolved = android.view.Choreographer.getInstance();
+                    } catch (RuntimeException e) {
+                        android.util.Log.w(
+                                "PresentExtension",
+                                "Choreographer unavailable on UI thread, using CPU pacer");
+                    }
+
+                    synchronized (choreographerLock) {
+                        choreographer = resolved;
+                        choreographerChecked = true;
+                        choreographerInitPosted = false;
+                    }
+
+                    if (resolved != null) {
+                        android.util.Log.d(
+                                "PresentExtension",
+                                "Choreographer initialized on UI thread");
+                    } else {
+                        startCpuPacer();
+                    }
+                });
+                if (!posted) {
+                    choreographerInitPosted = false;
+                }
+            }
+        }
+
+        // Do not block the Present/X thread while the UI thread resolves its
+        // Choreographer. The existing CPU pacer remains the fail-open fallback.
+        startCpuPacer();
+        return null;
     }
 
-    private void startCpuPacer() {
+    private synchronized void startCpuPacer() {
         if (cpuPacerThread != null) return;
         cpuPacerThread = new Thread(() -> {
             while (!Thread.interrupted()) {

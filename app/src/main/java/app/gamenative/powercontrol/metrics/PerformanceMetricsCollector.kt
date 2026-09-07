@@ -103,6 +103,17 @@ object PerformanceMetricsCollector {
         Timber.tag(TAG).i("Collector stopped after %d samples", sampleCount)
     }
 
+    /**
+     * Discard frame timestamps from the previous pacing regime and make the
+     * autotuner fail closed until fresh frame samples arrive.
+     */
+    @JvmStatic
+    fun resetFrameEpoch() {
+        FrameTimeRing.resetEpoch()
+        PowerManager.latestMetrics = null
+        PowerManager.currentFps = 0f
+    }
+
     fun pause() {
         if (!isRunning || paused) return
         paused = true
@@ -111,10 +122,11 @@ object PerformanceMetricsCollector {
 
     fun resume() {
         if (!isRunning || !paused) return
+        resetFrameEpoch()
         cpuSampler.reset()
         gpuSampler.reset()
         paused = false
-        Timber.tag(TAG).i("Collector resumed")
+        Timber.tag(TAG).i("Collector resumed with fresh frame epoch")
     }
 
     private fun sampleOnce() {

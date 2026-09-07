@@ -20,8 +20,11 @@ import com.winlator.xserver.Bitmask;
 import com.winlator.xserver.Drawable;
 import com.winlator.xserver.Pixmap;
 import com.winlator.xserver.Window;
+import com.winlator.xserver.WindowManager;
 import com.winlator.xserver.XClient;
 import com.winlator.xserver.XLock;
+import com.winlator.xserver.XResource;
+import com.winlator.xserver.XResourceManager;
 import com.winlator.xserver.XServer;
 import com.winlator.xserver.errors.BadImplementation;
 import com.winlator.xserver.errors.BadMatch;
@@ -33,7 +36,9 @@ import com.winlator.xserver.events.PresentIdleNotify;
 
 import java.io.IOException;
 
-public class PresentExtension implements Extension {
+public class PresentExtension implements Extension,
+        WindowManager.OnWindowModificationListener,
+        XResourceManager.OnResourceLifecycleListener {
     public static final byte MAJOR_OPCODE = -103;
     public enum Kind { PIXMAP, MSC_NOTIFY }
     public enum Mode { COPY, FLIP, SKIP }
@@ -62,12 +67,14 @@ public class PresentExtension implements Extension {
     static class PendingIdle {
         Window window; Pixmap pixmap; int serial; int idleFence;
         long targetNs;
-        int  vsyncSkips;    // vsyncs left to skip before firing (for fps < refresh)
+        int  vsyncSkips;    // retained for compatibility with the old vsync pacer state
         PendingIdle(Window w, Pixmap p, int s, int f, long t, int sk) {
             window = w; pixmap = p; serial = s; idleFence = f; targetNs = t; vsyncSkips = sk;
         }
     }
 
+    // Legacy Choreographer queue is kept drainable across pacing-regime transitions,
+    // but new Present limiter work is never scheduled onto the display-vsync clock.
     private final java.util.concurrent.ConcurrentHashMap<Integer, PendingIdle> pendingIdles =
             new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -82,6 +89,8 @@ public class PresentExtension implements Extension {
                     java.util.Comparator.comparingLong(p -> p.targetNs));
     private final java.util.concurrent.ConcurrentHashMap<Integer, PendingIdle> cpuPendingIdles =
             new java.util.concurrent.ConcurrentHashMap<>();
+
+    private volatile WindowManager lifecycleWindowManager = null;
 
     private static final long FIRE_EARLY_NS = 700_000L; // 0.7 ms
 
@@ -146,7 +155,29 @@ public class PresentExtension implements Extension {
         windowTimings.clear();
     }
 
+    private void ensureWindowLifecycleListener(XServer xServer) {
+        final WindowManager manager = xServer.windowManager;
+        if (lifecycleWindowManager == manager) return;
+
+        synchronized (this) {
+            if (lifecycleWindowManager == manager) return;
+            if (lifecycleWindowManager != null) {
+                lifecycleWindowManager.removeOnWindowModificationListener(this);
+                lifecycleWindowManager.removeOnResourceLifecycleListener(this);
+            }
+            manager.addOnWindowModificationListener(this);
+            manager.addOnResourceLifecycleListener(this);
+            lifecycleWindowManager = manager;
+        }
+    }
+
     public void close() {
+        WindowManager manager = lifecycleWindowManager;
+        if (manager != null) {
+            manager.removeOnWindowModificationListener(this);
+            manager.removeOnResourceLifecycleListener(this);
+            lifecycleWindowManager = null;
+        }
         if (cpuPacerThread != null) {
             cpuPacerThread.interrupt();
             cpuPacerThread = null;
@@ -202,8 +233,6 @@ public class PresentExtension implements Extension {
             }
         }
 
-        // Do not block the Present/X thread while the UI thread resolves its
-        // Choreographer. The existing CPU pacer remains the fail-open fallback.
         startCpuPacer();
         return null;
     }
@@ -233,6 +262,7 @@ public class PresentExtension implements Extension {
         cpuPacerThread.setDaemon(true);
         cpuPacerThread.setPriority(Thread.NORM_PRIORITY);
         cpuPacerThread.start();
+        android.util.Log.d("PresentExtension", "Using monotonic CPU deadline pacer");
     }
 
     private void wakeCpuPacer() {
@@ -278,6 +308,61 @@ public class PresentExtension implements Extension {
                 superseded.serial, superseded.idleFence);
     }
 
+    /**
+     * Release every Present idle owned by one X window and discard its deadline epoch.
+     * A window that is unmapped or freed must never leave back-pressure behind for a
+     * replacement window or a later remap.
+     */
+    public void resetWindowPacing(int windowId) {
+        int released = 0;
+
+        PendingIdle vsyncPending = pendingIdles.remove(windowId);
+        if (vsyncPending != null) {
+            sendIdleNotify(vsyncPending.window, vsyncPending.pixmap,
+                    vsyncPending.serial, vsyncPending.idleFence);
+            released++;
+        }
+
+        PendingIdle cpuPending = cpuPendingIdles.remove(windowId);
+        if (cpuPending != null && cpuQueue.remove(cpuPending)) {
+            sendIdleNotify(cpuPending.window, cpuPending.pixmap,
+                    cpuPending.serial, cpuPending.idleFence);
+            released++;
+        }
+
+        for (PendingIdle queued : cpuQueue.toArray(new PendingIdle[0])) {
+            if (queued.window.id == windowId && cpuQueue.remove(queued)) {
+                cpuPendingIdles.remove(windowId, queued);
+                sendIdleNotify(queued.window, queued.pixmap,
+                        queued.serial, queued.idleFence);
+                released++;
+            }
+        }
+
+        final boolean hadTiming = windowTimings.remove(windowId) != null;
+        wakeCpuPacer();
+
+        if (released > 0 || hadTiming) {
+            android.util.Log.d(
+                    "PresentExtension",
+                    "pacing-window-reset window=" + windowId
+                            + " released=" + released
+                            + " timing=" + (hadTiming ? 1 : 0));
+        }
+    }
+
+    @Override
+    public void onUnmapWindow(Window window) {
+        resetWindowPacing(window.id);
+    }
+
+    @Override
+    public void onFreeResource(XResource resource) {
+        if (resource instanceof Window) {
+            resetWindowPacing(((Window) resource).id);
+        }
+    }
+
     private void scheduleIdleNotify(Window window, Pixmap pixmap, int serial,
                                     int idleFence, int targetFps, VulkanRenderer renderer) {
         if (targetFps <= 0) {
@@ -296,31 +381,21 @@ public class PresentExtension implements Extension {
         }
         long fireTime = wt.nextIdleNs - FIRE_EARLY_NS;
 
-        android.view.Choreographer ch = tryGetChoreographer(renderer);
-        if (ch != null) {
-            PendingIdle replacement =
-                    new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
-            PendingIdle superseded = pendingIdles.put(window.id, replacement);
-            if (superseded != null) {
-                // Mailbox replacement inherits the already reserved deadline instead
-                // of pushing this window another frame into the future.
-                replacement.targetNs = superseded.targetNs;
-                wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
-                releaseSupersededIdle(superseded);
-            }
-            postChoreographerCallback();
-        } else {
-            PendingIdle replacement =
-                    new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
-            PendingIdle superseded = cpuPendingIdles.put(window.id, replacement);
-            if (superseded != null && cpuQueue.remove(superseded)) {
-                replacement.targetNs = superseded.targetNs;
-                wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
-                releaseSupersededIdle(superseded);
-            }
-            cpuQueue.offer(replacement);
-            wakeCpuPacer();
+        // Present idle is a source back-pressure deadline, not a display-vsync event.
+        // Scheduling it through Choreographer quantizes a 30-FPS deadline to the panel
+        // refresh cadence and can turn one missed callback into ~41.7 ms on a 120-Hz
+        // display. Always use the monotonic CPU deadline queue here.
+        PendingIdle replacement =
+                new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
+        PendingIdle superseded = cpuPendingIdles.put(window.id, replacement);
+        if (superseded != null && cpuQueue.remove(superseded)) {
+            replacement.targetNs = superseded.targetNs;
+            wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
+            releaseSupersededIdle(superseded);
         }
+        cpuQueue.offer(replacement);
+        startCpuPacer();
+        wakeCpuPacer();
     }
 
     private static abstract class ClientOpcodes {
@@ -497,6 +572,7 @@ public class PresentExtension implements Extension {
 
     @Override
     public void handleRequest(XClient client, XInputStream inputStream, XOutputStream outputStream) throws IOException, XRequestError {
+        ensureWindowLifecycleListener(client.xServer);
         int opcode = client.getRequestData();
         if (syncExtension == null) syncExtension = client.xServer.getExtension(SyncExtension.MAJOR_OPCODE);
 

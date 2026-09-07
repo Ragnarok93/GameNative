@@ -2,13 +2,14 @@ package app.gamenative.utils
 
 import java.nio.file.Files
 import java.nio.file.attribute.FileTime
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LsfgRuntimeGateTest {
     @Test
-    fun readyState_requiresFreshActiveGenerationReadyStats() {
+    fun readyState_isPublishedAsynchronouslyWithoutBlockingCaller() {
         val root = Files.createTempDirectory("lsfg-gate-ready")
         val stats = root.resolve(".config/lsfg-vk/stats.txt")
         Files.createDirectories(stats.parent)
@@ -16,7 +17,10 @@ class LsfgRuntimeGateTest {
 
         LsfgRuntimeGate.configure(root.toFile())
 
-        assertTrue(LsfgRuntimeGate.isGenerationReady())
+        // The render-path caller only observes the fail-closed cache. The
+        // filesystem read happens on the gate's background poll thread.
+        assertFalse(LsfgRuntimeGate.isGenerationReady())
+        assertTrue(awaitReadyState(true))
     }
 
     @Test
@@ -38,5 +42,15 @@ class LsfgRuntimeGateTest {
         )
         LsfgRuntimeGate.configure(staleRoot.toFile())
         assertFalse(LsfgRuntimeGate.isGenerationReady())
+    }
+
+    private fun awaitReadyState(expected: Boolean, timeoutMs: Long = 1_000L): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        var observed = LsfgRuntimeGate.isGenerationReady()
+        while (observed != expected && System.nanoTime() < deadline) {
+            Thread.sleep(10L)
+            observed = LsfgRuntimeGate.isGenerationReady()
+        }
+        return observed == expected
     }
 }

@@ -1,0 +1,112 @@
+name: BCn Wrapper Optimization Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/bcn-emulation-optimization
+    paths:
+      - tools/bcn-wrapper/**
+      - .github/workflows/bcn-wrapper-optimization-build.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-wrapper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout GameNative optimization branch
+        uses: actions/checkout@v4
+
+      - name: Checkout canonical GameNative wrapper source
+        run: |
+          git clone --depth 1 --branch wrapper-25 https://github.com/GameNative/mesa.git mesa-wrapper
+          git -C mesa-wrapper rev-parse HEAD | tee mesa-wrapper-source.txt
+
+      - name: Apply guarded BCn optimizations
+        run: |
+          python3 tools/bcn-wrapper/apply_optimizations.py mesa-wrapper
+          git -C mesa-wrapper diff --check
+          git -C mesa-wrapper diff -- src/vulkan/wrapper/wrapper_private.h src/vulkan/wrapper/wrapper_device.c
+
+      - name: Verify BC4/BC5 narrow surrogate formats
+        run: |
+          grep -A1 'case VK_FORMAT_BC4_UNORM_BLOCK:' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c | grep -q 'VK_FORMAT_R8_UNORM'
+          grep -A1 'case VK_FORMAT_BC4_SNORM_BLOCK:' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c | grep -q 'VK_FORMAT_R8_SNORM'
+          grep -A1 'case VK_FORMAT_BC5_UNORM_BLOCK:' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c | grep -q 'VK_FORMAT_R8G8_UNORM'
+          grep -A1 'case VK_FORMAT_BC5_SNORM_BLOCK:' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c | grep -q 'VK_FORMAT_R8G8_SNORM'
+
+      - name: Patch Mesa Android build compatibility
+        working-directory: mesa-wrapper
+        run: |
+          sed -i 's/#if defined(HAVE_MEMFD_CREATE) \&\& !defined __TERMUX__/#if defined(HAVE_MEMFD_CREATE)/' src/util/anon_file.c
+          sed -i "s/dep_libudev = dependency('libudev', required : false)/dep_libudev = null_dep/g" meson.build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mako PyYAML meson ninja packaging
+
+      - name: Generate Android NDK Meson cross file
+        working-directory: mesa-wrapper
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          export MESON_WORKING_DIR="$PWD"
+          envsubst < android.toml > android-cross.toml
+
+      - name: Generate shims
+        working-directory: mesa-wrapper
+        run: unzip shims.zip -d ./
+
+      - name: Configure release wrapper
+        working-directory: mesa-wrapper
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-wrapper/shims
+        run: |
+          meson setup _build \
+            --cross-file android-cross.toml \
+            -Dbuildtype=release \
+            -Dplatforms=x11 \
+            -Dandroid-stub=true \
+            -Dandroid-libbacktrace=disabled \
+            -Dplatform-sdk-version=30 \
+            -Dglx=disabled \
+            -Dgbm=disabled \
+            -Degl=disabled \
+            -Dopengl=false \
+            -Dgles1=disabled \
+            -Dgles2=disabled \
+            -Dglvnd=disabled \
+            -Dllvm=disabled \
+            -Dvalgrind=disabled \
+            -Dgallium-drivers= \
+            -Dshared-glapi=disabled \
+            -Dzstd=disabled \
+            -Dvulkan-drivers=wrapper
+
+      - name: Compile optimized wrapper
+        working-directory: mesa-wrapper
+        run: meson compile -C _build
+
+      - name: Record build provenance
+        run: |
+          mkdir -p wrapper-artifact
+          cp mesa-wrapper/_build/src/vulkan/wrapper/libvulkan_wrapper.so wrapper-artifact/
+          cp mesa-wrapper-source.txt wrapper-artifact/
+          git rev-parse HEAD > wrapper-artifact/gamenative-feature-commit.txt
+          sha256sum wrapper-artifact/libvulkan_wrapper.so > wrapper-artifact/SHA256SUMS
+
+      - name: Upload optimized Vulkan wrapper
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvulkan_wrapper-bcn-optimized-aarch64-release
+          path: wrapper-artifact/
+          if-no-files-found: error

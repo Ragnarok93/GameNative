@@ -34,6 +34,7 @@ jobs:
           python3 tools/bcn-wrapper/apply_optimizations.py mesa-wrapper
           python3 patches/bcn-wrapper/apply_cache_optimizations.py mesa-wrapper
           python3 tools/wrapper-bcn-staging/apply.py mesa-wrapper
+          python3 tools/wrapper-bcn-metrics/disambiguate.py mesa-wrapper
           python3 tools/wrapper-bcn-metrics/apply.py mesa-wrapper
           git -C mesa-wrapper diff --check
           git -C mesa-wrapper diff -- \

@@ -9,27 +9,33 @@ import org.junit.Test
 
 class XServerViewLsfgPacingContractTest {
     @Test
-    fun source_keepsRendererLimiterBehindNativeReadinessGate() {
+    fun sourceKeepsUpstreamSimpleFrameRateLimit() {
         val source = String(
             Files.readAllBytes(sourcePath("com/winlator/widget/XServerView.java")),
             Charsets.UTF_8,
         )
-        assertTrue(source.contains("LsfgRuntimeGate.isGenerationReady()"))
-        assertTrue(source.contains("transitionLsfgFramePacing"))
-        assertTrue(source.contains("refreshLsfgFramePacing"))
-        assertTrue(source.contains("nativeReady ? 0 : localFrameRateLimit"))
+        assertTrue(source.contains("this.frameRateLimit = Math.max(0, frameRateLimit);"))
+        assertTrue(source.contains("vkRenderer.setFpsLimit(this.frameRateLimit);"))
+        assertFalse(source.contains("LsfgRuntimeGate"))
+        assertFalse(source.contains("localFrameRateLimit"))
+        assertFalse(source.contains("lsfgPacingRequested"))
+        assertFalse(source.contains("transitionLsfgFramePacing"))
+        assertFalse(source.contains("refreshLsfgFramePacing"))
     }
 
     @Test
-    fun presentPath_resynchronizesRendererPacingOnEveryPresent() {
+    fun requestRenderDoesNotConsultLsfgReadiness() {
         val source = String(
             Files.readAllBytes(
-                sourcePath("com/winlator/xserver/extensions/PresentExtension.java"),
+                sourcePath("com/winlator/widget/XServerView.java"),
             ),
             Charsets.UTF_8,
         )
-        assertTrue(source.contains("vr.xServerView.transitionLsfgFramePacing"))
-        assertFalse(source.contains("pending idle superseded and dropped"))
+        val requestRender = source.substringAfter("public void requestRender()")
+            .substringBeforeLast("}")
+        assertTrue(requestRender.contains("vkRenderer.queueSceneUpdate();"))
+        assertFalse(requestRender.contains("LsfgRuntimeGate"))
+        assertFalse(requestRender.contains("refreshLsfgFramePacing"))
     }
 
     private fun sourcePath(relative: String): Path {

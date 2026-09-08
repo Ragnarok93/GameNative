@@ -9,7 +9,7 @@ import org.junit.Test
 
 class LsfgPacingCallSiteContractTest {
     @Test
-    fun xServerScreen_routesLsfgPacingThroughReadinessGates() {
+    fun xServerScreenOwnsLsfgPacingHandoff() {
         val source = String(
             Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
             Charsets.UTF_8,
@@ -18,12 +18,14 @@ class LsfgPacingCallSiteContractTest {
             .substringBefore("fun effectiveFpsLimit()")
 
         assertTrue(limiter.contains("val lsfgActive = isLsfgAvailable && lsfgMultiplier >= 2"))
-        assertTrue(limiter.contains("xServerView?.transitionLsfgFramePacing(lsfgActive, limit)"))
-        assertTrue(limiter.contains("?.transitionFramePacing(lsfgActive, limit)"))
-        assertFalse(
-            "LSFG must not unconditionally zero the renderer before native readiness",
-            limiter.contains("xServerView?.setFrameRateLimit(if (lsfgActive) 0 else limit)"),
-        )
+        assertTrue(limiter.contains("val vulkanPresentLimit = if (lsfgActive) 0 else limit"))
+        assertTrue(limiter.contains("xServerView?.setFrameRateLimit(vulkanPresentLimit)"))
+        assertTrue(limiter.contains("?.setFrameRateLimit(vulkanPresentLimit)"))
+        assertTrue(limiter.contains("ShmFramePacer.setFrameRateLimit(limit)"))
+        assertTrue(limiter.contains("PerformanceMetricsCollector.resetFrameEpoch()"))
+        assertFalse(limiter.contains("transitionLsfgFramePacing"))
+        assertFalse(limiter.contains("transitionFramePacing"))
+        assertFalse(limiter.contains("LsfgRuntimeGate"))
     }
 
     private fun sourcePath(relative: String): Path {

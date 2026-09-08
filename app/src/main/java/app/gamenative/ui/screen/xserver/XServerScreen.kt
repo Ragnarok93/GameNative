@@ -107,6 +107,7 @@ import app.gamenative.externaldisplay.ExternalDisplayInputController
 import app.gamenative.externaldisplay.ExternalDisplaySwapController
 import app.gamenative.externaldisplay.SwapInputOverlayView
 import app.gamenative.powercontrol.PowerManager
+import app.gamenative.powercontrol.metrics.PerformanceMetricsCollector
 import app.gamenative.service.AchievementWatcher
 import app.gamenative.service.SteamService
 import app.gamenative.service.epic.EpicOverlayManager
@@ -606,6 +607,7 @@ fun XServerScreen(
     var lsfgMultiplier by rememberSaveable(container.id) { mutableIntStateOf(initialLsfgSettings.multiplier) }
     var lsfgFlowScale by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.flowScale) }
     var lsfgPerformanceMode by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.performanceMode) }
+    var lastLsfgPacingActive by remember(container.id) { mutableStateOf(isLsfgAvailable && initialLsfgSettings.multiplier >= 2) }
 
     fun persistFpsLimiterState() {
         container.putExtra(FPS_LIMITER_ENABLED_EXTRA, fpsLimiterEnabled)
@@ -683,25 +685,19 @@ fun XServerScreen(
     }
 
     fun applyFpsLimiterToEngines(limit: Int) {
-        // With LSFG active the layer owns ALL pacing (vsync-locked via
-        // vsync.txt) and presents at limit * multiplier. Both the renderer's
-        // SurfaceControl frame-rate hint and the PresentExtension's scheduled
-        // idle-release pacing must stay off: the hint would clamp the display
-        // to the base rate, and the extension's Choreographer-scheduled pixmap
-        // releases mix stale pixmaps under multiplied present traffic
-        // (measured as constant multi-exposure ghosting on the X11/turnip
-        // present path).
         val lsfgActive = isLsfgAvailable && lsfgMultiplier >= 2
-        xServerView?.transitionLsfgFramePacing(lsfgActive, limit)
+        if (lastLsfgPacingActive != lsfgActive) {
+            PerformanceMetricsCollector.resetFrameEpoch()
+            lastLsfgPacingActive = lsfgActive
+        }
+
+        val vulkanPresentLimit = if (lsfgActive) 0 else limit
+        xServerView?.setFrameRateLimit(vulkanPresentLimit)
         xServerView?.getxServer()
             ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
-            ?.transitionFramePacing(lsfgActive, limit)
-        // Not disarmed with LSFG: the layer only multiplies Vulkan-swapchain
-        // presents, so SHM-presenting games never pass through it and would
-        // otherwise run uncapped whenever LSFG is armed.
+            ?.setFrameRateLimit(vulkanPresentLimit)
         ShmFramePacer.setFrameRateLimit(limit)
         PowerManager.targetFps = limit
-        // keeps frame stats in base units while generated frames tick the ring
         PowerManager.frameSampleStride =
             if (lsfgActive) lsfgMultiplier else 1
     }
@@ -1964,7 +1960,8 @@ fun XServerScreen(
             }
             val xServerView = xServerViewInstance.apply {
                 xServerView = this
-                setFrameRateLimit(if (fpsLimiterEnabled) fpsLimiterTarget else 0)
+                val initialLimit = if (fpsLimiterEnabled) fpsLimiterTarget else 0
+                setFrameRateLimit(if (isLsfgAvailable && lsfgMultiplier >= 2) 0 else initialLimit)
                 val renderer = this.renderer
                 if (!useGLRenderer && renderer is VulkanRenderer) {
                     val pm = container.rendererPresentMode.ifEmpty { "fifo" }

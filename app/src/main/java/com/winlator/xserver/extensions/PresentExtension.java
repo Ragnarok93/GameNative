@@ -4,9 +4,6 @@ import static com.winlator.xserver.XClientRequestHandler.RESPONSE_CODE_SUCCESS;
 
 import android.util.SparseArray;
 
-import app.gamenative.powercontrol.metrics.PerformanceMetricsCollector;
-import app.gamenative.utils.LsfgRuntimeGate;
-
 import com.winlator.renderer.ASurfaceRenderer;
 import com.winlator.renderer.GPUImage;
 import com.winlator.renderer.Texture;
@@ -20,11 +17,8 @@ import com.winlator.xserver.Bitmask;
 import com.winlator.xserver.Drawable;
 import com.winlator.xserver.Pixmap;
 import com.winlator.xserver.Window;
-import com.winlator.xserver.WindowManager;
 import com.winlator.xserver.XClient;
 import com.winlator.xserver.XLock;
-import com.winlator.xserver.XResource;
-import com.winlator.xserver.XResourceManager;
 import com.winlator.xserver.XServer;
 import com.winlator.xserver.errors.BadImplementation;
 import com.winlator.xserver.errors.BadMatch;
@@ -36,9 +30,7 @@ import com.winlator.xserver.events.PresentIdleNotify;
 
 import java.io.IOException;
 
-public class PresentExtension implements Extension,
-        WindowManager.OnWindowModificationListener,
-        XResourceManager.OnResourceLifecycleListener {
+public class PresentExtension implements Extension {
     public static final byte MAJOR_OPCODE = -103;
     public enum Kind { PIXMAP, MSC_NOTIFY }
     public enum Mode { COPY, FLIP, SKIP }
@@ -48,136 +40,51 @@ public class PresentExtension implements Extension,
     private byte firstEventId = 0;
     private byte firstErrorId = 0;
 
-    // Effective Target FPS for the back-pressure limiter. 0 means LSFG owns
-    // pacing and native readiness has been confirmed.
+    // Target FPS for the back-pressure limiter. 0 disables limiting (notifies fire
+    // immediately). Set from XServerScreen when the user toggles the FPS cap.
     private volatile int frameRateLimit = 0;
-    private volatile int localFrameRateLimit = 0;
-    private volatile boolean lsfgPacingRequested = false;
 
     // Mailbox semantics for the pacing scheduler: when a new present supersedes a
     // still-pending pixmap on the same window, release the superseded one
-    // immediately instead of holding it to the schedule. This becomes active
-    // only after the native LSFG context has published readiness.
+    // immediately instead of holding it to the schedule. Armed only while
+    // bionic-fg is active — the layer owns base pacing then, and it presents at
+    // multiplier x the cap, so releases must track presents or its generated
+    // frames starve the swapchain.
     private volatile boolean eagerIdleRelease = false;
+    private int supersededDrops = 0;
 
     public void setEagerIdleRelease(boolean eager) {
         this.eagerIdleRelease = eager;
     }
 
-    static class PendingIdle {
+    private static class PendingIdle {
         Window window; Pixmap pixmap; int serial; int idleFence;
         long targetNs;
-        int  vsyncSkips;    // retained for compatibility with the old vsync pacer state
+        int  vsyncSkips;    // vsyncs left to skip before firing (for fps < refresh)
         PendingIdle(Window w, Pixmap p, int s, int f, long t, int sk) {
             window = w; pixmap = p; serial = s; idleFence = f; targetNs = t; vsyncSkips = sk;
         }
     }
 
-    // Legacy Choreographer queue is kept drainable across pacing-regime transitions,
-    // but new Present limiter work is never scheduled onto the display-vsync clock.
     private final java.util.concurrent.ConcurrentHashMap<Integer, PendingIdle> pendingIdles =
             new java.util.concurrent.ConcurrentHashMap<>();
 
     private volatile android.view.Choreographer choreographer = null;
     private volatile boolean choreographerChecked = false;
-    private volatile boolean choreographerInitPosted = false;
     private final Object choreographerLock = new Object();
 
-    private volatile Thread cpuPacerThread = null;
+    private Thread cpuPacerThread = null;
     private final java.util.concurrent.PriorityBlockingQueue<PendingIdle> cpuQueue =
             new java.util.concurrent.PriorityBlockingQueue<>(11,
                     java.util.Comparator.comparingLong(p -> p.targetNs));
-    private final java.util.concurrent.ConcurrentHashMap<Integer, PendingIdle> cpuPendingIdles =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
-    private volatile WindowManager lifecycleWindowManager = null;
 
     private static final long FIRE_EARLY_NS = 700_000L; // 0.7 ms
 
     public void setFrameRateLimit(int limit) {
-        this.localFrameRateLimit = Math.max(0, limit);
-        refreshLsfgPacingState();
-    }
-
-    /**
-     * Record the requested pacing owner. LSFG does not actually receive pacing
-     * ownership until its fresh native stats state confirms a ready swapchain
-     * context; until then the normal X Present limiter remains active.
-     */
-    public void transitionFramePacing(boolean lsfgOwnsPacing, int limit) {
-        final boolean pacingRegimeChanged = this.lsfgPacingRequested != lsfgOwnsPacing;
-        if (pacingRegimeChanged) {
-            PerformanceMetricsCollector.resetFrameEpoch();
-        }
-        this.lsfgPacingRequested = lsfgOwnsPacing;
-        this.localFrameRateLimit = Math.max(0, limit);
-        applyEffectivePacing(lsfgOwnsPacing && LsfgRuntimeGate.isGenerationReady());
-    }
-
-    private void refreshLsfgPacingState() {
-        final boolean lsfgReady = lsfgPacingRequested && LsfgRuntimeGate.isGenerationReady();
-        final int desiredLimit = lsfgReady ? 0 : localFrameRateLimit;
-        if (this.eagerIdleRelease == lsfgReady && this.frameRateLimit == desiredLimit)
-            return;
-        applyEffectivePacing(lsfgReady);
-    }
-
-    private synchronized void applyEffectivePacing(boolean lsfgReady) {
-        final int nextLimit = lsfgReady ? 0 : localFrameRateLimit;
-        if (this.eagerIdleRelease == lsfgReady && this.frameRateLimit == nextLimit)
-            return;
-
-        this.eagerIdleRelease = lsfgReady;
-        this.frameRateLimit = nextLimit;
-
-        android.view.Choreographer activeChoreographer = this.choreographer;
-        if (activeChoreographer != null && choreographerPosted) {
-            activeChoreographer.removeFrameCallback(vsyncCallback);
-            choreographerPosted = false;
-        }
-
-        for (java.util.Map.Entry<Integer, PendingIdle> entry : pendingIdles.entrySet()) {
-            PendingIdle pending = entry.getValue();
-            if (pendingIdles.remove(entry.getKey(), pending)) {
-                sendIdleNotify(pending.window, pending.pixmap,
-                        pending.serial, pending.idleFence);
-            }
-        }
-
-        PendingIdle queued;
-        while ((queued = cpuQueue.poll()) != null) {
-            cpuPendingIdles.remove(queued.window.id, queued);
-            sendIdleNotify(queued.window, queued.pixmap, queued.serial, queued.idleFence);
-        }
-        cpuPendingIdles.clear();
-        wakeCpuPacer();
-
-        windowTimings.clear();
-    }
-
-    private void ensureWindowLifecycleListener(XServer xServer) {
-        final WindowManager manager = xServer.windowManager;
-        if (lifecycleWindowManager == manager) return;
-
-        synchronized (this) {
-            if (lifecycleWindowManager == manager) return;
-            if (lifecycleWindowManager != null) {
-                lifecycleWindowManager.removeOnWindowModificationListener(this);
-                lifecycleWindowManager.removeOnResourceLifecycleListener(this);
-            }
-            manager.addOnWindowModificationListener(this);
-            manager.addOnResourceLifecycleListener(this);
-            lifecycleWindowManager = manager;
-        }
+        this.frameRateLimit = Math.max(0, limit);
     }
 
     public void close() {
-        WindowManager manager = lifecycleWindowManager;
-        if (manager != null) {
-            manager.removeOnWindowModificationListener(this);
-            manager.removeOnResourceLifecycleListener(this);
-            lifecycleWindowManager = null;
-        }
         if (cpuPacerThread != null) {
             cpuPacerThread.interrupt();
             cpuPacerThread = null;
@@ -185,91 +92,50 @@ public class PresentExtension implements Extension,
     }
 
     private android.view.Choreographer tryGetChoreographer(VulkanRenderer renderer) {
-        android.view.Choreographer current = choreographer;
-        if (current != null || choreographerChecked) {
-            if (current == null) startCpuPacer();
-            return current;
-        }
-        if (renderer == null || renderer.xServerView == null) {
-            startCpuPacer();
-            return null;
-        }
-
+        if (choreographerChecked) return choreographer;
         synchronized (choreographerLock) {
-            current = choreographer;
-            if (current != null || choreographerChecked) {
-                if (current == null) startCpuPacer();
-                return current;
-            }
-            if (!choreographerInitPosted) {
-                choreographerInitPosted = true;
-                final boolean posted = renderer.xServerView.post(() -> {
-                    android.view.Choreographer resolved = null;
-                    try {
-                        resolved = android.view.Choreographer.getInstance();
-                    } catch (RuntimeException e) {
-                        android.util.Log.w(
-                                "PresentExtension",
-                                "Choreographer unavailable on UI thread, using CPU pacer");
-                    }
-
-                    synchronized (choreographerLock) {
-                        choreographer = resolved;
-                        choreographerChecked = true;
-                        choreographerInitPosted = false;
-                    }
-
-                    if (resolved != null) {
-                        android.util.Log.d(
-                                "PresentExtension",
-                                "Choreographer initialized on UI thread");
-                    } else {
-                        startCpuPacer();
-                    }
-                });
-                if (!posted) {
-                    choreographerInitPosted = false;
+            if (choreographerChecked) return choreographer;
+            choreographerChecked = true;
+            try {
+                if (renderer != null && renderer.xServerView != null) {
+                    choreographer = android.view.Choreographer.getInstance();
                 }
+            } catch (Exception ignored) {
+                android.util.Log.w("PresentExtension", "Choreographer unavailable, using CPU pacer");
             }
+            if (choreographer == null) {
+                startCpuPacer();
+            }
+            return choreographer;
         }
-
-        startCpuPacer();
-        return null;
     }
 
-    private synchronized void startCpuPacer() {
+    private void startCpuPacer() {
         if (cpuPacerThread != null) return;
         cpuPacerThread = new Thread(() -> {
             while (!Thread.interrupted()) {
                 PendingIdle p = cpuQueue.peek();
                 if (p == null) {
-                    java.util.concurrent.locks.LockSupport.park();
+                    java.util.concurrent.locks.LockSupport.parkNanos(500_000L);
                     continue;
                 }
-
-                long diff = p.targetNs - System.nanoTime();
-                if (diff > 0) {
-                    java.util.concurrent.locks.LockSupport.parkNanos(diff);
-                    continue;
-                }
-
-                if (cpuQueue.remove(p)) {
-                    cpuPendingIdles.remove(p.window.id, p);
-                    sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
+                long now = System.nanoTime();
+                if (now >= p.targetNs) {
+                    if (cpuQueue.remove(p)) {
+                        sendIdleNotify(p.window, p.pixmap, p.serial, p.idleFence);
+                    }
+                } else {
+                    long diff = p.targetNs - now;
+                    if (diff > 2_000_000L)
+                        java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L);
+                    else
+                        Thread.yield();
                 }
             }
         }, "PresentPacer-CPU");
         cpuPacerThread.setDaemon(true);
-        cpuPacerThread.setPriority(Thread.NORM_PRIORITY);
+        cpuPacerThread.setPriority(Thread.MAX_PRIORITY);
         cpuPacerThread.start();
-        android.util.Log.d("PresentExtension", "Using monotonic CPU deadline pacer");
-    }
-
-    private void wakeCpuPacer() {
-        Thread thread = cpuPacerThread;
-        if (thread != null) {
-            java.util.concurrent.locks.LockSupport.unpark(thread);
-        }
     }
 
     private volatile boolean choreographerPosted = false;
@@ -303,66 +169,6 @@ public class PresentExtension implements Extension,
     private final java.util.concurrent.ConcurrentHashMap<Integer, WindowTiming> windowTimings =
             new java.util.concurrent.ConcurrentHashMap<>();
 
-    void releaseSupersededIdle(PendingIdle superseded) {
-        sendIdleNotify(superseded.window, superseded.pixmap,
-                superseded.serial, superseded.idleFence);
-    }
-
-    /**
-     * Release every Present idle owned by one X window and discard its deadline epoch.
-     * A window that is unmapped or freed must never leave back-pressure behind for a
-     * replacement window or a later remap.
-     */
-    public void resetWindowPacing(int windowId) {
-        int released = 0;
-
-        PendingIdle vsyncPending = pendingIdles.remove(windowId);
-        if (vsyncPending != null) {
-            sendIdleNotify(vsyncPending.window, vsyncPending.pixmap,
-                    vsyncPending.serial, vsyncPending.idleFence);
-            released++;
-        }
-
-        PendingIdle cpuPending = cpuPendingIdles.remove(windowId);
-        if (cpuPending != null && cpuQueue.remove(cpuPending)) {
-            sendIdleNotify(cpuPending.window, cpuPending.pixmap,
-                    cpuPending.serial, cpuPending.idleFence);
-            released++;
-        }
-
-        for (PendingIdle queued : cpuQueue.toArray(new PendingIdle[0])) {
-            if (queued.window.id == windowId && cpuQueue.remove(queued)) {
-                cpuPendingIdles.remove(windowId, queued);
-                sendIdleNotify(queued.window, queued.pixmap,
-                        queued.serial, queued.idleFence);
-                released++;
-            }
-        }
-
-        final boolean hadTiming = windowTimings.remove(windowId) != null;
-        wakeCpuPacer();
-
-        if (released > 0 || hadTiming) {
-            android.util.Log.d(
-                    "PresentExtension",
-                    "pacing-window-reset window=" + windowId
-                            + " released=" + released
-                            + " timing=" + (hadTiming ? 1 : 0));
-        }
-    }
-
-    @Override
-    public void onUnmapWindow(Window window) {
-        resetWindowPacing(window.id);
-    }
-
-    @Override
-    public void onFreeResource(XResource resource) {
-        if (resource instanceof Window) {
-            resetWindowPacing(((Window) resource).id);
-        }
-    }
-
     private void scheduleIdleNotify(Window window, Pixmap pixmap, int serial,
                                     int idleFence, int targetFps, VulkanRenderer renderer) {
         if (targetFps <= 0) {
@@ -381,21 +187,31 @@ public class PresentExtension implements Extension,
         }
         long fireTime = wt.nextIdleNs - FIRE_EARLY_NS;
 
-        // Present idle is a source back-pressure deadline, not a display-vsync event.
-        // Scheduling it through Choreographer quantizes a 30-FPS deadline to the panel
-        // refresh cadence and can turn one missed callback into ~41.7 ms on a 120-Hz
-        // display. Always use the monotonic CPU deadline queue here.
-        PendingIdle replacement =
-                new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0);
-        PendingIdle superseded = cpuPendingIdles.put(window.id, replacement);
-        if (superseded != null && cpuQueue.remove(superseded)) {
-            replacement.targetNs = superseded.targetNs;
-            wt.nextIdleNs = superseded.targetNs + FIRE_EARLY_NS;
-            releaseSupersededIdle(superseded);
+        android.view.Choreographer ch = tryGetChoreographer(renderer);
+        if (ch != null) {
+            PendingIdle superseded = pendingIdles.put(window.id,
+                    new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0));
+            if (superseded != null) {
+                if (eagerIdleRelease) {
+                    sendIdleNotify(superseded.window, superseded.pixmap,
+                            superseded.serial, superseded.idleFence);
+                } else if (supersededDrops++ < 8) {
+                    android.util.Log.w("PresentExtension", "pending idle superseded and dropped"
+                            + " for window 0x" + Integer.toHexString(window.id)
+                            + " serial " + superseded.serial);
+                }
+            }
+            postChoreographerCallback();
+        } else {
+            if (eagerIdleRelease) {
+                for (PendingIdle q : cpuQueue) {
+                    if (q.window == window && cpuQueue.remove(q)) {
+                        sendIdleNotify(q.window, q.pixmap, q.serial, q.idleFence);
+                    }
+                }
+            }
+            cpuQueue.offer(new PendingIdle(window, pixmap, serial, idleFence, fireTime, 0));
         }
-        cpuQueue.offer(replacement);
-        startCpuPacer();
-        wakeCpuPacer();
     }
 
     private static abstract class ClientOpcodes {
@@ -499,14 +315,17 @@ public class PresentExtension implements Extension,
         final XServerRenderer xr = client.xServer.getRenderer();
         final VulkanRenderer vr = (xr instanceof VulkanRenderer) ? (VulkanRenderer) xr : null;
         final ASurfaceRenderer asr = (xr instanceof ASurfaceRenderer) ? (ASurfaceRenderer) xr : null;
-        refreshLsfgPacingState();
-        if (vr != null) {
-            vr.xServerView.transitionLsfgFramePacing(lsfgPacingRequested, localFrameRateLimit);
-        }
         final int targetFps = this.frameRateLimit;
 
         long ust = System.nanoTime() / 1000;
         long msc = ust / (targetFps > 0 ? (1_000_000L / targetFps) : (1_000_000L / 60));
+
+        if (!client.xServer.isFlatPresentationEnabled()) {
+            sendCompleteNotify(window, serial, Kind.PIXMAP, Mode.SKIP, ust, msc);
+            if (targetFps > 0) scheduleIdleNotify(window, pixmap, serial, idleFence, targetFps, vr);
+            else sendIdleNotify(window, pixmap, serial, idleFence);
+            return;
+        }
 
         synchronized (content.renderLock) {
             if (asr != null) {
@@ -572,7 +391,6 @@ public class PresentExtension implements Extension,
 
     @Override
     public void handleRequest(XClient client, XInputStream inputStream, XOutputStream outputStream) throws IOException, XRequestError {
-        ensureWindowLifecycleListener(client.xServer);
         int opcode = client.getRequestData();
         if (syncExtension == null) syncExtension = client.xServer.getExtension(SyncExtension.MAJOR_OPCODE);
 

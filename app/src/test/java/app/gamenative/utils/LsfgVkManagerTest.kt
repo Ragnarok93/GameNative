@@ -97,6 +97,51 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun readRuntimeState_distinguishesSourceOnlyResidentFromGenerating() {
+        val container = container(armed = true, multiplier = "0")
+        val statsFile = File(rootDir, ".config/lsfg-vk/stats.txt").apply {
+            parentFile?.mkdirs()
+            writeText(
+                """
+                state=source_only
+                active=0
+                generation_ready=0
+                resident=1
+                source_only=1
+                generation_initialized=1
+                generated_presented=0
+                degraded=0
+                multiplier=1
+                """.trimIndent(),
+            )
+        }
+
+        val sourceOnly = LsfgVkManager.readRuntimeState(container)
+        assertEquals(LsfgVkManager.RuntimeStatus.SOURCE_ONLY, sourceOnly.status)
+        assertTrue(sourceOnly.readyForSourceOnly)
+        assertFalse(sourceOnly.readyForGeneration)
+
+        statsFile.writeText(
+            """
+            state=generating
+            active=1
+            generation_ready=1
+            resident=1
+            source_only=0
+            generation_initialized=1
+            generated_presented=1
+            degraded=0
+            multiplier=3
+            """.trimIndent(),
+        )
+
+        val generating = LsfgVkManager.readRuntimeState(container)
+        assertEquals(LsfgVkManager.RuntimeStatus.GENERATING, generating.status)
+        assertTrue(generating.readyForGeneration)
+        assertFalse(generating.readyForSourceOnly)
+    }
+
+    @Test
     fun applyLaunchEnv_isDriverAgnosticAndPreservesSelectedIcd() {
         val container = container(armed = true)
         val envVars = EnvVars().apply {

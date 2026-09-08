@@ -247,10 +247,21 @@ private const val EXIT_PROCESS_POLL_INTERVAL_MS = 1_000L
 private const val EXIT_PROCESS_RESPONSE_TIMEOUT_MS = 2_000L
 private const val QUICK_MENU_PROCESS_POLL_INTERVAL_MS = 2_000L
 private const val LSFG_RUNTIME_HANDOFF_DELAY_MS = 1_200L
+private const val LSFG_RUNTIME_HANDOFF_TIMEOUT_MS = 2_500L
+private const val LSFG_RUNTIME_HANDOFF_POLL_MS = 100L
 private const val DEFAULT_FPS_LIMITER_MAX_HZ = 60
 private const val DEFAULT_FPS_LIMITER_TARGET_HZ = 60
 private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
 private const val FPS_LIMITER_TARGET_EXTRA = "fpsLimiterTarget"
+
+private enum class LsfgRuntimeMode(val label: String) {
+    OFF("Off"),
+    TURNING_ON("Turning on"),
+    GENERATING("Generating"),
+    TURNING_OFF("Turning off"),
+    SOURCE_ONLY_RESIDENT("Source only"),
+    DEGRADED("Degraded"),
+}
 
 private fun initialFpsLimiterEnabled(container: Container): Boolean =
     parseBooleanExtra(container.getExtra(FPS_LIMITER_ENABLED_EXTRA)) ?: true
@@ -609,6 +620,14 @@ fun XServerScreen(
     var lsfgFlowScale by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.flowScale) }
     var lsfgPerformanceMode by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.performanceMode) }
     val isLsfgRequested = isLsfgAvailable && lsfgMultiplier >= 2
+    fun initialLsfgRuntimeMode(): LsfgRuntimeMode = when {
+        !isLsfgAvailable -> LsfgRuntimeMode.OFF
+        initialLsfgSettings.multiplier >= 2 -> LsfgRuntimeMode.GENERATING
+        else -> LsfgRuntimeMode.SOURCE_ONLY_RESIDENT
+    }
+    var lsfgRuntimeMode by rememberSaveable(container.id) {
+        mutableStateOf(initialLsfgRuntimeMode())
+    }
     var isLsfgGenerationActive by rememberSaveable(container.id) {
         mutableStateOf(isLsfgAvailable && initialLsfgSettings.multiplier >= 2)
     }
@@ -725,11 +744,35 @@ fun XServerScreen(
 
     fun scheduleLsfgRuntimeHandoff(active: Boolean, multiplier: Int) {
         val generation = ++lsfgRuntimeTransitionGeneration
+        lsfgRuntimeMode = if (active) LsfgRuntimeMode.TURNING_ON else LsfgRuntimeMode.TURNING_OFF
         scope.launch {
-            delay(LSFG_RUNTIME_HANDOFF_DELAY_MS)
+            val startedAt = System.currentTimeMillis()
+            var observed = false
+            while (System.currentTimeMillis() - startedAt < LSFG_RUNTIME_HANDOFF_TIMEOUT_MS) {
+                val runtimeState = withContext(Dispatchers.IO) {
+                    LsfgVkManager.readRuntimeState(container)
+                }
+                observed = if (active) {
+                    runtimeState.readyForGeneration
+                } else {
+                    runtimeState.readyForSourceOnly
+                }
+                if (observed) break
+                delay(LSFG_RUNTIME_HANDOFF_POLL_MS)
+            }
+            val remainingSettleMs = LSFG_RUNTIME_HANDOFF_DELAY_MS - (System.currentTimeMillis() - startedAt)
+            if (remainingSettleMs > 0L) delay(remainingSettleMs)
             if (generation != lsfgRuntimeTransitionGeneration) return@launch
+            if (active && !observed) {
+                isLsfgGenerationActive = false
+                lsfgRuntimeMultiplier = 1
+                lsfgRuntimeMode = LsfgRuntimeMode.DEGRADED
+                applyFpsLimiterToEngines(effectiveFpsLimit())
+                return@launch
+            }
             isLsfgGenerationActive = active
             lsfgRuntimeMultiplier = if (active) multiplier.coerceIn(2, 4) else 1
+            lsfgRuntimeMode = if (active) LsfgRuntimeMode.GENERATING else LsfgRuntimeMode.SOURCE_ONLY_RESIDENT
             applyFpsLimiterToEngines(effectiveFpsLimit())
         }
     }
@@ -765,7 +808,10 @@ fun XServerScreen(
             scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)
         } else if (nextRequested) {
             lsfgRuntimeMultiplier = nextMultiplier.coerceIn(2, 4)
+            lsfgRuntimeMode = LsfgRuntimeMode.GENERATING
             applyFpsLimiterToEngines(effectiveFpsLimit())
+        } else {
+            lsfgRuntimeMode = if (isLsfgAvailable) LsfgRuntimeMode.SOURCE_ONLY_RESIDENT else LsfgRuntimeMode.OFF
         }
     }
 
@@ -1567,8 +1613,10 @@ fun XServerScreen(
         }   // preserve suspend state across activity recreation while a game is still running
     }
 
-    DisposableEffect(container, isLsfgGenerationActive) {
-        if (isLsfgGenerationActive) {
+    DisposableEffect(container, lsfgRuntimeMode) {
+        if (lsfgRuntimeMode == LsfgRuntimeMode.TURNING_ON ||
+            lsfgRuntimeMode == LsfgRuntimeMode.GENERATING
+        ) {
             LsfgVkManager.startVsyncClock(context, container)
         } else {
             LsfgVkManager.stopVsyncClock()
@@ -2880,6 +2928,7 @@ fun XServerScreen(
                 multiplier = lsfgMultiplier,
                 flowScale = lsfgFlowScale,
                 performanceMode = lsfgPerformanceMode,
+                runtimeStatus = lsfgRuntimeMode.label,
                 onMultiplierChanged = ::applyLsfgMultiplier,
                 onFlowScaleChanged = ::applyLsfgFlowScale,
                 onPerformanceModeChanged = ::applyLsfgPerformanceMode,

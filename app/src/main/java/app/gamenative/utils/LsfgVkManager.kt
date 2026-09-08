@@ -152,6 +152,32 @@ object LsfgVkManager {
         return if (raw == 0) 0 else raw.coerceIn(2, 4)
     }
 
+    enum class RuntimeStatus {
+        UNKNOWN,
+        PASS_THROUGH,
+        SOURCE_ONLY,
+        GENERATING,
+        DEGRADED,
+    }
+
+    data class RuntimeState(
+        val status: RuntimeStatus,
+        val resident: Boolean,
+        val sourceOnly: Boolean,
+        val generationReady: Boolean,
+        val generationInitialized: Boolean,
+        val generatedPresented: Boolean,
+        val degraded: Boolean,
+        val multiplier: Int,
+        val fresh: Boolean,
+    ) {
+        val readyForGeneration: Boolean
+            get() = fresh && resident && generationReady && multiplier >= 2 && !degraded
+
+        val readyForSourceOnly: Boolean
+            get() = fresh && resident && sourceOnly && !generationReady && !degraded
+    }
+
     private fun layerRequested(container: Container): Boolean =
         parseBool(container.getExtra(EXTRA_ARMED, "false"))
 
@@ -267,6 +293,64 @@ object LsfgVkManager {
         }
         return cachedMeasuredFps
     }
+
+    fun readRuntimeState(container: Container): RuntimeState {
+        val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
+        if (!statsFile.isFile) return unknownRuntimeState(fresh = false)
+        val fresh = System.currentTimeMillis() - statsFile.lastModified() in 0L..STATS_FRESHNESS_MS
+        if (!fresh) return unknownRuntimeState(fresh = false)
+
+        return runCatching {
+            val values = statsFile.readLines()
+                .mapNotNull { line ->
+                    val separator = line.indexOf('=')
+                    if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
+                }
+                .toMap()
+            val degraded = values["degraded"] == "1"
+            val sourceOnly = values["source_only"] == "1"
+            val generationReady = values["generation_ready"] == "1"
+            val resident = values["resident"] == "1" || values["active"] == "1" || sourceOnly
+            val status = when (values["state"]) {
+                "source_only" -> RuntimeStatus.SOURCE_ONLY
+                "generating" -> RuntimeStatus.GENERATING
+                "degraded" -> RuntimeStatus.DEGRADED
+                "pass_through" -> RuntimeStatus.PASS_THROUGH
+                else -> when {
+                    degraded -> RuntimeStatus.DEGRADED
+                    generationReady -> RuntimeStatus.GENERATING
+                    sourceOnly -> RuntimeStatus.SOURCE_ONLY
+                    resident -> RuntimeStatus.PASS_THROUGH
+                    else -> RuntimeStatus.UNKNOWN
+                }
+            }
+            RuntimeState(
+                status = status,
+                resident = resident,
+                sourceOnly = sourceOnly,
+                generationReady = generationReady,
+                generationInitialized = values["generation_initialized"] == "1",
+                generatedPresented = values["generated_presented"] == "1",
+                degraded = degraded,
+                multiplier = values["multiplier"]?.toIntOrNull() ?: 0,
+                fresh = true,
+            )
+        }.getOrElse {
+            unknownRuntimeState(fresh = false)
+        }
+    }
+
+    private fun unknownRuntimeState(fresh: Boolean) = RuntimeState(
+        status = RuntimeStatus.UNKNOWN,
+        resident = false,
+        sourceOnly = false,
+        generationReady = false,
+        generationInitialized = false,
+        generatedPresented = false,
+        degraded = false,
+        multiplier = 0,
+        fresh = fresh,
+    )
 
     /**
      * Install the layer runtime + DLL into the container's filesystem.

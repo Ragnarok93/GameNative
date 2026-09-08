@@ -18,6 +18,8 @@ class LsfgPacingCallSiteContractTest {
             .substringBefore("fun effectiveFpsLimit()")
 
         assertTrue(source.contains("val isLsfgRequested = isLsfgAvailable && lsfgMultiplier >= 2"))
+        assertTrue(source.contains("private enum class LsfgRuntimeMode"))
+        assertTrue(source.contains("var lsfgRuntimeMode by rememberSaveable(container.id)"))
         assertTrue(source.contains("var isLsfgGenerationActive by rememberSaveable(container.id)"))
         assertTrue(source.contains("var lsfgRuntimeMultiplier by rememberSaveable(container.id)"))
         assertTrue(limiter.contains("val lsfgActive = isLsfgGenerationActive"))
@@ -33,16 +35,17 @@ class LsfgPacingCallSiteContractTest {
     }
 
     @Test
-    fun xServerScreenOnlyRunsLsfgVsyncClockWhileGenerationIsActive() {
+    fun xServerScreenRunsLsfgVsyncClockDuringGenerationHandoff() {
         val source = String(
             Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
             Charsets.UTF_8,
         )
-        val vsyncEffect = source.substringAfter("DisposableEffect(container, isLsfgGenerationActive)")
+        val vsyncEffect = source.substringAfter("DisposableEffect(container, lsfgRuntimeMode)")
             .substringBefore("// Event handlers defined in composable scope")
 
-        assertTrue(source.contains("var isLsfgGenerationActive by rememberSaveable(container.id)"))
-        assertTrue(vsyncEffect.contains("if (isLsfgGenerationActive)"))
+        assertTrue(source.contains("var lsfgRuntimeMode by rememberSaveable(container.id)"))
+        assertTrue(vsyncEffect.contains("lsfgRuntimeMode == LsfgRuntimeMode.TURNING_ON"))
+        assertTrue(vsyncEffect.contains("lsfgRuntimeMode == LsfgRuntimeMode.GENERATING"))
         assertTrue(vsyncEffect.contains("LsfgVkManager.startVsyncClock(context, container)"))
         assertFalse(vsyncEffect.contains("if (isLsfgAvailable)"))
     }
@@ -60,7 +63,12 @@ class LsfgPacingCallSiteContractTest {
         val applier = source.substringAfter("PowerManager.fpsCapApplier = applier@")
             .substringBefore("val detectedMax")
 
-        assertTrue(handoff.contains("delay(LSFG_RUNTIME_HANDOFF_DELAY_MS)"))
+        assertTrue(handoff.contains("LsfgVkManager.readRuntimeState(container)"))
+        assertTrue(handoff.contains("runtimeState.readyForGeneration"))
+        assertTrue(handoff.contains("runtimeState.readyForSourceOnly"))
+        assertTrue(handoff.contains("LSFG_RUNTIME_HANDOFF_TIMEOUT_MS"))
+        assertTrue(handoff.contains("remainingSettleMs"))
+        assertTrue(handoff.contains("lsfgRuntimeMode = LsfgRuntimeMode.DEGRADED"))
         assertTrue(handoff.contains("isLsfgGenerationActive = active"))
         assertTrue(handoff.contains("applyFpsLimiterToEngines(effectiveFpsLimit())"))
         assertTrue(multiplier.contains("val previousRequested = isLsfgRequested"))

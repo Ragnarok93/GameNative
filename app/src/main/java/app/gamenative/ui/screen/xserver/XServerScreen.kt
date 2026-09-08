@@ -5930,6 +5930,15 @@ private suspend fun extractGraphicsDriverFiles(
         val bcnEmulationCache = graphicsDriverConfig.get("bcnEmulationCache")
         envVars.put("WRAPPER_USE_BCN_CACHE", bcnEmulationCache)
 
+        if (isWrapperGamenative) {
+            val bcnMetricsFile = app.gamenative.diagnostics.BcnPerformanceMetricsExporter.metricsFile(context, appId)
+            envVars.put("WRAPPER_BCN_METRICS", "1")
+            envVars.put("WRAPPER_BCN_METRICS_FILE", bcnMetricsFile.absolutePath)
+            envVars.put("WRAPPER_BCN_METRICS_APPID", appId)
+            // Cache hit/miss accounting feeds the same performance snapshot.
+            envVars.put("WRAPPER_BCN_TELEMETRY", "1")
+        }
+
         val transcoder = graphicsDriverConfig.get("transcoder", "cpu")
         envVars.put("WRAPPER_BCN_GPU", if (transcoder.equals("gpu", ignoreCase = true)) "1" else "0")
 

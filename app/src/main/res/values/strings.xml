@@ -605,6 +605,11 @@
     <!-- Settings -->
     <string name="settings_save_logcat_subtitle">Saves a snapshot of the logcat only for this app\'s PID</string>
     <string name="settings_save_logcat_title">Save logcat</string>
+    <string name="settings_save_bcn_metrics_title">Save BCn performance metrics</string>
+    <string name="settings_save_bcn_metrics_subtitle">Export timing, cache, descriptor, and staging-reuse counters from the latest BCn emulation run</string>
+    <string name="toast_bcn_metrics_saved">BCn performance metrics exported</string>
+    <string name="toast_failed_bcn_metrics_save">Failed to export BCn performance metrics</string>
+    <string name="toast_no_bcn_metrics">No BCn performance metrics have been captured yet</string>
     <string name="settings_achievement_show_notification">Show Achievement Notifications</string>
     <string name="settings_achievement_play_sound">Play Achievement Sound</string>
     <string name="box86_64_env_var_help__dynarec_safeflags"><![CDATA[

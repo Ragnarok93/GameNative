@@ -16,7 +16,7 @@ object LsfgQuickMenuHelper {
 
     fun isAvailable(container: Container): Boolean {
         LsfgRuntimeGate.configure(container.rootDir)
-        return LsfgVkManager.isSupported(container) && LsfgVkManager.isArmed(container)
+        return LsfgVkManager.isAvailable(container)
     }
 
     fun readSettings(container: Container): Settings = Settings(

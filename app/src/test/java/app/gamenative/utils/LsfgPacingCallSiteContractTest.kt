@@ -28,6 +28,21 @@ class LsfgPacingCallSiteContractTest {
         assertFalse(limiter.contains("LsfgRuntimeGate"))
     }
 
+    @Test
+    fun xServerScreenOnlyRunsLsfgVsyncClockWhileGenerationIsActive() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
+            Charsets.UTF_8,
+        )
+        val vsyncEffect = source.substringAfter("DisposableEffect(container, isLsfgGenerationActive)")
+            .substringBefore("// Event handlers defined in composable scope")
+
+        assertTrue(source.contains("val isLsfgGenerationActive = isLsfgAvailable && lsfgMultiplier >= 2"))
+        assertTrue(vsyncEffect.contains("if (isLsfgGenerationActive)"))
+        assertTrue(vsyncEffect.contains("LsfgVkManager.startVsyncClock(context, container)"))
+        assertFalse(vsyncEffect.contains("if (isLsfgAvailable)"))
+    }
+
     private fun sourcePath(relative: String): Path {
         val modulePath = Paths.get("src/main/java").resolve(relative)
         if (Files.isRegularFile(modulePath)) return modulePath

@@ -342,9 +342,11 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             }
         }
 
-        if (LsfgVkManager.isSupported(container)) {
+        if (LsfgVkManager.isFrameGenerationRequested(container)) {
             LsfgVkManager.ensureRuntimeInstalled(environment.getContext(), container);
             LsfgVkManager.writeConfig(container);
+            LsfgVkManager.applyLaunchEnv(container, envVars);
+        } else if (LsfgVkManager.isSupported(container)) {
             LsfgVkManager.applyLaunchEnv(container, envVars);
         }
 

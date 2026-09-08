@@ -1,0 +1,46 @@
+name: Apply BCn Metrics UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/bcn-emulation-optimization
+    paths:
+      - tools/bcn-ui/**
+      - .github/workflows/apply-bcn-metrics-ui.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/bcn-emulation-optimization
+          fetch-depth: 0
+
+      - name: Apply guarded Android source transform
+        run: |
+          python3 tools/bcn-ui/apply.py
+          git diff --check
+          grep -q 'settings_save_bcn_metrics_title' app/src/main/java/app/gamenative/ui/screen/settings/SettingsGroupDebug.kt
+          grep -q 'WRAPPER_BCN_METRICS_FILE' app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt
+          grep -q 'object BcnPerformanceMetricsExporter' app/src/main/java/app/gamenative/diagnostics/BcnPerformanceMetricsExporter.kt
+          grep -q 'Save BCn performance metrics' app/src/main/res/values/strings.xml
+
+      - name: Commit transformed Android sources
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            app/src/main/java/app/gamenative/ui/screen/settings/SettingsGroupDebug.kt \
+            app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt \
+            app/src/main/java/app/gamenative/diagnostics/BcnPerformanceMetricsExporter.kt \
+            app/src/main/res/values/strings.xml
+          git diff --cached --quiet && exit 0
+          git commit -m 'feat: add BCn performance metrics export'
+          git push origin HEAD:feature/bcn-emulation-optimization

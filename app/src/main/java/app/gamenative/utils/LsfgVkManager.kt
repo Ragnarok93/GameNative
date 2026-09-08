@@ -118,12 +118,11 @@ object LsfgVkManager {
             layerRequested(container) &&
             containerDllPath(container) != null
 
-    /** Whether launch should prepare the native LSFG runtime for this container. */
+    /** Whether launch should prepare the resident native LSFG layer for this container. */
     @JvmStatic
     fun isFrameGenerationRequested(container: Container): Boolean =
         isSupported(container) &&
-            layerRequested(container) &&
-            multiplier(container) >= 2
+            layerRequested(container)
 
     /** Whether the LSFG layer should be resident in the launched process. */
     @JvmStatic
@@ -380,7 +379,7 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) savedMultiplier else 1,
                 flowScale = flowScale(container),
-                performanceMode = performanceMode(container) && frameGenActive,
+                performanceMode = performanceMode(container),
                 fpsLimit = fpsLimit(container),
                 presentMode = presentMode(container),
             )
@@ -777,10 +776,10 @@ object LsfgVkManager {
                 appendLine("exe = ${tomlString(processName)}")
                 appendLine("multiplier = $effectiveMultiplier")
                 appendLine("flow_scale = ${formatFlowScale(flowScale)}")
-                appendLine("performance_mode = ${if (enabled && performanceMode) "true" else "false"}")
+                appendLine("performance_mode = ${if (performanceMode) "true" else "false"}")
                 appendLine("hdr_mode = false")
                 appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
-                appendLine("experimental_present_mode = ${tomlString(if (enabled) presentMode else "fifo")}")
+                appendLine("experimental_present_mode = ${tomlString(presentMode)}")
             }
         }
     }
@@ -841,7 +840,7 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) multiplier.coerceIn(2, 4) else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
-                performanceMode = performanceMode && frameGenActive,
+                performanceMode = performanceMode,
                 fpsLimit = effectiveFpsLimit,
                 presentMode = presentMode(container),
             )

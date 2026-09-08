@@ -246,6 +246,7 @@ private const val EXIT_PROCESS_TIMEOUT_MS = 30_000L
 private const val EXIT_PROCESS_POLL_INTERVAL_MS = 1_000L
 private const val EXIT_PROCESS_RESPONSE_TIMEOUT_MS = 2_000L
 private const val QUICK_MENU_PROCESS_POLL_INTERVAL_MS = 2_000L
+private const val LSFG_RUNTIME_HANDOFF_DELAY_MS = 1_200L
 private const val DEFAULT_FPS_LIMITER_MAX_HZ = 60
 private const val DEFAULT_FPS_LIMITER_TARGET_HZ = 60
 private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
@@ -607,9 +608,16 @@ fun XServerScreen(
     var lsfgMultiplier by rememberSaveable(container.id) { mutableIntStateOf(initialLsfgSettings.multiplier) }
     var lsfgFlowScale by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.flowScale) }
     var lsfgPerformanceMode by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.performanceMode) }
-    val isLsfgGenerationActive = isLsfgAvailable && lsfgMultiplier >= 2
-    var lastLsfgPacingActive by remember(container.id) {
+    val isLsfgRequested = isLsfgAvailable && lsfgMultiplier >= 2
+    var isLsfgGenerationActive by rememberSaveable(container.id) {
         mutableStateOf(isLsfgAvailable && initialLsfgSettings.multiplier >= 2)
+    }
+    var lsfgRuntimeMultiplier by rememberSaveable(container.id) {
+        mutableIntStateOf(if (isLsfgGenerationActive) initialLsfgSettings.multiplier else 1)
+    }
+    var lsfgRuntimeTransitionGeneration by remember(container.id) { mutableIntStateOf(0) }
+    var lastLsfgPacingActive by remember(container.id) {
+        mutableStateOf(isLsfgGenerationActive)
     }
 
     fun persistFpsLimiterState() {
@@ -702,7 +710,7 @@ fun XServerScreen(
         ShmFramePacer.setFrameRateLimit(limit)
         PowerManager.targetFps = limit
         PowerManager.frameSampleStride =
-            if (lsfgActive) lsfgMultiplier else 1
+            if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1
     }
 
     fun effectiveFpsLimit(): Int =
@@ -715,11 +723,22 @@ fun XServerScreen(
         )
     }
 
+    fun scheduleLsfgRuntimeHandoff(active: Boolean, multiplier: Int) {
+        val generation = ++lsfgRuntimeTransitionGeneration
+        scope.launch {
+            delay(LSFG_RUNTIME_HANDOFF_DELAY_MS)
+            if (generation != lsfgRuntimeTransitionGeneration) return@launch
+            isLsfgGenerationActive = active
+            lsfgRuntimeMultiplier = if (active) multiplier.coerceIn(2, 4) else 1
+            applyFpsLimiterToEngines(effectiveFpsLimit())
+        }
+    }
+
     fun applyFpsLimiterEnabled(enabled: Boolean) {
         fpsLimiterEnabled = enabled
         applyFpsLimiterToEngines(effectiveFpsLimit())
         persistFpsLimiterState()
-        if (isLsfgAvailable && lsfgMultiplier >= 2) {
+        if (isLsfgRequested) {
             applyLsfgSettings()
         }
     }
@@ -731,15 +750,23 @@ fun XServerScreen(
             applyFpsLimiterToEngines(effectiveFpsLimit())
         }
         persistFpsLimiterState()
-        if (isLsfgAvailable && lsfgMultiplier >= 2) {
+        if (isLsfgRequested) {
             applyLsfgSettings()
         }
     }
 
     fun applyLsfgMultiplier(mult: Int) {
-        lsfgMultiplier = LsfgQuickMenuHelper.sanitizeMultiplier(mult)
+        val previousRequested = isLsfgRequested
+        val nextMultiplier = LsfgQuickMenuHelper.sanitizeMultiplier(mult)
+        val nextRequested = isLsfgAvailable && nextMultiplier >= 2
+        lsfgMultiplier = nextMultiplier
         applyLsfgSettings()
-        applyFpsLimiterToEngines(effectiveFpsLimit())
+        if (previousRequested != nextRequested) {
+            scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)
+        } else if (nextRequested) {
+            lsfgRuntimeMultiplier = nextMultiplier.coerceIn(2, 4)
+            applyFpsLimiterToEngines(effectiveFpsLimit())
+        }
     }
 
     fun applyLsfgFlowScale(scale: Float) {
@@ -756,7 +783,7 @@ fun XServerScreen(
         // Adaptive-cap steps route through the LSFG limiter; the X-server
         // limiters must stay at 0 under LSFG.
         PowerManager.fpsCapApplier = applier@{ capFps: Int ->
-            if (!isLsfgAvailable || lsfgMultiplier < 2) return@applier false
+            if (!isLsfgAvailable || !isLsfgGenerationActive) return@applier false
             PowerManager.targetFps = capFps
             LsfgQuickMenuHelper.applyLiveFpsCap(container, capFps)
             ShmFramePacer.setFrameRateLimit(capFps)
@@ -1972,7 +1999,7 @@ fun XServerScreen(
             val xServerView = xServerViewInstance.apply {
                 xServerView = this
                 val initialLimit = if (fpsLimiterEnabled) fpsLimiterTarget else 0
-                setFrameRateLimit(if (isLsfgAvailable && lsfgMultiplier >= 2) 0 else initialLimit)
+                setFrameRateLimit(if (isLsfgGenerationActive) 0 else initialLimit)
                 val renderer = this.renderer
                 if (!useGLRenderer && renderer is VulkanRenderer) {
                     val pm = container.rendererPresentMode.ifEmpty { "fifo" }

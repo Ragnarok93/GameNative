@@ -60,28 +60,28 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun isArmed_multiplierZeroDoesNotKeepLayerResident() {
+    fun isArmed_multiplierZeroKeepsLayerResident() {
         val container = container(armed = true, multiplier = "0")
 
         assertTrue(LsfgVkManager.isAvailable(container))
-        assertFalse(LsfgVkManager.isFrameGenerationRequested(container))
-        assertFalse(LsfgVkManager.isArmed(container))
+        assertTrue(LsfgVkManager.isFrameGenerationRequested(container))
+        assertTrue(LsfgVkManager.isArmed(container))
     }
 
     @Test
-    fun applyLaunchEnv_multiplierZeroDoesNotLoadPassThroughLayer() {
+    fun applyLaunchEnv_multiplierZeroLoadsResidentSourceOnlyLayer() {
         val container = container(armed = true, multiplier = "0")
         val envVars = EnvVars().apply {
             put("VK_LAYER_PATH", "/existing/explicit-layers")
             put("VK_INSTANCE_LAYERS", "VK_LAYER_existing")
         }
 
-        assertFalse(LsfgVkManager.applyLaunchEnv(container, envVars))
-        assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
-        assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
-        assertEquals("VK_LAYER_existing", envVars["VK_LOADER_LAYERS_ENABLE"])
-        assertFalse(envVars.has("LSFG_CONFIG"))
-        assertFalse(envVars.has("LSFG_PROCESS_EXE"))
+        assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
+        assertTrue(envVars["VK_LAYER_PATH"].contains(".local/share/vulkan/implicit_layer.d"))
+        assertEquals("VK_LAYER_existing:VK_LAYER_LS_frame_generation", envVars["VK_INSTANCE_LAYERS"])
+        assertEquals("VK_LAYER_existing,VK_LAYER_LS_frame_generation", envVars["VK_LOADER_LAYERS_ENABLE"])
+        assertTrue(envVars.has("LSFG_CONFIG"))
+        assertEquals("game.exe", envVars["LSFG_PROCESS_EXE"])
     }
 
     @Test
@@ -92,8 +92,8 @@ class LsfgVkManagerTest {
 
         val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
         assertTrue(text.contains("multiplier = 1"))
-        assertTrue(text.contains("performance_mode = false"))
-        assertTrue(text.contains("experimental_present_mode = \"fifo\""))
+        assertTrue(text.contains("performance_mode = true"))
+        assertTrue(text.contains("experimental_present_mode = \"mailbox\""))
     }
 
     @Test

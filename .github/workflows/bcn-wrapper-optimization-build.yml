@@ -8,6 +8,7 @@ on:
     paths:
       - tools/bcn-wrapper/**
       - tools/wrapper-bcn-staging/**
+      - tools/wrapper-bcn-metrics/**
       - patches/bcn-wrapper/**
       - .github/workflows/bcn-wrapper-optimization-build.yml
 
@@ -33,10 +34,12 @@ jobs:
           python3 tools/bcn-wrapper/apply_optimizations.py mesa-wrapper
           python3 patches/bcn-wrapper/apply_cache_optimizations.py mesa-wrapper
           python3 tools/wrapper-bcn-staging/apply.py mesa-wrapper
+          python3 tools/wrapper-bcn-metrics/apply.py mesa-wrapper
           git -C mesa-wrapper diff --check
           git -C mesa-wrapper diff -- \
             src/vulkan/wrapper/wrapper_private.h \
             src/vulkan/wrapper/wrapper_device.c \
+            src/vulkan/wrapper/wrapper_bcdec.h \
             src/vulkan/wrapper/wrapper_bcdec.c
 
       - name: Verify BCn optimization postconditions
@@ -52,6 +55,10 @@ jobs:
           grep -q 'WRAPPER_BCN_BUFFER_CACHE_MB' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'wrapper_bcn_acquire_buffer' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'bcn_buffer_cache' mesa-wrapper/src/vulkan/wrapper/wrapper_private.h
+          grep -q 'WRAPPER_BCN_METRICS_FILE' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
+          grep -q 'BCN_PERF_VERSION=1' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
+          grep -q 'gpu_record_cpu_ns' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
+          grep -q 'wrapper_bcn_cache_get_stats' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c
 
       - name: Patch Mesa Android build compatibility
         working-directory: mesa-wrapper

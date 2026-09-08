@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import app.gamenative.CrashHandler
+import app.gamenative.diagnostics.BcnPerformanceMetricsExporter
 import app.gamenative.diagnostics.LsfgDiagnosticExporter
 import coil.annotation.ExperimentalCoilApi
 import coil.imageLoader
@@ -132,6 +133,28 @@ fun SettingsGroupDebug() {
         }
     }
 
+    /* Save the latest persistent BCn emulation performance snapshot. */
+    val saveBcnMetrics = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain"),
+    ) { resultUri ->
+        resultUri ?: return@rememberLauncherForActivityResult
+        diagnosticsScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val report = BcnPerformanceMetricsExporter.buildLatestReport(context)
+                    context.contentResolver.openOutputStream(resultUri)?.use { outputStream ->
+                        outputStream.write(report.toByteArray(Charsets.UTF_8))
+                    } ?: error("Unable to open selected destination")
+                }
+            }
+            result.onSuccess {
+                SnackbarManager.show(context.getString(R.string.toast_bcn_metrics_saved))
+            }.onFailure {
+                SnackbarManager.show(context.getString(R.string.toast_failed_bcn_metrics_save))
+            }
+        }
+    }
+
     /* Unified LSFG diagnostics export. Capture/assembly happens only on explicit export. */
     val saveLsfgDiagnostics = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/plain"),
@@ -209,6 +232,18 @@ fun SettingsGroupDebug() {
             title = { Text(text = stringResource(R.string.settings_save_logcat_title)) },
             subtitle = { Text(text = stringResource(R.string.settings_save_logcat_subtitle)) },
             onClick = { saveLogCat.launch("app_logs_${CrashHandler.timestamp}.txt") },
+        )
+        SettingsMenuLink(
+            colors = settingsTileColors(),
+            title = { Text(text = stringResource(R.string.settings_save_bcn_metrics_title)) },
+            subtitle = { Text(text = stringResource(R.string.settings_save_bcn_metrics_subtitle)) },
+            onClick = {
+                if (BcnPerformanceMetricsExporter.latestMetricsFile(context) == null) {
+                    SnackbarManager.show(context.getString(R.string.toast_no_bcn_metrics))
+                } else {
+                    saveBcnMetrics.launch(BcnPerformanceMetricsExporter.defaultExportFileName())
+                }
+            },
         )
         SettingsMenuLink(
             colors = settingsTileColors(),

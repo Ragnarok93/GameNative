@@ -7,6 +7,7 @@ on:
       - feature/bcn-emulation-optimization
     paths:
       - tools/bcn-wrapper/**
+      - tools/wrapper-bcn-staging/**
       - patches/bcn-wrapper/**
       - .github/workflows/bcn-wrapper-optimization-build.yml
 
@@ -31,6 +32,7 @@ jobs:
         run: |
           python3 tools/bcn-wrapper/apply_optimizations.py mesa-wrapper
           python3 patches/bcn-wrapper/apply_cache_optimizations.py mesa-wrapper
+          python3 tools/wrapper-bcn-staging/apply.py mesa-wrapper
           git -C mesa-wrapper diff --check
           git -C mesa-wrapper diff -- \
             src/vulkan/wrapper/wrapper_private.h \
@@ -47,6 +49,9 @@ jobs:
           grep -q 'WRAPPER_BCN_CACHE_BUDGET_MB' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c
           grep -q 'WRAPPER_BCN_TELEMETRY' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c
           grep -q 'WRAPPER_BCN_CACHE_KEY_VERSION 2' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c
+          grep -q 'WRAPPER_BCN_BUFFER_CACHE_MB' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
+          grep -q 'wrapper_bcn_acquire_buffer' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
+          grep -q 'bcn_buffer_cache' mesa-wrapper/src/vulkan/wrapper/wrapper_private.h
 
       - name: Patch Mesa Android build compatibility
         working-directory: mesa-wrapper

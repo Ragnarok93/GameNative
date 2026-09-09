@@ -56,6 +56,7 @@ jobs:
           grep -q 'WRAPPER_BCN_BUFFER_CACHE_MB' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'wrapper_bcn_acquire_buffer' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'bcn_buffer_cache' mesa-wrapper/src/vulkan/wrapper/wrapper_private.h
+          grep -q 'device->physical->emulate_bcn > 1' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'WRAPPER_BCN_METRICS_FILE' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'BCN_PERF_VERSION=1' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'gpu_record_cpu_ns' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c

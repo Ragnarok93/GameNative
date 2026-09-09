@@ -285,10 +285,12 @@ device = one(
     device,
     """   wcb->pool = pool;
    wcb->dispatch_handle = dispatch_handle;
+   list_inithead(&wcb->dynamic_render_objects);
    list_add(&wcb->link, &device->command_buffer_list);
 """,
     """   wcb->pool = pool;
    wcb->dispatch_handle = dispatch_handle;
+   list_inithead(&wcb->dynamic_render_objects);
    list_inithead(&wcb->bcn_buffers);
    list_add(&wcb->link, &device->command_buffer_list);
 """,
@@ -301,12 +303,14 @@ device = one(
     """   if (device->emulate_push_descriptor)
       wrapper_push_pool_destroy_all(wcb);
    wrapper_bcn_pool_destroy_all(wcb);
+   wrapper_dynamic_render_objects_reset(wcb);
 
    device->dispatch_table.FreeCommandBuffers(""",
     """   wrapper_bcn_release_cb_buffers(wcb);
    if (device->emulate_push_descriptor)
       wrapper_push_pool_destroy_all(wcb);
    wrapper_bcn_pool_destroy_all(wcb);
+   wrapper_dynamic_render_objects_reset(wcb);
 
    device->dispatch_table.FreeCommandBuffers(""",
     "command-buffer destroy lifetime",

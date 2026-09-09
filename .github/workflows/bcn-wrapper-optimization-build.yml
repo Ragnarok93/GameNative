@@ -9,6 +9,7 @@ on:
       - tools/bcn-wrapper/**
       - tools/wrapper-bcn-staging/**
       - tools/wrapper-bcn-metrics/**
+      - tools/wrapper-bcn-capabilities/**
       - patches/bcn-wrapper/**
       - .github/workflows/bcn-wrapper-optimization-build.yml
 
@@ -36,10 +37,12 @@ jobs:
           python3 tools/wrapper-bcn-staging/apply.py mesa-wrapper
           python3 tools/wrapper-bcn-metrics/disambiguate.py mesa-wrapper
           python3 tools/wrapper-bcn-metrics/apply.py mesa-wrapper
+          python3 tools/wrapper-bcn-capabilities/apply.py mesa-wrapper
           git -C mesa-wrapper diff --check
           git -C mesa-wrapper diff -- \
             src/vulkan/wrapper/wrapper_private.h \
             src/vulkan/wrapper/wrapper_device.c \
+            src/vulkan/wrapper/wrapper_physical_device.c \
             src/vulkan/wrapper/wrapper_bcdec.h \
             src/vulkan/wrapper/wrapper_bcdec.c
 
@@ -63,6 +66,12 @@ jobs:
           grep -q 'BCN_PERF_VERSION=1' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'gpu_record_cpu_ns' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
           grep -q 'wrapper_bcn_cache_get_stats' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c
+          grep -q 'bcn_storage_format' mesa-wrapper/src/vulkan/wrapper/wrapper_private.h
+          grep -q 'get_format_for_bcn_image' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c
+          grep -q 'VK_FORMAT_R8G8B8A8_SNORM' mesa-wrapper/src/vulkan/wrapper/wrapper_bcdec.c
+          grep -q 'bcn_upload_size_for_target' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
+          grep -q 'decompress_bcn_format_to' mesa-wrapper/src/vulkan/wrapper/wrapper_device.c
+          grep -q 'surrogate_supported' mesa-wrapper/src/vulkan/wrapper/wrapper_physical_device.c
 
       - name: Patch Mesa Android build compatibility
         working-directory: mesa-wrapper

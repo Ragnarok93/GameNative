@@ -167,11 +167,13 @@ wrapper_bcn_alloc_set(struct wrapper_command_buffer *wcb, VkDescriptorSet *out)
 
     destroy_old = """   if (device->emulate_push_descriptor)
       wrapper_push_pool_destroy_all(wcb);
+   wrapper_dynamic_render_objects_reset(wcb);
 
    device->dispatch_table.FreeCommandBuffers("""
     destroy_new = """   if (device->emulate_push_descriptor)
       wrapper_push_pool_destroy_all(wcb);
    wrapper_bcn_pool_destroy_all(wcb);
+   wrapper_dynamic_render_objects_reset(wcb);
 
    device->dispatch_table.FreeCommandBuffers("""
     text = replace_once(text, destroy_old, destroy_new, "BCn pool destruction")

@@ -252,27 +252,47 @@ if device.count("wrapper_bcn_release_cb_buffers(wcb);") != 2:
     raise RuntimeError("expected BCn release hook on BeginCommandBuffer and ResetCommandBuffer")
 
 # ResetCommandPool also makes every child command buffer safe for reuse.
-old_pool_reset = """   if (device->emulate_push_descriptor) {
+# Current wrapper-25 also tracks dynamic-rendering objects in this walk. BCn
+# work must participate in the same lifetime boundary even when none of the
+# other emulation modes are active.
+old_pool_reset = """   /* Both of these walk the device's whole command-buffer list under its lock,
+ * so do it only when something can have put objects there. */
+   if (device->emulate_push_descriptor ||
+       device->physical->emulate_imageless_framebuffer ||
+       device->physical->emulate_vulkan13) {
       simple_mtx_lock(&device->resource_mutex);
       list_for_each_entry(struct wrapper_command_buffer, wcb,
-                          &device->command_buffer_list, link)
-         if (wcb->pool == commandPool)
-            wrapper_push_pool_reset_all(wcb);
+                          &device->command_buffer_list, link) {
+         if (wcb->pool == commandPool) {
+            wrapper_dynamic_render_objects_reset(wcb);
+            if (device->emulate_push_descriptor)
+               wrapper_push_pool_reset_all(wcb);
+         }
+      }
       simple_mtx_unlock(&device->resource_mutex);
    }
    return device->dispatch_table.ResetCommandPool(device->dispatch_handle,
 """
-new_pool_reset = """   simple_mtx_lock(&device->resource_mutex);
-   list_for_each_entry(struct wrapper_command_buffer, wcb,
-                       &device->command_buffer_list, link) {
-      if (wcb->pool != commandPool)
-         continue;
-      if (device->emulate_push_descriptor)
-         wrapper_push_pool_reset_all(wcb);
-      wrapper_bcn_release_cb_buffers(wcb);
-      wrapper_bcn_pool_reset_all(wcb);
+new_pool_reset = """   /* Dynamic-rendering, push-descriptor, and BCn transient objects all follow
+ * command-buffer lifetime. Include BCn in the gate so a pool reset releases
+ * its internal buffers even when the other emulation modes are inactive. */
+   if (device->emulate_push_descriptor ||
+       device->physical->emulate_imageless_framebuffer ||
+       device->physical->emulate_vulkan13 ||
+       device->physical->emulate_bcn > 1) {
+      simple_mtx_lock(&device->resource_mutex);
+      list_for_each_entry(struct wrapper_command_buffer, wcb,
+                          &device->command_buffer_list, link) {
+         if (wcb->pool == commandPool) {
+            wrapper_dynamic_render_objects_reset(wcb);
+            if (device->emulate_push_descriptor)
+               wrapper_push_pool_reset_all(wcb);
+            wrapper_bcn_release_cb_buffers(wcb);
+            wrapper_bcn_pool_reset_all(wcb);
+         }
+      }
+      simple_mtx_unlock(&device->resource_mutex);
    }
-   simple_mtx_unlock(&device->resource_mutex);
    return device->dispatch_table.ResetCommandPool(device->dispatch_handle,
 """
 device = one(device, old_pool_reset, new_pool_reset, "command-pool reset lifetime")

@@ -21,6 +21,10 @@ public class ShmFramePacer {
         if (frameRateLimit == 0) timings.clear();
     }
 
+    public static synchronized void resetTiming() {
+        timings.clear();
+    }
+
     // Returns how long (ns) the caller should suspend this client's reads, or 0.
     public static long framePresented(int drawableId) {
         int fps = frameRateLimit;

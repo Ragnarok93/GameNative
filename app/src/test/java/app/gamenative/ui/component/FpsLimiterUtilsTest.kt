@@ -177,4 +177,48 @@ class FpsLimiterUtilsTest {
             0.001f,
         )
     }
+
+    @Test
+    fun `source cap stays authoritative when LSFG is off`() {
+        assertEquals(30, effectiveSourceFpsCap(30))
+        assertEquals(30, predictedLsfgOutputFps(effectiveSourceFpsCap(30), 1))
+    }
+
+    @Test
+    fun `source cap is not multiplied or disabled at LSFG 2x`() {
+        val source = effectiveSourceFpsCap(30)
+
+        assertEquals(30, source)
+        assertEquals(60, predictedLsfgOutputFps(source, 2))
+    }
+
+    @Test
+    fun `source cap survives LSFG multiplier changes`() {
+        listOf(2, 3, 4).forEach { multiplier ->
+            assertEquals(30, effectiveSourceFpsCap(30))
+            assertEquals(30 * multiplier, predictedLsfgOutputFps(30, multiplier))
+        }
+    }
+
+    @Test
+    fun `source cap survives LSFG enable disable cycling`() {
+        listOf(1, 2, 1, 2).forEach { multiplier ->
+            assertEquals(30, effectiveSourceFpsCap(30))
+            assertEquals(30 * multiplier, predictedLsfgOutputFps(30, multiplier))
+        }
+    }
+
+    @Test
+    fun `cap changes while LSFG is active affect only source pacing`() {
+        listOf(60, 30, 45, 60).forEach { cap ->
+            assertEquals(cap, effectiveSourceFpsCap(cap))
+            assertEquals(cap * 2, predictedLsfgOutputFps(cap, 2))
+        }
+    }
+
+    @Test
+    fun `zero source cap remains explicitly unlimited`() {
+        assertEquals(0, effectiveSourceFpsCap(0))
+        assertEquals(0, predictedLsfgOutputFps(effectiveSourceFpsCap(0), 2))
+    }
 }

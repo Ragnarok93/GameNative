@@ -50,3 +50,16 @@ internal fun previousFpsLimiterValue(currentValue: Int, maxFps: Int): Int {
     val currentIndex = fpsLimiterCurrentIndex(steps, currentValue)
     return steps[(currentIndex - 1).coerceAtLeast(0)]
 }
+
+/**
+ * The FPS limiter always describes real/source game frames. LSFG fixed
+ * multipliers may increase display output, but they never disable or multiply
+ * the upstream source cap. A value of 0 remains the explicit unlimited state.
+ */
+internal fun effectiveSourceFpsCap(requestedSourceCap: Int): Int =
+    requestedSourceCap.coerceAtLeast(0)
+
+internal fun predictedLsfgOutputFps(sourceFpsCap: Int, lsfgMultiplier: Int): Int {
+    if (sourceFpsCap <= 0) return 0
+    return sourceFpsCap * lsfgMultiplier.coerceAtLeast(1)
+}

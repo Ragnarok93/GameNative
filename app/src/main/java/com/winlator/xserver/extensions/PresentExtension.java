@@ -84,6 +84,10 @@ public class PresentExtension implements Extension {
         this.frameRateLimit = Math.max(0, limit);
     }
 
+    public void resetTiming() {
+        windowTimings.clear();
+    }
+
     public void close() {
         if (cpuPacerThread != null) {
             cpuPacerThread.interrupt();

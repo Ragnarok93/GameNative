@@ -22,13 +22,13 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(source.contains("var lsfgRuntimeMode by rememberSaveable(container.id)"))
         assertTrue(source.contains("var isLsfgGenerationActive by rememberSaveable(container.id)"))
         assertTrue(source.contains("var lsfgRuntimeMultiplier by rememberSaveable(container.id)"))
-        assertTrue(limiter.contains("val lsfgActive = isLsfgGenerationActive"))
-        assertTrue(limiter.contains("val vulkanPresentLimit = if (lsfgActive) 0 else limit"))
-        assertTrue(limiter.contains("xServerView?.setFrameRateLimit(vulkanPresentLimit)"))
-        assertTrue(limiter.contains("?.setFrameRateLimit(vulkanPresentLimit)"))
-        assertTrue(limiter.contains("ShmFramePacer.setFrameRateLimit(limit)"))
+        assertTrue(limiter.contains("val sourceFrameCap = effectiveSourceFpsCap(limit)"))
+        assertTrue(limiter.contains("val runtimeMultiplier = if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1"))
+        assertTrue(limiter.contains("xServerView?.setFrameRateLimit(sourceFrameCap)"))
+        assertTrue(limiter.contains("?.setFrameRateLimit(sourceFrameCap)"))
+        assertTrue(limiter.contains("ShmFramePacer.setFrameRateLimit(sourceFrameCap)"))
         assertTrue(limiter.contains("PerformanceMetricsCollector.resetFrameEpoch()"))
-        assertTrue(limiter.contains("if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1"))
+        assertFalse(limiter.contains("if (lsfgActive) 0 else limit"))
         assertFalse(limiter.contains("transitionLsfgFramePacing"))
         assertFalse(limiter.contains("transitionFramePacing"))
         assertFalse(limiter.contains("LsfgRuntimeGate"))
@@ -73,7 +73,39 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(handoff.contains("applyFpsLimiterToEngines(effectiveFpsLimit())"))
         assertTrue(multiplier.contains("val previousRequested = isLsfgRequested"))
         assertTrue(multiplier.contains("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"))
-        assertTrue(applier.contains("!isLsfgGenerationActive"))
+        assertFalse(applier.contains("!isLsfgGenerationActive"))
+        assertTrue(applier.contains("applyFpsLimiterToEngines(capFps)"))
+    }
+
+    @Test
+    fun capOnlyChangesDoNotRepublishLsfgRuntimeSettings() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
+            Charsets.UTF_8,
+        )
+        val enabled = source.substringAfter("fun applyFpsLimiterEnabled(enabled: Boolean)")
+            .substringBefore("fun applyFpsLimiterTarget(target: Int)")
+        val target = source.substringAfter("fun applyFpsLimiterTarget(target: Int)")
+            .substringBefore("fun applyLsfgMultiplier(mult: Int)")
+
+        assertFalse(enabled.contains("applyLsfgSettings()"))
+        assertFalse(target.contains("applyLsfgSettings()"))
+    }
+
+    @Test
+    fun quickMenuSuspendResumeInvalidatesTimingWithoutRuntimeRecreation() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
+            Charsets.UTF_8,
+        )
+        val invalidator = source.substringAfter("fun invalidateSuspendedTiming(reason: String)")
+            .substringBefore("fun startExitWatchForUnmappedGameWindow")
+
+        assertTrue(invalidator.contains("PerformanceMetricsCollector.resetFrameEpoch()"))
+        assertTrue(invalidator.contains("?.resetTiming()"))
+        assertTrue(invalidator.contains("ShmFramePacer.resetTiming()"))
+        assertFalse(invalidator.contains("applyLsfgSettings()"))
+        assertFalse(invalidator.contains("scheduleLsfgRuntimeHandoff"))
     }
 
     private fun sourcePath(relative: String): Path {

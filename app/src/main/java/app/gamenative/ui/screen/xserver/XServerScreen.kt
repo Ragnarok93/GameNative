@@ -118,8 +118,10 @@ import app.gamenative.ui.component.PerformanceQuickMenuState
 import app.gamenative.ui.component.QuickMenu
 import app.gamenative.ui.component.QuickMenuAction
 import app.gamenative.ui.component.SteamInviteState
+import app.gamenative.ui.component.effectiveSourceFpsCap
 import app.gamenative.ui.component.parseBooleanExtra
 import app.gamenative.ui.component.parsePositiveFpsLimit
+import app.gamenative.ui.component.predictedLsfgOutputFps
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.data.XServerState
@@ -638,6 +640,8 @@ fun XServerScreen(
     var lastLsfgPacingActive by remember(container.id) {
         mutableStateOf(isLsfgGenerationActive)
     }
+    var runtimeConfigRevision by rememberSaveable(container.id) { mutableIntStateOf(0) }
+    var lastLoggedOutputBudget by remember(container.id) { mutableStateOf<String?>(null) }
 
     fun persistFpsLimiterState() {
         container.putExtra(FPS_LIMITER_ENABLED_EXTRA, fpsLimiterEnabled)
@@ -721,21 +725,50 @@ fun XServerScreen(
             lastLsfgPacingActive = lsfgActive
         }
 
-        val vulkanPresentLimit = if (lsfgActive) 0 else limit
-        xServerView?.setFrameRateLimit(vulkanPresentLimit)
+        val sourceFrameCap = effectiveSourceFpsCap(limit)
+        val runtimeMultiplier = if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1
+        xServerView?.setFrameRateLimit(sourceFrameCap)
         xServerView?.getxServer()
             ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
-            ?.setFrameRateLimit(vulkanPresentLimit)
-        ShmFramePacer.setFrameRateLimit(limit)
-        PowerManager.targetFps = limit
-        PowerManager.frameSampleStride =
-            if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1
+            ?.setFrameRateLimit(sourceFrameCap)
+        ShmFramePacer.setFrameRateLimit(sourceFrameCap)
+        PowerManager.targetFps = sourceFrameCap
+        PowerManager.frameSampleStride = runtimeMultiplier
+
+        val predictedOutput = predictedLsfgOutputFps(sourceFrameCap, runtimeMultiplier)
+        val budgetKey = "$sourceFrameCap:$runtimeMultiplier:$detectedMaxRefreshRateHz:$runtimeConfigRevision"
+        if (predictedOutput > detectedMaxRefreshRateHz && lastLoggedOutputBudget != budgetKey) {
+            lastLoggedOutputBudget = budgetKey
+            Timber.i(
+                "LSFG output budget exceeds display: revision=%d source_cap_effective=%d lsfg_multiplier=%d predicted_output=%d display_refresh=%d",
+                runtimeConfigRevision,
+                sourceFrameCap,
+                runtimeMultiplier,
+                predictedOutput,
+                detectedMaxRefreshRateHz,
+            )
+        }
+        Timber.d(
+            "Source FPS cap applied: revision=%d source_cap_requested=%d source_cap_effective=%d lsfg_enabled=%b lsfg_multiplier=%d",
+            runtimeConfigRevision,
+            limit,
+            sourceFrameCap,
+            lsfgActive,
+            runtimeMultiplier,
+        )
     }
 
     fun effectiveFpsLimit(): Int =
         if (fpsLimiterEnabled) fpsLimiterTarget else 0
 
     fun applyLsfgSettings() {
+        Timber.i(
+            "QuickMenu LSFG config revision=%d sourceCap=%d lsfgMultiplier=%d performanceMode=%b",
+            runtimeConfigRevision,
+            effectiveFpsLimit(),
+            lsfgMultiplier,
+            lsfgPerformanceMode,
+        )
         LsfgQuickMenuHelper.applySettings(
             container,
             LsfgQuickMenuHelper.Settings(lsfgMultiplier, lsfgFlowScale, lsfgPerformanceMode),
@@ -778,27 +811,24 @@ fun XServerScreen(
     }
 
     fun applyFpsLimiterEnabled(enabled: Boolean) {
+        runtimeConfigRevision++
         fpsLimiterEnabled = enabled
         applyFpsLimiterToEngines(effectiveFpsLimit())
         persistFpsLimiterState()
-        if (isLsfgRequested) {
-            applyLsfgSettings()
-        }
     }
 
     fun applyFpsLimiterTarget(target: Int) {
+        runtimeConfigRevision++
         val sanitized = target.coerceAtLeast(5).coerceAtMost(detectedMaxRefreshRateHz)
         fpsLimiterTarget = sanitized
         if (fpsLimiterEnabled) {
             applyFpsLimiterToEngines(effectiveFpsLimit())
         }
         persistFpsLimiterState()
-        if (isLsfgRequested) {
-            applyLsfgSettings()
-        }
     }
 
     fun applyLsfgMultiplier(mult: Int) {
+        runtimeConfigRevision++
         val previousRequested = isLsfgRequested
         val nextMultiplier = LsfgQuickMenuHelper.sanitizeMultiplier(mult)
         val nextRequested = isLsfgAvailable && nextMultiplier >= 2
@@ -816,23 +846,24 @@ fun XServerScreen(
     }
 
     fun applyLsfgFlowScale(scale: Float) {
+        runtimeConfigRevision++
         lsfgFlowScale = LsfgQuickMenuHelper.sanitizeFlowScale(scale)
         applyLsfgSettings()
     }
 
     fun applyLsfgPerformanceMode(enabled: Boolean) {
+        runtimeConfigRevision++
         lsfgPerformanceMode = enabled
         applyLsfgSettings()
     }
 
     LaunchedEffect(xServerView) {
-        // Adaptive-cap steps route through the LSFG limiter; the X-server
-        // limiters must stay at 0 under LSFG.
         PowerManager.fpsCapApplier = applier@{ capFps: Int ->
-            if (!isLsfgAvailable || !isLsfgGenerationActive) return@applier false
-            PowerManager.targetFps = capFps
-            LsfgQuickMenuHelper.applyLiveFpsCap(container, capFps)
-            ShmFramePacer.setFrameRateLimit(capFps)
+            if (!isLsfgAvailable) return@applier false
+            Handler(Looper.getMainLooper()).post {
+                runtimeConfigRevision++
+                applyFpsLimiterToEngines(capFps)
+            }
             true
         }
         val detectedMax = detectMaxRefreshRateHz(context, xServerView as? View)
@@ -955,8 +986,9 @@ fun XServerScreen(
             Timber.d("Skipping overlay suspend due to suspend policy=never")
             return
         }
-        PluviaApp.xEnvironment?.onPause()
         PluviaApp.isOverlayPaused = true
+        invalidateSuspendedTiming("quick-menu-pause")
+        PluviaApp.xEnvironment?.onPause()
     }
 
     fun resumeIfAllowedAfterOverlay() {
@@ -970,12 +1002,14 @@ fun XServerScreen(
             return
         }
         PluviaApp.xEnvironment?.onResume()
+        invalidateSuspendedTiming("quick-menu-resume")
         clearOverlayPauseState()
     }
 
     fun forceResumeIfSuspended() {
         if (PluviaApp.isOverlayPaused && !neverSuspend) {
             PluviaApp.xEnvironment?.onResume()
+            invalidateSuspendedTiming("force-resume")
         }
         clearOverlayPauseState()
     }
@@ -984,9 +1018,24 @@ fun XServerScreen(
         if (!PluviaApp.isOverlayPaused) return
         if (!neverSuspend) {
             PluviaApp.xEnvironment?.onResume()
+            invalidateSuspendedTiming("manual-resume")
         }
         keepPausedForEditor = false
         clearOverlayPauseState()
+    }
+
+    fun invalidateSuspendedTiming(reason: String) {
+        PerformanceMetricsCollector.resetFrameEpoch()
+        xServerView?.getxServer()
+            ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
+            ?.resetTiming()
+        ShmFramePacer.resetTiming()
+        Timber.i(
+            "Timing invalidated after suspend boundary: reason=%s revision=%d guest_suspended=%b timing_sample_valid=false",
+            reason,
+            runtimeConfigRevision,
+            PluviaApp.isOverlayPaused,
+        )
     }
 
     fun startExitWatchForUnmappedGameWindow(window: Window) {
@@ -2047,7 +2096,7 @@ fun XServerScreen(
             val xServerView = xServerViewInstance.apply {
                 xServerView = this
                 val initialLimit = if (fpsLimiterEnabled) fpsLimiterTarget else 0
-                setFrameRateLimit(if (isLsfgGenerationActive) 0 else initialLimit)
+                setFrameRateLimit(effectiveSourceFpsCap(initialLimit))
                 val renderer = this.renderer
                 if (!useGLRenderer && renderer is VulkanRenderer) {
                     val pm = container.rendererPresentMode.ifEmpty { "fifo" }

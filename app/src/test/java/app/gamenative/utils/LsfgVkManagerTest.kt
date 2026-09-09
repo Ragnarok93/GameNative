@@ -60,14 +60,16 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun isArmed_multiplierZeroKeepsLayerResidentForHotReload() {
+    fun isArmed_multiplierZeroKeepsLayerResident() {
         val container = container(armed = true, multiplier = "0")
 
+        assertTrue(LsfgVkManager.isAvailable(container))
+        assertTrue(LsfgVkManager.isFrameGenerationRequested(container))
         assertTrue(LsfgVkManager.isArmed(container))
     }
 
     @Test
-    fun applyLaunchEnv_multiplierZeroKeepsLayerResidentForHotReload() {
+    fun applyLaunchEnv_multiplierZeroLoadsResidentSourceOnlyLayer() {
         val container = container(armed = true, multiplier = "0")
         val envVars = EnvVars().apply {
             put("VK_LAYER_PATH", "/existing/explicit-layers")
@@ -75,12 +77,10 @@ class LsfgVkManagerTest {
         }
 
         assertTrue(LsfgVkManager.applyLaunchEnv(container, envVars))
-        assertTrue(envVars["VK_LAYER_PATH"].orEmpty().contains(".local/share/vulkan/implicit_layer.d"))
-        assertTrue(envVars["VK_INSTANCE_LAYERS"].orEmpty().contains("VK_LAYER_LS_frame_generation"))
-        assertEquals(
-            File(rootDir, ".config/lsfg-vk/conf.toml").absolutePath,
-            envVars["LSFG_CONFIG"],
-        )
+        assertTrue(envVars["VK_LAYER_PATH"].contains(".local/share/vulkan/implicit_layer.d"))
+        assertEquals("VK_LAYER_existing:VK_LAYER_LS_frame_generation", envVars["VK_INSTANCE_LAYERS"])
+        assertEquals("VK_LAYER_existing,VK_LAYER_LS_frame_generation", envVars["VK_LOADER_LAYERS_ENABLE"])
+        assertTrue(envVars.has("LSFG_CONFIG"))
         assertEquals("game.exe", envVars["LSFG_PROCESS_EXE"])
     }
 
@@ -92,8 +92,53 @@ class LsfgVkManagerTest {
 
         val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
         assertTrue(text.contains("multiplier = 1"))
-        assertTrue(text.contains("performance_mode = false"))
-        assertTrue(text.contains("experimental_present_mode = \"fifo\""))
+        assertTrue(text.contains("performance_mode = true"))
+        assertTrue(text.contains("experimental_present_mode = \"mailbox\""))
+    }
+
+    @Test
+    fun readRuntimeState_distinguishesSourceOnlyResidentFromGenerating() {
+        val container = container(armed = true, multiplier = "0")
+        val statsFile = File(rootDir, ".config/lsfg-vk/stats.txt").apply {
+            parentFile?.mkdirs()
+            writeText(
+                """
+                state=source_only
+                active=0
+                generation_ready=0
+                resident=1
+                source_only=1
+                generation_initialized=1
+                generated_presented=0
+                degraded=0
+                multiplier=1
+                """.trimIndent(),
+            )
+        }
+
+        val sourceOnly = LsfgVkManager.readRuntimeState(container)
+        assertEquals(LsfgVkManager.RuntimeStatus.SOURCE_ONLY, sourceOnly.status)
+        assertTrue(sourceOnly.readyForSourceOnly)
+        assertFalse(sourceOnly.readyForGeneration)
+
+        statsFile.writeText(
+            """
+            state=generating
+            active=1
+            generation_ready=1
+            resident=1
+            source_only=0
+            generation_initialized=1
+            generated_presented=1
+            degraded=0
+            multiplier=3
+            """.trimIndent(),
+        )
+
+        val generating = LsfgVkManager.readRuntimeState(container)
+        assertEquals(LsfgVkManager.RuntimeStatus.GENERATING, generating.status)
+        assertTrue(generating.readyForGeneration)
+        assertFalse(generating.readyForSourceOnly)
     }
 
     @Test
@@ -213,7 +258,8 @@ class LsfgVkManagerTest {
         val container = container(armed = false)
         val envVars = EnvVars().apply {
             put("VK_LAYER_PATH", "/existing/explicit-layers")
-            put("VK_INSTANCE_LAYERS", "VK_LAYER_existing")
+            put("VK_LOADER_LAYERS_ENABLE", "VK_LAYER_existing,VK_LAYER_LS_frame_generation")
+            put("VK_INSTANCE_LAYERS", "VK_LAYER_existing:VK_LAYER_LS_frame_generation")
             put("LSFG_PROCESS", "stale")
             put("LSFG_PROCESS_EXE", "stale.exe")
             put("LSFG_CONFIG", "/stale/conf.toml")
@@ -222,6 +268,7 @@ class LsfgVkManagerTest {
         assertFalse(LsfgVkManager.applyLaunchEnv(container, envVars))
         assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
+        assertEquals("VK_LAYER_existing", envVars["VK_LOADER_LAYERS_ENABLE"])
         assertFalse(envVars.has("LSFG_PROCESS"))
         assertFalse(envVars.has("LSFG_PROCESS_EXE"))
         assertFalse(envVars.has("LSFG_CONFIG"))

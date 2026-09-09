@@ -325,6 +325,7 @@ class LsfgQuickMenuState(
     val multiplier: Int = 2,
     val flowScale: Float = 0.80f,
     val performanceMode: Boolean = true,
+    val runtimeStatus: String = "",
     val onMultiplierChanged: (Int) -> Unit = {},
     val onFlowScaleChanged: (Float) -> Unit = {},
     val onPerformanceModeChanged: (Boolean) -> Unit = {},
@@ -369,6 +370,7 @@ fun QuickMenu(
     val lsfgMultiplier = lsfg.multiplier
     val lsfgFlowScale = lsfg.flowScale
     val lsfgPerformanceMode = lsfg.performanceMode
+    val lsfgRuntimeStatus = lsfg.runtimeStatus
     val onLsfgMultiplierChanged = lsfg.onMultiplierChanged
     val onLsfgFlowScaleChanged = lsfg.onFlowScaleChanged
     val onLsfgPerformanceModeChanged = lsfg.onPerformanceModeChanged
@@ -912,6 +914,7 @@ fun QuickMenu(
                                             multiplier = lsfgMultiplier,
                                             flowScale = lsfgFlowScale,
                                             performanceMode = lsfgPerformanceMode,
+                                            runtimeStatus = lsfgRuntimeStatus,
                                             onMultiplierChanged = onLsfgMultiplierChanged,
                                             onFlowScaleChanged = onLsfgFlowScaleChanged,
                                             onPerformanceModeChanged = onLsfgPerformanceModeChanged,
@@ -1567,6 +1570,7 @@ private fun LsfgQuickMenuTab(
     multiplier: Int,
     flowScale: Float,
     performanceMode: Boolean,
+    runtimeStatus: String,
     onMultiplierChanged: (Int) -> Unit,
     onFlowScaleChanged: (Float) -> Unit,
     onPerformanceModeChanged: (Boolean) -> Unit,
@@ -1588,6 +1592,7 @@ private fun LsfgQuickMenuTab(
         // ── Multiplier (Off / 2x / 3x / 4x) ───────────────────────────────
         QuickMenuSectionHeader(
             title = stringResource(R.string.lsfg_multiplier),
+            subtitle = runtimeStatus.takeIf { it.isNotBlank() },
         )
         Row(
             modifier = Modifier

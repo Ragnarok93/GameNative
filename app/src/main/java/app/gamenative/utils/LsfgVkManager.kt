@@ -111,17 +111,23 @@ object LsfgVkManager {
     fun isSupported(container: Container): Boolean =
         container.containerVariant.equals(Container.BIONIC, ignoreCase = true)
 
-    /**
-     * Whether the LSFG layer is armed/resident for this container.
-     *
-     * This deliberately does not require multiplier >= 2. A selected multiplier
-     * of 0 means frame generation is currently off, but the layer must remain
-     * resident so a Quick Menu config hot-reload can enable it without restart.
-     */
+    /** Whether the container has LSFG enabled in settings and can expose LSFG controls. */
     @JvmStatic
-    fun isArmed(container: Container): Boolean =
+    fun isAvailable(container: Container): Boolean =
         isSupported(container) &&
             layerRequested(container) &&
+            containerDllPath(container) != null
+
+    /** Whether launch should prepare the resident native LSFG layer for this container. */
+    @JvmStatic
+    fun isFrameGenerationRequested(container: Container): Boolean =
+        isSupported(container) &&
+            layerRequested(container)
+
+    /** Whether the LSFG layer should be resident in the launched process. */
+    @JvmStatic
+    fun isArmed(container: Container): Boolean =
+        isFrameGenerationRequested(container) &&
             containerDllPath(container) != null
 
     /** Whether Lossless Scaling is installed (Lossless.dll exists in Steam dir). */
@@ -144,6 +150,32 @@ object LsfgVkManager {
     fun multiplier(container: Container): Int {
         val raw = container.getExtra(EXTRA_MULTIPLIER, "2").toIntOrNull() ?: 2
         return if (raw == 0) 0 else raw.coerceIn(2, 4)
+    }
+
+    enum class RuntimeStatus {
+        UNKNOWN,
+        PASS_THROUGH,
+        SOURCE_ONLY,
+        GENERATING,
+        DEGRADED,
+    }
+
+    data class RuntimeState(
+        val status: RuntimeStatus,
+        val resident: Boolean,
+        val sourceOnly: Boolean,
+        val generationReady: Boolean,
+        val generationInitialized: Boolean,
+        val generatedPresented: Boolean,
+        val degraded: Boolean,
+        val multiplier: Int,
+        val fresh: Boolean,
+    ) {
+        val readyForGeneration: Boolean
+            get() = fresh && resident && generationReady && multiplier >= 2 && !degraded
+
+        val readyForSourceOnly: Boolean
+            get() = fresh && resident && sourceOnly && !generationReady && !degraded
     }
 
     private fun layerRequested(container: Container): Boolean =
@@ -262,6 +294,64 @@ object LsfgVkManager {
         return cachedMeasuredFps
     }
 
+    fun readRuntimeState(container: Container): RuntimeState {
+        val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
+        if (!statsFile.isFile) return unknownRuntimeState(fresh = false)
+        val fresh = System.currentTimeMillis() - statsFile.lastModified() in 0L..STATS_FRESHNESS_MS
+        if (!fresh) return unknownRuntimeState(fresh = false)
+
+        return runCatching {
+            val values = statsFile.readLines()
+                .mapNotNull { line ->
+                    val separator = line.indexOf('=')
+                    if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
+                }
+                .toMap()
+            val degraded = values["degraded"] == "1"
+            val sourceOnly = values["source_only"] == "1"
+            val generationReady = values["generation_ready"] == "1"
+            val resident = values["resident"] == "1" || values["active"] == "1" || sourceOnly
+            val status = when (values["state"]) {
+                "source_only" -> RuntimeStatus.SOURCE_ONLY
+                "generating" -> RuntimeStatus.GENERATING
+                "degraded" -> RuntimeStatus.DEGRADED
+                "pass_through" -> RuntimeStatus.PASS_THROUGH
+                else -> when {
+                    degraded -> RuntimeStatus.DEGRADED
+                    generationReady -> RuntimeStatus.GENERATING
+                    sourceOnly -> RuntimeStatus.SOURCE_ONLY
+                    resident -> RuntimeStatus.PASS_THROUGH
+                    else -> RuntimeStatus.UNKNOWN
+                }
+            }
+            RuntimeState(
+                status = status,
+                resident = resident,
+                sourceOnly = sourceOnly,
+                generationReady = generationReady,
+                generationInitialized = values["generation_initialized"] == "1",
+                generatedPresented = values["generated_presented"] == "1",
+                degraded = degraded,
+                multiplier = values["multiplier"]?.toIntOrNull() ?: 0,
+                fresh = true,
+            )
+        }.getOrElse {
+            unknownRuntimeState(fresh = false)
+        }
+    }
+
+    private fun unknownRuntimeState(fresh: Boolean) = RuntimeState(
+        status = RuntimeStatus.UNKNOWN,
+        resident = false,
+        sourceOnly = false,
+        generationReady = false,
+        generationInitialized = false,
+        generatedPresented = false,
+        degraded = false,
+        multiplier = 0,
+        fresh = fresh,
+    )
+
     /**
      * Install the layer runtime + DLL into the container's filesystem.
      * Called during container startup in BionicProgramLauncherComponent.
@@ -373,7 +463,7 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) savedMultiplier else 1,
                 flowScale = flowScale(container),
-                performanceMode = performanceMode(container) && frameGenActive,
+                performanceMode = performanceMode(container),
                 fpsLimit = fpsLimit(container),
                 presentMode = presentMode(container),
             )
@@ -395,8 +485,14 @@ object LsfgVkManager {
         envVars.remove(ENV_PROCESS)
         envVars.remove(ENV_PROCESS_EXE)
 
-        if (!isSupported(container)) {
+        if (!isSupported(container) || !isFrameGenerationRequested(container)) {
+            removeLsfgVulkanLayerActivation(envVars)
             disableLayerInContainer(container)
+            Timber.tag(TAG).i(
+                "LSFG layer disabled for launch (requested=%s, multiplier=%d)",
+                container.getExtra(EXTRA_ARMED, "false"),
+                multiplier(container),
+            )
             return false
         }
 
@@ -404,6 +500,7 @@ object LsfgVkManager {
         val armed = isArmed(container)
 
         if (!armed) {
+            removeLsfgVulkanLayerActivation(envVars)
             disableLayerInContainer(container)
             Timber.tag(TAG).i(
                 "LSFG layer disabled (requested=%s, dll=%s)",
@@ -602,6 +699,23 @@ object LsfgVkManager {
         }
     }
 
+    private fun removeLsfgVulkanLayerActivation(envVars: EnvVars) {
+        removeSeparatedEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME, ":")
+        removeSeparatedEnvEntry(envVars, ENV_VK_LOADER_LAYERS_ENABLE, VULKAN_LAYER_NAME, ",")
+    }
+
+    private fun removeSeparatedEnvEntry(envVars: EnvVars, key: String, value: String, separator: String) {
+        val current = envVars[key].orEmpty()
+        if (current.isBlank()) return
+        val next = current
+            .split(separator)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != value }
+            .joinToString(separator)
+        envVars.remove(key)
+        if (next.isNotEmpty()) envVars.put(key, next)
+    }
+
     private fun disableLayerInContainer(container: Container) {
         val layerDir = File(container.rootDir, LAYER_RELATIVE_DIR)
         val manifest = File(layerDir, MANIFEST_FILENAME)
@@ -746,10 +860,10 @@ object LsfgVkManager {
                 appendLine("exe = ${tomlString(processName)}")
                 appendLine("multiplier = $effectiveMultiplier")
                 appendLine("flow_scale = ${formatFlowScale(flowScale)}")
-                appendLine("performance_mode = ${if (enabled && performanceMode) "true" else "false"}")
+                appendLine("performance_mode = ${if (performanceMode) "true" else "false"}")
                 appendLine("hdr_mode = false")
                 appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
-                appendLine("experimental_present_mode = ${tomlString(if (enabled) presentMode else "fifo")}")
+                appendLine("experimental_present_mode = ${tomlString(presentMode)}")
             }
         }
     }
@@ -810,7 +924,7 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) multiplier.coerceIn(2, 4) else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
-                performanceMode = performanceMode && frameGenActive,
+                performanceMode = performanceMode,
                 fpsLimit = effectiveFpsLimit,
                 presentMode = presentMode(container),
             )

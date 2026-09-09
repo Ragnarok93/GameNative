@@ -6,6 +6,25 @@ import org.junit.Test
 
 class FrameTimeRingTest {
     @Test
+    fun resetEpoch_discardsPreviousPacingRegimeWithoutStoppingRecording() {
+        val out = LongArray(FrameTimeRing.capacity())
+        FrameTimeRing.start()
+        try {
+            FrameTimeRing.record()
+            FrameTimeRing.record()
+            FrameTimeRing.resetEpoch()
+
+            assertEquals(0, FrameTimeRing.copySince(0L, out))
+
+            FrameTimeRing.record()
+            FrameTimeRing.record()
+            assertEquals(2, FrameTimeRing.copySince(0L, out))
+        } finally {
+            FrameTimeRing.stop()
+        }
+    }
+
+    @Test
     fun computeFrameWindowStats_rejectsSubMillisecondEventStormAsImplausibleFps() {
         // Mirrors the debug-log failure: one ~37us interval produced ~27k FPS
         // and caused PerformanceAutoTuner to downclock CPU/GPU/bus.

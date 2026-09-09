@@ -541,6 +541,28 @@ private fun LsfgSection(state: ContainerConfigState) {
 
     var dllAvailable by rememberSaveable { mutableStateOf(LsfgVkManager.isDllAvailable()) }
     val ownsApp = LsfgVkManager.ownsLosslessScaling()
+    fun requestLsfgEnable() {
+        if (LsfgVkManager.isDllAvailable()) {
+            dllAvailable = true
+            state.config.value = state.config.value.copy(lsfgEnabled = true)
+            return
+        }
+
+        if (!LsfgVkManager.ownsLosslessScaling()) {
+            dllAvailable = false
+            state.config.value = state.config.value.copy(lsfgEnabled = false)
+            return
+        }
+
+        state.launchSteamAppDownload(
+            LsfgVkManager.LOSSLESS_SCALING_APP_ID,
+            "Lossless Scaling",
+        ) {
+            val downloaded = LsfgVkManager.isDllAvailable()
+            dllAvailable = downloaded
+            state.config.value = state.config.value.copy(lsfgEnabled = downloaded)
+        }
+    }
 
     SettingsGroup {
         when {
@@ -552,10 +574,10 @@ private fun LsfgSection(state: ContainerConfigState) {
                     subtitle = { Text(text = stringResource(R.string.lsfg_description)) },
                     state = config.lsfgEnabled,
                     onCheckedChange = {
-                        state.config.value = if (it) {
-                            config.copy(lsfgEnabled = true)
+                        if (it) {
+                            requestLsfgEnable()
                         } else {
-                            config.copy(lsfgEnabled = false)
+                            state.config.value = config.copy(lsfgEnabled = false)
                         }
                     },
                 )
@@ -568,15 +590,7 @@ private fun LsfgSection(state: ContainerConfigState) {
                     subtitle = { Text(text = stringResource(R.string.lsfg_install_prompt)) },
                     state = false,
                     onCheckedChange = {
-                        state.launchSteamAppDownload(
-                            LsfgVkManager.LOSSLESS_SCALING_APP_ID,
-                            "Lossless Scaling",
-                        ) {
-                            dllAvailable = LsfgVkManager.isDllAvailable()
-                            if (dllAvailable) {
-                                state.config.value = state.config.value.copy(lsfgEnabled = true)
-                            }
-                        }
+                        if (it) requestLsfgEnable()
                     },
                 )
             }
@@ -587,10 +601,11 @@ private fun LsfgSection(state: ContainerConfigState) {
                     title = { Text(text = stringResource(R.string.lsfg_enable)) },
                     subtitle = { Text(text = stringResource(R.string.lsfg_not_in_library)) },
                     state = false,
-                    onCheckedChange = {},
+                    onCheckedChange = {
+                        if (it) requestLsfgEnable()
+                    },
                 )
             }
         }
     }
 }
-

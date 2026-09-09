@@ -16,6 +16,10 @@ object FrameTimeRing {
 
     private val timestampsNs = LongArray(CAPACITY)
     private val writeIndex = AtomicLong(0L)
+    private val epochGeneration = AtomicLong(0L)
+
+    @Volatile
+    private var epochStartIndex = 0L
 
     @Volatile
     private var recording = false
@@ -29,6 +33,8 @@ object FrameTimeRing {
 
     fun start() {
         writeIndex.set(0L)
+        epochGeneration.set(0L)
+        epochStartIndex = 0L
         java.util.Arrays.fill(timestampsNs, 0L)
         recording = true
     }
@@ -41,13 +47,27 @@ object FrameTimeRing {
 
     fun capacity(): Int = CAPACITY
 
+    /** Current metrics epoch generation for rejecting in-flight stale samples. */
+    fun generation(): Long = epochGeneration.get()
+
+    /**
+     * Starts a fresh metrics epoch without stopping timestamp recording or clearing
+     * the ring. Samples written before this boundary are ignored by future readers.
+     * This is O(1) and leaves the per-frame [record] hot path unchanged.
+     */
+    fun resetEpoch() {
+        epochStartIndex = writeIndex.get()
+        epochGeneration.incrementAndGet()
+    }
+
     /**
      * Copies every retained timestamp at or after [sinceNanos] into [out], oldest first.
      * Returns the number of entries written.
      */
     fun copySince(sinceNanos: Long, out: LongArray): Int {
         val end = writeIndex.get()
-        var index = if (end > CAPACITY) end - CAPACITY else 0L
+        val retainedStart = if (end > CAPACITY) end - CAPACITY else 0L
+        var index = maxOf(retainedStart, epochStartIndex)
         var count = 0
         while (index < end && count < out.size) {
             val value = timestampsNs[(index and MASK).toInt()]

@@ -880,6 +880,44 @@ object LsfgVkManager {
     // ---- Runtime hot-reload -----------------------------------------------
 
     /**
+     * Request one deliberate native-context reload without changing conf.toml's
+     * payload. Adaptive topology/target state lives in a separate overlay, so an
+     * overlay-only change can otherwise be invisible to the layer's existing
+     * config timestamp watcher. This intentionally uses that proven recreation
+     * mechanism instead of adding another in-place presentation transition.
+     */
+    @JvmStatic
+    @Synchronized
+    fun requestRuntimeReload(container: Container, reason: String): Boolean {
+        if (!isSupported(container)) return false
+        val file = configFile(container)
+        if (!file.isFile) {
+            Timber.tag(TAG).w("LSFG reload requested but conf.toml is missing: reason=%s", reason)
+            return false
+        }
+
+        // Do not report pre-reload telemetry as if it described the new context.
+        cachedMeasuredFps = null
+        lastStatsReadMs = 0L
+        runCatching { File(container.rootDir, STATS_RELATIVE_PATH).delete() }
+
+        val previousTimestamp = file.lastModified()
+        val requestedTimestamp = maxOf(System.currentTimeMillis(), previousTimestamp + 1000L)
+        val ok = file.setLastModified(requestedTimestamp)
+        if (ok) {
+            Timber.tag(TAG).i(
+                "Requested controlled LSFG context reload: reason=%s, previousMtime=%d, newMtime=%d",
+                reason,
+                previousTimestamp,
+                requestedTimestamp,
+            )
+        } else {
+            Timber.tag(TAG).w("Failed to request LSFG context reload: reason=%s", reason)
+        }
+        return ok
+    }
+
+    /**
      * Update conf.toml while the container is running. The layer observes the
      * timestamp change and recreates its swapchain context with the new values.
      * GameNative's real/source FPS limiter is intentionally not forwarded here;

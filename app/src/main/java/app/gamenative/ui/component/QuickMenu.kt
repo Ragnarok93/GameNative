@@ -911,6 +911,7 @@ fun QuickMenu(
 
                                     QuickMenuTab.LSFG -> {
                                         LsfgQuickMenuTab(
+                                            container = container,
                                             multiplier = lsfgMultiplier,
                                             flowScale = lsfgFlowScale,
                                             performanceMode = lsfgPerformanceMode,
@@ -1567,6 +1568,7 @@ private fun PerformanceHudQuickMenuTab(
 
 @Composable
 private fun LsfgQuickMenuTab(
+    container: com.winlator.container.Container?,
     multiplier: Int,
     flowScale: Float,
     performanceMode: Boolean,
@@ -1582,6 +1584,15 @@ private fun LsfgQuickMenuTab(
 ) {
     val accentColor = PluviaTheme.colors.accentPurple
     val isEnabled = multiplier >= 2
+    val initialAdaptiveSettings = remember(container) {
+        container?.let { app.gamenative.utils.LsfgQuickMenuHelper.readSettings(it) }
+    }
+    var adaptiveFramegen by remember(container) {
+        mutableStateOf(initialAdaptiveSettings?.adaptiveFramegen == true)
+    }
+    var adaptiveTargetFps by remember(container) {
+        mutableStateOf(initialAdaptiveSettings?.adaptiveTargetFps ?: 60)
+    }
 
     Column(
         modifier = modifier
@@ -1620,6 +1631,58 @@ private fun LsfgQuickMenuTab(
             exit = shrinkVertically() + fadeOut(),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // ── Adaptive frame generation ─────────────────────────────
+                QuickMenuToggleRow(
+                    title = stringResource(R.string.lsfg_adaptive_framegen),
+                    subtitle = stringResource(R.string.lsfg_adaptive_framegen_desc),
+                    enabled = adaptiveFramegen,
+                    onToggle = {
+                        val next = !adaptiveFramegen
+                        adaptiveFramegen = next
+                        container?.let {
+                            app.gamenative.utils.LsfgQuickMenuHelper.applyAdaptiveSettings(
+                                it,
+                                next,
+                                adaptiveTargetFps,
+                            )
+                        }
+                    },
+                    accentColor = accentColor,
+                )
+
+                if (adaptiveFramegen) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    QuickMenuSectionHeader(
+                        title = stringResource(R.string.lsfg_adaptive_target),
+                        subtitle = stringResource(R.string.lsfg_adaptive_target_desc),
+                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        app.gamenative.utils.LsfgQuickMenuHelper.ADAPTIVE_TARGET_OPTIONS.forEach { target ->
+                            QuickMenuChoiceChip(
+                                text = target.toString(),
+                                selected = adaptiveTargetFps == target,
+                                accentColor = accentColor,
+                                onClick = {
+                                    adaptiveTargetFps = target
+                                    container?.let {
+                                        app.gamenative.utils.LsfgQuickMenuHelper.applyAdaptiveSettings(
+                                            it,
+                                            true,
+                                            target,
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.width(56.dp),
+                            )
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
 
                 // ── Flow Scale ────────────────────────────────────────────

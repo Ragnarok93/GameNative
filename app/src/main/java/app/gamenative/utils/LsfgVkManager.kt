@@ -72,9 +72,10 @@ object LsfgVkManager {
     const val EXTRA_PERFORMANCE_MODE = "lsfgPerformanceMode"
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
 
-    // FPS limiter extras (owned by XServerScreen)
-    private const val EXTRA_FPS_LIMITER_ENABLED = "fpsLimiterEnabled"
-    private const val EXTRA_FPS_LIMITER_TARGET = "fpsLimiterTarget"
+    // GameNative owns real/source-frame pacing. conf.toml must stay
+    // uncapped; Adaptive output targeting is supplied only by the separate
+    // gamenative-adaptive.toml overlay consumed by the native layer.
+    private const val LSFG_CONF_FPS_LIMIT = 0
 
     // Written by the layer next to conf.toml; measured presented/base fps
     private const val STATS_RELATIVE_PATH = ".config/lsfg-vk/stats.txt"
@@ -200,16 +201,6 @@ object LsfgVkManager {
     fun presentMode(container: Container): String =
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
-
-    /**
-     * Base fps cap for the layer's limiter (0 = uncapped). The layer
-     * phase-locks its schedule to the vsync grid published by
-     * [startVsyncClock]; without that file it falls back to free-running.
-     */
-    fun fpsLimit(container: Container): Int {
-        if (!parseBool(container.getExtra(EXTRA_FPS_LIMITER_ENABLED, "false"))) return 0
-        return container.getExtra(EXTRA_FPS_LIMITER_TARGET, "0").toIntOrNull()?.coerceAtLeast(0) ?: 0
-    }
 
     // ---- Vsync clock ------------------------------------------------------
 
@@ -464,7 +455,7 @@ object LsfgVkManager {
                 multiplier = if (frameGenActive) savedMultiplier else 1,
                 flowScale = flowScale(container),
                 performanceMode = performanceMode(container),
-                fpsLimit = fpsLimit(container),
+                fpsLimit = LSFG_CONF_FPS_LIMIT,
                 presentMode = presentMode(container),
             )
             writeConfigAtomic(configFile, configText)
@@ -891,8 +882,8 @@ object LsfgVkManager {
     /**
      * Update conf.toml while the container is running. The layer observes the
      * timestamp change and recreates its swapchain context with the new values.
-     * A temporary fpsLimitOverride is deliberately not persisted in container
-     * extras, so adaptive caps can be applied without rewriting user settings.
+     * GameNative's real/source FPS limiter is intentionally not forwarded here;
+     * Adaptive output targeting lives exclusively in gamenative-adaptive.toml.
      */
     @JvmStatic
     @Synchronized
@@ -902,7 +893,6 @@ object LsfgVkManager {
         multiplier: Int,
         flowScale: Float,
         performanceMode: Boolean,
-        fpsLimitOverride: Int? = null,
     ): Boolean {
         if (!isSupported(container)) return false
 
@@ -917,7 +907,7 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val frameGenActive = enabled && multiplier >= 2 &&
                 dllPath != null && processExecutable != null
-            val effectiveFpsLimit = (fpsLimitOverride ?: fpsLimit(container)).coerceAtLeast(0)
+            val effectiveFpsLimit = LSFG_CONF_FPS_LIMIT
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,

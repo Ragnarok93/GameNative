@@ -1,0 +1,213 @@
+name: Finalize Experimental Adaptive Integration
+
+on:
+  push:
+    branches:
+      - experimental/winnative-governor-20260909
+    paths:
+      - .github/workflows/experimental-adaptive-finalize-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v5
+        with:
+          ref: experimental/winnative-governor-20260909
+          fetch-depth: 0
+
+      - name: Isolate Adaptive output target from source FPS limiter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manager = Path("app/src/main/java/app/gamenative/utils/LsfgVkManager.kt")
+          text = manager.read_text(encoding="utf-8")
+
+          def replace_once(before: str, after: str) -> None:
+              global text
+              count = text.count(before)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one manager anchor, found {count}: {before[:80]!r}")
+              text = text.replace(before, after, 1)
+
+          replace_once(
+              '''    // FPS limiter extras (owned by XServerScreen)\n    private const val EXTRA_FPS_LIMITER_ENABLED = "fpsLimiterEnabled"\n    private const val EXTRA_FPS_LIMITER_TARGET = "fpsLimiterTarget"\n\n''',
+              '''    // GameNative owns real/source-frame pacing. conf.toml must stay\n    // uncapped; Adaptive output targeting is supplied only by the separate\n    // gamenative-adaptive.toml overlay consumed by the native layer.\n    private const val LSFG_CONF_FPS_LIMIT = 0\n\n''',
+          )
+
+          replace_once(
+              '''    /**\n     * Base fps cap for the layer's limiter (0 = uncapped). The layer\n     * phase-locks its schedule to the vsync grid published by\n     * [startVsyncClock]; without that file it falls back to free-running.\n     */\n    fun fpsLimit(container: Container): Int {\n        if (!parseBool(container.getExtra(EXTRA_FPS_LIMITER_ENABLED, "false"))) return 0\n        return container.getExtra(EXTRA_FPS_LIMITER_TARGET, "0").toIntOrNull()?.coerceAtLeast(0) ?: 0\n    }\n\n''',
+              '',
+          )
+
+          replace_once(
+              '                fpsLimit = fpsLimit(container),\n',
+              '                fpsLimit = LSFG_CONF_FPS_LIMIT,\n',
+          )
+
+          replace_once(
+              '''    /**\n     * Update conf.toml while the container is running. The layer observes the\n     * timestamp change and recreates its swapchain context with the new values.\n     * A temporary fpsLimitOverride is deliberately not persisted in container\n     * extras, so adaptive caps can be applied without rewriting user settings.\n     */\n''',
+              '''    /**\n     * Update conf.toml while the container is running. The layer observes the\n     * timestamp change and recreates its swapchain context with the new values.\n     * GameNative's real/source FPS limiter is intentionally not forwarded here;\n     * Adaptive output targeting lives exclusively in gamenative-adaptive.toml.\n     */\n''',
+          )
+
+          replace_once(
+              '''        flowScale: Float,\n        performanceMode: Boolean,\n        fpsLimitOverride: Int? = null,\n    ): Boolean {\n''',
+              '''        flowScale: Float,\n        performanceMode: Boolean,\n    ): Boolean {\n''',
+          )
+
+          replace_once(
+              '            val effectiveFpsLimit = (fpsLimitOverride ?: fpsLimit(container)).coerceAtLeast(0)\n',
+              '            val effectiveFpsLimit = LSFG_CONF_FPS_LIMIT\n',
+          )
+
+          manager.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Create Adaptive LegacyDebug verification workflow
+        shell: bash
+        run: |
+          cat > .github/workflows/experimental-adaptive-legacydebug.yml <<'YAML'
+          name: Experimental Adaptive LSFG LegacyDebug
+
+          on:
+            workflow_dispatch:
+            push:
+              branches:
+                - experimental/winnative-governor-20260909
+              paths:
+                - app/src/main/cpp/lsfg-vk-android
+                - app/src/main/java/app/gamenative/ui/component/QuickMenu.kt
+                - app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt
+                - app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+                - app/src/main/res/values/strings_lsfg_adaptive.xml
+                - .github/actions/prepare-lsfg-native/action.yml
+                - .github/workflows/experimental-adaptive-legacydebug.yml
+
+          jobs:
+            adaptive-legacy-debug:
+              runs-on: ubuntu-latest
+              steps:
+                - name: Checkout experimental branch
+                  uses: actions/checkout@v5
+                  with:
+                    submodules: recursive
+
+                - name: Setup Java 17
+                  uses: actions/setup-java@v5
+                  with:
+                    java-version: '17'
+                    distribution: 'temurin'
+
+                - name: Setup Android SDK
+                  uses: android-actions/setup-android@v3
+
+                - name: Verify Adaptive integration contracts
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    native_dir=app/src/main/cpp/lsfg-vk-android
+                    expected_native=01831cca792a32a245df8240a7fe5d7df64f7e75
+                    actual_native="$(git rev-parse HEAD:${native_dir})"
+                    test "$actual_native" = "$expected_native"
+                    git submodule update --init --recursive -- "$native_dir"
+                    test "$(git -C "$native_dir" rev-parse HEAD)" = "$expected_native"
+
+                    python3 "$native_dir/tests/gamenative_adaptive_config_test.py"
+
+                    python3 - <<'PY'
+                    from pathlib import Path
+
+                    helper = Path('app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt').read_text(encoding='utf-8')
+                    manager = Path('app/src/main/java/app/gamenative/utils/LsfgVkManager.kt').read_text(encoding='utf-8')
+                    quick = Path('app/src/main/java/app/gamenative/ui/component/QuickMenu.kt').read_text(encoding='utf-8')
+                    native = Path('app/src/main/cpp/lsfg-vk-android/src/context.cpp').read_text(encoding='utf-8')
+
+                    assert 'gamenative-adaptive.toml' in helper
+                    assert 'intArrayOf(60, 90, 120, 144)' in helper
+                    assert 'fpsLimitOverride' not in helper
+                    assert 'LSFG_CONF_FPS_LIMIT = 0' in manager
+                    assert 'EXTRA_FPS_LIMITER_ENABLED' not in manager
+                    assert 'EXTRA_FPS_LIMITER_TARGET' not in manager
+                    assert 'fpsLimitOverride' not in manager
+                    assert 'fpsLimit = LSFG_CONF_FPS_LIMIT' in manager
+                    assert 'LsfgQuickMenuHelper.applyAdaptiveSettings' in quick
+                    assert 'lsfg_adaptive_framegen' in quick
+                    assert 'lsfg_adaptive_target' in quick
+                    assert 'adaptive_source_fps' in native
+                    assert 'adaptive_smoothed_source_fps' in native
+                    assert 'adaptive_cost_limit' in native
+                    assert 'adaptive_final_generated' in native
+                    assert 'adaptive_zero_cycles' in native
+                    PY
+
+                    git diff --check
+
+                - name: Prepare GameNative-pinned LSFG native runtime
+                  uses: ./.github/actions/prepare-lsfg-native
+
+                - name: Inject credentials
+                  env:
+                    POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+                    POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+                  run: |
+                    printf 'POSTHOG_API_KEY=%s\n' "${POSTHOG_API_KEY:-dummy}" > local.properties
+                    printf 'POSTHOG_HOST=%s\n' "${POSTHOG_HOST:-https://us.i.posthog.com}" >> local.properties
+
+                - name: Validate Gradle wrapper
+                  uses: gradle/actions/wrapper-validation@v6
+
+                - name: Setup Gradle
+                  uses: gradle/actions/setup-gradle@v6
+
+                - name: Assemble Adaptive LegacyDebug
+                  run: ./gradlew :app:assembleLegacyDebug --no-daemon
+
+                - name: Prepare Adaptive LegacyDebug APK
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
+                    test ${#apks[@]} -eq 1
+                    cp "${apks[0]}" gamenative-adaptive-legacy-debug.apk
+                    sha256sum gamenative-adaptive-legacy-debug.apk
+                    ls -lh gamenative-adaptive-legacy-debug.apk
+
+                - name: Upload Adaptive LegacyDebug APK
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: gamenative-adaptive-legacy-debug
+                    path: gamenative-adaptive-legacy-debug.apk
+                    if-no-files-found: error
+                    compression-level: 0
+          YAML
+
+      - name: Verify staged changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .github/workflows/experimental-adaptive-legacydebug.yml
+          grep -Fq 'LSFG_CONF_FPS_LIMIT = 0' app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+          ! grep -Fq 'fpsLimitOverride' app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+          git diff --check
+
+      - name: Commit final integration and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/experimental-adaptive-finalize-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            app/src/main/java/app/gamenative/utils/LsfgVkManager.kt \
+            .github/workflows/experimental-adaptive-legacydebug.yml \
+            .github/workflows/experimental-adaptive-finalize-once.yml
+          git diff --cached --check
+          git commit -m "ci(lsfg): verify Adaptive LegacyDebug integration"
+          git push origin HEAD:experimental/winnative-governor-20260909

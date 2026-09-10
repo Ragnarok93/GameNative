@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   legacy-debug:
-    if: github.event.head_commit.message != 'perf(lsfg): integrate fixed governor runtime'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout GameNative
@@ -67,7 +66,7 @@ jobs:
       - name: Assemble LegacyDebug
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 
-      - name: Commit validated integration on staging branch
+      - name: Commit validated integration on result branch
         shell: bash
         run: |
           set -euo pipefail
@@ -76,4 +75,4 @@ jobs:
           git add app/src/main/java/app/gamenative/utils/LsfgVkManager.kt app/src/main/cpp/lsfg-vk-android
           git diff --cached --check
           git commit -m 'perf(lsfg): integrate fixed governor runtime'
-          git push origin HEAD:experimental/winnative-gamenative-cleanup-stage
+          git push origin HEAD:experimental/winnative-gamenative-cleanup-result

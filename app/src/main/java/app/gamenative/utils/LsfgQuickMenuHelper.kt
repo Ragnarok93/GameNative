@@ -18,6 +18,19 @@ object LsfgQuickMenuHelper {
 
     val ADAPTIVE_TARGET_OPTIONS: IntArray = intArrayOf(60, 90, 120, 144)
 
+    enum class FrameGenerationMode {
+        OFF,
+        FIXED,
+        ADAPTIVE,
+    }
+
+    fun frameGenerationMode(multiplier: Int, adaptiveEnabled: Boolean): FrameGenerationMode =
+        when {
+            sanitizeMultiplier(multiplier) < 2 -> FrameGenerationMode.OFF
+            adaptiveEnabled -> FrameGenerationMode.ADAPTIVE
+            else -> FrameGenerationMode.FIXED
+        }
+
     data class Settings(
         val multiplier: Int,
         val flowScale: Float,
@@ -34,11 +47,21 @@ object LsfgQuickMenuHelper {
     }
 
     fun readSettings(container: Container): Settings {
-        val adaptiveEnabled = adaptiveFramegen(container)
+        val multiplier = LsfgVkManager.multiplier(container)
+        val storedAdaptive = adaptiveFramegen(container)
+        val adaptiveEnabled = multiplier >= 2 && storedAdaptive
         val adaptiveTarget = adaptiveTargetFps(container)
+
+        // Off is authoritative. Clear stale Adaptive state instead of allowing an
+        // old overlay to spring back to life the next time a multiplier is enabled.
+        if (storedAdaptive && !adaptiveEnabled) {
+            container.putExtra(EXTRA_ADAPTIVE_FRAMEGEN, "false")
+            container.saveData()
+        }
         writeAdaptiveOverlay(container, adaptiveEnabled, adaptiveTarget)
+
         return Settings(
-            multiplier = LsfgVkManager.multiplier(container),
+            multiplier = multiplier,
             flowScale = LsfgVkManager.flowScale(container),
             performanceMode = LsfgVkManager.performanceMode(container),
             adaptiveFramegen = adaptiveEnabled,
@@ -52,6 +75,11 @@ object LsfgQuickMenuHelper {
         LsfgRuntimeUpdateDebouncer(applyExecutor, SETTINGS_APPLY_DEBOUNCE_MS)
 
     fun presentMode(container: Container): String = LsfgVkManager.presentMode(container)
+
+    fun configuredMode(container: Container): FrameGenerationMode {
+        val settings = readSettings(container)
+        return frameGenerationMode(settings.multiplier, settings.adaptiveFramegen == true)
+    }
 
     /**
      * Source-frame pacing belongs to XServerScreen/Present/SHM. Keep this hook
@@ -89,21 +117,80 @@ object LsfgQuickMenuHelper {
     fun sanitizeAdaptiveTargetFps(targetFps: Int): Int =
         if (targetFps in ADAPTIVE_TARGET_OPTIONS) targetFps else DEFAULT_ADAPTIVE_TARGET_FPS
 
-    fun applyAdaptiveSettings(container: Container, enabled: Boolean, targetFps: Int) {
+    fun applyFrameGenerationMode(
+        container: Container,
+        mode: FrameGenerationMode,
+        activeMultiplier: Int,
+        targetFps: Int,
+    ) {
         val current = readSettings(container)
+        val previousMode = frameGenerationMode(current.multiplier, current.adaptiveFramegen == true)
+        val effectiveMultiplier = when (mode) {
+            FrameGenerationMode.OFF -> 0
+            FrameGenerationMode.FIXED, FrameGenerationMode.ADAPTIVE ->
+                sanitizeMultiplier(activeMultiplier).takeIf { it >= 2 } ?: 2
+        }
+
         applySettings(
             container,
             current.copy(
-                adaptiveFramegen = enabled,
+                multiplier = effectiveMultiplier,
+                adaptiveFramegen = mode == FrameGenerationMode.ADAPTIVE,
                 adaptiveTargetFps = sanitizeAdaptiveTargetFps(targetFps),
             ),
         )
+
+        // Do not interfere with the proven Off <-> enabled handoff. Those changes
+        // already alter conf.toml and remain owned by XServerScreen/native code.
+        // Fixed <-> Adaptive can leave conf.toml byte-identical, so explicitly
+        // request exactly one context reload to make the native layer re-read the
+        // overlay. A short LSFG interruption is intentional and preferable to
+        // adding another in-place presentation transition.
+        if (
+            previousMode != mode &&
+            previousMode != FrameGenerationMode.OFF &&
+            mode != FrameGenerationMode.OFF
+        ) {
+            LsfgVkManager.requestRuntimeReload(
+                container,
+                reason = "mode=${previousMode.name.lowercase(Locale.US)}->${mode.name.lowercase(Locale.US)}",
+            )
+        }
+    }
+
+    fun applyAdaptiveSettings(container: Container, enabled: Boolean, targetFps: Int) {
+        val current = readSettings(container)
+        val previousEnabled = current.adaptiveFramegen == true
+        val previousTarget = current.adaptiveTargetFps ?: DEFAULT_ADAPTIVE_TARGET_FPS
+        val sanitizedTarget = sanitizeAdaptiveTargetFps(targetFps)
+        val effectiveEnabled = current.multiplier >= 2 && enabled
+
+        applySettings(
+            container,
+            current.copy(
+                adaptiveFramegen = effectiveEnabled,
+                adaptiveTargetFps = sanitizedTarget,
+            ),
+        )
+
+        // Overlay-only changes do not necessarily rewrite conf.toml. Touching the
+        // existing config asks the already-proven native watcher to recreate once.
+        if (
+            current.multiplier >= 2 &&
+            (previousEnabled != effectiveEnabled || (effectiveEnabled && previousTarget != sanitizedTarget))
+        ) {
+            LsfgVkManager.requestRuntimeReload(
+                container,
+                reason = if (previousEnabled != effectiveEnabled) "adaptive-topology" else "adaptive-target",
+            )
+        }
     }
 
     fun applySettings(container: Container, settings: Settings) {
         val multiplier = sanitizeMultiplier(settings.multiplier)
         val flowScale = sanitizeFlowScale(settings.flowScale)
-        val adaptiveEnabled = settings.adaptiveFramegen ?: adaptiveFramegen(container)
+        val requestedAdaptive = settings.adaptiveFramegen ?: adaptiveFramegen(container)
+        val adaptiveEnabled = multiplier >= 2 && requestedAdaptive
         val adaptiveTarget = sanitizeAdaptiveTargetFps(
             settings.adaptiveTargetFps ?: adaptiveTargetFps(container),
         )

@@ -1,0 +1,351 @@
+name: Apply LSFG mode cleanup
+
+on:
+  push:
+    branches:
+      - experimental/winnative-governor-20260909
+    paths:
+      - .github/workflows/apply-lsfg-mode-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v5
+        with:
+          ref: experimental/winnative-governor-20260909
+          fetch-depth: 0
+          submodules: false
+
+      - name: Apply GameNative-only LSFG mode cleanup
+        shell: bash
+        env:
+          LSFG_NATIVE_SHA: b4befc388b1ef4e76c7204874c2dfe2fa3cb02c0
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          helper_path = Path('app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt')
+          helper = helper_path.read_text(encoding='utf-8')
+          old = '''    val ADAPTIVE_TARGET_OPTIONS: IntArray = intArrayOf(60, 90, 120, 144)\n\n    data class Settings(\n'''
+          new = '''    val ADAPTIVE_TARGET_OPTIONS: IntArray = intArrayOf(60, 90, 120, 144)\n\n    enum class FrameGenerationMode {\n        OFF,\n        FIXED,\n        ADAPTIVE,\n    }\n\n    fun frameGenerationMode(multiplier: Int, adaptiveEnabled: Boolean): FrameGenerationMode =\n        when {\n            sanitizeMultiplier(multiplier) < 2 -> FrameGenerationMode.OFF\n            adaptiveEnabled -> FrameGenerationMode.ADAPTIVE\n            else -> FrameGenerationMode.FIXED\n        }\n\n    data class Settings(\n'''
+          if old not in helper:
+              raise SystemExit('helper mode insertion anchor not found')
+          helper = helper.replace(old, new, 1)
+
+          old = '''    fun presentMode(container: Container): String = LsfgVkManager.presentMode(container)\n\n    /**\n'''
+          new = '''    fun presentMode(container: Container): String = LsfgVkManager.presentMode(container)\n\n    fun configuredMode(container: Container): FrameGenerationMode =\n        frameGenerationMode(multiplier = LsfgVkManager.multiplier(container), adaptiveEnabled = adaptiveFramegen(container))\n\n    /**\n'''
+          if old not in helper:
+              raise SystemExit('helper configured-mode anchor not found')
+          helper = helper.replace(old, new, 1)
+
+          old = '''    fun applyAdaptiveSettings(container: Container, enabled: Boolean, targetFps: Int) {\n        val current = readSettings(container)\n        applySettings(\n            container,\n            current.copy(\n                adaptiveFramegen = enabled,\n                adaptiveTargetFps = sanitizeAdaptiveTargetFps(targetFps),\n            ),\n        )\n    }\n\n'''
+          new = '''    fun applyFrameGenerationMode(\n        container: Container,\n        mode: FrameGenerationMode,\n        activeMultiplier: Int,\n        targetFps: Int,\n    ) {\n        val current = readSettings(container)\n        val effectiveMultiplier = when (mode) {\n            FrameGenerationMode.OFF -> 0\n            FrameGenerationMode.FIXED, FrameGenerationMode.ADAPTIVE ->\n                sanitizeMultiplier(activeMultiplier).takeIf { it >= 2 } ?: 2\n        }\n        applySettings(\n            container,\n            current.copy(\n                multiplier = effectiveMultiplier,\n                adaptiveFramegen = mode == FrameGenerationMode.ADAPTIVE,\n                adaptiveTargetFps = sanitizeAdaptiveTargetFps(targetFps),\n            ),\n        )\n\n        // Fixed <-> Adaptive may leave conf.toml byte-identical. Explicitly request\n        // one context reload so the native layer re-reads the Adaptive overlay.\n        // This deliberately accepts a short LSFG interruption rather than changing\n        // the proven native present/source-only transition path.\n        LsfgVkManager.requestRuntimeReload(container, reason = "mode=${mode.name.lowercase(Locale.US)}")\n    }\n\n    fun applyAdaptiveSettings(container: Container, enabled: Boolean, targetFps: Int) {\n        val previousEnabled = adaptiveFramegen(container)\n        val previousTarget = adaptiveTargetFps(container)\n        val sanitizedTarget = sanitizeAdaptiveTargetFps(targetFps)\n        val current = readSettings(container)\n        applySettings(\n            container,\n            current.copy(\n                adaptiveFramegen = enabled,\n                adaptiveTargetFps = sanitizedTarget,\n            ),\n        )\n        if (previousEnabled != enabled || previousTarget != sanitizedTarget) {\n            LsfgVkManager.requestRuntimeReload(\n                container,\n                reason = if (previousEnabled != enabled) "adaptive-topology" else "adaptive-target",\n            )\n        }\n    }\n\n'''
+          if old not in helper:
+              raise SystemExit('helper adaptive-settings anchor not found')
+          helper = helper.replace(old, new, 1)
+          helper_path.write_text(helper, encoding='utf-8')
+
+          manager_path = Path('app/src/main/java/app/gamenative/utils/LsfgVkManager.kt')
+          manager = manager_path.read_text(encoding='utf-8')
+          anchor = '''    // ---- Runtime hot-reload -----------------------------------------------\n\n    /**\n     * Update conf.toml while the container is running. The layer observes the\n'''
+          replacement = '''    // ---- Runtime hot-reload -----------------------------------------------\n\n    /**\n     * Request a deliberate native-context reload without changing the config payload.\n     * Adaptive topology/target state lives in a separate overlay, so changing only\n     * that overlay may otherwise leave conf.toml byte-identical and invisible to the\n     * layer's config watcher. This is intentionally a reload boundary, not a new\n     * in-place present-path transition.\n     */\n    @JvmStatic\n    @Synchronized\n    fun requestRuntimeReload(container: Container, reason: String): Boolean {\n        if (!isSupported(container)) return false\n        val file = configFile(container)\n        if (!file.isFile) {\n            Timber.tag(TAG).w("LSFG reload requested but conf.toml is missing: reason=%s", reason)\n            return false\n        }\n        val previousTimestamp = file.lastModified()\n        val requestedTimestamp = maxOf(System.currentTimeMillis(), previousTimestamp + 1000L)\n        val ok = file.setLastModified(requestedTimestamp)\n        if (ok) {\n            Timber.tag(TAG).i(\n                "Requested controlled LSFG context reload: reason=%s, previousMtime=%d, newMtime=%d",\n                reason,\n                previousTimestamp,\n                requestedTimestamp,\n            )\n        } else {\n            Timber.tag(TAG).w("Failed to request LSFG context reload: reason=%s", reason)\n        }\n        return ok\n    }\n\n    /**\n     * Update conf.toml while the container is running. The layer observes the\n'''
+          if anchor not in manager:
+              raise SystemExit('manager runtime-reload anchor not found')
+          manager = manager.replace(anchor, replacement, 1)
+          manager_path.write_text(manager, encoding='utf-8')
+
+          quick_path = Path('app/src/main/java/app/gamenative/ui/component/QuickMenu.kt')
+          quick = quick_path.read_text(encoding='utf-8')
+          start_marker = '@Composable\nprivate fun LsfgQuickMenuTab('
+          end_marker = '@Composable\nprivate fun ImmersiveQuickMenuTab('
+          start = quick.find(start_marker)
+          end = quick.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('QuickMenu LSFG function boundaries not found')
+          replacement = r'''@Composable
+private fun LsfgQuickMenuTab(
+    container: com.winlator.container.Container?,
+    multiplier: Int,
+    flowScale: Float,
+    performanceMode: Boolean,
+    runtimeStatus: String,
+    onMultiplierChanged: (Int) -> Unit,
+    onFlowScaleChanged: (Float) -> Unit,
+    onPerformanceModeChanged: (Boolean) -> Unit,
+    presentMode: String,
+    onPresentModeChanged: (String) -> Unit,
+    scrollState: ScrollState,
+    focusRequester: FocusRequester? = null,
+    modifier: Modifier = Modifier,
+) {
+    val accentColor = PluviaTheme.colors.accentPurple
+    val initialAdaptiveSettings = remember(container) {
+        container?.let { app.gamenative.utils.LsfgQuickMenuHelper.readSettings(it) }
+    }
+    var adaptiveFramegen by remember(container) {
+        mutableStateOf(initialAdaptiveSettings?.adaptiveFramegen == true)
+    }
+    var adaptiveTargetFps by remember(container) {
+        mutableStateOf(initialAdaptiveSettings?.adaptiveTargetFps ?: 60)
+    }
+    val mode = app.gamenative.utils.LsfgQuickMenuHelper.frameGenerationMode(
+        multiplier = multiplier,
+        adaptiveEnabled = adaptiveFramegen,
+    )
+    val modeLabel = when (mode) {
+        app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.OFF ->
+            stringResource(R.string.lsfg_mode_off)
+        app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.FIXED ->
+            stringResource(R.string.lsfg_mode_fixed)
+        app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE ->
+            stringResource(R.string.lsfg_mode_adaptive)
+    }
+    val statusSubtitle = if (runtimeStatus.isBlank()) modeLabel else "$modeLabel • $runtimeStatus"
+
+    fun selectMode(nextMode: app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode) {
+        val targetMultiplier = when (nextMode) {
+            app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.OFF -> 0
+            app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.FIXED,
+            app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE ->
+                multiplier.coerceIn(2, 4)
+        }
+        adaptiveFramegen = nextMode == app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE
+        container?.let {
+            app.gamenative.utils.LsfgQuickMenuHelper.applyFrameGenerationMode(
+                it,
+                nextMode,
+                targetMultiplier,
+                adaptiveTargetFps,
+            )
+        }
+        if (targetMultiplier != multiplier) {
+            onMultiplierChanged(targetMultiplier)
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .verticalScroll(scrollState)
+            .focusGroup(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        QuickMenuSectionHeader(
+            title = stringResource(R.string.lsfg_frame_generation_mode),
+            subtitle = statusSubtitle,
+        )
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 8.dp)
+                .then(if (LocalImmersiveInputBypass.current.active) Modifier.focusGroup() else Modifier),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(
+                app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.OFF to R.string.lsfg_mode_off,
+                app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.FIXED to R.string.lsfg_mode_fixed,
+                app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE to R.string.lsfg_mode_adaptive,
+            ).forEach { (value, labelRes) ->
+                QuickMenuChoiceChip(
+                    text = stringResource(labelRes),
+                    selected = mode == value,
+                    accentColor = accentColor,
+                    onClick = { selectMode(value) },
+                    modifier = Modifier.width(72.dp),
+                    focusRequester = if (value == app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.OFF) {
+                        focusRequester
+                    } else {
+                        null
+                    },
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = mode != app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.OFF,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Spacer(modifier = Modifier.height(4.dp))
+
+                if (mode == app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.FIXED) {
+                    QuickMenuSectionHeader(
+                        title = stringResource(R.string.lsfg_fixed_multiplier),
+                        subtitle = stringResource(R.string.lsfg_fixed_multiplier_desc),
+                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(2, 3, 4).forEach { value ->
+                            QuickMenuChoiceChip(
+                                text = "${value}×",
+                                selected = multiplier == value,
+                                accentColor = accentColor,
+                                onClick = { onMultiplierChanged(value) },
+                                modifier = Modifier.width(56.dp),
+                            )
+                        }
+                    }
+                }
+
+                if (mode == app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE) {
+                    QuickMenuSectionHeader(
+                        title = stringResource(R.string.lsfg_adaptive_target),
+                        subtitle = stringResource(R.string.lsfg_adaptive_target_desc),
+                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        app.gamenative.utils.LsfgQuickMenuHelper.ADAPTIVE_TARGET_OPTIONS.forEach { target ->
+                            QuickMenuChoiceChip(
+                                text = stringResource(R.string.lsfg_fps_value, target),
+                                selected = adaptiveTargetFps == target,
+                                accentColor = accentColor,
+                                onClick = {
+                                    adaptiveTargetFps = target
+                                    container?.let {
+                                        app.gamenative.utils.LsfgQuickMenuHelper.applyAdaptiveSettings(
+                                            it,
+                                            true,
+                                            target,
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.width(64.dp),
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    QuickMenuSectionHeader(
+                        title = stringResource(R.string.lsfg_adaptive_max_generation),
+                        subtitle = stringResource(R.string.lsfg_adaptive_max_generation_desc),
+                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(2, 3, 4).forEach { value ->
+                            QuickMenuChoiceChip(
+                                text = "${value}×",
+                                selected = multiplier == value,
+                                accentColor = accentColor,
+                                onClick = { onMultiplierChanged(value) },
+                                modifier = Modifier.width(56.dp),
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                QuickMenuAdjustmentRow(
+                    title = stringResource(R.string.lsfg_flow_scale),
+                    subtitle = stringResource(R.string.lsfg_flow_scale_desc),
+                    valueText = String.format(java.util.Locale.US, "%.2f", flowScale),
+                    progress = (flowScale - 0.25f) / 0.75f,
+                    onDecrease = {
+                        val next = (flowScale - 0.05f).coerceIn(0.25f, 1.0f)
+                        onFlowScaleChanged(String.format(java.util.Locale.US, "%.2f", next).toFloat())
+                    },
+                    onIncrease = {
+                        val next = (flowScale + 0.05f).coerceIn(0.25f, 1.0f)
+                        onFlowScaleChanged(String.format(java.util.Locale.US, "%.2f", next).toFloat())
+                    },
+                    accentColor = accentColor,
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+                QuickMenuToggleRow(
+                    title = stringResource(R.string.lsfg_performance_mode),
+                    subtitle = stringResource(R.string.lsfg_performance_mode_desc),
+                    enabled = performanceMode,
+                    onToggle = { onPerformanceModeChanged(!performanceMode) },
+                    accentColor = accentColor,
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+                QuickMenuSectionHeader(
+                    title = stringResource(R.string.lsfg_present_mode),
+                    subtitle = stringResource(R.string.lsfg_present_mode_desc),
+                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf("mailbox" to "Mailbox", "fifo" to "FIFO").forEach { (value, label) ->
+                        QuickMenuChoiceChip(
+                            text = label,
+                            selected = presentMode == value,
+                            accentColor = accentColor,
+                            onClick = { onPresentModeChanged(value) },
+                            modifier = Modifier.width(96.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+    }
+}
+
+'''
+          quick = quick[:start] + replacement + quick[end:]
+          quick_path.write_text(quick, encoding='utf-8')
+
+          strings_path = Path('app/src/main/res/values/strings_lsfg_adaptive.xml')
+          strings_path.write_text('''<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <string name="lsfg_frame_generation_mode">Frame generation mode</string>\n    <string name="lsfg_mode_off">Off</string>\n    <string name="lsfg_mode_fixed">Fixed</string>\n    <string name="lsfg_mode_adaptive">Adaptive</string>\n    <string name="lsfg_fixed_multiplier">Fixed multiplier</string>\n    <string name="lsfg_fixed_multiplier_desc">Generate at a constant 2×, 3×, or 4× multiplier.</string>\n    <string name="lsfg_adaptive_framegen">Adaptive frame generation</string>\n    <string name="lsfg_adaptive_framegen_desc">Targets output frame rate without changing the source-game FPS limiter.</string>\n    <string name="lsfg_adaptive_target">Output target</string>\n    <string name="lsfg_adaptive_target_desc">Adaptive generation targets this output rate without changing the source-game FPS limiter.</string>\n    <string name="lsfg_adaptive_max_generation">Maximum generation</string>\n    <string name="lsfg_adaptive_max_generation_desc">Caps Adaptive at 2×, 3×, or 4× generation.</string>\n    <string name="lsfg_fps_value">%1$d FPS</string>\n</resources>\n''', encoding='utf-8')
+
+          test_path = Path('app/src/test/java/app/gamenative/utils/LsfgQuickMenuHelperModeTest.kt')
+          test_path.write_text('''package app.gamenative.utils\n\nimport org.junit.Assert.assertEquals\nimport org.junit.Test\n\nclass LsfgQuickMenuHelperModeTest {\n    @Test\n    fun offWinsWhenMultiplierIsDisabled() {\n        assertEquals(\n            LsfgQuickMenuHelper.FrameGenerationMode.OFF,\n            LsfgQuickMenuHelper.frameGenerationMode(0, adaptiveEnabled = true),\n        )\n    }\n\n    @Test\n    fun enabledNonAdaptiveStateIsFixed() {\n        assertEquals(\n            LsfgQuickMenuHelper.FrameGenerationMode.FIXED,\n            LsfgQuickMenuHelper.frameGenerationMode(2, adaptiveEnabled = false),\n        )\n    }\n\n    @Test\n    fun enabledAdaptiveStateIsAdaptive() {\n        assertEquals(\n            LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,\n            LsfgQuickMenuHelper.frameGenerationMode(4, adaptiveEnabled = true),\n        )\n    }\n}\n''', encoding='utf-8')
+
+          workflow_path = Path('.github/workflows/experimental-adaptive-legacydebug.yml')
+          workflow = workflow_path.read_text(encoding='utf-8')
+          old_sha = '01831cca792a32a245df8240a7fe5d7df64f7e75'
+          new_sha = 'b4befc388b1ef4e76c7204874c2dfe2fa3cb02c0'
+          if old_sha not in workflow:
+              raise SystemExit('expected native workflow SHA anchor not found')
+          workflow = workflow.replace(old_sha, new_sha, 1)
+          workflow = workflow.replace(
+              "          assert 'lsfg_adaptive_framegen' in quick\n          assert 'lsfg_adaptive_target' in quick\n",
+              "          assert 'lsfg_frame_generation_mode' in quick\n          assert 'FrameGenerationMode.FIXED' in quick\n          assert 'FrameGenerationMode.ADAPTIVE' in quick\n          assert 'lsfg_adaptive_max_generation' in quick\n          assert 'LsfgQuickMenuHelper.applyAdaptiveSettings' in quick\n          assert 'requestRuntimeReload' in helper\n          assert 'requestRuntimeReload' in manager\n",
+              1,
+          )
+          workflow_path.write_text(workflow, encoding='utf-8')
+          PY
+
+          # Pin only the gitlink. No native source files are edited here.
+          git update-index --cacheinfo 160000,"$LSFG_NATIVE_SHA",app/src/main/cpp/lsfg-vk-android
+
+          # The staging workflow removes itself from the resulting branch head.
+          rm .github/workflows/apply-lsfg-mode-cleanup.yml
+
+          git add \
+            app/src/main/java/app/gamenative/ui/component/QuickMenu.kt \
+            app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt \
+            app/src/main/java/app/gamenative/utils/LsfgVkManager.kt \
+            app/src/main/res/values/strings_lsfg_adaptive.xml \
+            app/src/test/java/app/gamenative/utils/LsfgQuickMenuHelperModeTest.kt \
+            .github/workflows/experimental-adaptive-legacydebug.yml \
+            .github/workflows/apply-lsfg-mode-cleanup.yml
+
+          test "$(git ls-files -s app/src/main/cpp/lsfg-vk-android | awk '{print $2}')" = "$LSFG_NATIVE_SHA"
+          git diff --cached --check
+          git diff --cached --name-only
+          if git diff --cached --name-only | grep -Eq '^app/src/main/cpp/lsfg-vk-android/'; then
+            echo 'ERROR: native LSFG source was modified' >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(lsfg): make Fixed and Adaptive explicit modes'
+          git push origin HEAD:experimental/winnative-governor-20260909

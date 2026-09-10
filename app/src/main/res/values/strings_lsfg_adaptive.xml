@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lsfg_adaptive_framegen">Adaptive frame generation</string>
+    <string name="lsfg_adaptive_framegen_desc">Targets output frame rate without changing the source-game FPS limiter.</string>
+    <string name="lsfg_adaptive_target">Adaptive output target</string>
+    <string name="lsfg_adaptive_target_desc">The selected multiplier remains the maximum generation level.</string>
+</resources>

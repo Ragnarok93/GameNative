@@ -89,6 +89,57 @@ jobs:
       - name: Run Legacy unit tests
         run: ./gradlew :app:testLegacyDebugUnitTest --no-daemon
 
+      - name: Print Legacy unit test failures
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          results_dir=app/build/test-results/testLegacyDebugUnitTest
+          if [[ ! -d "$results_dir" ]]; then
+            echo "No Legacy JUnit result directory was produced."
+            exit 0
+          fi
+          python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          root = pathlib.Path("app/build/test-results/testLegacyDebugUnitTest")
+          found = False
+          for report in sorted(root.rglob("*.xml")):
+              try:
+                  suite = ET.parse(report).getroot()
+              except ET.ParseError as exc:
+                  print(f"Could not parse {report}: {exc}")
+                  continue
+              for case in suite.iter("testcase"):
+                  problem = case.find("failure")
+                  if problem is None:
+                      problem = case.find("error")
+                  if problem is None:
+                      continue
+                  found = True
+                  classname = case.attrib.get("classname", "")
+                  name = case.attrib.get("name", "")
+                  message = problem.attrib.get("message", "")
+                  body = (problem.text or "").strip()
+                  print(f"::error title=Legacy unit test failed::{classname}.{name}: {message}")
+                  print(f"REPORT: {report}")
+                  if body:
+                      print(body)
+          if not found:
+              print("No <failure> or <error> entries found in Legacy JUnit XML.")
+          PY
+
+      - name: Upload Legacy unit test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-unit-test-reports
+          path: |
+            app/build/test-results/testLegacyDebugUnitTest/**
+            app/build/reports/tests/testLegacyDebugUnitTest/**
+          if-no-files-found: warn
+
       - name: Build LegacyDebug
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 

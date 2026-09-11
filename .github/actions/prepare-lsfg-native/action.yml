@@ -21,7 +21,6 @@ runs:
         native_manifest="$native_dir/VkLayer_LS_frame_generation.json"
         runtime_manifest=app/src/main/assets/lsfg_vk/android_arm64_v8a/VkLayer_LS_frame_generation.json
         runtime_manager=app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
-        runtime_test=app/src/test/java/app/gamenative/utils/LsfgVkManagerTest.kt
         expected_commit="$(git rev-parse HEAD:${native_dir})"
         expected_prefix="${expected_commit:0:8}"
         expected_build_id="${expected_commit:0:12}"
@@ -36,19 +35,17 @@ runs:
         echo "Building GameNative-pinned LSFG native revision ${actual_commit}"
 
         # The checked-in Kotlin marker describes the checked-in jniLibs payload.
-        # CI replaces only its native SHA token (and the matching assertion) after
-        # resolving the gitlink, so every prepared APK identifies the exact native
-        # revision it actually packages without a second manually maintained SHA.
-        # Keep the feature label flexible so provenance follows the gitlink rather
-        # than a branch-specific runtime marker name.
-        python3 - "$runtime_manager" "$runtime_test" "$expected_prefix" <<'PY'
+        # CI replaces only its native SHA token after resolving the gitlink, so
+        # every prepared APK identifies the exact native revision it packages.
+        # Tests validate the stable runtime marker family/revision contract rather
+        # than duplicating a manually maintained native SHA assertion.
+        python3 - "$runtime_manager" "$expected_prefix" <<'PY'
         import pathlib
         import re
         import sys
 
         manager = pathlib.Path(sys.argv[1])
-        test = pathlib.Path(sys.argv[2])
-        expected_prefix = sys.argv[3]
+        expected_prefix = sys.argv[2]
 
         manager_text = manager.read_text(encoding="utf-8")
         manager_pattern = re.compile(
@@ -60,22 +57,10 @@ runs:
         if manager_count != 1:
             raise SystemExit("ERROR: could not rewrite the LSFG runtime marker")
         manager.write_text(manager_text, encoding="utf-8")
-
-        test_text = test.read_text(encoding="utf-8")
-        test_pattern = re.compile(
-            r'(loaderVersion\.readText\(\)\.contains\(")[0-9a-f]{8}("\))'
-        )
-        test_text, test_count = test_pattern.subn(
-            rf"\g<1>{expected_prefix}\g<2>", test_text, count=1
-        )
-        if test_count != 1:
-            raise SystemExit("ERROR: could not rewrite the LSFG runtime provenance assertion")
-        test.write_text(test_text, encoding="utf-8")
         PY
 
         grep -Fq "$expected_prefix" "$runtime_manager"
-        grep -Fq "$expected_prefix" "$runtime_test"
-        git diff --check -- "$runtime_manager" "$runtime_test"
+        git diff --check -- "$runtime_manager"
 
         mapfile -t android_native_tests < <(find "$native_dir/tests" -maxdepth 1 -type f -name 'android_*_test.py' | sort)
         if [[ "${#android_native_tests[@]}" -eq 0 ]]; then

@@ -8,6 +8,7 @@ on:
     paths:
       - tools/finalize_adaptive_ui_stage.py
       - app/src/test/java/app/gamenative/utils/LsfgVkManagerTest.kt
+      - app/src/test/java/app/gamenative/utils/LsfgBuildWorkflowContractTest.kt
       - .github/actions/prepare-lsfg-native/action.yml
       - .github/workflows/finalize-adaptive-ui-stage.yml
 

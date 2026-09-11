@@ -60,24 +60,30 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun sharedNativePreparationDerivesRuntimeMarkerFromGitlinkAndRejectsCheckoutMismatch() {
+    fun sharedNativePreparationDerivesRuntimeMarkerFromGitlinkWithoutMutatingTests() {
         val source = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
         listOf(
             "runtime_manager=app/src/main/java/app/gamenative/utils/LsfgVkManager.kt",
-            "runtime_test=app/src/test/java/app/gamenative/utils/LsfgVkManagerTest.kt",
             "expected_prefix=\"${'$'}{expected_commit:0:8}\"",
             "actual_commit=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
             "if [[ \"${'$'}actual_commit\" != \"${'$'}expected_commit\" ]]; then",
             "LSFG submodule checkout ${'$'}{actual_commit} != GameNative gitlink ${'$'}{expected_commit}",
-            "python3 - \"${'$'}runtime_manager\" \"${'$'}runtime_test\" \"${'$'}expected_prefix\"",
+            "python3 - \"${'$'}runtime_manager\" \"${'$'}expected_prefix\"",
             "grep -Fq \"${'$'}expected_prefix\" \"${'$'}runtime_manager\"",
-            "grep -Fq \"${'$'}expected_prefix\" \"${'$'}runtime_test\"",
         ).forEach { token ->
             assertTrue(
                 "shared LSFG preparation action must derive runtime provenance from the gitlink and reject checkout mismatches; missing $token",
                 source.contains(token),
             )
         }
+        assertFalse(
+            "shared LSFG preparation must not rewrite source tests to match the runtime under test",
+            source.contains("runtime_test="),
+        )
+        assertFalse(
+            "shared LSFG preparation must not rewrite LsfgVkManagerTest.kt",
+            source.contains("LsfgVkManagerTest.kt"),
+        )
     }
 
     @Test

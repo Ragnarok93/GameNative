@@ -1,0 +1,122 @@
+name: Fix and verify LSFG external semaphore regression
+
+on:
+  push:
+    branches:
+      - experimental/winnative-governor-integration-stage-20260910
+    paths:
+      - .github/workflows/fix-lsfg-external-semaphore-regression.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  LSFG_SHA: b77b8e81f260f3bcace6000d011c79b2c222b9ac
+  LSFG_RUNTIME_MARKER: gamenative-adaptive-b77b8e81-r1
+
+jobs:
+  patch-and-legacy-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout integration stage
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Pin fixed LSFG and bump runtime marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_dir=app/src/main/cpp/lsfg-vk-android
+          old_native="$(git rev-parse HEAD:${native_dir})"
+          echo "old native pin: ${old_native}"
+          git update-index --cacheinfo 160000,"${LSFG_SHA}","${native_dir}"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          path = Path("app/src/main/java/app/gamenative/utils/LsfgVkManager.kt")
+          text = path.read_text(encoding="utf-8")
+          marker = os.environ["LSFG_RUNTIME_MARKER"]
+          text, count = re.subn(
+              r'(private const val RUNTIME_VERSION =\s*\n\s*)"[^"]+"',
+              lambda match: match.group(1) + f'"{marker}"',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("unable to update LSFG runtime marker")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          git add app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+          test "$(git rev-parse :${native_dir})" = "${LSFG_SHA}"
+          grep -F "${LSFG_RUNTIME_MARKER}" app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+          git diff --cached --check
+
+      - name: Commit fixed runtime pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix(lsfg): pin external semaphore regression fix'
+          git push origin HEAD:experimental/winnative-governor-integration-stage-20260910
+
+      - name: Checkout fixed native submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_dir=app/src/main/cpp/lsfg-vk-android
+          git submodule sync --recursive
+          git submodule update --init --recursive -- "$native_dir"
+          test "$(git -C "$native_dir" rev-parse HEAD)" = "${LSFG_SHA}"
+          python3 "$native_dir/tests/android_external_semaphore_regression_test.py"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare pinned LSFG native runtime
+        uses: ./.github/actions/prepare-lsfg-native
+
+      - name: Inject debug credentials
+        run: |
+          printf 'POSTHOG_API_KEY=dummy\n' > local.properties
+          printf 'POSTHOG_HOST=https://us.i.posthog.com\n' >> local.properties
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Assemble LegacyDebug
+        run: ./gradlew :app:assembleLegacyDebug --no-daemon
+
+      - name: Prepare verified APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
+          test ${#apks[@]} -eq 1
+          cp "${apks[0]}" gamenative-lsfg-semaphore-fix-legacy-debug.apk
+          sha256sum gamenative-lsfg-semaphore-fix-legacy-debug.apk
+          ls -lh gamenative-lsfg-semaphore-fix-legacy-debug.apk
+
+      - name: Upload verified LegacyDebug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamenative-lsfg-semaphore-fix-legacy-debug
+          path: gamenative-lsfg-semaphore-fix-legacy-debug.apk
+          if-no-files-found: error
+          compression-level: 0

@@ -47,6 +47,21 @@ jobs:
           path.write_text(source[:start] + replacement + source[end:], encoding="utf-8")
           PY
           python3 tools/apply_gamenative_adaptive.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path("app/src/main/java/app/gamenative/utils/LsfgVkManager.kt")
+          text = path.read_text(encoding="utf-8")
+          text, count = re.subn(
+              r'(private const val RUNTIME_VERSION =\s*\n\s*)"[^"]+"',
+              r'\1"gamenative-adaptive-edcb5e25-r1"',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("unable to normalize LSFG runtime marker")
+          path.write_text(text, encoding="utf-8")
+          PY
 
       - name: Commit transformed product locally
         run: |

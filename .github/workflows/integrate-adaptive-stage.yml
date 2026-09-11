@@ -48,11 +48,21 @@ jobs:
           PY
           python3 tools/apply_gamenative_adaptive.py
 
-      - name: Keep temporary workflow history out of staged code commit
+      - name: Commit transformed product locally
         run: |
           git restore --source=HEAD -- .github/workflows/apply-lsfg-mode-cleanup.yml || true
           git restore --source=HEAD -- .github/workflows/experimental-adaptive-legacydebug.yml || true
-          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/app/gamenative/ui/component/QuickMenu.kt \
+                  app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt \
+                  app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt \
+                  app/src/main/java/app/gamenative/utils/LsfgVkManager.kt \
+                  app/src/main/res/values/strings_lsfg_adaptive.xml \
+                  app/src/main/cpp/lsfg-vk-android
+          git diff --cached --check
+          git commit -m 'feat(lsfg): integrate authoritative Adaptive controls'
+          test "$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)" = "edcb5e25c7c9e23b3653fb7a90a580cc2b520b4f"
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -83,19 +93,8 @@ jobs:
       - name: Build LegacyDebug
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 
-      - name: Commit validated product changes to stage branch
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add app/src/main/java/app/gamenative/ui/component/QuickMenu.kt \
-                  app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt \
-                  app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt \
-                  app/src/main/java/app/gamenative/utils/LsfgVkManager.kt \
-                  app/src/main/res/values/strings_lsfg_adaptive.xml \
-                  app/src/main/cpp/lsfg-vk-android
-          git diff --cached --check
-          git commit -m 'feat(lsfg): integrate authoritative Adaptive controls'
-          git push origin HEAD:experimental/winnative-governor-integration-stage-20260910
+      - name: Push validated product commit to stage branch
+        run: git push origin HEAD:experimental/winnative-governor-integration-stage-20260910
 
       - name: Upload LegacyDebug APK
         uses: actions/upload-artifact@v4

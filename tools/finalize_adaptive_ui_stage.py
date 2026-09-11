@@ -68,6 +68,71 @@ new_setter = '''    fun setAdaptiveTargetFps(container: Container, targetFps: In
 helper = replace_once(helper, old_setter, new_setter, "adaptive target setter")
 write(helper_rel, helper)
 
+# Tests: disabled runtime state is separate from the persisted Fixed/Adaptive selection.
+mode_test_rel = "app/src/test/java/app/gamenative/utils/LsfgQuickMenuHelperModeTest.kt"
+mode_test = read(mode_test_rel)
+old_mode_test = '''package app.gamenative.utils
+
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class LsfgQuickMenuHelperModeTest {
+    @Test
+    fun offWinsWhenMultiplierIsDisabled() {
+        assertEquals(
+            LsfgQuickMenuHelper.FrameGenerationMode.OFF,
+            LsfgQuickMenuHelper.frameGenerationMode(0, adaptiveEnabled = true),
+        )
+    }
+
+    @Test
+    fun enabledNonAdaptiveStateIsFixed() {
+        assertEquals(
+            LsfgQuickMenuHelper.FrameGenerationMode.FIXED,
+            LsfgQuickMenuHelper.frameGenerationMode(2, adaptiveEnabled = false),
+        )
+    }
+
+    @Test
+    fun enabledAdaptiveStateIsAdaptive() {
+        assertEquals(
+            LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,
+            LsfgQuickMenuHelper.frameGenerationMode(4, adaptiveEnabled = true),
+        )
+    }
+}
+'''
+new_mode_test = '''package app.gamenative.utils
+
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class LsfgQuickMenuHelperModeTest {
+    @Test
+    fun disabledMultiplierIsSeparateFromPersistedGenerationMode() {
+        assertEquals(0, LsfgQuickMenuHelper.sanitizeMultiplier(0))
+        assertEquals(
+            setOf(
+                LsfgQuickMenuHelper.FrameGenerationMode.FIXED,
+                LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,
+            ),
+            LsfgQuickMenuHelper.FrameGenerationMode.values().toSet(),
+        )
+    }
+
+    @Test
+    fun supportedFixedMultipliersRemainInRange() {
+        assertEquals(2, LsfgQuickMenuHelper.sanitizeMultiplier(2))
+        assertEquals(4, LsfgQuickMenuHelper.sanitizeMultiplier(4))
+        assertEquals(4, LsfgQuickMenuHelper.sanitizeMultiplier(5))
+    }
+}
+'''
+mode_test = replace_once(mode_test, old_mode_test, new_mode_test, "helper split-state mode test")
+if "FrameGenerationMode.OFF" in mode_test or "frameGenerationMode(" in mode_test:
+    raise RuntimeError("retired combined frame-generation mode API remains in helper test")
+write(mode_test_rel, mode_test)
+
 # Validator workflow must require the exact green native cadence-fix revision.
 workflow_rel = ".github/workflows/experimental-adaptive-legacydebug.yml"
 workflow = read(workflow_rel)

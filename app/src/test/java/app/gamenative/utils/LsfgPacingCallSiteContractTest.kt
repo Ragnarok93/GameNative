@@ -35,19 +35,23 @@ class LsfgPacingCallSiteContractTest {
     }
 
     @Test
-    fun xServerScreenRunsLsfgVsyncClockDuringGenerationHandoff() {
+    fun xServerScreenDoesNotRunAuxiliaryLsfgVsyncClock() {
         val source = String(
             Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
             Charsets.UTF_8,
         )
-        val vsyncEffect = source.substringAfter("DisposableEffect(container, lsfgRuntimeMode)")
-            .substringBefore("// Event handlers defined in composable scope")
+        val manager = String(
+            Files.readAllBytes(sourcePath("app/gamenative/utils/LsfgVkManager.kt")),
+            Charsets.UTF_8,
+        )
 
         assertTrue(source.contains("var lsfgRuntimeMode by rememberSaveable(container.id)"))
-        assertTrue(vsyncEffect.contains("lsfgRuntimeMode == LsfgRuntimeMode.TURNING_ON"))
-        assertTrue(vsyncEffect.contains("lsfgRuntimeMode == LsfgRuntimeMode.GENERATING"))
-        assertTrue(vsyncEffect.contains("LsfgVkManager.startVsyncClock(context, container)"))
-        assertFalse(vsyncEffect.contains("if (isLsfgAvailable)"))
+        assertFalse(source.contains("DisposableEffect(container, lsfgRuntimeMode)"))
+        assertFalse(source.contains("LsfgVkManager.startVsyncClock"))
+        assertFalse(source.contains("LsfgVkManager.stopVsyncClock"))
+        assertFalse(manager.contains("fun startVsyncClock("))
+        assertFalse(manager.contains("fun stopVsyncClock("))
+        assertFalse(manager.contains("Choreographer"))
     }
 
     @Test

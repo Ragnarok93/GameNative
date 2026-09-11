@@ -1647,7 +1647,6 @@ fun XServerScreen(
         }
         onDispose {
             Timber.d("XServerScreen leaving, clearing back action")
-            LsfgVkManager.stopVsyncClock()
             removePerformanceHud()
             performanceHudHost = null
             imeInputReceiver?.hideKeyboard()
@@ -1662,18 +1661,6 @@ fun XServerScreen(
         }   // preserve suspend state across activity recreation while a game is still running
     }
 
-    DisposableEffect(container, lsfgRuntimeMode) {
-        if (lsfgRuntimeMode == LsfgRuntimeMode.TURNING_ON ||
-            lsfgRuntimeMode == LsfgRuntimeMode.GENERATING
-        ) {
-            LsfgVkManager.startVsyncClock(context, container)
-        } else {
-            LsfgVkManager.stopVsyncClock()
-        }
-        onDispose {
-            LsfgVkManager.stopVsyncClock()
-        }
-    }
 
     // Event handlers defined in composable scope to capture latest state on each recomposition
     val onActivityDestroyed: (AndroidEvent.ActivityDestroyed) -> Unit = {

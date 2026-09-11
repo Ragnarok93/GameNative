@@ -1,16 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="lsfg_frame_generation_mode">Frame generation mode</string>
-    <string name="lsfg_mode_off">Off</string>
+    <string name="lsfg_frame_generation">Frame Generation</string>
+    <string name="lsfg_frame_generation_desc">Generate intermediate frames while keeping the LSFG layer resident.</string>
+    <string name="lsfg_mode">Mode</string>
     <string name="lsfg_mode_fixed">Fixed</string>
     <string name="lsfg_mode_adaptive">Adaptive</string>
     <string name="lsfg_fixed_multiplier">Fixed multiplier</string>
-    <string name="lsfg_fixed_multiplier_desc">Generate at a constant 2×, 3×, or 4× multiplier.</string>
-    <string name="lsfg_adaptive_framegen">Adaptive frame generation</string>
-    <string name="lsfg_adaptive_framegen_desc">Targets output frame rate without changing the source-game FPS limiter.</string>
-    <string name="lsfg_adaptive_target">Output target</string>
-    <string name="lsfg_adaptive_target_desc">Adaptive generation targets this output rate without changing the source-game FPS limiter.</string>
-    <string name="lsfg_adaptive_max_generation">Maximum generation</string>
-    <string name="lsfg_adaptive_max_generation_desc">Caps Adaptive at 2×, 3×, or 4× generation.</string>
-    <string name="lsfg_fps_value">%1$d FPS</string>
+    <string name="lsfg_adaptive_target">Target frame rate</string>
+    <string name="lsfg_adaptive_target_desc">Adaptive uses up to 4x generation only as needed to approach this output target.</string>
+    <string name="lsfg_adaptive_target_value">%1$d FPS</string>
 </resources>

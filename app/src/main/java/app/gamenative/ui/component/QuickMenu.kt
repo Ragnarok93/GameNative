@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Slider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -1583,114 +1584,117 @@ private fun LsfgQuickMenuTab(
     modifier: Modifier = Modifier,
 ) {
     val accentColor = PluviaTheme.colors.accentPurple
-    val isEnabled = multiplier >= 2
-    val initialAdaptiveSettings = remember(container) {
-        container?.let { app.gamenative.utils.LsfgQuickMenuHelper.readSettings(it) }
+    val initialMode = remember(container?.id) {
+        container?.let { app.gamenative.utils.LsfgQuickMenuHelper.generationMode(it) }
+            ?: app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.FIXED
     }
-    var adaptiveFramegen by remember(container) {
-        mutableStateOf(initialAdaptiveSettings?.adaptiveFramegen == true)
+    var frameGenerationEnabled by remember(container?.id) { mutableStateOf(multiplier >= 2) }
+    var mode by remember(container?.id) { mutableStateOf(initialMode) }
+    var fixedMultiplier by remember(container?.id) {
+        mutableIntStateOf(container?.let { app.gamenative.utils.LsfgQuickMenuHelper.fixedMultiplier(it) } ?: 2)
     }
-    var adaptiveTargetFps by remember(container) {
-        mutableStateOf(initialAdaptiveSettings?.adaptiveTargetFps ?: 60)
+    var adaptiveTargetFps by remember(container?.id) {
+        mutableIntStateOf(container?.let { app.gamenative.utils.LsfgQuickMenuHelper.adaptiveTargetFps(it) } ?: 60)
     }
 
+    LaunchedEffect(multiplier) { frameGenerationEnabled = multiplier >= 2 }
+
+    fun runtimeMultiplier(): Int =
+        if (mode == app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE) 4 else fixedMultiplier
+
     Column(
-        modifier = modifier
-            .verticalScroll(scrollState)
-            .focusGroup(),
+        modifier = modifier.verticalScroll(scrollState).focusGroup(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // ── Multiplier (Off / 2x / 3x / 4x) ───────────────────────────────
-        QuickMenuSectionHeader(
-            title = stringResource(R.string.lsfg_multiplier),
-            subtitle = runtimeStatus.takeIf { it.isNotBlank() },
+        QuickMenuToggleRow(
+            title = stringResource(R.string.lsfg_frame_generation),
+            subtitle = runtimeStatus.takeIf { it.isNotBlank() }
+                ?: stringResource(R.string.lsfg_frame_generation_desc),
+            enabled = frameGenerationEnabled,
+            onToggle = {
+                val next = !frameGenerationEnabled
+                frameGenerationEnabled = next
+                onMultiplierChanged(if (next) runtimeMultiplier() else 0)
+            },
+            accentColor = accentColor,
+            focusRequester = focusRequester,
         )
-        Row(
-            modifier = Modifier
-                .padding(horizontal = 8.dp)
-                // Immersive only: groups the chips so directional focus enters the row as a
-                // unit. Flat mode keeps master's traversal.
-                .then(if (LocalImmersiveInputBypass.current.active) Modifier.focusGroup() else Modifier),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf(0, 2, 3, 4).forEach { value ->
+
+        Spacer(modifier = Modifier.height(4.dp))
+        QuickMenuSectionHeader(title = stringResource(R.string.lsfg_mode))
+        Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.FIXED to R.string.lsfg_mode_fixed,
+                app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE to R.string.lsfg_mode_adaptive,
+            ).forEach { (candidate, label) ->
                 QuickMenuChoiceChip(
-                    text = if (value == 0) "Off" else "${value}x",
-                    selected = multiplier == value || (value == 0 && multiplier < 2),
+                    text = stringResource(label),
+                    selected = mode == candidate,
                     accentColor = accentColor,
-                    onClick = { onMultiplierChanged(value) },
-                    modifier = Modifier.width(56.dp),
-                    focusRequester = if (value == 0) focusRequester else null,
+                    onClick = {
+                        mode = candidate
+                        container?.let { app.gamenative.utils.LsfgQuickMenuHelper.setGenerationMode(it, candidate) }
+                        if (frameGenerationEnabled) onMultiplierChanged(runtimeMultiplier())
+                    },
+                    modifier = Modifier.width(96.dp),
                 )
             }
         }
 
+        Spacer(modifier = Modifier.height(4.dp))
+        if (mode == app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.FIXED) {
+            QuickMenuSectionHeader(title = stringResource(R.string.lsfg_fixed_multiplier))
+            Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(2, 3, 4).forEach { value ->
+                    QuickMenuChoiceChip(
+                        text = "${value}x",
+                        selected = fixedMultiplier == value,
+                        accentColor = accentColor,
+                        onClick = {
+                            fixedMultiplier = value
+                            container?.let { app.gamenative.utils.LsfgQuickMenuHelper.setFixedMultiplier(it, value) }
+                            if (frameGenerationEnabled) onMultiplierChanged(value)
+                        },
+                        modifier = Modifier.width(56.dp),
+                    )
+                }
+            }
+        } else {
+            QuickMenuSectionHeader(
+                title = stringResource(R.string.lsfg_adaptive_target),
+                subtitle = stringResource(R.string.lsfg_adaptive_target_desc),
+            )
+            Text(
+                text = stringResource(R.string.lsfg_adaptive_target_value, adaptiveTargetFps),
+                style = MaterialTheme.typography.labelLarge,
+                color = accentColor,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+            Slider(
+                value = adaptiveTargetFps.toFloat(),
+                onValueChange = { adaptiveTargetFps = it.roundToInt().coerceIn(30, 144) },
+                onValueChangeFinished = {
+                    container?.let { app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveTargetFps(it, adaptiveTargetFps) }
+                    if (frameGenerationEnabled) onMultiplierChanged(4)
+                },
+                valueRange = 30f..144f,
+                steps = 113,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+        }
+
         AnimatedVisibility(
-            visible = isEnabled,
+            visible = frameGenerationEnabled,
             enter = expandVertically() + fadeIn(),
             exit = shrinkVertically() + fadeOut(),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Spacer(modifier = Modifier.height(4.dp))
-
-                // ── Adaptive frame generation ─────────────────────────────
-                QuickMenuToggleRow(
-                    title = stringResource(R.string.lsfg_adaptive_framegen),
-                    subtitle = stringResource(R.string.lsfg_adaptive_framegen_desc),
-                    enabled = adaptiveFramegen,
-                    onToggle = {
-                        val next = !adaptiveFramegen
-                        adaptiveFramegen = next
-                        container?.let {
-                            app.gamenative.utils.LsfgQuickMenuHelper.applyAdaptiveSettings(
-                                it,
-                                next,
-                                adaptiveTargetFps,
-                            )
-                        }
-                    },
-                    accentColor = accentColor,
-                )
-
-                if (adaptiveFramegen) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    QuickMenuSectionHeader(
-                        title = stringResource(R.string.lsfg_adaptive_target),
-                        subtitle = stringResource(R.string.lsfg_adaptive_target_desc),
-                    )
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        app.gamenative.utils.LsfgQuickMenuHelper.ADAPTIVE_TARGET_OPTIONS.forEach { target ->
-                            QuickMenuChoiceChip(
-                                text = target.toString(),
-                                selected = adaptiveTargetFps == target,
-                                accentColor = accentColor,
-                                onClick = {
-                                    adaptiveTargetFps = target
-                                    container?.let {
-                                        app.gamenative.utils.LsfgQuickMenuHelper.applyAdaptiveSettings(
-                                            it,
-                                            true,
-                                            target,
-                                        )
-                                    }
-                                },
-                                modifier = Modifier.width(56.dp),
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                // ── Flow Scale ────────────────────────────────────────────
                 QuickMenuAdjustmentRow(
                     title = stringResource(R.string.lsfg_flow_scale),
                     subtitle = stringResource(R.string.lsfg_flow_scale_desc),
                     valueText = String.format(java.util.Locale.US, "%.2f", flowScale),
-                    progress = (flowScale - 0.25f) / 0.75f, // 0.25..1.0 → 0..1
+                    progress = (flowScale - 0.25f) / 0.75f,
                     onDecrease = {
                         val next = (flowScale - 0.05f).coerceIn(0.25f, 1.0f)
                         onFlowScaleChanged(String.format(java.util.Locale.US, "%.2f", next).toFloat())
@@ -1701,10 +1705,7 @@ private fun LsfgQuickMenuTab(
                     },
                     accentColor = accentColor,
                 )
-
                 Spacer(modifier = Modifier.height(4.dp))
-
-                // ── Performance Mode ──────────────────────────────────────
                 QuickMenuToggleRow(
                     title = stringResource(R.string.lsfg_performance_mode),
                     subtitle = stringResource(R.string.lsfg_performance_mode_desc),
@@ -1712,18 +1713,12 @@ private fun LsfgQuickMenuTab(
                     onToggle = { onPerformanceModeChanged(!performanceMode) },
                     accentColor = accentColor,
                 )
-
                 Spacer(modifier = Modifier.height(4.dp))
-
-                // ── Present Mode (Mailbox / FIFO) ─────────────────────────
                 QuickMenuSectionHeader(
                     title = stringResource(R.string.lsfg_present_mode),
                     subtitle = stringResource(R.string.lsfg_present_mode_desc),
                 )
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
+                Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("mailbox" to "Mailbox", "fifo" to "FIFO").forEach { (value, label) ->
                         QuickMenuChoiceChip(
                             text = label,
@@ -1736,7 +1731,6 @@ private fun LsfgQuickMenuTab(
                 }
             }
         }
-
         Spacer(modifier = Modifier.height(12.dp))
     }
 }

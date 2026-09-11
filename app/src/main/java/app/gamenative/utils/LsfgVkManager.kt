@@ -2,10 +2,6 @@ package app.gamenative.utils
 
 import android.content.Context
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.view.Choreographer
-import android.view.WindowManager
 import java.util.concurrent.Executors
 import app.gamenative.BuildConfig
 import app.gamenative.service.SteamService
@@ -71,15 +67,22 @@ object LsfgVkManager {
     const val EXTRA_FLOW_SCALE = "lsfgFlowScale"
     const val EXTRA_PERFORMANCE_MODE = "lsfgPerformanceMode"
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
+    const val EXTRA_FRAMEGEN_MODE = "lsfgFramegenMode"
+    const val EXTRA_FIXED_MULTIPLIER = "lsfgFixedMultiplier"
+    const val EXTRA_ADAPTIVE_TARGET_FPS = "lsfgAdaptiveTargetFps"
 
-    // GameNative owns real/source-frame pacing. conf.toml must stay
-    // uncapped; Adaptive output targeting is supplied only by the separate
-    // gamenative-adaptive.toml overlay consumed by the native layer.
-    private const val LSFG_CONF_FPS_LIMIT = 0
+    const val MODE_FIXED = "fixed"
+    const val MODE_ADAPTIVE = "adaptive"
+    const val MIN_ADAPTIVE_TARGET_FPS = 30
+    const val MAX_ADAPTIVE_TARGET_FPS = 144
+    const val DEFAULT_ADAPTIVE_TARGET_FPS = 60
 
     // Written by the layer next to conf.toml; measured presented/base fps
     private const val STATS_RELATIVE_PATH = ".config/lsfg-vk/stats.txt"
     private const val STATS_FRESHNESS_MS = 2000L
+    private val statsReadExecutor by lazy {
+        Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-stats").apply { isDaemon = true } }
+    }
 
     // Environment variables consumed by the lsfg-vk layer / Vulkan loader.
     private const val ENV_DISABLE = "DISABLE_LSFG"
@@ -99,7 +102,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "v1.3.5-android-arm64-v8a-gamenative-presentsync-c1087946-r9"
+        "gamenative-adaptive-edcb5e25-r1"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -153,6 +156,20 @@ object LsfgVkManager {
         return if (raw == 0) 0 else raw.coerceIn(2, 4)
     }
 
+    fun generationMode(container: Container): String =
+        container.getExtra(EXTRA_FRAMEGEN_MODE, MODE_FIXED)
+            .lowercase(Locale.US)
+            .takeIf { it == MODE_FIXED || it == MODE_ADAPTIVE }
+            ?: MODE_FIXED
+
+    fun fixedMultiplier(container: Container): Int =
+        (container.getExtra(EXTRA_FIXED_MULTIPLIER, "2").toIntOrNull() ?: 2).coerceIn(2, 4)
+
+    fun adaptiveTargetFps(container: Container): Int =
+        (container.getExtra(EXTRA_ADAPTIVE_TARGET_FPS, DEFAULT_ADAPTIVE_TARGET_FPS.toString())
+            .toIntOrNull() ?: DEFAULT_ADAPTIVE_TARGET_FPS)
+            .coerceIn(MIN_ADAPTIVE_TARGET_FPS, MAX_ADAPTIVE_TARGET_FPS)
+
     enum class RuntimeStatus {
         UNKNOWN,
         PASS_THROUGH,
@@ -202,53 +219,6 @@ object LsfgVkManager {
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
 
-    // ---- Vsync clock ------------------------------------------------------
-
-    private var vsyncClockHandler: Handler? = null
-    private val vsyncWriteExecutor by lazy {
-        Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-vsync").apply { isDaemon = true } }
-    }
-
-    /**
-     * Publish the display's vsync timestamp and period to vsync.txt next to
-     * conf.toml, once a second, so the layer can phase-lock its frame limiter
-     * to the display instead of free-running against it. Choreographer frame
-     * timestamps are CLOCK_MONOTONIC, the clock the layer paces with.
-     */
-    @JvmStatic
-    fun startVsyncClock(context: Context, container: Container) {
-        stopVsyncClock()
-        val file = File(container.rootDir, ".config/lsfg-vk/vsync.txt")
-        val handler = Handler(Looper.getMainLooper())
-        vsyncClockHandler = handler
-        val tick = object : Runnable {
-            override fun run() {
-                if (vsyncClockHandler !== handler) return
-                Choreographer.getInstance().postFrameCallback { frameTimeNanos ->
-                    if (vsyncClockHandler !== handler) return@postFrameCallback
-                    val refreshRate = runCatching {
-                        (context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
-                            ?.defaultDisplay?.refreshRate
-                    }.getOrNull()?.takeIf { it > 1f } ?: 60f
-                    val periodNs = (1_000_000_000.0 / refreshRate).toLong()
-                    vsyncWriteExecutor.execute {
-                        runCatching {
-                            file.parentFile?.mkdirs()
-                            file.writeText("vsync_ns=$frameTimeNanos\nperiod_ns=$periodNs\n")
-                        }
-                    }
-                }
-                handler.postDelayed(this, 1000)
-            }
-        }
-        handler.post(tick)
-    }
-
-    @JvmStatic
-    fun stopVsyncClock() {
-        vsyncClockHandler?.removeCallbacksAndMessages(null)
-        vsyncClockHandler = null
-    }
 
     /**
      * Read the fps the layer actually presented, measured on-device.
@@ -264,7 +234,7 @@ object LsfgVkManager {
         val now = System.currentTimeMillis()
         if (now - lastStatsReadMs >= 500L) {
             lastStatsReadMs = now
-            vsyncWriteExecutor.execute {
+            statsReadExecutor.execute {
                 cachedMeasuredFps = try {
                     val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
                     if (statsFile.isFile &&
@@ -447,15 +417,19 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val savedMultiplier = multiplier(container)
             val frameGenActive = frameGenerationActive(container) && processExecutable != null
+            val adaptive = frameGenActive && generationMode(container) == MODE_ADAPTIVE
+            val runtimeMultiplier = if (adaptive) 4 else savedMultiplier
+            val adaptiveTarget = if (adaptive) adaptiveTargetFps(container) else 0
             val configFile = File(container.rootDir, CONFIG_RELATIVE_PATH)
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,
                 enabled = frameGenActive,
-                multiplier = if (frameGenActive) savedMultiplier else 1,
+                multiplier = if (frameGenActive) runtimeMultiplier else 1,
                 flowScale = flowScale(container),
                 performanceMode = performanceMode(container),
-                fpsLimit = LSFG_CONF_FPS_LIMIT,
+                adaptiveFramegen = adaptive,
+                fpsLimit = adaptiveTarget,
                 presentMode = presentMode(container),
             )
             writeConfigAtomic(configFile, configText)
@@ -833,6 +807,7 @@ object LsfgVkManager {
         multiplier: Int,
         flowScale: Float,
         performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
         fpsLimit: Int,
         presentMode: String,
     ): String = buildString {
@@ -853,6 +828,7 @@ object LsfgVkManager {
                 appendLine("flow_scale = ${formatFlowScale(flowScale)}")
                 appendLine("performance_mode = ${if (performanceMode) "true" else "false"}")
                 appendLine("hdr_mode = false")
+                appendLine("adaptive_framegen = ${if (adaptiveFramegen) "true" else "false"}")
                 appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
                 appendLine("experimental_present_mode = ${tomlString(presentMode)}")
             }
@@ -879,49 +855,12 @@ object LsfgVkManager {
 
     // ---- Runtime hot-reload -----------------------------------------------
 
-    /**
-     * Request one deliberate native-context reload without changing conf.toml's
-     * payload. Adaptive topology/target state lives in a separate overlay, so an
-     * overlay-only change can otherwise be invisible to the layer's existing
-     * config timestamp watcher. This intentionally uses that proven recreation
-     * mechanism instead of adding another in-place presentation transition.
-     */
-    @JvmStatic
-    @Synchronized
-    fun requestRuntimeReload(container: Container, reason: String): Boolean {
-        if (!isSupported(container)) return false
-        val file = configFile(container)
-        if (!file.isFile) {
-            Timber.tag(TAG).w("LSFG reload requested but conf.toml is missing: reason=%s", reason)
-            return false
-        }
-
-        // Do not report pre-reload telemetry as if it described the new context.
-        cachedMeasuredFps = null
-        lastStatsReadMs = 0L
-        runCatching { File(container.rootDir, STATS_RELATIVE_PATH).delete() }
-
-        val previousTimestamp = file.lastModified()
-        val requestedTimestamp = maxOf(System.currentTimeMillis(), previousTimestamp + 1000L)
-        val ok = file.setLastModified(requestedTimestamp)
-        if (ok) {
-            Timber.tag(TAG).i(
-                "Requested controlled LSFG context reload: reason=%s, previousMtime=%d, newMtime=%d",
-                reason,
-                previousTimestamp,
-                requestedTimestamp,
-            )
-        } else {
-            Timber.tag(TAG).w("Failed to request LSFG context reload: reason=%s", reason)
-        }
-        return ok
-    }
 
     /**
      * Update conf.toml while the container is running. The layer observes the
      * timestamp change and recreates its swapchain context with the new values.
-     * GameNative's real/source FPS limiter is intentionally not forwarded here;
-     * Adaptive output targeting lives exclusively in gamenative-adaptive.toml.
+     * GameNative's real/source FPS limiter is intentionally not forwarded here.
+     * In Adaptive mode fps_limit is the requested output target only.
      */
     @JvmStatic
     @Synchronized
@@ -945,14 +884,17 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val frameGenActive = enabled && multiplier >= 2 &&
                 dllPath != null && processExecutable != null
-            val effectiveFpsLimit = LSFG_CONF_FPS_LIMIT
+            val adaptive = frameGenActive && generationMode(container) == MODE_ADAPTIVE
+            val effectiveMultiplier = if (adaptive) 4 else multiplier.coerceIn(2, 4)
+            val effectiveFpsLimit = if (adaptive) adaptiveTargetFps(container) else 0
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,
                 enabled = frameGenActive,
-                multiplier = if (frameGenActive) multiplier.coerceIn(2, 4) else 1,
+                multiplier = if (frameGenActive) effectiveMultiplier else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
                 performanceMode = performanceMode,
+                adaptiveFramegen = adaptive,
                 fpsLimit = effectiveFpsLimit,
                 presentMode = presentMode(container),
             )
@@ -960,9 +902,10 @@ object LsfgVkManager {
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
                 Timber.tag(TAG).i(
-                    "Hot-reloaded conf.toml: enabled=%s, multiplier=%d, flowScale=%.2f, perf=%s, fpsLimit=%d",
+                    "Hot-reloaded conf.toml: enabled=%s, adaptive=%s, multiplier=%d, flowScale=%.2f, perf=%s, fpsLimit=%d",
                     frameGenActive,
-                    multiplier,
+                    adaptive,
+                    effectiveMultiplier,
                     flowScale,
                     performanceMode,
                     effectiveFpsLimit,

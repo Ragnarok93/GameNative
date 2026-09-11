@@ -1,44 +1,16 @@
 package app.gamenative.utils
 
 import com.winlator.container.Container
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.Locale
-import java.util.concurrent.Executors
 
-/** Helpers for Quick Menu LSFG state persistence and runtime hot-reload. */
+/** Quick Menu LSFG state persistence and runtime publication. */
 object LsfgQuickMenuHelper {
-    private const val SETTINGS_APPLY_DEBOUNCE_MS = 400L
-    private const val ADAPTIVE_OVERLAY_RELATIVE_PATH = ".config/lsfg-vk/gamenative-adaptive.toml"
-    private const val EXTRA_ADAPTIVE_FRAMEGEN = "lsfgAdaptiveFramegen"
-    private const val EXTRA_ADAPTIVE_TARGET_FPS = "lsfgAdaptiveTargetFps"
-    private const val DEFAULT_ADAPTIVE_TARGET_FPS = 60
-
-    val ADAPTIVE_TARGET_OPTIONS: IntArray = intArrayOf(60, 90, 120, 144)
-
-    enum class FrameGenerationMode {
-        OFF,
-        FIXED,
-        ADAPTIVE,
-    }
-
-    fun frameGenerationMode(multiplier: Int, adaptiveEnabled: Boolean): FrameGenerationMode =
-        when {
-            sanitizeMultiplier(multiplier) < 2 -> FrameGenerationMode.OFF
-            adaptiveEnabled -> FrameGenerationMode.ADAPTIVE
-            else -> FrameGenerationMode.FIXED
-        }
+    enum class FrameGenerationMode { FIXED, ADAPTIVE }
 
     data class Settings(
         val multiplier: Int,
         val flowScale: Float,
         val performanceMode: Boolean,
-        // Nullable so existing fixed-mode call sites can update multiplier/flow/perf
-        // without implicitly changing the independent Adaptive controls.
-        val adaptiveFramegen: Boolean? = null,
-        val adaptiveTargetFps: Int? = null,
     )
 
     fun isAvailable(container: Container): Boolean {
@@ -46,233 +18,77 @@ object LsfgQuickMenuHelper {
         return LsfgVkManager.isAvailable(container)
     }
 
-    fun readSettings(container: Container): Settings {
-        val multiplier = LsfgVkManager.multiplier(container)
-        val storedAdaptive = adaptiveFramegen(container)
-        val adaptiveEnabled = multiplier >= 2 && storedAdaptive
-        val adaptiveTarget = adaptiveTargetFps(container)
+    fun readSettings(container: Container): Settings = Settings(
+        multiplier = LsfgVkManager.multiplier(container),
+        flowScale = LsfgVkManager.flowScale(container),
+        performanceMode = LsfgVkManager.performanceMode(container),
+    )
 
-        // Off is authoritative. Clear stale Adaptive state instead of allowing an
-        // old overlay to spring back to life the next time a multiplier is enabled.
-        if (storedAdaptive && !adaptiveEnabled) {
-            container.putExtra(EXTRA_ADAPTIVE_FRAMEGEN, "false")
-            container.saveData()
-        }
-        writeAdaptiveOverlay(container, adaptiveEnabled, adaptiveTarget)
+    fun generationMode(container: Container): FrameGenerationMode =
+        if (LsfgVkManager.generationMode(container) == LsfgVkManager.MODE_ADAPTIVE) {
+            FrameGenerationMode.ADAPTIVE
+        } else FrameGenerationMode.FIXED
 
-        return Settings(
-            multiplier = multiplier,
-            flowScale = LsfgVkManager.flowScale(container),
-            performanceMode = LsfgVkManager.performanceMode(container),
-            adaptiveFramegen = adaptiveEnabled,
-            adaptiveTargetFps = adaptiveTarget,
+    fun fixedMultiplier(container: Container): Int = LsfgVkManager.fixedMultiplier(container)
+    fun adaptiveTargetFps(container: Container): Int = LsfgVkManager.adaptiveTargetFps(container)
+
+    fun setGenerationMode(container: Container, mode: FrameGenerationMode) {
+        container.putExtra(
+            LsfgVkManager.EXTRA_FRAMEGEN_MODE,
+            if (mode == FrameGenerationMode.ADAPTIVE) LsfgVkManager.MODE_ADAPTIVE else LsfgVkManager.MODE_FIXED,
         )
+        container.saveData()
     }
 
-    private val applyExecutor =
-        Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "lsfg-apply").apply { isDaemon = true } }
-    private val settingsApplyDebouncer =
-        LsfgRuntimeUpdateDebouncer(applyExecutor, SETTINGS_APPLY_DEBOUNCE_MS)
+    fun setFixedMultiplier(container: Container, multiplier: Int) {
+        container.putExtra(LsfgVkManager.EXTRA_FIXED_MULTIPLIER, multiplier.coerceIn(2, 4).toString())
+        container.saveData()
+    }
+
+    fun setAdaptiveTargetFps(container: Container, targetFps: Int) {
+        container.putExtra(
+            LsfgVkManager.EXTRA_ADAPTIVE_TARGET_FPS,
+            targetFps.coerceIn(LsfgVkManager.MIN_ADAPTIVE_TARGET_FPS, LsfgVkManager.MAX_ADAPTIVE_TARGET_FPS).toString(),
+        )
+        container.saveData()
+    }
 
     fun presentMode(container: Container): String = LsfgVkManager.presentMode(container)
 
-    fun configuredMode(container: Container): FrameGenerationMode {
-        val settings = readSettings(container)
-        return frameGenerationMode(settings.multiplier, settings.adaptiveFramegen == true)
-    }
-
-    /**
-     * Source-frame pacing belongs to XServerScreen/Present/SHM. Keep this hook
-     * for existing callers, but never forward that source cap into LSFG's
-     * Adaptive target-output control.
-     */
-    fun applyLiveFpsCap(container: Container, capFps: Int) {
-        applyExecutor.execute {
-            val settings = readSettings(container)
-            LsfgVkManager.updateConfigAtRuntime(
-                container,
-                settings.multiplier >= 2,
-                if (settings.multiplier >= 2) settings.multiplier else 2,
-                settings.flowScale,
-                settings.performanceMode,
-            )
-        }
-    }
-
-    /** Persist the present mode and publish it once the adjustment burst settles. */
     fun applyPresentMode(container: Container, mode: String) {
-        applyExecutor.execute {
-            container.putExtra(LsfgVkManager.EXTRA_PRESENT_MODE, mode)
-            container.saveData()
-            scheduleSettledRuntimePublish(container)
-        }
+        val sanitized = mode.takeIf { it == "mailbox" || it == "fifo" } ?: "mailbox"
+        container.putExtra(LsfgVkManager.EXTRA_PRESENT_MODE, sanitized)
+        container.saveData()
+        publishRuntimeConfig(container, readSettings(container))
     }
 
-    fun sanitizeMultiplier(multiplier: Int): Int =
-        if (multiplier < 2) 0 else multiplier.coerceIn(2, 4)
-
-    fun sanitizeFlowScale(flowScale: Float): Float =
-        flowScale.coerceIn(0.25f, 1.0f)
-
-    fun sanitizeAdaptiveTargetFps(targetFps: Int): Int =
-        if (targetFps in ADAPTIVE_TARGET_OPTIONS) targetFps else DEFAULT_ADAPTIVE_TARGET_FPS
-
-    fun applyFrameGenerationMode(
-        container: Container,
-        mode: FrameGenerationMode,
-        activeMultiplier: Int,
-        targetFps: Int,
-    ) {
-        val current = readSettings(container)
-        val previousMode = frameGenerationMode(current.multiplier, current.adaptiveFramegen == true)
-        val effectiveMultiplier = when (mode) {
-            FrameGenerationMode.OFF -> 0
-            FrameGenerationMode.FIXED, FrameGenerationMode.ADAPTIVE ->
-                sanitizeMultiplier(activeMultiplier).takeIf { it >= 2 } ?: 2
-        }
-
-        applySettings(
-            container,
-            current.copy(
-                multiplier = effectiveMultiplier,
-                adaptiveFramegen = mode == FrameGenerationMode.ADAPTIVE,
-                adaptiveTargetFps = sanitizeAdaptiveTargetFps(targetFps),
-            ),
-        )
-
-        // Do not interfere with the proven Off <-> enabled handoff. Those changes
-        // already alter conf.toml and remain owned by XServerScreen/native code.
-        // Fixed <-> Adaptive can leave conf.toml byte-identical, so explicitly
-        // request exactly one context reload to make the native layer re-read the
-        // overlay. A short LSFG interruption is intentional and preferable to
-        // adding another in-place presentation transition.
-        if (
-            previousMode != mode &&
-            previousMode != FrameGenerationMode.OFF &&
-            mode != FrameGenerationMode.OFF
-        ) {
-            LsfgVkManager.requestRuntimeReload(
-                container,
-                reason = "mode=${previousMode.name.lowercase(Locale.US)}->${mode.name.lowercase(Locale.US)}",
-            )
-        }
-    }
-
-    fun applyAdaptiveSettings(container: Container, enabled: Boolean, targetFps: Int) {
-        val current = readSettings(container)
-        val previousEnabled = current.adaptiveFramegen == true
-        val previousTarget = current.adaptiveTargetFps ?: DEFAULT_ADAPTIVE_TARGET_FPS
-        val sanitizedTarget = sanitizeAdaptiveTargetFps(targetFps)
-        val effectiveEnabled = current.multiplier >= 2 && enabled
-
-        applySettings(
-            container,
-            current.copy(
-                adaptiveFramegen = effectiveEnabled,
-                adaptiveTargetFps = sanitizedTarget,
-            ),
-        )
-
-        // Overlay-only changes do not necessarily rewrite conf.toml. Touching the
-        // existing config asks the already-proven native watcher to recreate once.
-        if (
-            current.multiplier >= 2 &&
-            (previousEnabled != effectiveEnabled || (effectiveEnabled && previousTarget != sanitizedTarget))
-        ) {
-            LsfgVkManager.requestRuntimeReload(
-                container,
-                reason = if (previousEnabled != effectiveEnabled) "adaptive-topology" else "adaptive-target",
-            )
-        }
-    }
+    fun sanitizeMultiplier(multiplier: Int): Int = if (multiplier < 2) 0 else multiplier.coerceIn(2, 4)
+    fun sanitizeFlowScale(flowScale: Float): Float = flowScale.coerceIn(0.25f, 1.0f)
 
     fun applySettings(container: Container, settings: Settings) {
         val multiplier = sanitizeMultiplier(settings.multiplier)
         val flowScale = sanitizeFlowScale(settings.flowScale)
-        val requestedAdaptive = settings.adaptiveFramegen ?: adaptiveFramegen(container)
-        val adaptiveEnabled = multiplier >= 2 && requestedAdaptive
-        val adaptiveTarget = sanitizeAdaptiveTargetFps(
-            settings.adaptiveTargetFps ?: adaptiveTargetFps(container),
-        )
-
-        // Persist immediately so the UI remains authoritative, but avoid
-        // publishing every intermediate button-repeat/slider value to the
-        // Vulkan layer. Multiplier and present-mode changes may recreate the
-        // swapchain, and repeated OUT_OF_DATE transitions destabilize some
-        // games and WSI paths.
         container.putExtra(LsfgVkManager.EXTRA_MULTIPLIER, multiplier.toString())
         container.putExtra(LsfgVkManager.EXTRA_FLOW_SCALE, String.format(Locale.US, "%.2f", flowScale))
         container.putExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, settings.performanceMode.toString())
-        container.putExtra(EXTRA_ADAPTIVE_FRAMEGEN, adaptiveEnabled.toString())
-        container.putExtra(EXTRA_ADAPTIVE_TARGET_FPS, adaptiveTarget.toString())
         container.saveData()
-        writeAdaptiveOverlay(container, adaptiveEnabled, adaptiveTarget)
-
-        scheduleSettledRuntimePublish(container)
+        publishRuntimeConfig(container, settings.copy(multiplier = multiplier, flowScale = flowScale))
     }
 
-    private fun adaptiveFramegen(container: Container): Boolean =
-        container.getExtra(EXTRA_ADAPTIVE_FRAMEGEN, "false").equals("true", ignoreCase = true) ||
-            container.getExtra(EXTRA_ADAPTIVE_FRAMEGEN, "false") == "1"
-
-    private fun adaptiveTargetFps(container: Container): Int =
-        sanitizeAdaptiveTargetFps(
-            container.getExtra(EXTRA_ADAPTIVE_TARGET_FPS, DEFAULT_ADAPTIVE_TARGET_FPS.toString())
-                .toIntOrNull()
-                ?: DEFAULT_ADAPTIVE_TARGET_FPS,
-        )
-
-    private fun writeAdaptiveOverlay(
-        container: Container,
-        enabled: Boolean,
-        targetFps: Int,
-    ): Boolean {
-        val file = java.io.File(container.rootDir, ADAPTIVE_OVERLAY_RELATIVE_PATH)
-        val text = buildString {
-            appendLine("version = 1")
-            appendLine("adaptive_framegen = ${if (enabled) "true" else "false"}")
-            appendLine("target_output_fps = ${sanitizeAdaptiveTargetFps(targetFps)}")
+    private fun publishRuntimeConfig(container: Container, settings: Settings) {
+        val enabled = sanitizeMultiplier(settings.multiplier) >= 2
+        val adaptive = enabled && generationMode(container) == FrameGenerationMode.ADAPTIVE
+        val effectiveMultiplier = when {
+            !enabled -> 2
+            adaptive -> 4
+            else -> sanitizeMultiplier(settings.multiplier).coerceIn(2, 4)
         }
-        val parent = file.parentFile ?: return false
-        var temp: java.nio.file.Path? = null
-        return try {
-            parent.mkdirs()
-            if (file.isFile && runCatching { file.readText() }.getOrNull() == text) return true
-            temp = Files.createTempFile(parent.toPath(), ".${file.name}.", ".tmp")
-            temp.toFile().writeText(text)
-            try {
-                Files.move(temp, file.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(temp, file.toPath(), REPLACE_EXISTING)
-            }
-            temp = null
-            true
-        } catch (_: Throwable) {
-            false
-        } finally {
-            temp?.let { runCatching { Files.deleteIfExists(it) } }
-        }
-    }
-
-    private fun scheduleSettledRuntimePublish(container: Container) {
-        settingsApplyDebouncer.submit {
-            publishSettledRuntimeSnapshot(container)
-        }
-    }
-
-    private fun publishSettledRuntimeSnapshot(container: Container) {
-        // Re-read after the settle window so the newest persisted state wins;
-        // don't publish a stale snapshot captured by an earlier UI event.
-        val latest = readSettings(container)
-        val multiplier = sanitizeMultiplier(latest.multiplier)
-        val effectiveEnabled = multiplier >= 2
-        val effectiveMultiplier = if (effectiveEnabled) multiplier else 2
         LsfgVkManager.updateConfigAtRuntime(
             container,
-            effectiveEnabled,
+            enabled,
             effectiveMultiplier,
-            sanitizeFlowScale(latest.flowScale),
-            latest.performanceMode,
+            sanitizeFlowScale(settings.flowScale),
+            settings.performanceMode,
         )
     }
 }

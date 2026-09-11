@@ -24,7 +24,37 @@ jobs:
       - name: Apply deterministic integration
         env:
           LSFG_SHA: edcb5e25c7c9e23b3653fb7a90a580cc2b520b4f
-        run: python3 tools/apply_gamenative_adaptive.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("tools/apply_gamenative_adaptive.py")
+          source = path.read_text(encoding="utf-8")
+          old = '''xserver = xserver.replace("            LsfgVkManager.stopVsyncClock()\\n", "")
+          xserver = regex_once(
+              xserver,
+              r'''\\n    DisposableEffect\\(container, lsfgRuntimeMode\\) \\{\\n        if \\(lsfgRuntimeMode == LsfgRuntimeMode\\.TURNING_ON \\|\\|\\n            lsfgRuntimeMode == LsfgRuntimeMode\\.GENERATING\\n        \\) \\{\\n            LsfgVkManager\\.startVsyncClock\\(context, container\\)\\n        \\} else \\{\\n            LsfgVkManager\\.stopVsyncClock\\(\\)\\n        \\}\\n        onDispose \\{\\n            LsfgVkManager\\.stopVsyncClock\\(\\)\\n        \\}\\n    \\}\\n''',
+              "\\n",
+              "remove XServer vsync lifecycle",
+          )
+          if "startVsyncClock" in xserver or "stopVsyncClock" in xserver:
+              raise RuntimeError("XServer still references removed vsync publisher")
+          write(xserver_rel, xserver)'''
+          new = '''marker_start = "\\n    DisposableEffect(container, lsfgRuntimeMode) {"
+          marker_end = "\\n    // Event handlers defined in composable scope"
+          start = xserver.find(marker_start)
+          end = xserver.find(marker_end, start)
+          if start < 0 or end < 0:
+              raise RuntimeError("unable to locate XServer LSFG vsync lifecycle block")
+          xserver = xserver[:start] + "\\n" + xserver[end:]
+          xserver = xserver.replace("            LsfgVkManager.stopVsyncClock()\\n", "")
+          if "startVsyncClock" in xserver or "stopVsyncClock" in xserver:
+              raise RuntimeError("XServer still references removed vsync publisher")
+          write(xserver_rel, xserver)'''
+          if old not in source:
+              raise SystemExit("expected XServer transformer block not found")
+          path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          PY
+          python3 tools/apply_gamenative_adaptive.py
 
       - name: Keep temporary workflow history out of staged code commit
         run: |

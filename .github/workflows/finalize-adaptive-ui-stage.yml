@@ -49,6 +49,7 @@ jobs:
                   app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt \
                   app/src/main/java/app/gamenative/utils/LsfgVkManager.kt \
                   app/src/test/java/app/gamenative/ui/component/LsfgAdaptiveTargetUtilsTest.kt \
+                  app/src/test/java/app/gamenative/utils/LsfgQuickMenuHelperModeTest.kt \
                   .github/workflows/experimental-adaptive-legacydebug.yml
           git diff --cached --check
           git commit -m 'feat(lsfg): finalize adaptive target controls [adaptive-ui-final]'

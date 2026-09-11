@@ -1,11 +1,13 @@
 name: Finalize Adaptive UI stage
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - experimental/adaptive-ui-cadence-stage-20260911
     paths:
       - tools/finalize_adaptive_ui_stage.py
+      - app/src/test/java/app/gamenative/utils/LsfgVkManagerTest.kt
       - .github/workflows/finalize-adaptive-ui-stage.yml
 
 permissions:

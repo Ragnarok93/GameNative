@@ -235,6 +235,7 @@ class LsfgVkManagerTest {
             Int::class.javaPrimitiveType,
             Float::class.javaPrimitiveType,
             Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
             Int::class.javaPrimitiveType,
             String::class.java,
         ).apply { isAccessible = true }
@@ -247,6 +248,7 @@ class LsfgVkManagerTest {
             2,
             0.80f,
             true,
+            false,
             0,
             "mailbox",
         ) as String

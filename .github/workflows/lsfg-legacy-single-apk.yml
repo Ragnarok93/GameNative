@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feature/adreno-6xx-lsfg-optimization
+      - fix/android-instance-dispatch-isolation
     paths:
       - app/src/main/cpp/lsfg-vk-android
       - .github/actions/prepare-lsfg-native/**
@@ -29,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          expected_native=924d5a66a2af0dff248e8a4ef0e48913bedf6437
+          expected_native=5dd35a19b5c897b9adb801803ca2a1bb43a3d8e8
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"

@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          expected_native=b77b8e81f260f3bcace6000d011c79b2c222b9ac
+          expected_native=f08b1e5817a7f2fb898927ea9e3b544a4a9d6a9b
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"

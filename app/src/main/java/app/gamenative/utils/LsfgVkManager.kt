@@ -74,7 +74,8 @@ object LsfgVkManager {
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
     const val MIN_ADAPTIVE_TARGET_FPS = 30
-    const val MAX_ADAPTIVE_TARGET_FPS = 144
+    const val MAX_ADAPTIVE_TARGET_FPS = 120
+    const val ADAPTIVE_TARGET_FPS_STEP = 5
     const val DEFAULT_ADAPTIVE_TARGET_FPS = 60
 
     // Written by the layer next to conf.toml; measured presented/base fps
@@ -102,7 +103,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-adaptive-b77b8e81-r1"
+        "gamenative-adaptive-f7158459-r1"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -165,10 +166,17 @@ object LsfgVkManager {
     fun fixedMultiplier(container: Container): Int =
         (container.getExtra(EXTRA_FIXED_MULTIPLIER, "2").toIntOrNull() ?: 2).coerceIn(2, 4)
 
+    fun sanitizeAdaptiveTargetFps(targetFps: Int): Int {
+        val clamped = targetFps.coerceIn(MIN_ADAPTIVE_TARGET_FPS, MAX_ADAPTIVE_TARGET_FPS)
+        val offset = clamped - MIN_ADAPTIVE_TARGET_FPS
+        return MIN_ADAPTIVE_TARGET_FPS + (offset / ADAPTIVE_TARGET_FPS_STEP) * ADAPTIVE_TARGET_FPS_STEP
+    }
+
     fun adaptiveTargetFps(container: Container): Int =
-        (container.getExtra(EXTRA_ADAPTIVE_TARGET_FPS, DEFAULT_ADAPTIVE_TARGET_FPS.toString())
-            .toIntOrNull() ?: DEFAULT_ADAPTIVE_TARGET_FPS)
-            .coerceIn(MIN_ADAPTIVE_TARGET_FPS, MAX_ADAPTIVE_TARGET_FPS)
+        sanitizeAdaptiveTargetFps(
+            container.getExtra(EXTRA_ADAPTIVE_TARGET_FPS, DEFAULT_ADAPTIVE_TARGET_FPS.toString())
+                .toIntOrNull() ?: DEFAULT_ADAPTIVE_TARGET_FPS,
+        )
 
     enum class RuntimeStatus {
         UNKNOWN,

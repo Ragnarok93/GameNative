@@ -5,26 +5,21 @@ import org.junit.Test
 
 class LsfgQuickMenuHelperModeTest {
     @Test
-    fun offWinsWhenMultiplierIsDisabled() {
+    fun disabledMultiplierIsSeparateFromPersistedGenerationMode() {
+        assertEquals(0, LsfgQuickMenuHelper.sanitizeMultiplier(0))
         assertEquals(
-            LsfgQuickMenuHelper.FrameGenerationMode.OFF,
-            LsfgQuickMenuHelper.frameGenerationMode(0, adaptiveEnabled = true),
+            setOf(
+                LsfgQuickMenuHelper.FrameGenerationMode.FIXED,
+                LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,
+            ),
+            LsfgQuickMenuHelper.FrameGenerationMode.values().toSet(),
         )
     }
 
     @Test
-    fun enabledNonAdaptiveStateIsFixed() {
-        assertEquals(
-            LsfgQuickMenuHelper.FrameGenerationMode.FIXED,
-            LsfgQuickMenuHelper.frameGenerationMode(2, adaptiveEnabled = false),
-        )
-    }
-
-    @Test
-    fun enabledAdaptiveStateIsAdaptive() {
-        assertEquals(
-            LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,
-            LsfgQuickMenuHelper.frameGenerationMode(4, adaptiveEnabled = true),
-        )
+    fun supportedFixedMultipliersRemainInRange() {
+        assertEquals(2, LsfgQuickMenuHelper.sanitizeMultiplier(2))
+        assertEquals(4, LsfgQuickMenuHelper.sanitizeMultiplier(4))
+        assertEquals(4, LsfgQuickMenuHelper.sanitizeMultiplier(5))
     }
 }

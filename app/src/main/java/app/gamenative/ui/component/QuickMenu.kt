@@ -61,7 +61,6 @@ import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Slider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -1660,26 +1659,26 @@ private fun LsfgQuickMenuTab(
                 }
             }
         } else {
-            QuickMenuSectionHeader(
+            QuickMenuAdjustmentRow(
                 title = stringResource(R.string.lsfg_adaptive_target),
                 subtitle = stringResource(R.string.lsfg_adaptive_target_desc),
-            )
-            Text(
-                text = stringResource(R.string.lsfg_adaptive_target_value, adaptiveTargetFps),
-                style = MaterialTheme.typography.labelLarge,
-                color = accentColor,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
-            )
-            Slider(
-                value = adaptiveTargetFps.toFloat(),
-                onValueChange = { adaptiveTargetFps = it.roundToInt().coerceIn(30, 144) },
-                onValueChangeFinished = {
-                    container?.let { app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveTargetFps(it, adaptiveTargetFps) }
-                    if (frameGenerationEnabled) onMultiplierChanged(4)
+                valueText = stringResource(R.string.lsfg_adaptive_target_value, adaptiveTargetFps),
+                progress = adaptiveTargetFpsProgress(adaptiveTargetFps),
+                onDecrease = {
+                    val next = previousAdaptiveTargetFps(adaptiveTargetFps)
+                    if (next != adaptiveTargetFps) {
+                        adaptiveTargetFps = next
+                        container?.let { app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveTargetFps(it, next) }
+                    }
                 },
-                valueRange = 30f..144f,
-                steps = 113,
-                modifier = Modifier.padding(horizontal = 12.dp),
+                onIncrease = {
+                    val next = nextAdaptiveTargetFps(adaptiveTargetFps)
+                    if (next != adaptiveTargetFps) {
+                        adaptiveTargetFps = next
+                        container?.let { app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveTargetFps(it, next) }
+                    }
+                },
+                accentColor = accentColor,
             )
         }
 

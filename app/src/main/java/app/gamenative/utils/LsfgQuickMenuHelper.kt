@@ -46,11 +46,14 @@ object LsfgQuickMenuHelper {
     }
 
     fun setAdaptiveTargetFps(container: Container, targetFps: Int) {
-        container.putExtra(
-            LsfgVkManager.EXTRA_ADAPTIVE_TARGET_FPS,
-            targetFps.coerceIn(LsfgVkManager.MIN_ADAPTIVE_TARGET_FPS, LsfgVkManager.MAX_ADAPTIVE_TARGET_FPS).toString(),
-        )
+        val sanitized = LsfgVkManager.sanitizeAdaptiveTargetFps(targetFps)
+        container.putExtra(LsfgVkManager.EXTRA_ADAPTIVE_TARGET_FPS, sanitized.toString())
         container.saveData()
+        if (generationMode(container) == FrameGenerationMode.ADAPTIVE &&
+            sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2
+        ) {
+            publishRuntimeConfig(container, readSettings(container))
+        }
     }
 
     fun presentMode(container: Container): String = LsfgVkManager.presentMode(container)

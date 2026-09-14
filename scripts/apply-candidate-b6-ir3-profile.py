@@ -5,6 +5,10 @@ B6 is diagnostic-only. The retained B4 source tree remains unchanged in Git; CI
 patches XServerScreen.kt immediately before its final EnvVars object is assigned
 to GuestProgramLauncherComponent. This guarantees Turnip sees the same variable
 that the launch log and ProcessHelper environment will show on-device.
+
+The IR3 ``nocache`` debug option is paired with ``cs`` so the profiling launch
+must compile compute shaders instead of silently reusing Mesa disk-cache entries
+that were produced before compute disassembly was enabled.
 """
 
 from __future__ import annotations
@@ -16,13 +20,13 @@ import sys
 DEFAULT_SOURCE = Path(
     "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt"
 )
-ENV_MARKER = 'envVars.put("IR3_SHADER_DEBUG", "cs")'
-LOG_MARKER = 'Timber.i("B6_IR3_PROFILE armed IR3_SHADER_DEBUG=cs")'
+ENV_MARKER = 'envVars.put("IR3_SHADER_DEBUG", "cs,nocache")'
+LOG_MARKER = 'Timber.i("B6_IR3_PROFILE armed IR3_SHADER_DEBUG=cs,nocache")'
 ANCHOR = "    guestProgramLauncherComponent.envVars = envVars\n"
-REPLACEMENT = """    // Candidate B6 profiling only: enable Turnip/IR3 compute-shader disassembly
-    // on the exact final EnvVars object handed to the guest process.
-    envVars.put(\"IR3_SHADER_DEBUG\", \"cs\")
-    Timber.i(\"B6_IR3_PROFILE armed IR3_SHADER_DEBUG=cs\")
+REPLACEMENT = """    // Candidate B6 profiling only: force Turnip/IR3 compute-shader compilation
+    // and disassembly on the exact final EnvVars object handed to the guest process.
+    envVars.put(\"IR3_SHADER_DEBUG\", \"cs,nocache\")
+    Timber.i(\"B6_IR3_PROFILE armed IR3_SHADER_DEBUG=cs,nocache\")
     guestProgramLauncherComponent.envVars = envVars
 """
 

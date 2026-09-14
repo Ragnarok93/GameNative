@@ -39,6 +39,8 @@ jobs:
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
           test "$(git -C "$native_dir" rev-parse HEAD)" = "$expected_native"
+          grep -q 'kB4ExpectedInputFnv' "$native_dir/scripts/apply-candidate-b4-beta4-predicate-opt.py"
+          grep -q 'apply-candidate-b4-beta4-predicate-opt.py' "$native_dir/scripts/build/android.sh"
           git diff --check
 
       - name: Setup Java 17

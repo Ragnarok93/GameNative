@@ -31,7 +31,7 @@ SYNTHETIC_NEEDLE = """        val processExecutable = targetExecutable(container
 """
 INSERTION = """        val processExecutable = targetExecutable(container)
         if (processExecutable == null) {
-{failure_body}        }
+__FAILURE_BODY__        }
 
         // Candidate B6 profiling only: request IR3 disassembly for compute shaders.
         // This is applied after all LSFG activation gates so disabled/non-armed
@@ -55,12 +55,10 @@ def patch_source(path: Path) -> bool:
             '            Timber.tag(TAG).w("LSFG layer armed but target executable could not be resolved")\n'
             "            return false\n"
         )
-        replacement = INSERTION.format(failure_body=failure_body)
-        text = text.replace(NEEDLE, replacement, 1)
+        text = text.replace(NEEDLE, INSERTION.replace("__FAILURE_BODY__", failure_body), 1)
     elif text.count(SYNTHETIC_NEEDLE) == 1:
         failure_body = "            return false\n"
-        replacement = INSERTION.format(failure_body=failure_body)
-        text = text.replace(SYNTHETIC_NEEDLE, replacement, 1)
+        text = text.replace(SYNTHETIC_NEEDLE, INSERTION.replace("__FAILURE_BODY__", failure_body), 1)
     else:
         raise RuntimeError(
             "Candidate B6 source anchor mismatch; refusing to patch an unknown LsfgVkManager layout"
@@ -81,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         patch_source(args.source)
-    except Exception as exc:  # fail closed on source drift
+    except Exception as exc:
         print(f"candidate-b6-ir3-profile: {exc}", file=sys.stderr)
         return 1
     return 0

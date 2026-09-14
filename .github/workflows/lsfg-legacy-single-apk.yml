@@ -33,8 +33,8 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Candidate B4 native optimization: exact adjacency-corrected revision.
-          expected_native=cfdb3bfe97f8a5875d5cce914ba1d4390fe747b2
+          # Candidate B4 native optimization: adjacency-corrected revision with validated test fixture.
+          expected_native=0cc5e6a4c7dacd461b29d9cd748c6d9c07d5ab7a
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -45,7 +45,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '17'
-          distribution: 'temurin'
+          distribution: temurin
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3

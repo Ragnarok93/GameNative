@@ -32,6 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
+          # Candidate B3 native evidence probe: exact validated revision.
           expected_native=82b681df8ab4d20d14acdccfee1ccd2674e15aea
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"

@@ -8,6 +8,7 @@ on:
       - fix/android-instance-dispatch-isolation
       - feature/adreno-6xx-candidate-b2-mipmaps
       - feature/adreno-6xx-candidate-b3-beta4-analysis
+      - feature/adreno-6xx-candidate-b4-beta4-predicate-opt
     paths:
       - app/src/main/cpp/lsfg-vk-android
       - .github/actions/prepare-lsfg-native/**
@@ -32,8 +33,8 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Candidate B3 native evidence probe: exact validated revision.
-          expected_native=82b681df8ab4d20d14acdccfee1ccd2674e15aea
+          # Candidate B4 Beta-4 predicate canonicalization: exact validated revision.
+          expected_native=7c0ed3e3e9c510061440258a343f5c64802e1361
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -52,8 +53,8 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
-          # Candidate B3 keeps the B2 Mipmaps evidence and adds read-only Beta 4
-          # barrier/phase plus raw-SPIR-V capture. No shader rewrite is enabled.
+          # Candidate B4 retains the B3 evidence instrumentation and applies the
+          # exact fingerprinted Beta-4 reduction-predicate rewrite for measurement.
           LSFGVK_ZERO_STAGE_PROFILE: "1"
 
       - name: Inject credentials

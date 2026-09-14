@@ -9,8 +9,11 @@ on:
       - feature/adreno-6xx-candidate-b2-mipmaps
       - feature/adreno-6xx-candidate-b3-beta4-analysis
       - feature/adreno-6xx-candidate-b4-beta4-predicate
+      - feature/adreno-6xx-candidate-b6-ir3-profile
     paths:
       - app/src/main/cpp/lsfg-vk-android
+      - app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+      - app/src/test/java/app/gamenative/utils/LsfgIr3ProfilingEnvTest.kt
       - .github/actions/prepare-lsfg-native/**
       - .github/workflows/lsfg-legacy-single-apk.yml
 

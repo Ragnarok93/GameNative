@@ -53,13 +53,6 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Prepare GameNative-pinned LSFG native runtime
-        uses: ./.github/actions/prepare-lsfg-native
-        env:
-          # Candidate B4 retains B3 evidence and applies the exact, fingerprinted
-          # Beta 4 predicate rewrite while preserving SelectionMerge adjacency.
-          LSFGVK_ZERO_STAGE_PROFILE: "1"
-
       - name: Inject credentials
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
@@ -73,6 +66,16 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
+
+      - name: Run B6 IR3 profiling env contract
+        run: ./gradlew :app:testLegacyDebugUnitTest --tests app.gamenative.utils.LsfgIr3ProfilingEnvTest --no-daemon
+
+      - name: Prepare GameNative-pinned LSFG native runtime
+        uses: ./.github/actions/prepare-lsfg-native
+        env:
+          # Candidate B4 retains B3 evidence and applies the exact, fingerprinted
+          # Beta 4 predicate rewrite while preserving SelectionMerge adjacency.
+          LSFGVK_ZERO_STAGE_PROFILE: "1"
 
       - name: Run Legacy unit tests
         run: ./gradlew :app:testLegacyDebugUnitTest --no-daemon

@@ -5,7 +5,6 @@ import com.winlator.core.envvars.EnvVars
 import java.io.File
 import java.nio.file.Files
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -30,15 +29,18 @@ class LsfgIr3ProfilingEnvTest {
     }
 
     @Test
-    fun applyLaunchEnv_enablesTurnipComputeShaderDebugForArmedLsfg() {
+    fun applyLaunchEnv_doesNotOwnB6DriverProfilingHook() {
         val envVars = EnvVars()
 
         assertTrue(LsfgVkManager.applyLaunchEnv(container(armed = true), envVars))
-        assertEquals("cs", envVars["IR3_SHADER_DEBUG"])
+        // B6 must be injected at XServerScreen's final guest handoff. The real
+        // launch path does not call applyLaunchEnv(), so keeping the profiling
+        // hook here would recreate the device-visible instrumentation gap.
+        assertFalse(envVars.has("IR3_SHADER_DEBUG"))
     }
 
     @Test
-    fun applyLaunchEnv_doesNotEnableTurnipDebugWhenLsfgIsDisabled() {
+    fun applyLaunchEnv_disabledPathAlsoLeavesDriverDebugUntouched() {
         val envVars = EnvVars()
 
         assertFalse(LsfgVkManager.applyLaunchEnv(container(armed = false), envVars))

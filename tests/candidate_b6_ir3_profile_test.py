@@ -7,44 +7,44 @@ import tempfile
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "apply-candidate-b6-ir3-profile.py"
 
-SOURCE = '''object LsfgVkManager {
-    @JvmStatic
-    fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean {
-        if (!isSupported(container) || !isFrameGenerationRequested(container)) {
-            return false
-        }
-        val processExecutable = targetExecutable(container)
-        if (processExecutable == null) {
-            return false
-        }
+SOURCE = '''private fun launchGuest() {
+    val envVars = EnvVars()
+    envVars.putAll(container.envVars)
 
-        envVars.put(ENV_CONFIG, configFile(container).absolutePath)
-        return true
-    }
+    guestProgramLauncherComponent.envVars = envVars
+
+    Timber.i("Env Vars (Final Guest): ${envVars.toString()}")
 }
 '''
 
 
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
-        source = pathlib.Path(td) / "LsfgVkManager.kt"
+        source = pathlib.Path(td) / "XServerScreen.kt"
         source.write_text(SOURCE, encoding="utf-8")
+
         subprocess.run(
             [sys.executable, str(SCRIPT), "--source", str(source)],
             check=True,
         )
         patched = source.read_text(encoding="utf-8")
-        assert 'envVars.put("IR3_SHADER_DEBUG", "cs")' in patched
-        assert patched.index('envVars.put("IR3_SHADER_DEBUG", "cs")') > patched.index('processExecutable == null')
-        assert patched.index('envVars.put("IR3_SHADER_DEBUG", "cs")') < patched.index('envVars.put(ENV_CONFIG')
+        env_marker = 'envVars.put("IR3_SHADER_DEBUG", "cs")'
+        log_marker = 'Timber.i("B6_IR3_PROFILE armed IR3_SHADER_DEBUG=cs")'
+        handoff = "guestProgramLauncherComponent.envVars = envVars"
 
-        # The build hook may be invoked more than once; it must be idempotent.
+        assert patched.count(env_marker) == 1
+        assert patched.count(log_marker) == 1
+        assert patched.index(env_marker) < patched.index(handoff)
+        assert patched.index(log_marker) < patched.index(handoff)
+
+        # CI may invoke the build hook more than once; it must remain idempotent.
         subprocess.run(
             [sys.executable, str(SCRIPT), "--source", str(source)],
             check=True,
         )
         patched_twice = source.read_text(encoding="utf-8")
-        assert patched_twice.count('envVars.put("IR3_SHADER_DEBUG", "cs")') == 1
+        assert patched_twice.count(env_marker) == 1
+        assert patched_twice.count(log_marker) == 1
     return 0
 
 

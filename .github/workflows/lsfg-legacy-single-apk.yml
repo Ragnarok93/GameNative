@@ -9,13 +9,15 @@ on:
       - feature/adreno-6xx-candidate-b2-mipmaps
       - feature/adreno-6xx-candidate-b3-beta4-analysis
       - feature/adreno-6xx-candidate-b4-beta4-predicate
+      - feature/adreno-6xx-candidate-b5-mipmaps-predicate
     paths:
       - app/src/main/cpp/lsfg-vk-android
       - .github/actions/prepare-lsfg-native/**
       - .github/workflows/lsfg-legacy-single-apk.yml
 
 concurrency:
-  group: gamenative-adreno6xx-${{ github.ref }}
+  group: gamenative-adreno6xx$
+{{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,13 +30,13 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Verify pinned Adreno LSFG native revision
+      - name: Verify pinned Adreno LSFA native revision
         shell: bash
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Candidate B4 native optimization: adjacency-corrected revision with validated test fixture.
-          expected_native=0cc5e6a4c7dacd461b29d9cd748c6d9c07d5ab7a
+          # Candidate B5 native optimization: exact Mipmaps predicate rewrite on validated B4.
+          expected_native=f9d3f08ab8ab22e37c1baa4921956856494e7a23
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -53,20 +55,18 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
-          # Candidate B4 retains B3 evidence and applies the exact, fingerprinted
-          # Beta 4 predicate rewrite while preserving SelectionMerge adjacency.
+          # Candidate B5 retains B4's exact Beta 4 predicate rewrite and adds the
+          # fingerprinted Mipmaps reduction-predicate rewrite without topology changes.
           LSFGVK_ZERO_STAGE_PROFILE: "1"
 
-      - name: Inject credentials
-        env:
-          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+      - name: Inject debug credentials
         run: |
-          printf 'POSTHOG_API_KEY=%s\n' "${POSTHOG_API_KEY:-dummy}" > local.properties
-          printf 'POSTHOG_HOST=%s\n' "${POSTHOG_HOST:-https://us.i.posthog.com}" >> local.properties
+          printf 'POSTHOG_API_KEY=dummy\n' > local.properties
+          printf 'POSTHOG_HOST=https://us.i.posthog.com\n' >> local.properties
 
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@v6
+
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6

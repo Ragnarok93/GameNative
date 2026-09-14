@@ -33,8 +33,8 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Candidate B4 native optimization: exact validated revision.
-          expected_native=c46b9a3fc9f8c556be9040d8558456310fd50ebf
+          # Candidate B4 native optimization: exact adjacency-corrected revision.
+          expected_native=cfdb3bfe97f8a5875d5cce914ba1d4390fe747b2
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -53,8 +53,8 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
-          # Candidate B4 retains B3 evidence while applying the exact, fingerprinted
-          # Beta 4 reduction-predicate canonicalization for device measurement.
+          # Candidate B4 retains B3 evidence and applies the exact, fingerprinted
+          # Beta 4 predicate rewrite while preserving SelectionMerge adjacency.
           LSFGVK_ZERO_STAGE_PROFILE: "1"
 
       - name: Inject credentials

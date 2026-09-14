@@ -14,6 +14,8 @@ on:
       - app/src/main/cpp/lsfg-vk-android
       - app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
       - app/src/test/java/app/gamenative/utils/LsfgIr3ProfilingEnvTest.kt
+      - scripts/apply-candidate-b6-ir3-profile.py
+      - tests/candidate_b6_ir3_profile_test.py
       - .github/actions/prepare-lsfg-native/**
       - .github/workflows/lsfg-legacy-single-apk.yml
 
@@ -44,6 +46,9 @@ jobs:
           test "$(git -C "$native_dir" rev-parse HEAD)" = "$expected_native"
           git diff --check
 
+      - name: Run B6 source-transform contract
+        run: python3 tests/candidate_b6_ir3_profile_test.py
+
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
@@ -66,6 +71,9 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
+
+      - name: Apply B6 IR3 compute profiling env
+        run: python3 scripts/apply-candidate-b6-ir3-profile.py
 
       - name: Run B6 IR3 profiling env contract
         run: ./gradlew :app:testLegacyDebugUnitTest --tests app.gamenative.utils.LsfgIr3ProfilingEnvTest --no-daemon

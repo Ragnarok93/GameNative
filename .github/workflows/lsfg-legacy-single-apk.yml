@@ -50,6 +50,8 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
+          # Candidate B2 keeps dependency profiling enabled. The first-run
+          # tight-ICB experiment is intentionally not forced for this candidate.
           LSFGVK_ZERO_STAGE_PROFILE: "1"
 
       - name: Inject credentials

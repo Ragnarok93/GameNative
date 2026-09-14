@@ -28,8 +28,8 @@ def main() -> int:
             check=True,
         )
         patched = source.read_text(encoding="utf-8")
-        env_marker = 'envVars.put("IR3_SHADER_DEBUG", "cs")'
-        log_marker = 'Timber.i("B6_IR3_PROFILE armed IR3_SHADER_DEBUG=cs")'
+        env_marker = 'envVars.put("IR3_SHADER_DEBUG", "cs,nocache")'
+        log_marker = 'Timber.i("B6_IR3_PROFILE armed IR3_SHADER_DEBUG=cs,nocache")'
         handoff = "guestProgramLauncherComponent.envVars = envVars"
 
         assert patched.count(env_marker) == 1

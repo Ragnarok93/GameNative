@@ -12,6 +12,7 @@ on:
       - feature/adreno-6xx-candidate-b6-pipeline-exec-profile
       - feature/adreno-6xx-candidate-b8-mipmaps-matrix
       - feature/adreno-6xx-final-nonadaptive-sweep
+      - feature/adreno-6xx-deferred-zero-b4
     paths:
       - app/src/main/cpp/lsfg-vk-android
       - .github/actions/prepare-lsfg-native/**
@@ -36,9 +37,9 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # B9 is retained only as an opt-in experiment in the native tree.
-          # This packaged runtime leaves B9 disabled and keeps proven B4 behavior.
-          expected_native=11d5239587970545b02089d2db300ff8ada84443
+          # Candidate A DeferredZero is layered over the retained B4-safe shader state.
+          # B9/B10 remain disabled in this package.
+          expected_native=470d1e2b19c3e5436c8cee7d5b894a2202aa4bef
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -59,8 +60,8 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
-          # Instrument the verified final non-adaptive sweep. Compile-only probes
-          # are deferred and are never bound for presentation. B9 remains off.
+          # Keep B4/final-sweep profiling active as a control while Candidate A
+          # changes only sustained adaptive-zero lifecycle execution.
           LSFGVK_ZERO_STAGE_PROFILE: "1"
           LSFGVK_FINAL_NONADAPTIVE_SWEEP: "1"
 

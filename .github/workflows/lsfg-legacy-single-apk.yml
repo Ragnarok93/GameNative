@@ -10,6 +10,7 @@ on:
       - feature/adreno-6xx-candidate-b3-beta4-analysis
       - feature/adreno-6xx-candidate-b4-beta4-predicate
       - feature/adreno-6xx-candidate-b6-pipeline-exec-profile
+      - feature/adreno-6xx-candidate-b7-mipmaps-live-range
     paths:
       - app/src/main/cpp/lsfg-vk-android
       - .github/actions/prepare-lsfg-native/**

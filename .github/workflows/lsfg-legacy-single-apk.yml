@@ -38,8 +38,8 @@ jobs:
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
           # Candidate A DeferredZero is layered over the retained B4-safe shader state.
-          # Exit now rebuilds framegen history over three live source presents; B9/B10 remain disabled.
-          expected_native=f2428df796247f767a29278984500e591ccb3a59
+          # Exit requires two scheduler generation requests within 500 ms before the validated three-live-present re-prime; B9/B10 remain disabled.
+          expected_native=8860c8be6f62c1b398bd0319ea1fc211769322f9
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"

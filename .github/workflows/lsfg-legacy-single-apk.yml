@@ -34,8 +34,8 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Candidate B6 profiling revision: retained B4 plus p_mipmaps pipeline-executable diagnostics.
-          expected_native=b054cc93ea167145a81374e46b0071bf134d086b
+          # Candidate B7 live-range revision: retained B4 plus p_mipmaps pipeline-executable diagnostics.
+          expected_native=71beb62b14a862e684201780bfdea2461324101c
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -56,8 +56,8 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
-          # Candidate B6 keeps retained B4 behavior and adds p_mipmaps-only Vulkan
-          # pipeline executable statistics/internal-representation capture.
+          # Candidate B7 keeps retained B4 behavior, B6 p_mipmaps-only Vulkan
+          # pipeline executable capture, and adds the compiler-guided live-range reorder.
           LSFGVK_ZERO_STAGE_PROFILE: "1"
 
       - name: Inject debug credentials

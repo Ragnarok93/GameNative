@@ -35,8 +35,8 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Candidate B8 profiling revision: retained B4 runtime plus the consolidated p_mipmaps compiler-probe matrix.
-          expected_native=36e24e273e8dd73398d12041414df7fcedd01d50
+          # Candidate B8 safe package: retained B4 runtime by default; B8 diagnostics remain explicit opt-in.
+          expected_native=0da8ec3eacda4ae8b18f9249a203f93a51df9949
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -57,8 +57,8 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
-          # Candidate B8 keeps retained B4 runtime behavior while compiling the
-          # consolidated p_mipmaps profiling matrix and pipeline diagnostics.
+          # Keep zero-stage profiling needed for B4 evidence, but do not arm
+          # LSFGVK_B8_DIAGNOSTICS in a normal game package.
           LSFGVK_ZERO_STAGE_PROFILE: "1"
 
       - name: Inject debug credentials

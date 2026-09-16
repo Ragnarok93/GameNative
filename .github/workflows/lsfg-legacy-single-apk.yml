@@ -1,4 +1,4 @@
-name: Adreno 6xx LSFG B14 Mipmaps Evidence
+name: Adreno 6xx LSFG B12 Dual Stage Evidence
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Verify pinned B14 Adreno LSFG native revision
+      - name: Verify pinned B12 Adreno LSFG native revision
         shell: bash
         run: |
           set -euo pipefail
@@ -46,7 +46,7 @@ jobs:
           git submodule update --init --recursive -- "$native_dir"
           actual_native="$(git -C "$native_dir" rev-parse HEAD)"
           test "$actual_native" = "$expected_native"
-          echo "Verified pinned B14 LSFG native revision ${expected_native}"
+          echo "Verified pinned B12 LSFG native revision ${expected_native}"
           git diff --check
 
       - name: Setup Java 17
@@ -60,14 +60,13 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Prepare GameNative-pinned B14 evidence runtime
+      - name: Prepare GameNative-pinned B12 evidence runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
           LSFGVK_ADAPTIVE_RUNTIME: "1"
           LSFGVK_B12_DUAL_STAGE_PROFILE: "1"
-          LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py
 
-      - name: Verify prepared B14 LSFG evidence layer
+      - name: Verify prepared B12 LSFG evidence layer
         shell: bash
         run: |
           set -euo pipefail
@@ -80,7 +79,6 @@ jobs:
             'candidate-b4-beta4-predicate-opt' \
             'candidate-b11-beta4-pow2-mask' \
             'candidate-b13-beta4-fused-mask' \
-            'candidate-b14-mipmaps-tail-fusion' \
             'b12-stage-profile' \
             'mipmaps_avg_ms=' \
             'beta4_avg_ms=' \
@@ -88,7 +86,7 @@ jobs:
             'b12-timestamp-fallback' \
             'b12-device-profile'; do
             if ! grep -Fq "$required" /tmp/lsfg-layer-strings.txt; then
-              echo "ERROR: prepared B14 evidence layer is missing runtime marker: $required" >&2
+              echo "ERROR: prepared B12 evidence layer is missing runtime marker: $required" >&2
               exit 1
             fi
           done
@@ -98,7 +96,7 @@ jobs:
             'zero-stage-profile backend=' \
             'final-nonadaptive-sweep'; do
             if grep -Fq "$forbidden" /tmp/lsfg-layer-strings.txt; then
-              echo "ERROR: prepared B14 evidence layer contains heavyweight profiler marker: $forbidden" >&2
+              echo "ERROR: prepared B12 evidence layer contains heavyweight profiler marker: $forbidden" >&2
               exit 1
             fi
           done
@@ -117,23 +115,23 @@ jobs:
       - name: Run Legacy unit tests
         run: ./gradlew :app:testLegacyDebugUnitTest --no-daemon
 
-      - name: Assemble Adreno B14 LegacyDebug
+      - name: Assemble Adreno B12 LegacyDebug
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 
-      - name: Prepare Adreno B14 evidence APK
+      - name: Prepare Adreno B12 evidence APK
         run: |
           set -euo pipefail
           mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
           test ${#apks[@]} -eq 1
-          cp "${apks[0]}" gamenative-adreno6xx-b14-mipmaps-evidence.apk
-          sha256sum gamenative-adreno6xx-b14-mipmaps-evidence.apk
-          ls -lh gamenative-adreno6xx-b14-mipmaps-evidence.apk
+          cp "${apks[0]}" gamenative-adreno6xx-b12-dual-stage-evidence.apk
+          sha256sum gamenative-adreno6xx-b12-dual-stage-evidence.apk
+          ls -lh gamenative-adreno6xx-b12-dual-stage-evidence.apk
 
-      - name: Verify APK contains B14 LSFG evidence layer
+      - name: Verify APK contains B12 LSFG evidence layer
         shell: bash
         run: |
           set -euo pipefail
-          apk=gamenative-adreno6xx-b14-mipmaps-evidence.apk
+          apk=gamenative-adreno6xx-b12-dual-stage-evidence.apk
           apk_layer=/tmp/apk-liblsfg-vk-layer.so
           unzip -p "$apk" lib/arm64-v8a/liblsfg-vk-layer.so > "$apk_layer"
           test -s "$apk_layer"
@@ -144,7 +142,6 @@ jobs:
             'candidate-b4-beta4-predicate-opt' \
             'candidate-b11-beta4-pow2-mask' \
             'candidate-b13-beta4-fused-mask' \
-            'candidate-b14-mipmaps-tail-fusion' \
             'b12-stage-profile' \
             'mipmaps_avg_ms=' \
             'beta4_avg_ms=' \
@@ -152,7 +149,7 @@ jobs:
             'b12-timestamp-fallback' \
             'b12-device-profile'; do
             if ! grep -Fq "$required" /tmp/apk-lsfg-layer-strings.txt; then
-              echo "ERROR: APK B14 LSFG layer is missing runtime marker: $required" >&2
+              echo "ERROR: APK B12 LSFG layer is missing runtime marker: $required" >&2
               exit 1
             fi
           done
@@ -162,15 +159,15 @@ jobs:
             'zero-stage-profile backend=' \
             'final-nonadaptive-sweep'; do
             if grep -Fq "$forbidden" /tmp/apk-lsfg-layer-strings.txt; then
-              echo "ERROR: APK B14 LSFG layer contains heavyweight profiler marker: $forbidden" >&2
+              echo "ERROR: APK B12 LSFG layer contains heavyweight profiler marker: $forbidden" >&2
               exit 1
             fi
           done
 
-      - name: Upload Adreno B14 evidence APK
+      - name: Upload Adreno B12 evidence APK
         uses: actions/upload-artifact@v4
         with:
-          name: gamenative-adreno6xx-b14-mipmaps-evidence
-          path: gamenative-adreno6xx-b14-mipmaps-evidence.apk
+          name: gamenative-adreno6xx-b12-dual-stage-evidence
+          path: gamenative-adreno6xx-b12-dual-stage-evidence.apk
           if-no-files-found: error
           compression-level: 0

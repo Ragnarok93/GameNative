@@ -105,17 +105,15 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun b14CandidateWorkflowUsesGitlinkProvenanceAndAuditsPortableEvidenceRuntime() {
+    fun b12CandidateWorkflowUsesGitlinkProvenanceAndAuditsPortableEvidenceRuntime() {
         val source = repoFile(".github/workflows/lsfg-legacy-single-apk.yml").readText()
         listOf(
             "expected_native=\"${'$'}(git rev-parse HEAD:${'$'}{native_dir})\"",
             "actual_native=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
             "test \"${'$'}actual_native\" = \"${'$'}expected_native\"",
             "LSFGVK_B12_DUAL_STAGE_PROFILE: \"1\"",
-            "LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py",
             "candidate-b11-beta4-pow2-mask",
             "candidate-b13-beta4-fused-mask",
-            "candidate-b14-mipmaps-tail-fusion",
             "b12-stage-profile",
             "mipmaps_avg_ms=",
             "beta4_avg_ms=",
@@ -125,7 +123,7 @@ class LsfgBuildWorkflowContractTest {
             "unzip -p \"${'$'}apk\" lib/arm64-v8a/liblsfg-vk-layer.so",
         ).forEach { token ->
             assertTrue(
-                "B14 candidate workflow is missing verified provenance or evidence/APK audit token: ${'$'}token",
+                "B12 candidate workflow is missing verified provenance or evidence/APK audit token: ${'$'}token",
                 source.contains(token),
             )
         }

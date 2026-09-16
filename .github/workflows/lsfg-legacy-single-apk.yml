@@ -7,7 +7,7 @@ on:
       - feature/adreno-6xx-lsfg-optimization
       - fix/android-instance-dispatch-isolation
       - feature/adreno-6xx-candidate-b2-mipmaps
-      - feature/adreno-6xx-candidate-b3-beta4-analysis
+      - feature/adreno-6xx-candidate-b3-beta4-beta4-predicate
       - feature/adreno-6xx-candidate-b4-beta4-predicate
       - feature/adreno-6xx-candidate-b6-pipeline-exec-profile
       - feature/adreno-6xx-candidate-b8-mipmaps-matrix
@@ -63,23 +63,31 @@ jobs:
         env:
           LSFGVK_ADAPTIVE_RUNTIME: "1"
 
-      - name: Verify packaged LSFG layer is benchmark-clean
+      - name: Verify prepared LSFG layer is benchmark-clean
         shell: bash
         run: |
           set -euo pipefail
-          layer=app/src/main/assets/lsfg_vk/android_arm64_v8a/liblsfg-vk-layer.so
+          # prepare-lsfg-native writes the rebuilt layer to jniLibs; Android
+          # packages that file into applicationInfo.nativeLibraryDir at install.
+          layer=app/src/main/jniLibs/arm64-v8a/liblsfg-vk-layer.so
           test -f "$layer"
           strings "$layer" > /tmp/lsfg-layer-strings.txt
-          grep -Fq 'deferred-zero reprime-warmup-begin' /tmp/lsfg-layer-strings.txt
-          grep -Fq 'deferred-zero reprime-deferred request_count=' /tmp/lsfg-layer-strings.txt
-          grep -Fq 'candidate-b4-beta4-predicate-opt' /tmp/lsfg-layer-strings.txt
+          for required in \
+            'deferred-zero reprime-warmup-begin' \
+            'deferred-zero reprime-deferred request_count=' \
+            'candidate-b4-beta4-predicate-opt'; do
+            if ! grep -Fq "$required" /tmp/lsfg-layer-strings.txt; then
+              echo "ERROR: prepared benchmark layer is missing retained runtime marker: $required" >&2
+              exit 1
+            fi
+          done
           for forbidden in \
             'pipeline-exec-ir-line' \
             'generated-stage-profile backend=' \
             'zero-stage-profile backend=' \
             'final-nonadaptive-sweep'; do
             if grep -Fq "$forbidden" /tmp/lsfg-layer-strings.txt; then
-              echo "ERROR: packaged benchmark layer contains profiler marker: $forbidden" >&2
+              echo "ERROR: prepared benchmark layer contains profiler marker: $forbidden" >&2
               exit 1
             fi
           done
@@ -109,6 +117,35 @@ jobs:
           cp "${apks[0]}" gamenative-adreno6xx-clean-benchmark.apk
           sha256sum gamenative-adreno6xx-clean-benchmark.apk
           ls -lh gamenative-adreno6xx-clean-benchmark.apk
+
+      - name: Verify APK contains clean LSFG layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=gamenative-adreno6xx-clean-benchmark.apk
+          apk_layer=/tmp/apk-liblsfg-vk-layer.so
+          unzip -p "$apk" lib/arm64-v8a/liblsfg-vk-layer.so > "$apk_layer"
+          test -s "$apk_layer"
+          strings "$apk_layer" > /tmp/apk-lsfg-layer-strings.txt
+          for required in \
+            'deferred-zero reprime-warmup-begin' \
+            'deferred-zero reprime-deferred request_count=' \
+            'candidate-b4-beta4-predicate-opt'; do
+            if ! grep -Fq "$required" /tmp/apk-lsfg-layer-strings.txt; then
+              echo "ERROR: APK LSFG layer is missing retained runtime marker: $required" >&2
+              exit 1
+            fi
+          done
+          for forbidden in \
+            'pipeline-exec-ir-line' \
+            'generated-stage-profile backend=' \
+            'zero-stage-profile backend=' \
+            'final-nonadaptive-sweep'; do
+            if grep -Fq "$forbidden" /tmp/apk-lsfg-layer-strings.txt; then
+              echo "ERROR: APK LSFG layer contains profiler marker: $forbidden" >&2
+              exit 1
+            fi
+          done
 
       - name: Upload Adreno Clean Benchmark APK
         uses: actions/upload-artifact@v4

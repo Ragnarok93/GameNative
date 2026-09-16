@@ -1,4 +1,4 @@
-name: Adreno 6xx LSFG Clean Benchmark
+name: Adreno 6xx LSFG B11 Beta4 Pow2 Mask
 
 on:
   workflow_dispatch:
@@ -14,6 +14,7 @@ on:
       - feature/adreno-6xx-final-nonadaptive-sweep
       - feature/adreno-6xx-deferred-zero-b4
       - feature/adreno-6xx-clean-benchmark
+      - feature/adreno-6xx-candidate-b11-beta4-pow2-mask
     paths:
       - app/src/main/cpp/lsfg-vk-android
       - .github/actions/prepare-lsfg-native/**
@@ -33,14 +34,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Verify pinned clean Adreno LSFG native revision
+      - name: Verify pinned B11 Adreno LSFG native revision
         shell: bash
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Validated Candidate A DeferredZero + two-request wake persistence + B4.
-          # Clean benchmark mode excludes zero-stage, generated-stage, B6/B8 and final-sweep profiling; B9/B10 remain disabled.
-          expected_native=ed53505c87b8c02099c83f89c5bcef24bf5838ca
+          # Candidate A DeferredZero + two-request wake persistence + retained B4
+          # plus guarded B11 Beta4 power-of-two predicate masks. B9/B10 remain disabled.
+          expected_native=75532c2fa48e3e31317f76de4f3950c17d1470b8
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -63,21 +64,20 @@ jobs:
         env:
           LSFGVK_ADAPTIVE_RUNTIME: "1"
 
-      - name: Verify prepared LSFG layer is benchmark-clean
+      - name: Verify prepared B11 LSFG layer is benchmark-clean
         shell: bash
         run: |
           set -euo pipefail
-          # prepare-lsfg-native writes the rebuilt layer to jniLibs; Android
-          # packages that file into applicationInfo.nativeLibraryDir at install.
           layer=app/src/main/jniLibs/arm64-v8a/liblsfg-vk-layer.so
           test -f "$layer"
           strings "$layer" > /tmp/lsfg-layer-strings.txt
           for required in \
             'deferred-zero reprime-warmup-begin' \
             'deferred-zero reprime-deferred request_count=' \
-            'candidate-b4-beta4-predicate-opt'; do
+            'candidate-b4-beta4-predicate-opt' \
+            'candidate-b11-beta4-pow2-mask'; do
             if ! grep -Fq "$required" /tmp/lsfg-layer-strings.txt; then
-              echo "ERROR: prepared benchmark layer is missing retained runtime marker: $required" >&2
+              echo "ERROR: prepared B11 benchmark layer is missing retained runtime marker: $required" >&2
               exit 1
             fi
           done
@@ -87,7 +87,7 @@ jobs:
             'zero-stage-profile backend=' \
             'final-nonadaptive-sweep'; do
             if grep -Fq "$forbidden" /tmp/lsfg-layer-strings.txt; then
-              echo "ERROR: prepared benchmark layer contains profiler marker: $forbidden" >&2
+              echo "ERROR: prepared B11 benchmark layer contains profiler marker: $forbidden" >&2
               exit 1
             fi
           done
@@ -106,23 +106,23 @@ jobs:
       - name: Run Legacy unit tests
         run: ./gradlew :app:testLegacyDebugUnitTest --no-daemon
 
-      - name: Assemble Adreno Clean Benchmark LegacyDebug
+      - name: Assemble Adreno B11 LegacyDebug
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 
-      - name: Prepare Adreno Clean Benchmark APK
+      - name: Prepare Adreno B11 APK
         run: |
           set -euo pipefail
           mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
           test ${#apks[@]} -eq 1
-          cp "${apks[0]}" gamenative-adreno6xx-clean-benchmark.apk
-          sha256sum gamenative-adreno6xx-clean-benchmark.apk
-          ls -lh gamenative-adreno6xx-clean-benchmark.apk
+          cp "${apks[0]}" gamenative-adreno6xx-b11-beta4-pow2-mask.apk
+          sha256sum gamenative-adreno6xx-b11-beta4-pow2-mask.apk
+          ls -lh gamenative-adreno6xx-b11-beta4-pow2-mask.apk
 
-      - name: Verify APK contains clean LSFG layer
+      - name: Verify APK contains clean B11 LSFG layer
         shell: bash
         run: |
           set -euo pipefail
-          apk=gamenative-adreno6xx-clean-benchmark.apk
+          apk=gamenative-adreno6xx-b11-beta4-pow2-mask.apk
           apk_layer=/tmp/apk-liblsfg-vk-layer.so
           unzip -p "$apk" lib/arm64-v8a/liblsfg-vk-layer.so > "$apk_layer"
           test -s "$apk_layer"
@@ -130,9 +130,10 @@ jobs:
           for required in \
             'deferred-zero reprime-warmup-begin' \
             'deferred-zero reprime-deferred request_count=' \
-            'candidate-b4-beta4-predicate-opt'; do
+            'candidate-b4-beta4-predicate-opt' \
+            'candidate-b11-beta4-pow2-mask'; do
             if ! grep -Fq "$required" /tmp/apk-lsfg-layer-strings.txt; then
-              echo "ERROR: APK LSFG layer is missing retained runtime marker: $required" >&2
+              echo "ERROR: APK B11 LSFG layer is missing retained runtime marker: $required" >&2
               exit 1
             fi
           done
@@ -142,15 +143,15 @@ jobs:
             'zero-stage-profile backend=' \
             'final-nonadaptive-sweep'; do
             if grep -Fq "$forbidden" /tmp/apk-lsfg-layer-strings.txt; then
-              echo "ERROR: APK LSFG layer contains profiler marker: $forbidden" >&2
+              echo "ERROR: APK B11 LSFG layer contains profiler marker: $forbidden" >&2
               exit 1
             fi
           done
 
-      - name: Upload Adreno Clean Benchmark APK
+      - name: Upload Adreno B11 APK
         uses: actions/upload-artifact@v4
         with:
-          name: gamenative-adreno6xx-clean-benchmark
-          path: gamenative-adreno6xx-clean-benchmark.apk
+          name: gamenative-adreno6xx-b11-beta4-pow2-mask
+          path: gamenative-adreno6xx-b11-beta4-pow2-mask.apk
           if-no-files-found: error
           compression-level: 0

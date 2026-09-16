@@ -17,6 +17,7 @@ on:
       - feature/adreno-6xx-candidate-b11-beta4-pow2-mask
     paths:
       - app/src/main/cpp/lsfg-vk-android
+      - app/src/test/java/app/gamenative/utils/LsfgBuildWorkflowContractTest.kt
       - .github/actions/prepare-lsfg-native/**
       - .github/workflows/lsfg-legacy-single-apk.yml
 

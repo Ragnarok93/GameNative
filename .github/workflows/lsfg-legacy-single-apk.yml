@@ -1,4 +1,4 @@
-name: Adreno 6xx LSFG B11 Beta4 Pow2 Mask
+name: Adreno 6xx LSFG B12 Dual Stage Evidence
 
 on:
   workflow_dispatch:
@@ -60,12 +60,13 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Prepare clean GameNative-pinned LSFG native runtime
+      - name: Prepare GameNative-pinned B12 evidence runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
           LSFGVK_ADAPTIVE_RUNTIME: "1"
+          LSFGVK_B12_DUAL_STAGE_PROFILE: "1"
 
-      - name: Verify prepared B11 LSFG layer is benchmark-clean
+      - name: Verify prepared B12 LSFG evidence layer
         shell: bash
         run: |
           set -euo pipefail
@@ -76,9 +77,12 @@ jobs:
             'deferred-zero reprime-warmup-begin' \
             'deferred-zero reprime-deferred request_count=' \
             'candidate-b4-beta4-predicate-opt' \
-            'candidate-b11-beta4-pow2-mask'; do
+            'candidate-b11-beta4-pow2-mask' \
+            'b12-stage-profile' \
+            'mipmaps_avg_ms=' \
+            'beta4_avg_ms='; do
             if ! grep -Fq "$required" /tmp/lsfg-layer-strings.txt; then
-              echo "ERROR: prepared B11 benchmark layer is missing retained runtime marker: $required" >&2
+              echo "ERROR: prepared B12 evidence layer is missing runtime marker: $required" >&2
               exit 1
             fi
           done
@@ -88,7 +92,7 @@ jobs:
             'zero-stage-profile backend=' \
             'final-nonadaptive-sweep'; do
             if grep -Fq "$forbidden" /tmp/lsfg-layer-strings.txt; then
-              echo "ERROR: prepared B11 benchmark layer contains profiler marker: $forbidden" >&2
+              echo "ERROR: prepared B12 evidence layer contains heavyweight profiler marker: $forbidden" >&2
               exit 1
             fi
           done
@@ -107,23 +111,23 @@ jobs:
       - name: Run Legacy unit tests
         run: ./gradlew :app:testLegacyDebugUnitTest --no-daemon
 
-      - name: Assemble Adreno B11 LegacyDebug
+      - name: Assemble Adreno B12 LegacyDebug
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 
-      - name: Prepare Adreno B11 APK
+      - name: Prepare Adreno B12 evidence APK
         run: |
           set -euo pipefail
           mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
           test ${#apks[@]} -eq 1
-          cp "${apks[0]}" gamenative-adreno6xx-b11-beta4-pow2-mask.apk
-          sha256sum gamenative-adreno6xx-b11-beta4-pow2-mask.apk
-          ls -lh gamenative-adreno6xx-b11-beta4-pow2-mask.apk
+          cp "${apks[0]}" gamenative-adreno6xx-b12-dual-stage-evidence.apk
+          sha256sum gamenative-adreno6xx-b12-dual-stage-evidence.apk
+          ls -lh gamenative-adreno6xx-b12-dual-stage-evidence.apk
 
-      - name: Verify APK contains clean B11 LSFG layer
+      - name: Verify APK contains B12 LSFG evidence layer
         shell: bash
         run: |
           set -euo pipefail
-          apk=gamenative-adreno6xx-b11-beta4-pow2-mask.apk
+          apk=gamenative-adreno6xx-b12-dual-stage-evidence.apk
           apk_layer=/tmp/apk-liblsfg-vk-layer.so
           unzip -p "$apk" lib/arm64-v8a/liblsfg-vk-layer.so > "$apk_layer"
           test -s "$apk_layer"
@@ -132,9 +136,12 @@ jobs:
             'deferred-zero reprime-warmup-begin' \
             'deferred-zero reprime-deferred request_count=' \
             'candidate-b4-beta4-predicate-opt' \
-            'candidate-b11-beta4-pow2-mask'; do
+            'candidate-b11-beta4-pow2-mask' \
+            'b12-stage-profile' \
+            'mipmaps_avg_ms=' \
+            'beta4_avg_ms='; do
             if ! grep -Fq "$required" /tmp/apk-lsfg-layer-strings.txt; then
-              echo "ERROR: APK B11 LSFG layer is missing retained runtime marker: $required" >&2
+              echo "ERROR: APK B12 LSFG layer is missing runtime marker: $required" >&2
               exit 1
             fi
           done
@@ -144,15 +151,15 @@ jobs:
             'zero-stage-profile backend=' \
             'final-nonadaptive-sweep'; do
             if grep -Fq "$forbidden" /tmp/apk-lsfg-layer-strings.txt; then
-              echo "ERROR: APK B11 LSFG layer contains profiler marker: $forbidden" >&2
+              echo "ERROR: APK B12 LSFG layer contains heavyweight profiler marker: $forbidden" >&2
               exit 1
             fi
           done
 
-      - name: Upload Adreno B11 APK
+      - name: Upload Adreno B12 evidence APK
         uses: actions/upload-artifact@v4
         with:
-          name: gamenative-adreno6xx-b11-beta4-pow2-mask
-          path: gamenative-adreno6xx-b11-beta4-pow2-mask.apk
+          name: gamenative-adreno6xx-b12-dual-stage-evidence
+          path: gamenative-adreno6xx-b12-dual-stage-evidence.apk
           if-no-files-found: error
           compression-level: 0

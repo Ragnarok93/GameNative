@@ -263,6 +263,37 @@ object LsfgVkManager {
         return cachedMeasuredFps
     }
 
+    /**
+     * Returns a fresh cadence measured after LSFG presentation for power-control decisions.
+     * This read is synchronous because its callers already run on one-second background loops.
+     * A missing, stale, source-only, or not-yet-presented sample is deliberately unusable: an
+     * active frame-generation session must never fall back to the lower source cadence.
+     */
+    fun readFreshOutputFps(rootDir: File?, nowMs: Long = System.currentTimeMillis()): Float? {
+        val statsFile = rootDir?.let { File(it, STATS_RELATIVE_PATH) } ?: return null
+        if (!statsFile.isFile || nowMs - statsFile.lastModified() !in 0L..STATS_FRESHNESS_MS) {
+            return null
+        }
+
+        return runCatching {
+            val values = statsFile.useLines { lines ->
+                lines.mapNotNull { line ->
+                    val separator = line.indexOf('=')
+                    if (separator <= 0) null
+                    else line.substring(0, separator) to line.substring(separator + 1)
+                }.toMap()
+            }
+            val generating = values["state"] == "generating" &&
+                values["active"] == "1" &&
+                values["generated_presented"] == "1"
+            if (!generating) return@runCatching null
+
+            (values["output_fps"] ?: values["fps"])
+                ?.toFloatOrNull()
+                ?.takeIf { it.isFinite() && it > 0f }
+        }.getOrNull()
+    }
+
     fun readRuntimeState(container: Container): RuntimeState {
         val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
         if (!statsFile.isFile) return unknownRuntimeState(fresh = false)

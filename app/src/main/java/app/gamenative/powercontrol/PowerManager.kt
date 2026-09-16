@@ -18,6 +18,7 @@ import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import app.gamenative.powercontrol.metrics.PerformanceMetricsCollector
 import app.gamenative.powercontrol.profiles.CpuGovernor
 import app.gamenative.powercontrol.profiles.PerformancePreset
+import app.gamenative.utils.LsfgVkManager
 import com.winlator.container.Container
 import com.winlator.core.ProcessHelper
 import com.winlator.winhandler.WinHandler
@@ -417,6 +418,7 @@ object PowerManager {
             applyGpuMaxLevel = { level -> pserver.setMaxGpuPowerLevel(level) },
             metricsProvider = { latestMetrics },
             targetFpsProvider = { targetFps },
+            tuningFpsProvider = { sourceFps -> fpsForTuning(sourceFps) },
             fanSampleProvider = { FanController.latestSample },
             strategyProvider = { currentProfile.tuningStrategy },
             fpsCapProvider = { AdaptiveFpsCapController.snapshot() },
@@ -478,6 +480,21 @@ object PowerManager {
      *  generation runs, 1 otherwise) so frame stats stay in base units. */
     @Volatile
     var frameSampleStride: Int = 1
+
+    /**
+     * Selects the cadence used by FPS-based tuning. While LSFG is active, only the layer's
+     * fresh post-generation output cadence is valid; null tells callers to hold their FPS
+     * decision state instead of treating source cadence as displayed cadence.
+     */
+    internal fun fpsForTuning(sourceFps: Float): Float? = selectPowerTuningFps(
+        sourceFps = sourceFps,
+        frameGenerationActive = frameSampleStride > 1,
+        postLsfgOutputFps = if (frameSampleStride > 1) {
+            LsfgVkManager.readFreshOutputFps(containerDir)
+        } else {
+            null
+        },
+    )
 
     internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
         fpsCapApplier?.let { if (it(limitFps)) return true }

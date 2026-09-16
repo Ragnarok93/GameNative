@@ -103,4 +103,19 @@ class LsfgBuildWorkflowContractTest {
             )
         }
     }
+
+    @Test
+    fun b11CandidateWorkflowPinsSynthesizedMaskRuntimeAndAuditsItsMarker() {
+        val source = repoFile(".github/workflows/lsfg-legacy-single-apk.yml").readText()
+        listOf(
+            "expected_native=e7905d21903c08f4aa0c39907271db890f2becfc",
+            "candidate-b11-beta4-pow2-mask",
+            "unzip -p \"${'$'}apk\" lib/arm64-v8a/liblsfg-vk-layer.so",
+        ).forEach { token ->
+            assertTrue(
+                "B11 candidate workflow is missing verified provenance or APK audit token: ${'$'}token",
+                source.contains(token),
+            )
+        }
+    }
 }

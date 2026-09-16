@@ -8,6 +8,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -139,6 +140,60 @@ class LsfgVkManagerTest {
         assertEquals(LsfgVkManager.RuntimeStatus.GENERATING, generating.status)
         assertTrue(generating.readyForGeneration)
         assertFalse(generating.readyForSourceOnly)
+    }
+
+    @Test
+    fun readFreshOutputFps_requiresFreshGeneratingPostLsfgSample() {
+        val nowMs = 2_000_000L
+        val statsFile = File(rootDir, ".config/lsfg-vk/stats.txt").apply {
+            parentFile?.mkdirs()
+            writeText(
+                """
+                state=generating
+                active=1
+                generated_presented=1
+                output_fps=60.0
+                source_fps=15.0
+                """.trimIndent(),
+            )
+            assertTrue(setLastModified(nowMs - 500L))
+        }
+
+        assertEquals(60f, LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
+
+        assertTrue(statsFile.setLastModified(nowMs - 2_001L))
+        assertNull(LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
+
+        statsFile.writeText(
+            """
+            state=source_only
+            active=0
+            generated_presented=0
+            output_fps=15.0
+            """.trimIndent(),
+        )
+        assertTrue(statsFile.setLastModified(nowMs))
+        assertNull(LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
+    }
+
+    @Test
+    fun readFreshOutputFps_acceptsCurrentNativeFpsField() {
+        val nowMs = 3_000_000L
+        File(rootDir, ".config/lsfg-vk/stats.txt").apply {
+            parentFile?.mkdirs()
+            writeText(
+                """
+                state=generating
+                active=1
+                generated_presented=1
+                fps=59.75
+                source_fps=15.0
+                """.trimIndent(),
+            )
+            assertTrue(setLastModified(nowMs))
+        }
+
+        assertEquals(59.75f, LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
     }
 
     @Test

@@ -28,6 +28,7 @@ class ClusterTuner(
     private val applyGpuMaxLevel: (Int) -> Boolean,
     private val metricsProvider: () -> MetricsSnapshot?,
     private val targetFpsProvider: () -> Int,
+    private val tuningFpsProvider: (Float) -> Float? = { it },
     private val fanSampleProvider: () -> FanSample? = { null },
     private val strategyProvider: () -> AutoTuningStrategy = { AutoTuningStrategy.BALANCED },
     private val fpsCapProvider: () -> FpsCapSnapshot? = { null },
@@ -199,9 +200,14 @@ class ClusterTuner(
             logCycle(snapshot, 0, HOLD_ACTION, "stale-metrics", engine.steadyCycles, engine.frozenDomains, 0f)
             return
         }
+        val tuningFps = tuningFpsProvider(snapshot.fps)
+        if (tuningFps == null) {
+            logCycle(snapshot, targetFps, HOLD_ACTION, "missing-lsfg-output", engine.steadyCycles, engine.frozenDomains, 0f)
+            return
+        }
 
         val input = TunerInput(
-            fps = snapshot.fps,
+            fps = tuningFps,
             targetFps = targetFps,
             frameTimeP50Ms = snapshot.frameTimeP50Ms,
             frameTimeP95Ms = snapshot.frameTimeP95Ms,
@@ -255,7 +261,7 @@ class ClusterTuner(
                 "%s %s: fps=%.1f/%d p95=%.1fms slow=%.1f%% cpu=%s%% gpu=%s%% caps[prime=%s perf=%s gpu=%s] frozen=%s",
                 action,
                 reason,
-                snapshot.fps,
+                tuningFps,
                 targetFps,
                 snapshot.frameTimeP95Ms,
                 slowRatio * 100f,
@@ -270,7 +276,7 @@ class ClusterTuner(
             Timber.tag(TAG).d(
                 "hold %s: fps=%.1f/%d p95=%.1fms steady=%d",
                 reason,
-                snapshot.fps,
+                tuningFps,
                 targetFps,
                 snapshot.frameTimeP95Ms,
                 decision.steadyCycles,

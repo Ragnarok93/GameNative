@@ -82,7 +82,8 @@ jobs:
             'mipmaps_avg_ms=' \
             'beta4_avg_ms=' \
             'b12-timestamp-capability' \
-            'b12-timestamp-fallback'; do
+            'b12-timestamp-fallback' \
+            'b12-device-profile'; do
             if ! grep -Fq "$required" /tmp/lsfg-layer-strings.txt; then
               echo "ERROR: prepared B12 evidence layer is missing runtime marker: $required" >&2
               exit 1
@@ -143,7 +144,8 @@ jobs:
             'mipmaps_avg_ms=' \
             'beta4_avg_ms=' \
             'b12-timestamp-capability' \
-            'b12-timestamp-fallback'; do
+            'b12-timestamp-fallback' \
+            'b12-device-profile'; do
             if ! grep -Fq "$required" /tmp/apk-lsfg-layer-strings.txt; then
               echo "ERROR: APK B12 LSFG layer is missing runtime marker: $required" >&2
               exit 1

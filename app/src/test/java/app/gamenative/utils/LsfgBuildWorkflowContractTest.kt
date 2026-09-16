@@ -105,7 +105,7 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun b12CandidateWorkflowUsesGitlinkProvenanceAndAuditsTimestampEvidenceRuntime() {
+    fun b12CandidateWorkflowUsesGitlinkProvenanceAndAuditsPortableEvidenceRuntime() {
         val source = repoFile(".github/workflows/lsfg-legacy-single-apk.yml").readText()
         listOf(
             "expected_native=\"${'$'}(git rev-parse HEAD:${'$'}{native_dir})\"",
@@ -118,6 +118,7 @@ class LsfgBuildWorkflowContractTest {
             "beta4_avg_ms=",
             "b12-timestamp-capability",
             "b12-timestamp-fallback",
+            "b12-device-profile",
             "unzip -p \"${'$'}apk\" lib/arm64-v8a/liblsfg-vk-layer.so",
         ).forEach { token ->
             assertTrue(
@@ -126,8 +127,12 @@ class LsfgBuildWorkflowContractTest {
             )
         }
         assertFalse(
-            "B12 gameplay evidence APK must keep verbose Mipmaps executable/IR capture disabled",
+            "B12 gameplay evidence APK must keep legacy verbose Mipmaps executable/IR capture disabled",
             source.contains("LSFGVK_B12_MIPMAPS_EXEC_PROFILE"),
+        )
+        assertFalse(
+            "B12 gameplay evidence APK must keep generic verbose Mipmaps executable/IR capture disabled",
+            source.contains("LSFGVK_MIPMAPS_EXEC_PROFILE"),
         )
         assertFalse(
             "B12 candidate workflow must not duplicate the pinned LSFG commit as a hard-coded SHA",

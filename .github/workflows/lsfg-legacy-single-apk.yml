@@ -78,6 +78,7 @@ jobs:
             'deferred-zero reprime-deferred request_count=' \
             'candidate-b4-beta4-predicate-opt' \
             'candidate-b11-beta4-pow2-mask' \
+            'candidate-b13-beta4-fused-mask' \
             'b12-stage-profile' \
             'mipmaps_avg_ms=' \
             'beta4_avg_ms=' \
@@ -140,6 +141,7 @@ jobs:
             'deferred-zero reprime-deferred request_count=' \
             'candidate-b4-beta4-predicate-opt' \
             'candidate-b11-beta4-pow2-mask' \
+            'candidate-b13-beta4-fused-mask' \
             'b12-stage-profile' \
             'mipmaps_avg_ms=' \
             'beta4_avg_ms=' \

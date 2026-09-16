@@ -113,6 +113,7 @@ class LsfgBuildWorkflowContractTest {
             "test \"${'$'}actual_native\" = \"${'$'}expected_native\"",
             "LSFGVK_B12_DUAL_STAGE_PROFILE: \"1\"",
             "candidate-b11-beta4-pow2-mask",
+            "candidate-b13-beta4-fused-mask",
             "b12-stage-profile",
             "mipmaps_avg_ms=",
             "beta4_avg_ms=",

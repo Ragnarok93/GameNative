@@ -39,13 +39,13 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Candidate A DeferredZero + two-request wake persistence + retained B4
-          # plus guarded B11 Beta4 power-of-two predicate masks. B9/B10 remain disabled.
-          expected_native=e7905d21903c08f4aa0c39907271db890f2becfc
-          actual_native="$(git rev-parse HEAD:${native_dir})"
-          test "$actual_native" = "$expected_native"
+          # Treat the GameNative gitlink as the single source of truth so this
+          # guard follows deliberate LSFG pin updates instead of going stale.
+          expected_native="$(git rev-parse HEAD:${native_dir})"
           git submodule update --init --recursive -- "$native_dir"
-          test "$(git -C "$native_dir" rev-parse HEAD)" = "$expected_native"
+          actual_native="$(git -C "$native_dir" rev-parse HEAD)"
+          test "$actual_native" = "$expected_native"
+          echo "Verified pinned B11 LSFG native revision ${expected_native}"
           git diff --check
 
       - name: Setup Java 17

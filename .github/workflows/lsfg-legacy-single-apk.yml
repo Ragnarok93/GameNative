@@ -1,4 +1,4 @@
-name: Adreno 6xx LSFG LegacyDebug
+name: Adreno 6xx LSFG Clean Benchmark
 
 on:
   workflow_dispatch:
@@ -13,6 +13,7 @@ on:
       - feature/adreno-6xx-candidate-b8-mipmaps-matrix
       - feature/adreno-6xx-final-nonadaptive-sweep
       - feature/adreno-6xx-deferred-zero-b4
+      - feature/adreno-6xx-clean-benchmark
     paths:
       - app/src/main/cpp/lsfg-vk-android
       - .github/actions/prepare-lsfg-native/**
@@ -32,14 +33,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Verify pinned Adreno LSFG native revision
+      - name: Verify pinned clean Adreno LSFG native revision
         shell: bash
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Candidate A DeferredZero is layered over the retained B4-safe shader state.
-          # Exit requires two scheduler generation requests within 500 ms before the validated three-live-present re-prime; B9/B10 remain disabled.
-          expected_native=8860c8be6f62c1b398bd0319ea1fc211769322f9
+          # Validated Candidate A DeferredZero + two-request wake persistence + B4.
+          # Clean benchmark mode excludes zero-stage, generated-stage, B6/B8 and final-sweep profiling; B9/B10 remain disabled.
+          expected_native=ed53505c87b8c02099c83f89c5bcef24bf5838ca
           actual_native="$(git rev-parse HEAD:${native_dir})"
           test "$actual_native" = "$expected_native"
           git submodule update --init --recursive -- "$native_dir"
@@ -57,13 +58,31 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Prepare GameNative-pinned LSFG native runtime
+      - name: Prepare clean GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
-          # Keep B4/final-sweep profiling active as a control while Candidate A
-          # changes only sustained adaptive-zero lifecycle execution.
-          LSFGVK_ZERO_STAGE_PROFILE: "1"
-          LSFGVK_FINAL_NONADAPTIVE_SWEEP: "1"
+          LSFGVK_ADAPTIVE_RUNTIME: "1"
+
+      - name: Verify packaged LSFG layer is benchmark-clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          layer=app/src/main/assets/lsfg_vk/android_arm64_v8a/liblsfg-vk-layer.so
+          test -f "$layer"
+          strings "$layer" > /tmp/lsfg-layer-strings.txt
+          grep -Fq 'deferred-zero reprime-warmup-begin' /tmp/lsfg-layer-strings.txt
+          grep -Fq 'deferred-zero reprime-deferred request_count=' /tmp/lsfg-layer-strings.txt
+          grep -Fq 'candidate-b4-beta4-predicate-opt' /tmp/lsfg-layer-strings.txt
+          for forbidden in \
+            'pipeline-exec-ir-line' \
+            'generated-stage-profile backend=' \
+            'zero-stage-profile backend=' \
+            'final-nonadaptive-sweep'; do
+            if grep -Fq "$forbidden" /tmp/lsfg-layer-strings.txt; then
+              echo "ERROR: packaged benchmark layer contains profiler marker: $forbidden" >&2
+              exit 1
+            fi
+          done
 
       - name: Inject debug credentials
         run: |
@@ -79,22 +98,22 @@ jobs:
       - name: Run Legacy unit tests
         run: ./gradlew :app:testLegacyDebugUnitTest --no-daemon
 
-      - name: Assemble Adreno LegacyDebug
+      - name: Assemble Adreno Clean Benchmark LegacyDebug
         run: ./gradlew :app:assembleLegacyDebug --no-daemon
 
-      - name: Prepare Adreno LegacyDebug APK
+      - name: Prepare Adreno Clean Benchmark APK
         run: |
           set -euo pipefail
           mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
           test ${#apks[@]} -eq 1
-          cp "${apks[0]}" gamenative-adreno6xx-legacy-debug.apk
-          sha256sum gamenative-adreno6xx-legacy-debug.apk
-          ls -lh gamenative-adreno6xx-legacy-debug.apk
+          cp "${apks[0]}" gamenative-adreno6xx-clean-benchmark.apk
+          sha256sum gamenative-adreno6xx-clean-benchmark.apk
+          ls -lh gamenative-adreno6xx-clean-benchmark.apk
 
-      - name: Upload Adreno LegacyDebug APK
+      - name: Upload Adreno Clean Benchmark APK
         uses: actions/upload-artifact@v4
         with:
-          name: gamenative-adreno6xx-legacy-debug
-          path: gamenative-adreno6xx-legacy-debug.apk
+          name: gamenative-adreno6xx-clean-benchmark
+          path: gamenative-adreno6xx-clean-benchmark.apk
           if-no-files-found: error
           compression-level: 0

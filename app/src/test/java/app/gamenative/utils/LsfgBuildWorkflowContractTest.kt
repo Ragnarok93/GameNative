@@ -105,22 +105,32 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun b11CandidateWorkflowUsesGitlinkProvenanceAndAuditsSynthesizedMaskRuntime() {
+    fun b12CandidateWorkflowUsesGitlinkProvenanceAndAuditsTimestampEvidenceRuntime() {
         val source = repoFile(".github/workflows/lsfg-legacy-single-apk.yml").readText()
         listOf(
             "expected_native=\"${'$'}(git rev-parse HEAD:${'$'}{native_dir})\"",
             "actual_native=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
             "test \"${'$'}actual_native\" = \"${'$'}expected_native\"",
+            "LSFGVK_B12_DUAL_STAGE_PROFILE: \"1\"",
             "candidate-b11-beta4-pow2-mask",
+            "b12-stage-profile",
+            "mipmaps_avg_ms=",
+            "beta4_avg_ms=",
+            "b12-timestamp-capability",
+            "b12-timestamp-fallback",
             "unzip -p \"${'$'}apk\" lib/arm64-v8a/liblsfg-vk-layer.so",
         ).forEach { token ->
             assertTrue(
-                "B11 candidate workflow is missing verified provenance or APK audit token: ${'$'}token",
+                "B12 candidate workflow is missing verified provenance or evidence/APK audit token: ${'$'}token",
                 source.contains(token),
             )
         }
         assertFalse(
-            "B11 candidate workflow must not duplicate the pinned LSFG commit as a hard-coded SHA",
+            "B12 gameplay evidence APK must keep verbose Mipmaps executable/IR capture disabled",
+            source.contains("LSFGVK_B12_MIPMAPS_EXEC_PROFILE"),
+        )
+        assertFalse(
+            "B12 candidate workflow must not duplicate the pinned LSFG commit as a hard-coded SHA",
             Regex("expected_native=[0-9a-f]{40}").containsMatchIn(source),
         )
     }

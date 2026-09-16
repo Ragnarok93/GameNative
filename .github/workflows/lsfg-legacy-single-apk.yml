@@ -35,7 +35,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Verify pinned B11 Adreno LSFG native revision
+      - name: Verify pinned B12 Adreno LSFG native revision
         shell: bash
         run: |
           set -euo pipefail
@@ -46,7 +46,7 @@ jobs:
           git submodule update --init --recursive -- "$native_dir"
           actual_native="$(git -C "$native_dir" rev-parse HEAD)"
           test "$actual_native" = "$expected_native"
-          echo "Verified pinned B11 LSFG native revision ${expected_native}"
+          echo "Verified pinned B12 LSFG native revision ${expected_native}"
           git diff --check
 
       - name: Setup Java 17
@@ -80,7 +80,9 @@ jobs:
             'candidate-b11-beta4-pow2-mask' \
             'b12-stage-profile' \
             'mipmaps_avg_ms=' \
-            'beta4_avg_ms='; do
+            'beta4_avg_ms=' \
+            'b12-timestamp-capability' \
+            'b12-timestamp-fallback'; do
             if ! grep -Fq "$required" /tmp/lsfg-layer-strings.txt; then
               echo "ERROR: prepared B12 evidence layer is missing runtime marker: $required" >&2
               exit 1
@@ -139,7 +141,9 @@ jobs:
             'candidate-b11-beta4-pow2-mask' \
             'b12-stage-profile' \
             'mipmaps_avg_ms=' \
-            'beta4_avg_ms='; do
+            'beta4_avg_ms=' \
+            'b12-timestamp-capability' \
+            'b12-timestamp-fallback'; do
             if ! grep -Fq "$required" /tmp/apk-lsfg-layer-strings.txt; then
               echo "ERROR: APK B12 LSFG layer is missing runtime marker: $required" >&2
               exit 1

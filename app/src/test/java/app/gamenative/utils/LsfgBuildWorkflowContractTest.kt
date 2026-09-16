@@ -105,10 +105,12 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun b11CandidateWorkflowPinsSynthesizedMaskRuntimeAndAuditsItsMarker() {
+    fun b11CandidateWorkflowUsesGitlinkProvenanceAndAuditsSynthesizedMaskRuntime() {
         val source = repoFile(".github/workflows/lsfg-legacy-single-apk.yml").readText()
         listOf(
-            "expected_native=e7905d21903c08f4aa0c39907271db890f2becfc",
+            "expected_native=\"${'$'}(git rev-parse HEAD:${'$'}{native_dir})\"",
+            "actual_native=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
+            "test \"${'$'}actual_native\" = \"${'$'}expected_native\"",
             "candidate-b11-beta4-pow2-mask",
             "unzip -p \"${'$'}apk\" lib/arm64-v8a/liblsfg-vk-layer.so",
         ).forEach { token ->
@@ -117,5 +119,9 @@ class LsfgBuildWorkflowContractTest {
                 source.contains(token),
             )
         }
+        assertFalse(
+            "B11 candidate workflow must not duplicate the pinned LSFG commit as a hard-coded SHA",
+            Regex("expected_native=[0-9a-f]{40}").containsMatchIn(source),
+        )
     }
 }

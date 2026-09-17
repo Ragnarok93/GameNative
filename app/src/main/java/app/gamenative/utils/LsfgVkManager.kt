@@ -1,9 +1,7 @@
 package app.gamenative.utils
 
 import android.content.Context
-import android.os.Build
 import java.util.concurrent.Executors
-import app.gamenative.BuildConfig
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
 import com.winlator.core.FileUtils
@@ -94,11 +92,6 @@ object LsfgVkManager {
     private const val ENV_VK_LAYER_PATH = "VK_LAYER_PATH"
     private const val ENV_VK_INSTANCE_LAYERS = "VK_INSTANCE_LAYERS"
     private const val ENV_VK_LOADER_LAYERS_ENABLE = "VK_LOADER_LAYERS_ENABLE"
-    private const val ENV_VK_LOADER_DEBUG = "VK_LOADER_DEBUG"
-    private const val ENV_VK_ICD_FILENAMES = "VK_ICD_FILENAMES"
-    private const val ENV_ADRENOTOOLS_DRIVER_NAME = "ADRENOTOOLS_DRIVER_NAME"
-    private const val ENV_ADRENOTOOLS_DRIVER_PATH = "ADRENOTOOLS_DRIVER_PATH"
-    private const val ENV_LD_LIBRARY_PATH = "LD_LIBRARY_PATH"
 
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
@@ -528,24 +521,10 @@ object LsfgVkManager {
         appendUniqueEnvEntry(envVars, ENV_VK_LAYER_PATH, loaderLayerDir.absolutePath)
         appendUniqueEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME)
 
-        logLaunchPreflight(container, envVars)
-
-        // A DEBUG-only direct Android-linker probe deliberately runs before the
-        // guest Vulkan loader. It is diagnostic, not a support gate: failures are
-        // logged and launch continues. If this fails with the same unresolved
-        // symbol as the Vulkan loader, the fault is in Android namespace/dependency
-        // resolution; if it succeeds while Vulkan later fails, the guest Vulkan
-        // loader path is the differentiator.
-        if (BuildConfig.DEBUG) probeAndroidLinker(container)
-
         Timber.tag(TAG).i(
-            "LSFG layer armed: dll=%s, target=%s, selectedMultiplier=%d, framegen=%s, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
-            dllPath,
+            "LSFG layer armed target=%s multiplier=%d",
             processExecutable,
             multiplier(container),
-            if (frameGenerationActive(container)) "on" else "off",
-            flowScale(container),
-            if (performanceMode(container)) "on" else "off",
         )
         return true
     }
@@ -616,12 +595,6 @@ object LsfgVkManager {
                 )
                 null
             } else {
-                Timber.tag(TAG).i(
-                    "LSFG loader runtime synchronized version=%s home=%s layerDir=%s",
-                    RUNTIME_VERSION,
-                    loaderHome.absolutePath,
-                    targetLayerDir.absolutePath,
-                )
                 targetLayerDir
             }
         } catch (t: Throwable) {
@@ -630,67 +603,6 @@ object LsfgVkManager {
         }
     }
 
-    private fun logLaunchPreflight(container: Container, envVars: EnvVars) {
-        val manifest = File(container.rootDir, "$LAYER_RELATIVE_DIR/$MANIFEST_FILENAME")
-        val library = File(container.rootDir, "$LIB_RELATIVE_DIR/$LIB_FILENAME")
-        val canonicalLibrary = runCatching { library.canonicalPath }.getOrDefault(library.absolutePath)
-        val abis = Build.SUPPORTED_ABIS?.joinToString(",").orEmpty()
-        Timber.tag(TAG).i(
-            "LSFG preflight state=CONFIGURED manifest=%s manifestExists=%s manifestReadable=%s library=%s libraryCanonical=%s libraryExists=%s libraryReadable=%s librarySize=%d abi=%s",
-            manifest.absolutePath,
-            manifest.isFile,
-            manifest.canRead(),
-            library.absolutePath,
-            canonicalLibrary,
-            library.isFile,
-            library.canRead(),
-            if (library.isFile) library.length() else -1L,
-            abis,
-        )
-        Timber.tag(TAG).i(
-            "LSFG preflight Vulkan env VK_INSTANCE_LAYERS=%s VK_LOADER_LAYERS_ENABLE=%s VK_LAYER_PATH=%s VK_LOADER_DEBUG=%s VK_ICD_FILENAMES=%s",
-            envVars[ENV_VK_INSTANCE_LAYERS],
-            envVars[ENV_VK_LOADER_LAYERS_ENABLE],
-            envVars[ENV_VK_LAYER_PATH],
-            envVars[ENV_VK_LOADER_DEBUG],
-            envVars[ENV_VK_ICD_FILENAMES],
-        )
-        Timber.tag(TAG).i(
-            "LSFG preflight loader env LD_LIBRARY_PATH=%s ADRENOTOOLS_DRIVER_NAME=%s ADRENOTOOLS_DRIVER_PATH=%s",
-            envVars[ENV_LD_LIBRARY_PATH],
-            envVars[ENV_ADRENOTOOLS_DRIVER_NAME],
-            envVars[ENV_ADRENOTOOLS_DRIVER_PATH],
-        )
-    }
-
-    private fun probeAndroidLinker(container: Container) {
-        val library = File(container.rootDir, "$LIB_RELATIVE_DIR/$LIB_FILENAME")
-        if (!library.isFile) {
-            Timber.tag(TAG).e("LSFG linker preflight state=FAILED reason=library_missing path=%s", library.absolutePath)
-            return
-        }
-        try {
-            System.load(library.absolutePath)
-            Timber.tag(TAG).i(
-                "LSFG linker preflight state=LAYER_LOADED namespace=app-system-load path=%s",
-                library.absolutePath,
-            )
-        } catch (e: UnsatisfiedLinkError) {
-            Timber.tag(TAG).e(
-                e,
-                "LSFG linker preflight state=LOAD_FAILED namespace=app-system-load path=%s error=%s",
-                library.absolutePath,
-                e.message ?: "unknown",
-            )
-        } catch (t: Throwable) {
-            Timber.tag(TAG).e(
-                t,
-                "LSFG linker preflight state=LOAD_FAILED namespace=app-system-load path=%s error=%s",
-                library.absolutePath,
-                t.message ?: t.javaClass.name,
-            )
-        }
-    }
 
     private fun appendUniqueEnvEntry(envVars: EnvVars, key: String, value: String) {
         val current = envVars[key].orEmpty()
@@ -742,7 +654,6 @@ object LsfgVkManager {
             val appDir = File(basePath, installDirName)
             val dll = File(appDir, LOSSLESS_DLL_NAME)
             if (dll.isFile) {
-                Timber.tag(TAG).d("Found Lossless.dll at: %s", dll.absolutePath)
                 return dll
             }
         }
@@ -754,7 +665,6 @@ object LsfgVkManager {
                 if (subDir.isDirectory) {
                     val dll = File(subDir, LOSSLESS_DLL_NAME)
                     if (dll.isFile) {
-                        Timber.tag(TAG).d("Found Lossless.dll in fallback search at: %s", dll.absolutePath)
                         return dll
                     }
                 }
@@ -940,15 +850,7 @@ object LsfgVkManager {
 
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
-                Timber.tag(TAG).i(
-                    "Hot-reloaded conf.toml: enabled=%s, adaptive=%s, multiplier=%d, flowScale=%.2f, perf=%s, fpsLimit=%d",
-                    frameGenActive,
-                    adaptive,
-                    effectiveMultiplier,
-                    flowScale,
-                    performanceMode,
-                    effectiveFpsLimit,
-                )
+                Timber.tag(TAG).i("LSFG configuration hot-reloaded")
             }
             ok
         } catch (t: Throwable) {

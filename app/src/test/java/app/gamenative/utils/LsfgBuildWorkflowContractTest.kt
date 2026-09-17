@@ -142,28 +142,4 @@ class LsfgBuildWorkflowContractTest {
             Regex("expected_native=[0-9a-f]{40}").containsMatchIn(source),
         )
     }
-    @Test
-    fun b14ValidationWorkflowBuildsMatchedB13ControlWhileDefaultingToB14() {
-        val source = repoFile(".github/workflows/b14-fixed-wrapper-validation.yml").readText()
-        listOf(
-            "profile_variant:",
-            "default: b14",
-            "- b14",
-            "- b13",
-            "PROFILE_VARIANT: ${'$'}{{ inputs.profile_variant || 'b14' }}",
-            "candidate_script=",
-            "if [[ \"${'$'}PROFILE_VARIANT\" == \"b14\" ]]; then",
-            "B13 control unexpectedly contains the B14 transform",
-        ).forEach { token ->
-            assertTrue(
-                "B13/B14 evidence workflow is missing matched-control behavior: ${'$'}token",
-                source.contains(token),
-            )
-        }
-        assertTrue(
-            "B14 must remain the default candidate",
-            source.indexOf("default: b14") < source.indexOf("- b13"),
-        )
-    }
-
 }

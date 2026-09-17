@@ -149,48 +149,35 @@ jobs:
           grep -Eq 'ARM aarch64|aarch64' /tmp/wrapper-arm64.file
           sha256sum "$arm64"
 
-      - name: Replace wrapper-gamenative payload and verify binary identity
+      - name: Verify pinned wrapper-gamenative payload identity
         shell: bash
         run: |
           set -euo pipefail
           asset=app/src/legacy/assets/graphics_driver/wrapper-gamenative.tzst
           built=mesa-wrapper/_build-arm64/src/vulkan/wrapper/libvulkan_wrapper.so
-          shipped_sha=2aecf1c11cde57008a3cc5e1a551e095d7843d3aa84b3756953afc134035e7c5
+          poisoned_sha=2aecf1c11cde57008a3cc5e1a551e095d7843d3aa84b3756953afc134035e7c5
+          fixed_sha=1b74eeb77ce522ff741f39152db05d8f777f4180babe59b4911a08d74b91d89c
           built_sha="$(sha256sum "$built" | awk '{print $1}')"
-          test "$built_sha" != "$shipped_sha"
-          old_dir="$(mktemp -d)"
-          verify_dir="$(mktemp -d)"
-          tar --zstd -xf "$asset" -C "$old_dir"
-          mapfile -t targets < <(find "$old_dir" -type f -name libvulkan_wrapper.so -print)
+          test "$built_sha" != "$poisoned_sha"
+          unpacked="$(mktemp -d)"
+          tar --zstd -xf "$asset" -C "$unpacked"
+          mapfile -t targets < <(find "$unpacked" -type f -name libvulkan_wrapper.so -print)
           if [[ "${#targets[@]}" -ne 1 ]]; then
             echo "ERROR: expected one libvulkan_wrapper.so in wrapper-gamenative.tzst, found ${#targets[@]}" >&2
-            find "$old_dir" -maxdepth 4 -type f -print >&2
+            find "$unpacked" -maxdepth 4 -type f -print >&2
             exit 1
           fi
           current_sha="$(sha256sum "${targets[0]}" | awk '{print $1}')"
           echo "Current packaged wrapper SHA-256: $current_sha"
-          echo "Rebuilt patched wrapper SHA-256: $built_sha"
-          if [[ "$current_sha" = "$shipped_sha" ]]; then
-            mode="$(stat -c '%a' "${targets[0]}")"
-            install -m "$mode" "$built" "${targets[0]}"
-          elif [[ "$current_sha" = "$built_sha" ]]; then
-            echo 'wrapper-gamenative asset already contains the verified patched wrapper'
-          else
-            echo "ERROR: wrapper asset contains unexpected libvulkan_wrapper.so SHA-256 $current_sha" >&2
+          echo "Reference rebuild wrapper SHA-256: $built_sha"
+          test "$current_sha" != "$poisoned_sha"
+          if [[ "$current_sha" != "$fixed_sha" ]]; then
+            echo "ERROR: packaged wrapper does not match pinned known-good SHA-256 $fixed_sha" >&2
             exit 1
           fi
-          new_sha="$(sha256sum "${targets[0]}" | awk '{print $1}')"
-          test "$new_sha" = "$built_sha"
-          rm -f "$asset"
-          tar --zstd -cf "$asset" -C "$old_dir" .
-          tar --zstd -xf "$asset" -C "$verify_dir"
-          mapfile -t verified < <(find "$verify_dir" -type f -name libvulkan_wrapper.so -print)
-          test "${#verified[@]}" -eq 1
-          verified_sha="$(sha256sum "${verified[0]}" | awk '{print $1}')"
-          test "$verified_sha" = "$built_sha"
-          sha256sum "$asset"
-          printf '%s\n' "$shipped_sha" > wrapper-old-lib.sha256
-          printf '%s\n' "$built_sha" > wrapper-new-lib.sha256
+          printf '%s\n' "$poisoned_sha" > wrapper-old-lib.sha256
+          printf '%s\n' "$fixed_sha" > wrapper-new-lib.sha256
+          echo 'wrapper-gamenative asset already contains the pinned subgroup-capable wrapper'
 
       - name: Upload verified wrapper evidence
         uses: actions/upload-artifact@v4

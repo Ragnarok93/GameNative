@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  B14_NATIVE_REVISION: 613bdde4d18e9621a256d5fd8cfc042cfb0c812f
+  B14_NATIVE_REVISION: 634095e8de32d65e2d082af582ec7a53dff2601b
 
 jobs:
   validate-and-package:

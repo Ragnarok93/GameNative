@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  B14_NATIVE_REVISION: 634095e8de32d65e2d082af582ec7a53dff2601b
+  B14_NATIVE_REVISION: 5fc4bdd0eb4a28b88469b9e8c842e52e7c7814db
 
 jobs:
   validate-and-package:
@@ -77,7 +77,7 @@ jobs:
         uses: ./.github/actions/prepare-lsfg-native
         env:
           LSFGVK_ADAPTIVE_RUNTIME: "1"
-          LSFGVK_B12_DUAL_STAGE_PROFILE: "1"
+          LSFGVK_B12_DUAL_STAGE_PROFILE: "0"
           LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py
 
       - name: Verify promoted runtime contract
@@ -92,10 +92,7 @@ jobs:
             'candidate-b13-beta4-fused-mask' \
             'candidate-b14-mipmaps-tail-fusion' \
             'ahb-directional-transport' \
-            'config-reload-soft-toggle' \
-            'b12-stage-profile-init' \
-            'mipmaps_avg_ms=' \
-            'beta4_avg_ms='; do
+            'config-reload-soft-toggle'; do
             grep -Fq "$required" /tmp/b14-promoted.strings || {
               echo "ERROR: promoted runtime missing marker: $required" >&2
               exit 1
@@ -105,10 +102,13 @@ jobs:
             'candidate-b15-mip4-topology' \
             'candidate-b15-mip4-register-fusion' \
             'candidate-fp16-motion-compaction' \
+            'b12-stage-profile-init' \
+            'mipmaps_avg_ms=' \
+            'beta4_avg_ms=' \
             'ir3_gate=probe' \
             'ir3_gate=proven'; do
             if grep -Fq "$forbidden" /tmp/b14-promoted.strings; then
-              echo "ERROR: unpromoted B15/FP16 marker present: $forbidden" >&2
+              echo "ERROR: forbidden profiling/experimental marker present: $forbidden" >&2
               exit 1
             fi
           done

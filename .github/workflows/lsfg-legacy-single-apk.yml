@@ -156,6 +156,8 @@ jobs:
           asset=app/src/legacy/assets/graphics_driver/wrapper-gamenative.tzst
           built=mesa-wrapper/_build-arm64/src/vulkan/wrapper/libvulkan_wrapper.so
           shipped_sha=2aecf1c11cde57008a3cc5e1a551e095d7843d3aa84b3756953afc134035e7c5
+          built_sha="$(sha256sum "$built" | awk '{print $1}')"
+          test "$built_sha" != "$shipped_sha"
           old_dir="$(mktemp -d)"
           verify_dir="$(mktemp -d)"
           tar --zstd -xf "$asset" -C "$old_dir"
@@ -165,24 +167,30 @@ jobs:
             find "$old_dir" -maxdepth 4 -type f -print >&2
             exit 1
           fi
-          old_sha="$(sha256sum "${targets[0]}" | awk '{print $1}')"
-          echo "Shipped wrapper SHA-256: $old_sha"
-          test "$old_sha" = "$shipped_sha"
-          mode="$(stat -c '%a' "${targets[0]}")"
-          install -m "$mode" "$built" "${targets[0]}"
+          current_sha="$(sha256sum "${targets[0]}" | awk '{print $1}')"
+          echo "Current packaged wrapper SHA-256: $current_sha"
+          echo "Rebuilt patched wrapper SHA-256: $built_sha"
+          if [[ "$current_sha" = "$shipped_sha" ]]; then
+            mode="$(stat -c '%a' "${targets[0]}")"
+            install -m "$mode" "$built" "${targets[0]}"
+          elif [[ "$current_sha" = "$built_sha" ]]; then
+            echo 'wrapper-gamenative asset already contains the verified patched wrapper'
+          else
+            echo "ERROR: wrapper asset contains unexpected libvulkan_wrapper.so SHA-256 $current_sha" >&2
+            exit 1
+          fi
           new_sha="$(sha256sum "${targets[0]}" | awk '{print $1}')"
-          echo "Patched wrapper SHA-256: $new_sha"
-          test "$new_sha" != "$shipped_sha"
+          test "$new_sha" = "$built_sha"
           rm -f "$asset"
           tar --zstd -cf "$asset" -C "$old_dir" .
           tar --zstd -xf "$asset" -C "$verify_dir"
           mapfile -t verified < <(find "$verify_dir" -type f -name libvulkan_wrapper.so -print)
           test "${#verified[@]}" -eq 1
           verified_sha="$(sha256sum "${verified[0]}" | awk '{print $1}')"
-          test "$verified_sha" = "$new_sha"
+          test "$verified_sha" = "$built_sha"
           sha256sum "$asset"
-          printf '%s\n' "$old_sha" > wrapper-old-lib.sha256
-          printf '%s\n' "$new_sha" > wrapper-new-lib.sha256
+          printf '%s\n' "$shipped_sha" > wrapper-old-lib.sha256
+          printf '%s\n' "$built_sha" > wrapper-new-lib.sha256
 
       - name: Upload verified wrapper evidence
         uses: actions/upload-artifact@v4
@@ -205,11 +213,11 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add "$asset"
           if git diff --cached --quiet; then
-            echo 'ERROR: verified wrapper asset did not change' >&2
-            exit 1
+            echo 'Verified wrapper asset is already current; no commit needed'
+          else
+            git commit -m 'fix(wrapper): preserve driver subgroup capabilities [skip ci]'
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
-          git commit -m 'fix(wrapper): preserve driver subgroup capabilities [skip ci]'
-          git push origin "HEAD:${GITHUB_REF_NAME}"
 
   legacy-debug:
     needs: wrapper-gamenative
@@ -288,6 +296,12 @@ jobs:
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
+          expected_native="$(git rev-parse HEAD:${native_dir})"
+          git -C "$native_dir" reset --hard "$expected_native"
+          git -C "$native_dir" submodule update --init --recursive
+          actual_native="$(git -C "$native_dir" rev-parse HEAD)"
+          test "$actual_native" = "$expected_native"
+          test -z "$(git -C "$native_dir" status --porcelain --untracked-files=no)"
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           export ANDROID_NDK="$sdk_root/ndk/${ANDROID_NDK_VERSION}"
           export ANDROID_NDK_ROOT="$ANDROID_NDK"

@@ -20,28 +20,255 @@ on:
       - app/src/test/java/app/gamenative/utils/LsfgBuildWorkflowContractTest.kt
       - .github/actions/prepare-lsfg-native/**
       - .github/workflows/lsfg-legacy-single-apk.yml
+      - scripts/wrapper/**
+
+permissions:
+  contents: write
 
 concurrency:
   group: gamenative-adreno6xx-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  legacy-debug:
+  wrapper-gamenative:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    steps:
+      - name: Check out GameNative candidate
+        uses: actions/checkout@v5
+
+      - name: Check out pinned GameNative Mesa wrapper source
+        uses: actions/checkout@v5
+        with:
+          repository: GameNative/mesa
+          ref: cd0c2eb5482dbd51e196018799a0c9ee1b0e4226
+          path: mesa-wrapper
+
+      - name: Prove pristine wrapper fails subgroup forwarding regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=mesa-wrapper/src/vulkan/wrapper/wrapper_physical_device.c
+          set +e
+          python3 scripts/wrapper/test_subgroup_forwarding.py "$source" > /tmp/wrapper-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/wrapper-red.log
+          if [[ "$status" -eq 0 ]]; then
+            echo 'ERROR: regression unexpectedly passed against the known-poisoned wrapper source' >&2
+            exit 1
+          fi
+          grep -Fq 'SUBGROUP_FORWARDING_REGRESSION' /tmp/wrapper-red.log
+          grep -Fq 'subgroup forwarding changed driver bytes' /tmp/wrapper-red.log
+          echo 'RED verified: pristine wrapper corrupts forwarded subgroup masks'
+
+      - name: Apply minimal subgroup forwarding fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=mesa-wrapper/src/vulkan/wrapper/wrapper_physical_device.c
+          python3 scripts/wrapper/apply_subgroup_forwarding_fix.py "$source"
+          git -C mesa-wrapper diff --check
+          git -C mesa-wrapper diff -- src/vulkan/wrapper/wrapper_physical_device.c
+
+      - name: Verify fake-driver subgroup forwarding regression is green
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/wrapper/test_subgroup_forwarding.py \
+            mesa-wrapper/src/vulkan/wrapper/wrapper_physical_device.c
+          if grep -Eq '(subgroup_prop->supported(Operations|Stages)|vk11_prop->subgroupSupported(Operations|Stages))[[:space:]]*=' \
+              mesa-wrapper/src/vulkan/wrapper/wrapper_physical_device.c; then
+            echo 'ERROR: subgroup capability poisoning remains in wrapper source' >&2
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Set up Android SDK and wrapper build dependencies
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install wrapper toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y gettext-base zstd file pkg-config
+          python -m pip install --upgrade pip
+          pip install mako PyYAML meson ninja packaging
+          sdkmanager --install 'ndk;27.3.13750724'
+
+      - name: Configure patched wrapper for arm64 and x86_64
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$sdk_root"
+          export ANDROID_NDK_HOME="$sdk_root/ndk/27.3.13750724"
+          export MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-wrapper"
+          cd mesa-wrapper
+          sed -i 's/#if defined(HAVE_MEMFD_CREATE) \&\& !defined __TERMUX__/#if defined(HAVE_MEMFD_CREATE)/' src/util/anon_file.c
+          sed -i "s/dep_libudev = dependency('libudev', required : false)/dep_libudev = null_dep/g" meson.build
+          unzip -q shims.zip -d ./
+          envsubst < android.toml > android-arm64.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('android-arm64.toml').read_text()
+          replacements = {
+              'aarch64-linux-android30-clang++': 'x86_64-linux-android30-clang++',
+              'aarch64-linux-android30-clang': 'x86_64-linux-android30-clang',
+              "cpu_family = 'aarch64'": "cpu_family = 'x86_64'",
+              "cpu = 'aarch64'": "cpu = 'x86_64'",
+              '/linux/aarch64': '/linux/x86_64',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'ERROR: cross-file anchor missing: {old}')
+              text = text.replace(old, new)
+          Path('android-x86_64.toml').write_text(text)
+          PY
+          common=(
+            -Dbuildtype=release
+            -Dplatforms=x11
+            -Dandroid-stub=true
+            -Dandroid-libbacktrace=disabled
+            -Dplatform-sdk-version=30
+            -Dglx=disabled
+            -Dgbm=disabled
+            -Degl=disabled
+            -Dopengl=false
+            -Dgles1=disabled
+            -Dgles2=disabled
+            -Dglvnd=disabled
+            -Dllvm=disabled
+            -Dvalgrind=disabled
+            -Dgallium-drivers=
+            -Dshared-glapi=disabled
+            -Dzstd=disabled
+            -Dvulkan-drivers=wrapper
+          )
+          PKG_CONFIG_LIBDIR="$PWD/shims" meson setup _build-arm64 --cross-file android-arm64.toml "${common[@]}"
+          PKG_CONFIG_LIBDIR="$PWD/shims" meson setup _build-x86_64 --cross-file android-x86_64.toml "${common[@]}"
+
+      - name: Build patched wrapper for arm64 and x86_64
+        shell: bash
+        run: |
+          set -euo pipefail
+          ninja -C mesa-wrapper/_build-arm64 src/vulkan/wrapper/libvulkan_wrapper.so
+          ninja -C mesa-wrapper/_build-x86_64 src/vulkan/wrapper/libvulkan_wrapper.so
+          arm64=mesa-wrapper/_build-arm64/src/vulkan/wrapper/libvulkan_wrapper.so
+          x86=mesa-wrapper/_build-x86_64/src/vulkan/wrapper/libvulkan_wrapper.so
+          test -s "$arm64"
+          test -s "$x86"
+          file "$arm64" | tee /tmp/wrapper-arm64.file
+          file "$x86" | tee /tmp/wrapper-x86.file
+          grep -Eq 'ARM aarch64|aarch64' /tmp/wrapper-arm64.file
+          grep -Eq 'x86-64|x86_64' /tmp/wrapper-x86.file
+          sha256sum "$arm64" "$x86"
+
+      - name: Replace wrapper-gamenative payload and verify binary identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset=app/src/legacy/assets/graphics_driver/wrapper-gamenative.tzst
+          built=mesa-wrapper/_build-arm64/src/vulkan/wrapper/libvulkan_wrapper.so
+          shipped_sha=2aecf1c11cde57008a3cc5e1a551e095d7843d3aa84b3756953afc134035e7c5
+          old_dir="$(mktemp -d)"
+          verify_dir="$(mktemp -d)"
+          tar --zstd -xf "$asset" -C "$old_dir"
+          mapfile -t targets < <(find "$old_dir" -type f -name libvulkan_wrapper.so -print)
+          if [[ "${#targets[@]}" -ne 1 ]]; then
+            echo "ERROR: expected one libvulkan_wrapper.so in wrapper-gamenative.tzst, found ${#targets[@]}" >&2
+            find "$old_dir" -maxdepth 4 -type f -print >&2
+            exit 1
+          fi
+          old_sha="$(sha256sum "${targets[0]}" | awk '{print $1}')"
+          echo "Shipped wrapper SHA-256: $old_sha"
+          test "$old_sha" = "$shipped_sha"
+          mode="$(stat -c '%a' "${targets[0]}")"
+          install -m "$mode" "$built" "${targets[0]}"
+          new_sha="$(sha256sum "${targets[0]}" | awk '{print $1}')"
+          echo "Patched wrapper SHA-256: $new_sha"
+          test "$new_sha" != "$shipped_sha"
+          rm -f "$asset"
+          tar --zstd -cf "$asset" -C "$old_dir" .
+          tar --zstd -xf "$asset" -C "$verify_dir"
+          mapfile -t verified < <(find "$verify_dir" -type f -name libvulkan_wrapper.so -print)
+          test "${#verified[@]}" -eq 1
+          verified_sha="$(sha256sum "${verified[0]}" | awk '{print $1}')"
+          test "$verified_sha" = "$new_sha"
+          sha256sum "$asset"
+          printf '%s\n' "$old_sha" > wrapper-old-lib.sha256
+          printf '%s\n' "$new_sha" > wrapper-new-lib.sha256
+
+      - name: Upload verified wrapper evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamenative-subgroup-wrapper
+          path: |
+            app/src/legacy/assets/graphics_driver/wrapper-gamenative.tzst
+            mesa-wrapper/_build-arm64/src/vulkan/wrapper/libvulkan_wrapper.so
+            mesa-wrapper/_build-x86_64/src/vulkan/wrapper/libvulkan_wrapper.so
+            wrapper-old-lib.sha256
+            wrapper-new-lib.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Commit verified wrapper-gamenative asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset=app/src/legacy/assets/graphics_driver/wrapper-gamenative.tzst
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$asset"
+          if git diff --cached --quiet; then
+            echo 'ERROR: verified wrapper asset did not change' >&2
+            exit 1
+          fi
+          git commit -m 'fix(wrapper): preserve driver subgroup capabilities [skip ci]'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+  legacy-debug:
+    needs: wrapper-gamenative
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
     steps:
       - name: Checking out GameNative
         uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Use verified subgroup-capable wrapper asset
+        uses: actions/download-artifact@v4
+        with:
+          name: gamenative-subgroup-wrapper
+          path: /tmp/verified-wrapper
+
+      - name: Install verified wrapper into candidate workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=/tmp/verified-wrapper/app/src/legacy/assets/graphics_driver/wrapper-gamenative.tzst
+          dst=app/src/legacy/assets/graphics_driver/wrapper-gamenative.tzst
+          test -s "$src"
+          cp "$src" "$dst"
+          old_sha="$(cat /tmp/verified-wrapper/wrapper-old-lib.sha256)"
+          new_sha="$(cat /tmp/verified-wrapper/wrapper-new-lib.sha256)"
+          test "$old_sha" = 2aecf1c11cde57008a3cc5e1a551e095d7843d3aa84b3756953afc134035e7c5
+          test "$new_sha" != "$old_sha"
+          echo "Using verified wrapper SHA-256 $new_sha"
+
       - name: Verify pinned B14 Adreno LSFG native revision
         shell: bash
         run: |
           set -euo pipefail
           native_dir=app/src/main/cpp/lsfg-vk-android
-          # Treat the GameNative gitlink as the single source of truth so this
-          # guard follows deliberate LSFG pin updates instead of going stale.
           expected_native="$(git rev-parse HEAD:${native_dir})"
           git submodule update --init --recursive -- "$native_dir"
           actual_native="$(git -C "$native_dir" rev-parse HEAD)"
@@ -60,12 +287,41 @@ jobs:
         with:
           packages: platform-tools
 
+      - name: Install SPIR-V validator
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y spirv-tools file
+          spirv-val --version
+
       - name: Prepare GameNative-pinned B14 evidence runtime
         uses: ./.github/actions/prepare-lsfg-native
         env:
           LSFGVK_ADAPTIVE_RUNTIME: "1"
           LSFGVK_B12_DUAL_STAGE_PROFILE: "1"
           LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py
+
+      - name: Build the same B14 native runtime for x86_64
+        shell: bash
+        env:
+          ANDROID_ABI: x86_64
+          ANDROID_NDK_VERSION: '27.3.13750724'
+          LSFGVK_ADAPTIVE_RUNTIME: "1"
+          LSFGVK_B12_DUAL_STAGE_PROFILE: "1"
+          LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py
+        run: |
+          set -euo pipefail
+          native_dir=app/src/main/cpp/lsfg-vk-android
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          export ANDROID_NDK="$sdk_root/ndk/${ANDROID_NDK_VERSION}"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK"
+          export HOST_TAG=linux-x86_64
+          test -d "$ANDROID_NDK"
+          (cd "$native_dir" && bash ./scripts/build/android.sh Release)
+          built="$native_dir/build-android-x86_64/dist/liblsfg-vk-x86_64.so"
+          test -s "$built"
+          file "$built" | tee /tmp/lsfg-x86.file
+          grep -Eq 'x86-64|x86_64' /tmp/lsfg-x86.file
+          sha256sum "$built"
 
       - name: Verify prepared B14 LSFG evidence layer
         shell: bash
@@ -129,7 +385,7 @@ jobs:
           sha256sum gamenative-adreno6xx-b14-mipmaps-evidence.apk
           ls -lh gamenative-adreno6xx-b14-mipmaps-evidence.apk
 
-      - name: Verify APK contains B14 LSFG evidence layer
+      - name: Verify APK contains B14 LSFG evidence layer and patched wrapper asset
         shell: bash
         run: |
           set -euo pipefail
@@ -151,10 +407,10 @@ jobs:
             'b12-timestamp-capability' \
             'b12-timestamp-fallback' \
             'b12-device-profile'; do
-            if ! grep -Fq "$required" /tmp/apk-lsfg-layer-strings.txt; then
+            grep -Fq "$required" /tmp/apk-lsfg-layer-strings.txt || {
               echo "ERROR: APK B14 LSFG layer is missing runtime marker: $required" >&2
               exit 1
-            fi
+            }
           done
           for forbidden in \
             'pipeline-exec-ir-line' \
@@ -166,6 +422,7 @@ jobs:
               exit 1
             fi
           done
+          unzip -l "$apk" | grep -Fq 'assets/graphics_driver/wrapper-gamenative.tzst'
 
       - name: Upload Adreno B14 evidence APK
         uses: actions/upload-artifact@v4

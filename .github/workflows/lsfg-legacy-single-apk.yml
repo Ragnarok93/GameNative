@@ -103,7 +103,7 @@ jobs:
           pip install mako PyYAML meson ninja packaging
           sdkmanager --install 'ndk;27.3.13750724'
 
-      - name: Configure patched wrapper for arm64 and x86_64
+      - name: Configure patched wrapper for arm64
         shell: bash
         run: |
           set -euo pipefail
@@ -116,22 +116,6 @@ jobs:
           sed -i "s/dep_libudev = dependency('libudev', required : false)/dep_libudev = null_dep/g" meson.build
           unzip -q shims.zip -d ./
           envsubst < android.toml > android-arm64.toml
-          python3 - <<'PY'
-          from pathlib import Path
-          text = Path('android-arm64.toml').read_text()
-          replacements = {
-              'aarch64-linux-android30-clang++': 'x86_64-linux-android30-clang++',
-              'aarch64-linux-android30-clang': 'x86_64-linux-android30-clang',
-              "cpu_family = 'aarch64'": "cpu_family = 'x86_64'",
-              "cpu = 'aarch64'": "cpu = 'x86_64'",
-              '/linux/aarch64': '/linux/x86_64',
-          }
-          for old, new in replacements.items():
-              if old not in text:
-                  raise SystemExit(f'ERROR: cross-file anchor missing: {old}')
-              text = text.replace(old, new)
-          Path('android-x86_64.toml').write_text(text)
-          PY
           common=(
             -Dbuildtype=release
             -Dplatforms=x11
@@ -153,23 +137,17 @@ jobs:
             -Dvulkan-drivers=wrapper
           )
           PKG_CONFIG_LIBDIR="$PWD/shims" meson setup _build-arm64 --cross-file android-arm64.toml "${common[@]}"
-          PKG_CONFIG_LIBDIR="$PWD/shims" meson setup _build-x86_64 --cross-file android-x86_64.toml "${common[@]}"
 
-      - name: Build patched wrapper for arm64 and x86_64
+      - name: Build patched wrapper for arm64
         shell: bash
         run: |
           set -euo pipefail
           ninja -C mesa-wrapper/_build-arm64 src/vulkan/wrapper/libvulkan_wrapper.so
-          ninja -C mesa-wrapper/_build-x86_64 src/vulkan/wrapper/libvulkan_wrapper.so
           arm64=mesa-wrapper/_build-arm64/src/vulkan/wrapper/libvulkan_wrapper.so
-          x86=mesa-wrapper/_build-x86_64/src/vulkan/wrapper/libvulkan_wrapper.so
           test -s "$arm64"
-          test -s "$x86"
           file "$arm64" | tee /tmp/wrapper-arm64.file
-          file "$x86" | tee /tmp/wrapper-x86.file
           grep -Eq 'ARM aarch64|aarch64' /tmp/wrapper-arm64.file
-          grep -Eq 'x86-64|x86_64' /tmp/wrapper-x86.file
-          sha256sum "$arm64" "$x86"
+          sha256sum "$arm64"
 
       - name: Replace wrapper-gamenative payload and verify binary identity
         shell: bash
@@ -213,7 +191,6 @@ jobs:
           path: |
             app/src/legacy/assets/graphics_driver/wrapper-gamenative.tzst
             mesa-wrapper/_build-arm64/src/vulkan/wrapper/libvulkan_wrapper.so
-            mesa-wrapper/_build-x86_64/src/vulkan/wrapper/libvulkan_wrapper.so
             wrapper-old-lib.sha256
             wrapper-new-lib.sha256
           if-no-files-found: error
@@ -290,7 +267,7 @@ jobs:
       - name: Install SPIR-V validator
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y spirv-tools file
+          sudo apt-get install -y spirv-tools file zstd
           spirv-val --version
 
       - name: Prepare GameNative-pinned B14 evidence runtime
@@ -422,7 +399,18 @@ jobs:
               exit 1
             fi
           done
-          unzip -l "$apk" | grep -Fq 'assets/graphics_driver/wrapper-gamenative.tzst'
+          apk_wrapper=/tmp/apk-wrapper-gamenative.tzst
+          unzip -p "$apk" assets/graphics_driver/wrapper-gamenative.tzst > "$apk_wrapper"
+          test -s "$apk_wrapper"
+          apk_wrapper_dir="$(mktemp -d)"
+          tar --zstd -xf "$apk_wrapper" -C "$apk_wrapper_dir"
+          mapfile -t apk_wrappers < <(find "$apk_wrapper_dir" -type f -name libvulkan_wrapper.so -print)
+          test "${#apk_wrappers[@]}" -eq 1
+          apk_wrapper_sha="$(sha256sum "${apk_wrappers[0]}" | awk '{print $1}')"
+          expected_wrapper_sha="$(cat /tmp/verified-wrapper/wrapper-new-lib.sha256)"
+          echo "APK wrapper SHA-256: $apk_wrapper_sha"
+          test "$apk_wrapper_sha" = "$expected_wrapper_sha"
+          test "$apk_wrapper_sha" != 2aecf1c11cde57008a3cc5e1a551e095d7843d3aa84b3756953afc134035e7c5
 
       - name: Upload Adreno B14 evidence APK
         uses: actions/upload-artifact@v4

@@ -1,0 +1,147 @@
+name: LSFG production code cleanup
+
+on:
+  push:
+    branches:
+      - feature/adreno-6xx-b14-directional-ahb-adaptive-reload
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Strip LSFG development-only diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('app/src/main/java/app/gamenative/utils/LsfgVkManager.kt')
+          text = p.read_text(encoding='utf-8')
+
+          for line in [
+              'import android.os.Build\n',
+              'import app.gamenative.BuildConfig\n',
+          ]:
+              if text.count(line) != 1:
+                  raise SystemExit(f'import cleanup anchor missing: {line!r}')
+              text = text.replace(line, '', 1)
+
+          for line in [
+              '    private const val ENV_VK_LOADER_DEBUG = "VK_LOADER_DEBUG"\n',
+              '    private const val ENV_VK_ICD_FILENAMES = "VK_ICD_FILENAMES"\n',
+              '    private const val ENV_ADRENOTOOLS_DRIVER_NAME = "ADRENOTOOLS_DRIVER_NAME"\n',
+              '    private const val ENV_ADRENOTOOLS_DRIVER_PATH = "ADRENOTOOLS_DRIVER_PATH"\n',
+              '    private const val ENV_LD_LIBRARY_PATH = "LD_LIBRARY_PATH"\n',
+          ]:
+              if text.count(line) != 1:
+                  raise SystemExit(f'preflight-only constant anchor missing: {line!r}')
+              text = text.replace(line, '', 1)
+
+          old = '''        logLaunchPreflight(container, envVars)
+          
+                  // A DEBUG-only direct Android-linker probe deliberately runs before the
+                  // guest Vulkan loader. It is diagnostic, not a support gate: failures are
+                  // logged and launch continues. If this fails with the same unresolved
+                  // symbol as the Vulkan loader, the fault is in Android namespace/dependency
+                  // resolution; if it succeeds while Vulkan later fails, the guest Vulkan
+                  // loader path is the differentiator.
+                  if (BuildConfig.DEBUG) probeAndroidLinker(container)
+          
+                  Timber.tag(TAG).i(
+                      "LSFG layer armed: dll=%s, target=%s, selectedMultiplier=%d, framegen=%s, flowScale=%.2f, perf=%s, discovery=explicit-env-targeted",
+                      dllPath,
+                      processExecutable,
+                      multiplier(container),
+                      if (frameGenerationActive(container)) "on" else "off",
+                      flowScale(container),
+                      if (performanceMode(container)) "on" else "off",
+                  )
+          '''
+          new = '''        Timber.tag(TAG).i(
+                      "LSFG layer armed target=%s mode=%s multiplier=%d",
+                      processExecutable,
+                      generationMode(container),
+                      multiplier(container),
+                  )
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('launch preflight/probe anchor missing')
+          text = text.replace(old, new, 1)
+
+          text, n = re.subn(
+              r'\n    private fun logLaunchPreflight\(container: Container, envVars: EnvVars\) \{.*?\n    \}\n\n    private fun probeAndroidLinker\(container: Container\) \{.*?\n    \}\n',
+              '\n', text, count=1, flags=re.S,
+          )
+          if n != 1:
+              raise SystemExit('preflight/linker helper removal anchor missing')
+
+          old = '''            } else {
+                          Timber.tag(TAG).i(
+                              "LSFG loader runtime synchronized version=%s home=%s layerDir=%s",
+                              RUNTIME_VERSION,
+                              loaderHome.absolutePath,
+                              targetLayerDir.absolutePath,
+                          )
+                          targetLayerDir
+                      }
+          '''
+          new = '''            } else {
+                          targetLayerDir
+                      }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('loader sync success log anchor missing')
+          text = text.replace(old, new, 1)
+
+          for old in [
+              '                Timber.tag(TAG).d("Found Lossless.dll at: %s", dll.absolutePath)\n',
+              '                        Timber.tag(TAG).d("Found Lossless.dll in fallback search at: %s", dll.absolutePath)\n',
+          ]:
+              if text.count(old) != 1:
+                  raise SystemExit(f'DLL discovery debug anchor missing: {old!r}')
+              text = text.replace(old, '', 1)
+
+          text, n = re.subn(
+              r'                Timber\.tag\(TAG\)\.i\(\n                    "Hot-reloaded conf\.toml: enabled=%s, adaptive=%s, multiplier=%d, flowScale=%.2f, perf=%s, fpsLimit=%d",\n                    frameGenActive,\n                    adaptive,\n                    effectiveMultiplier,\n                    flowScale,\n                    performanceMode,\n                    effectiveFpsLimit,\n                \)\n',
+              '                Timber.tag(TAG).i("LSFG configuration hot-reloaded")\n',
+              text, count=1,
+          )
+          if n != 1:
+              raise SystemExit('hot-reload verbose log anchor missing')
+
+          if 'logLaunchPreflight(' in text or 'probeAndroidLinker(' in text or 'BuildConfig.DEBUG' in text:
+              raise SystemExit('development preflight diagnostics remain')
+          p.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run Legacy unit tests
+        shell: bash
+        run: ./gradlew :app:testLegacyDebugUnitTest --no-daemon
+
+      - name: Commit cleaned GameNative logging
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+          git commit -m 'cleanup(lsfg): remove development preflight diagnostics'
+          git push origin HEAD:${GITHUB_REF_NAME}

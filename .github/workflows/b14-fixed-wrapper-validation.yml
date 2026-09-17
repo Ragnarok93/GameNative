@@ -104,6 +104,32 @@ jobs:
           LSFGVK_B12_DUAL_STAGE_PROFILE: "1"
           LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py
 
+      - name: Verify transformed B12 control flow and strict B14 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_dir=app/src/main/cpp/lsfg-vk-android
+          for context in \
+            "$native_dir/framegen/v3.1_src/context.cpp" \
+            "$native_dir/framegen/v3.1p_src/context.cpp"; do
+            grep -Fq 'b12-stage-profile-init' "$context"
+            grep -Fq 'b12-readback-pending stage=mipmaps' "$context"
+            grep -Fq 'b12-readback-failure stage=mipmaps' "$context"
+            grep -Fq 'result == VK_NOT_READY' "$context"
+            grep -Fq '&& !data.b12MipmapsPending' "$context"
+            grep -Fq '&& !data.b12Beta4Pending' "$context"
+            grep -Fq 'std::cerr << "lsfg-vk: b12-stage-profile-init' "$context"
+          done
+          timestamp_source="$native_dir/framegen/src/core/timestampquerypool.cpp"
+          if grep -Fq 'VK_QUERY_RESULT_WAIT_BIT' "$timestamp_source"; then
+            echo 'ERROR: B12 readback still blocks in the frame hot path' >&2
+            exit 1
+          fi
+          gate="$native_dir/scripts/b14_subgroup_properties.hpp"
+          grep -Fq 'VK_SHADER_STAGE_COMPUTE_BIT' "$gate"
+          grep -Fq 'VK_SUBGROUP_FEATURE_BASIC_BIT' "$gate"
+          grep -Fq 'VK_SUBGROUP_FEATURE_BALLOT_BIT' "$gate"
+
       - name: Verify arm64 B14 runtime markers
         shell: bash
         run: |
@@ -115,15 +141,27 @@ jobs:
             'candidate-b11-beta4-pow2-mask' \
             'candidate-b13-beta4-fused-mask' \
             'candidate-b14-mipmaps-tail-fusion' \
+            'b12-stage-profile-init' \
+            'b12-readback-pending stage=mipmaps result=' \
+            'b12-readback-failure stage=mipmaps result=' \
+            'b12-readback-failure stage=beta4 result=' \
             'b12-stage-profile' \
+            'mipmaps_attempts=' \
+            'mipmaps_failures=' \
+            'mipmaps_not_ready=' \
             'mipmaps_avg_ms=' \
+            'beta4_attempts=' \
+            'beta4_failures=' \
+            'beta4_not_ready=' \
             'beta4_avg_ms=' \
             'b12-timestamp-capability' \
             'b12-timestamp-fallback' \
             'b12-device-profile'; do
             grep -Fq "$marker" /tmp/b14-arm64.strings || { echo "Missing B14 marker: $marker" >&2; exit 1; }
           done
-          sha256sum "$layer"
+          arm64_sha="$(sha256sum "$layer" | awk '{print $1}')"
+          printf '%s\n' "$arm64_sha" > /tmp/b14-arm64-sha
+          echo "Arm64 LSFG SHA-256: $arm64_sha"
 
       - name: Reset pinned native checkout before x86_64 validation
         shell: bash
@@ -158,7 +196,16 @@ jobs:
           file "$built" | tee /tmp/b14-x86.file
           grep -Eq 'x86-64|x86_64' /tmp/b14-x86.file
           strings "$built" > /tmp/b14-x86.strings
-          grep -Fq 'candidate-b14-mipmaps-tail-fusion' /tmp/b14-x86.strings
+          for marker in \
+            'candidate-b14-mipmaps-tail-fusion' \
+            'b12-stage-profile-init' \
+            'b12-readback-pending stage=mipmaps result=' \
+            'b12-readback-failure stage=mipmaps result=' \
+            'b12-readback-failure stage=beta4 result=' \
+            'mipmaps_avg_ms=' \
+            'beta4_avg_ms='; do
+            grep -Fq "$marker" /tmp/b14-x86.strings || { echo "Missing x86_64 profiler marker: $marker" >&2; exit 1; }
+          done
           sha256sum "$built"
 
       - name: Inject debug credentials
@@ -203,14 +250,38 @@ jobs:
           test "$wrapper_sha" != "$poisoned"
           test "$wrapper_sha" = "$fixed"
           unzip -p "$apk" lib/arm64-v8a/liblsfg-vk-layer.so > "$tmp/liblsfg-vk-layer.so"
-          strings "$tmp/liblsfg-vk-layer.so" | grep -Fq 'candidate-b14-mipmaps-tail-fusion'
-          cp "$apk" gamenative-adreno-b14-fixed-wrapper.apk
-          sha256sum gamenative-adreno-b14-fixed-wrapper.apk
+          strings "$tmp/liblsfg-vk-layer.so" > "$tmp/apk-lsfg.strings"
+          for marker in \
+            'candidate-b14-mipmaps-tail-fusion' \
+            'b12-stage-profile-init' \
+            'b12-readback-pending stage=mipmaps result=' \
+            'b12-readback-failure stage=mipmaps result=' \
+            'b12-readback-failure stage=beta4 result=' \
+            'b12-stage-profile' \
+            'mipmaps_attempts=' \
+            'mipmaps_failures=' \
+            'mipmaps_not_ready=' \
+            'mipmaps_avg_ms=' \
+            'beta4_attempts=' \
+            'beta4_failures=' \
+            'beta4_not_ready=' \
+            'beta4_avg_ms=' \
+            'b12-device-profile' \
+            'b12-timestamp-capability'; do
+            grep -Fq "$marker" "$tmp/apk-lsfg.strings" || { echo "Missing packaged profiler marker: $marker" >&2; exit 1; }
+          done
+          packaged_lsfg_sha="$(sha256sum "$tmp/liblsfg-vk-layer.so" | awk '{print $1}')"
+          expected_lsfg_sha="$(cat /tmp/b14-arm64-sha)"
+          echo "Packaged LSFG SHA-256: $packaged_lsfg_sha"
+          test "$packaged_lsfg_sha" = "$expected_lsfg_sha"
+          cp "$apk" gamenative-adreno-b14-profiler-evidence.apk
+          apk_sha="$(sha256sum gamenative-adreno-b14-profiler-evidence.apk | awk '{print $1}')"
+          echo "Evidence APK SHA-256: $apk_sha"
 
-      - name: Upload verified B14 APK
+      - name: Upload verified B14 profiler evidence APK
         uses: actions/upload-artifact@v4
         with:
-          name: gamenative-adreno-b14-fixed-wrapper
-          path: gamenative-adreno-b14-fixed-wrapper.apk
+          name: gamenative-adreno-b14-profiler-evidence
+          path: gamenative-adreno-b14-profiler-evidence.apk
           if-no-files-found: error
           compression-level: 0

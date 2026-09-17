@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - feature/adreno-6xx-b14-directional-ahb-adaptive-reload
+      - master
+      - 'fix/**'
 
 permissions:
   contents: read

@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "fix/**" ]
     paths-ignore:
       - '**.md'
       - '.gitignore'

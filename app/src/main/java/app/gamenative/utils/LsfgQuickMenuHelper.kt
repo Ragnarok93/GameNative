@@ -2,9 +2,18 @@ package app.gamenative.utils
 
 import com.winlator.container.Container
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /** Quick Menu LSFG state persistence and runtime publication. */
 object LsfgQuickMenuHelper {
+    private const val RUNTIME_CONFIG_DEBOUNCE_MS = 120L
+    private val runtimeConfigExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "lsfg-runtime-config").apply { isDaemon = true }
+    }
+    private val runtimeConfigDebouncer = LsfgRuntimeUpdateDebouncer(
+        runtimeConfigExecutor,
+        RUNTIME_CONFIG_DEBOUNCE_MS,
+    )
     enum class FrameGenerationMode { FIXED, ADAPTIVE }
 
     data class Settings(
@@ -38,11 +47,13 @@ object LsfgQuickMenuHelper {
             if (mode == FrameGenerationMode.ADAPTIVE) LsfgVkManager.MODE_ADAPTIVE else LsfgVkManager.MODE_FIXED,
         )
         container.saveData()
+        scheduleRuntimeConfig(container)
     }
 
     fun setFixedMultiplier(container: Container, multiplier: Int) {
         container.putExtra(LsfgVkManager.EXTRA_FIXED_MULTIPLIER, multiplier.coerceIn(2, 4).toString())
         container.saveData()
+        scheduleRuntimeConfig(container)
     }
 
     fun setAdaptiveTargetFps(container: Container, targetFps: Int) {
@@ -52,7 +63,7 @@ object LsfgQuickMenuHelper {
         if (generationMode(container) == FrameGenerationMode.ADAPTIVE &&
             sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2
         ) {
-            publishRuntimeConfig(container, readSettings(container))
+            scheduleRuntimeConfig(container)
         }
     }
 
@@ -62,7 +73,7 @@ object LsfgQuickMenuHelper {
         val sanitized = mode.takeIf { it == "mailbox" || it == "fifo" } ?: "mailbox"
         container.putExtra(LsfgVkManager.EXTRA_PRESENT_MODE, sanitized)
         container.saveData()
-        publishRuntimeConfig(container, readSettings(container))
+        scheduleRuntimeConfig(container)
     }
 
     fun sanitizeMultiplier(multiplier: Int): Int = if (multiplier < 2) 0 else multiplier.coerceIn(2, 4)
@@ -75,7 +86,13 @@ object LsfgQuickMenuHelper {
         container.putExtra(LsfgVkManager.EXTRA_FLOW_SCALE, String.format(Locale.US, "%.2f", flowScale))
         container.putExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, settings.performanceMode.toString())
         container.saveData()
-        publishRuntimeConfig(container, settings.copy(multiplier = multiplier, flowScale = flowScale))
+        scheduleRuntimeConfig(container)
+    }
+
+    private fun scheduleRuntimeConfig(container: Container) {
+        runtimeConfigDebouncer.submit {
+            publishRuntimeConfig(container, readSettings(container))
+        }
     }
 
     private fun publishRuntimeConfig(container: Container, settings: Settings) {

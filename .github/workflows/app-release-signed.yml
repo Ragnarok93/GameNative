@@ -40,34 +40,48 @@ jobs:
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
 
-    - name: Configure Keystore
+    - name: Configure signing
       env:
         KEYSTORE: ${{ secrets.KEYSTORE }}
         KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
         KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
         KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
-      run: |
-        mkdir -p app/keystores
-        echo "$KEYSTORE" | base64 --decode > app/keystores/keystore
-        echo "storeFile=keystores/keystore" >> app/keystores/keystore.properties
-        echo "keyAlias=$KEYSTORE_KEY_ALIAS" >> app/keystores/keystore.properties
-        echo "storePassword=$KEYSTORE_STORE_PASSWORD" >> app/keystores/keystore.properties
-        echo "keyPassword=$KEYSTORE_KEY_PASSWORD" >> app/keystores/keystore.properties
-
-    - name: Configure Production Keystore
-      env:
         PROD_KEYSTORE: ${{ secrets.PROD_KEYSTORE }}
         PROD_KEYSTORE_KEY_ALIAS: ${{ secrets.PROD_KEYSTORE_KEY_ALIAS }}
         PROD_KEYSTORE_KEY_PASSWORD: ${{ secrets.PROD_KEYSTORE_KEY_PASSWORD }}
         PROD_KEYSTORE_STORE_PASSWORD: ${{ secrets.PROD_KEYSTORE_STORE_PASSWORD }}
       run: |
+        set -euo pipefail
         mkdir -p app/keystores
-        echo "$PROD_KEYSTORE" | base64 --decode > app/keystores/prod.keystore
-        cat <<EOF > app/keystores/prod-keystore.properties
+        if [ -n "$KEYSTORE" ] && [ -n "$KEYSTORE_KEY_ALIAS" ] &&
+           [ -n "$KEYSTORE_KEY_PASSWORD" ] && [ -n "$KEYSTORE_STORE_PASSWORD" ] &&
+           [ -n "$PROD_KEYSTORE" ] && [ -n "$PROD_KEYSTORE_KEY_ALIAS" ] &&
+           [ -n "$PROD_KEYSTORE_KEY_PASSWORD" ] && [ -n "$PROD_KEYSTORE_STORE_PASSWORD" ]; then
+          echo "$KEYSTORE" | base64 --decode > app/keystores/keystore
+          echo "$PROD_KEYSTORE" | base64 --decode > app/keystores/prod.keystore
+          cat > app/keystores/keystore.properties <<EOF
+        storeFile=keystores/keystore
+        keyAlias=$KEYSTORE_KEY_ALIAS
+        storePassword=$KEYSTORE_STORE_PASSWORD
+        keyPassword=$KEYSTORE_KEY_PASSWORD
+        EOF
+          cat > app/keystores/prod-keystore.properties <<EOF
         keyAlias=$PROD_KEYSTORE_KEY_ALIAS
         keyPassword=$PROD_KEYSTORE_KEY_PASSWORD
         storePassword=$PROD_KEYSTORE_STORE_PASSWORD
         EOF
+          echo "SIGNING_MODE=dual" >> "$GITHUB_ENV"
+        else
+          echo "Signing secrets are incomplete; generating an ephemeral CI signing key."
+          keytool -genkeypair -noprompt             -keystore app/keystores/ci.keystore             -storepass gamenative-ci             -keypass gamenative-ci             -alias gamenative-ci             -keyalg RSA -keysize 2048 -validity 2             -dname "CN=GameNative CI,O=GameNative,C=US"
+          cat > app/keystores/keystore.properties <<EOF
+        storeFile=keystores/ci.keystore
+        keyAlias=gamenative-ci
+        storePassword=gamenative-ci
+        keyPassword=gamenative-ci
+        EOF
+          echo "SIGNING_MODE=ci" >> "$GITHUB_ENV"
+        fi
 
     - name: Inject credentials
       run: |
@@ -107,12 +121,7 @@ jobs:
         java -jar tools/bundletool-all-1.17.2.jar build-apks --bundle=app-legacy-xr-release.aab --output=app-legacy-xr-release.apks --mode=universal
         unzip -p app-legacy-xr-release.apks universal.apk > universal-legacy-xr.apk
 
-    - name: Copy lineage file
-      run: |
-        mkdir -p app/keystores
-        cp prod-debug.lineage app/keystores/prod-debug.lineage
-
-    - name: Dual sign universal APKs
+    - name: Sign and verify universal APKs
       env:
         DEBUG_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
         DEBUG_KEY_PASS: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
@@ -121,25 +130,22 @@ jobs:
         PROD_KEY_PASS: ${{ secrets.PROD_KEYSTORE_KEY_PASSWORD }}
         PROD_STORE_PASS: ${{ secrets.PROD_KEYSTORE_STORE_PASSWORD }}
       run: |
+        set -euo pipefail
         BUILD_TOOLS_DIR="${ANDROID_HOME}/build-tools/34.0.0"
         if [ ! -d "$BUILD_TOOLS_DIR" ]; then
           BUILD_TOOLS_DIR="${ANDROID_SDK_ROOT}/build-tools/34.0.0"
         fi
         for apk in universal.apk universal-modern.apk universal-legacy-xr.apk; do
-          "${BUILD_TOOLS_DIR}/apksigner" sign \
-            --lineage app/keystores/prod-debug.lineage \
-            --ks app/keystores/keystore \
-            --ks-key-alias "$DEBUG_ALIAS" \
-            --ks-pass pass:$DEBUG_STORE_PASS \
-            --key-pass pass:$DEBUG_KEY_PASS \
-            --next-signer --ks app/keystores/prod.keystore \
-            --ks-key-alias "$PROD_ALIAS" \
-            --ks-pass pass:$PROD_STORE_PASS \
-            --key-pass pass:$PROD_KEY_PASS \
-            --out "${apk%.apk}-signed.apk" \
-            "$apk"
+          if [ "$SIGNING_MODE" = "dual" ]; then
+            cp prod-debug.lineage app/keystores/prod-debug.lineage
+            "$BUILD_TOOLS_DIR/apksigner" sign               --lineage app/keystores/prod-debug.lineage               --ks app/keystores/keystore               --ks-key-alias "$DEBUG_ALIAS"               --ks-pass "pass:$DEBUG_STORE_PASS"               --key-pass "pass:$DEBUG_KEY_PASS"               --next-signer --ks app/keystores/prod.keystore               --ks-key-alias "$PROD_ALIAS"               --ks-pass "pass:$PROD_STORE_PASS"               --key-pass "pass:$PROD_KEY_PASS"               --out "${apk%.apk}-signed.apk" "$apk"
+          else
+            "$BUILD_TOOLS_DIR/apksigner" sign               --ks app/keystores/ci.keystore               --ks-key-alias gamenative-ci               --ks-pass pass:gamenative-ci               --key-pass pass:gamenative-ci               --out "${apk%.apk}-signed.apk" "$apk"
+          fi
           mv "${apk%.apk}-signed.apk" "$apk"
+          "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$apk"
         done
+        echo "APK signing mode: $SIGNING_MODE"
 
     - name: Upload Legacy APK
       uses: actions/upload-artifact@v4
@@ -162,7 +168,10 @@ jobs:
     - name: Build changelog text
       id: changelog
       run: |
-        text=$(jq -r '.commits[] | "• " + (.message | split("\n")[0]) + " (" + .id[0:7] + ")"' "$GITHUB_EVENT_PATH")
+        text=$(jq -r '(.commits // [])[] | "• " + (.message | split("\n")[0]) + " (" + .id[0:7] + ")"' "$GITHUB_EVENT_PATH")
+        if [ -z "$text" ]; then
+          text="• $(git log -1 --format='%s (%h)')"
+        fi
         # Stable random delimiter so newlines in $text can't terminate the heredoc.
         delim="EOF_$(openssl rand -hex 8)"
         {
@@ -180,6 +189,10 @@ jobs:
         MODERN_URL: https://nightly.link/utkarshdalal/GameNative/actions/runs/${{ github.run_id }}/app-release-signed-modern.zip
         LEGACY_XR_URL: https://nightly.link/utkarshdalal/GameNative/actions/runs/${{ github.run_id }}/app-release-signed-legacy-xr.zip
       run: |
+        if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+          echo "DISCORD_WEBHOOK_URL is not configured; skipping notification."
+          exit 0
+        fi
         # jq -n handles JSON escaping (newlines, quotes, etc.) for us.
         payload=$(jq -n \
           --arg legacy "$LEGACY_URL" \

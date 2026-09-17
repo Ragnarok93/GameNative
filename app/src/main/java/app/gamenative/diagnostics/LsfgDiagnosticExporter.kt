@@ -69,6 +69,7 @@ object LsfgDiagnosticExporter {
         val warnings = mutableListOf<String>()
         val report = StringBuilder(128 * 1024)
         val artifacts = discoverArtifacts(appContext, warnings)
+        val captureState = readCaptureState(artifacts.config, artifacts.stats)
         val appLogcat = runCatching { CrashHandler.getAppLogs(LOGCAT_LINES) }
             .getOrElse {
                 warnings += "APP LOGCAT capture failed: ${safeMessage(it)}"
@@ -90,8 +91,9 @@ object LsfgDiagnosticExporter {
         section("CAPTURE") {
             buildString {
                 appendLine("captured_at=${SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ", Locale.US).format(Date())}")
-                appendLine("mode=fixed-multiplier")
-                appendLine("adaptive_frame_generation=disabled")
+                appendLine("mode=${captureState.mode}")
+                appendLine("adaptive_frame_generation=${if (captureState.adaptive) "enabled" else "disabled"}")
+                appendLine("adaptive_target_fps=${captureState.targetFps ?: "unavailable"}")
                 appendLine("scan_roots=${artifacts.scanRoots.joinToString(";")}")
                 appendLine("scanned_nodes=${artifacts.scannedNodes}")
             }
@@ -229,6 +231,38 @@ object LsfgDiagnosticExporter {
         report.append('\n')
 
         return report.toString()
+    }
+
+    private data class CaptureState(
+        val mode: String,
+        val adaptive: Boolean,
+        val targetFps: Int?,
+    )
+
+    private fun readCaptureState(config: File?, stats: File?): CaptureState {
+        fun values(file: File?): Map<String, String> = runCatching {
+            file?.takeIf(File::isFile)?.readLines()?.mapNotNull { line ->
+                val cleaned = line.substringBefore('#').trim()
+                val separator = cleaned.indexOf('=')
+                if (separator <= 0) null else cleaned.substring(0, separator).trim() to
+                    cleaned.substring(separator + 1).trim().trim('"')
+            }?.toMap().orEmpty()
+        }.getOrDefault(emptyMap())
+
+        val statsValues = values(stats)
+        val configValues = values(config)
+        val adaptive = when (statsValues["adaptive"]) {
+            "1" -> true
+            "0" -> false
+            else -> configValues["adaptive_framegen"].equals("true", ignoreCase = true)
+        }
+        val target = statsValues["target_fps"]?.toIntOrNull()
+            ?: configValues["fps_limit"]?.toIntOrNull()
+        return CaptureState(
+            mode = if (adaptive) "adaptive" else "fixed-multiplier",
+            adaptive = adaptive,
+            targetFps = target?.takeIf { it > 0 },
+        )
     }
 
     private data class DiscoveredArtifacts(

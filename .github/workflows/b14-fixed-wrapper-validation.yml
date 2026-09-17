@@ -15,6 +15,9 @@ concurrency:
   group: b14-fixed-wrapper-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  B14_NATIVE_REVISION: 7fee0ef6299da1171b7a0196759714f007ccf108
+
 jobs:
   validate-b14:
     runs-on: ubuntu-latest
@@ -94,6 +97,7 @@ jobs:
           expected="$(git rev-parse HEAD:${native_dir})"
           actual="$(git -C "$native_dir" rev-parse HEAD)"
           test "$actual" = "$expected"
+          test "$expected" = "$B14_NATIVE_REVISION"
           printf '%s\n' "$expected" > /tmp/b14-native-commit
           echo "Pinned B14 native revision: $expected"
 

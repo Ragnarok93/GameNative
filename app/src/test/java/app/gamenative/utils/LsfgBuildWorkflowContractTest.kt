@@ -16,7 +16,7 @@ class LsfgBuildWorkflowContractTest {
     fun everyApkOrBundleWorkflowPreparesPinnedLsfgNativeRuntime() {
         val workflows = listOf(
             ".github/workflows/pluvia-pr-check.yml",
-            ".github/workflows/lsfg-legacy-single-apk.yml",
+            ".github/workflows/legacy-release-build.yml",
             ".github/workflows/tagged-release.yml",
             ".github/workflows/app-release-signed.yml",
             ".github/workflows/adhoc-signed-build.yml",
@@ -105,41 +105,48 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun b14CandidateWorkflowUsesGitlinkProvenanceAndAuditsPortableEvidenceRuntime() {
-        val source = repoFile(".github/workflows/lsfg-legacy-single-apk.yml").readText()
+    fun b14PromotionWorkflowUsesGitlinkProvenanceAndAuditsCleanProductionRuntime() {
+        val source = repoFile(".github/workflows/b14-directional-adaptive-promotion.yml").readText()
         listOf(
-            "expected_native=\"${'$'}(git rev-parse HEAD:${'$'}{native_dir})\"",
-            "actual_native=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
-            "test \"${'$'}actual_native\" = \"${'$'}expected_native\"",
-            "LSFGVK_B12_DUAL_STAGE_PROFILE: \"1\"",
-            "LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py",
+            "expected=\"${'$'}(git rev-parse HEAD:${'$'}{native_dir})\"",
+            "actual=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
+            "test \"${'$'}expected\" = \"${'$'}B14_NATIVE_REVISION\"",
+            "test \"${'$'}actual\" = \"${'$'}B14_NATIVE_REVISION\"",
             "candidate-b11-beta4-pow2-mask",
             "candidate-b13-beta4-fused-mask",
             "candidate-b14-mipmaps-tail-fusion",
-            "b12-stage-profile",
+            "ahb-directional-transport",
+            "config-reload-soft-toggle",
+            "candidate-b15-mip4-topology",
+            "candidate-b15-mip4-register-fusion",
+            "candidate-fp16-motion-compaction",
+            "b12-stage-profile-init",
             "mipmaps_avg_ms=",
             "beta4_avg_ms=",
-            "b12-timestamp-capability",
-            "b12-timestamp-fallback",
-            "b12-device-profile",
             "unzip -p \"${'$'}apk\" lib/arm64-v8a/liblsfg-vk-layer.so",
         ).forEach { token ->
             assertTrue(
-                "B14 candidate workflow is missing verified provenance or evidence/APK audit token: ${'$'}token",
+                "B14 promotion workflow is missing provenance, production marker, or rejection token: ${'$'}token",
                 source.contains(token),
             )
         }
+        for (staleOverride in listOf(
+            "LSFGVK_ADAPTIVE_RUNTIME",
+            "LSFGVK_B12_DUAL_STAGE_PROFILE",
+            "LSFGVK_MIPMAPS_CANDIDATE_SCRIPT",
+        )) {
+            assertFalse(
+                "promotion workflow must consume the native release production defaults, not override $staleOverride",
+                source.contains(staleOverride),
+            )
+        }
         assertFalse(
-            "B12 gameplay evidence APK must keep legacy verbose Mipmaps executable/IR capture disabled",
+            "promoted production runtime must keep verbose Mipmaps executable/IR capture disabled",
             source.contains("LSFGVK_B12_MIPMAPS_EXEC_PROFILE"),
         )
         assertFalse(
-            "B12 gameplay evidence APK must keep generic verbose Mipmaps executable/IR capture disabled",
+            "promoted production runtime must keep generic verbose Mipmaps executable/IR capture disabled",
             source.contains("LSFGVK_MIPMAPS_EXEC_PROFILE"),
-        )
-        assertFalse(
-            "B12 candidate workflow must not duplicate the pinned LSFG commit as a hard-coded SHA",
-            Regex("expected_native=[0-9a-f]{40}").containsMatchIn(source),
         )
     }
 }

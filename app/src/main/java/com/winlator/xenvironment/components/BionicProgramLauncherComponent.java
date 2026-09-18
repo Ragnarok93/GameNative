@@ -274,7 +274,13 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         envVars.put("WINE_NO_DUPLICATE_EXPLORER", "1");
         envVars.put("PREFIX", rootDir.getPath() + "/usr");
         envVars.put("WINE_DISABLE_FULLSCREEN_HACK", "1");
-        envVars.put("ENABLE_UTIL_LAYER", "1");
+        File utilLayerLibrary = new File(imageFs.getLibDir(), "libutil_layer.so");
+        if (utilLayerLibrary.isFile()) {
+            envVars.put("ENABLE_UTIL_LAYER", "1");
+        } else {
+            Log.i("BionicProgramLauncherComponent",
+                    "Vulkan util layer disabled because libutil_layer.so is not installed");
+        }
         envVars.put("GST_PLUGIN_FEATURE_RANK", "ximagesink:3000");
         envVars.put("ALSA_CONFIG_PATH", rootDir.getPath() + "/usr/share/alsa/alsa.conf" + ":" + rootDir.getPath() + "/usr/etc/alsa/conf.d/android_aserver.conf");
         envVars.put("ALSA_PLUGIN_DIR", rootDir.getPath() + "/usr/lib/alsa-lib");

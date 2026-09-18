@@ -71,9 +71,19 @@ class LsfgAdaptiveFlowUiContractTest {
             lsfgTab.windowed("modifier = Modifier.weight(1f)".length)
                 .count { it == "modifier = Modifier.weight(1f)" } >= 4,
         )
-        assertTrue(choiceChip.contains("maxLines = 1"))
-        assertTrue(choiceChip.contains("softWrap = false"))
-        assertTrue(choiceChip.contains("overflow = TextOverflow.Ellipsis"))
+        assertTrue(choiceChip.contains("singleLine: Boolean = false"))
+        assertTrue(choiceChip.contains("maxLines = if (singleLine) 1 else Int.MAX_VALUE"))
+        assertTrue(choiceChip.contains("softWrap = !singleLine"))
+        assertTrue(
+            choiceChip.contains(
+                "overflow = if (singleLine) TextOverflow.Ellipsis else TextOverflow.Clip",
+            ),
+        )
+        assertTrue(
+            "Every LSFG choice group must opt into single-line labels",
+            lsfgTab.windowed("singleLine = true".length)
+                .count { it == "singleLine = true" } >= 5,
+        )
         assertTrue(
             "Adjustment-row titles must yield space to the value column",
             adjustmentRow.contains("modifier = Modifier.weight(1f)"),

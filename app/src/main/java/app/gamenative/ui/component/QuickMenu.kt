@@ -1654,6 +1654,7 @@ private fun LsfgQuickMenuTab(
                         if (frameGenerationEnabled) onMultiplierChanged(runtimeMultiplier())
                     },
                     modifier = Modifier.weight(1f),
+                    singleLine = true,
                 )
             }
         }
@@ -1678,6 +1679,7 @@ private fun LsfgQuickMenuTab(
                             if (frameGenerationEnabled) onMultiplierChanged(value)
                         },
                         modifier = Modifier.weight(1f),
+                    singleLine = true,
                     )
                 }
             }
@@ -1742,6 +1744,7 @@ private fun LsfgQuickMenuTab(
                                 }
                             },
                             modifier = Modifier.weight(1f),
+                    singleLine = true,
                         )
                     }
                 }
@@ -1808,6 +1811,7 @@ private fun LsfgQuickMenuTab(
                                     }
                                 },
                                 modifier = Modifier.weight(1f),
+                    singleLine = true,
                             )
                         }
                     }
@@ -1839,6 +1843,7 @@ private fun LsfgQuickMenuTab(
                             accentColor = accentColor,
                             onClick = { onPresentModeChanged(value) },
                             modifier = Modifier.weight(1f),
+                    singleLine = true,
                         )
                     }
                 }
@@ -2171,6 +2176,7 @@ private fun QuickMenuChoiceChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
+    singleLine: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -2231,9 +2237,9 @@ private fun QuickMenuChoiceChip(
             style = MaterialTheme.typography.labelLarge,
             color = if (selected || isFocused) accentColor else MaterialTheme.colorScheme.onSurface,
             fontWeight = if (selected || isFocused) FontWeight.SemiBold else FontWeight.Medium,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
+            maxLines = if (singleLine) 1 else Int.MAX_VALUE,
+            softWrap = !singleLine,
+            overflow = if (singleLine) TextOverflow.Ellipsis else TextOverflow.Clip,
         )
     }
 }

@@ -6,6 +6,8 @@ import java.util.Locale
 /** Quick Menu LSFG state persistence and runtime publication. */
 object LsfgQuickMenuHelper {
     enum class FrameGenerationMode { FIXED, ADAPTIVE }
+    enum class FlowScaleMode { FIXED, ADAPTIVE }
+    enum class AdaptiveFlowPreset { QUALITY, BALANCED, LOW }
 
     data class Settings(
         val multiplier: Int,
@@ -31,6 +33,48 @@ object LsfgQuickMenuHelper {
 
     fun fixedMultiplier(container: Container): Int = LsfgVkManager.fixedMultiplier(container)
     fun adaptiveTargetFps(container: Container): Int = LsfgVkManager.adaptiveTargetFps(container)
+
+    fun flowScaleMode(container: Container): FlowScaleMode =
+        if (LsfgVkManager.flowScaleMode(container) == LsfgVkManager.FLOW_MODE_ADAPTIVE) {
+            FlowScaleMode.ADAPTIVE
+        } else FlowScaleMode.FIXED
+
+    fun adaptiveFlowPreset(container: Container): AdaptiveFlowPreset =
+        when (LsfgVkManager.adaptiveFlowPreset(container)) {
+            LsfgVkManager.ADAPTIVE_FLOW_PRESET_BALANCED -> AdaptiveFlowPreset.BALANCED
+            LsfgVkManager.ADAPTIVE_FLOW_PRESET_LOW -> AdaptiveFlowPreset.LOW
+            else -> AdaptiveFlowPreset.QUALITY
+        }
+
+    fun setFlowScaleMode(container: Container, mode: FlowScaleMode) {
+        container.putExtra(
+            LsfgVkManager.EXTRA_FLOW_SCALE_MODE,
+            if (mode == FlowScaleMode.ADAPTIVE) {
+                LsfgVkManager.FLOW_MODE_ADAPTIVE
+            } else {
+                LsfgVkManager.FLOW_MODE_FIXED
+            },
+        )
+        container.saveData()
+        if (sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2) {
+            publishRuntimeConfig(container, readSettings(container))
+        }
+    }
+
+    fun setAdaptiveFlowPreset(container: Container, preset: AdaptiveFlowPreset) {
+        val serialized = when (preset) {
+            AdaptiveFlowPreset.QUALITY -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_QUALITY
+            AdaptiveFlowPreset.BALANCED -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_BALANCED
+            AdaptiveFlowPreset.LOW -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_LOW
+        }
+        container.putExtra(LsfgVkManager.EXTRA_ADAPTIVE_FLOW_PRESET, serialized)
+        container.saveData()
+        if (flowScaleMode(container) == FlowScaleMode.ADAPTIVE &&
+            sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2
+        ) {
+            publishRuntimeConfig(container, readSettings(container))
+        }
+    }
 
     fun setGenerationMode(container: Container, mode: FrameGenerationMode) {
         container.putExtra(

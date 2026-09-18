@@ -1,0 +1,112 @@
+name: Source-Protected FG LegacyDebug
+
+on:
+  push:
+    branches:
+      - "test/source-protected-fractional-legacydebug-20260918"
+
+concurrency:
+  group: source-protected-fg-legacydebug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  legacy-debug:
+    name: LegacyDebug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out GameNative
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Verify Adaptive GameNative integration and LSFG pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_dir=app/src/main/cpp/lsfg-vk-android
+          expected="5ef274d14c75dd7a5602b8e5286dde7e020fdcca"
+          gitlink="$(git rev-parse HEAD:${native_dir})"
+          actual="$(git -C "${native_dir}" rev-parse HEAD)"
+          test "${gitlink}" = "${expected}"
+          test "${actual}" = "${expected}"
+
+          test -s app/src/main/java/app/gamenative/ui/component/QuickMenu.kt
+          test -s app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt
+          test -s app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+          test -s app/src/main/res/values/strings_lsfg_adaptive.xml
+          test -s app/src/test/java/app/gamenative/utils/LsfgAdaptiveFlowUiContractTest.kt
+
+          grep -Fq 'adaptiveFlow' app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
+          grep -Fq 'Adaptive Flow' app/src/main/res/values/strings_lsfg_adaptive.xml ||             grep -Fqi 'flow scale' app/src/main/res/values/strings_lsfg_adaptive.xml
+          echo "Adaptive GameNative integration present; pinned LSFG: ${actual}"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Prepare exact GameNative-pinned LSFG native runtime
+        uses: ./.github/actions/prepare-lsfg-native
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Run Adaptive LSFG unit contracts
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          STEAMGRIDDB_API_KEY: ${{ secrets.STEAMGRIDDB_API_KEY }}
+          CLOUD_PROJECT_NUMBER: ${{ secrets.CLOUD_PROJECT_NUMBER }}
+        run: |
+          ./gradlew :app:testLegacyDebugUnitTest --no-daemon --stacktrace             --tests app.gamenative.utils.LsfgAdaptiveFlowUiContractTest             --tests app.gamenative.utils.LsfgQuickMenuHelperModeTest             --tests app.gamenative.utils.LsfgVkManagerTest
+
+      - name: Assemble LegacyDebug
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          STEAMGRIDDB_API_KEY: ${{ secrets.STEAMGRIDDB_API_KEY }}
+          CLOUD_PROJECT_NUMBER: ${{ secrets.CLOUD_PROJECT_NUMBER }}
+        run: ./gradlew :app:assembleLegacyDebug --no-daemon --stacktrace
+
+      - name: Validate LegacyDebug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find app/build/outputs/apk/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            printf 'Expected exactly one LegacyDebug APK, found %d\n' "${#apks[@]}" >&2
+            exit 1
+          fi
+          apk="${apks[0]}"
+          cp "${apk}" gamenative-source-protected-fg-legacydebug.apk
+          unzip -Z1 gamenative-source-protected-fg-legacydebug.apk > apk-entries.txt
+          grep -qx 'lib/arm64-v8a/liblsfg-vk-layer\.so' apk-entries.txt
+          unzip -p gamenative-source-protected-fg-legacydebug.apk             lib/arm64-v8a/liblsfg-vk-layer.so > /tmp/liblsfg-vk-layer.so
+          grep -aFq '5ef274d14c75' /tmp/liblsfg-vk-layer.so
+          apksigner="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}" -path '*/build-tools/*/apksigner' -type f -print | sort -V | tail -n 1)"
+          test -x "${apksigner}"
+          "${apksigner}" verify --verbose gamenative-source-protected-fg-legacydebug.apk
+          sha256sum gamenative-source-protected-fg-legacydebug.apk             | tee gamenative-source-protected-fg-legacydebug.apk.sha256
+
+      - name: Upload LegacyDebug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamenative-source-protected-fg-legacydebug
+          path: |
+            gamenative-source-protected-fg-legacydebug.apk
+            gamenative-source-protected-fg-legacydebug.apk.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

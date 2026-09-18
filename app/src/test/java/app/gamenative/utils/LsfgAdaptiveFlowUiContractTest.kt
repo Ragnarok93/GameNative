@@ -94,9 +94,20 @@ class LsfgAdaptiveFlowUiContractTest {
             quickMenu.indexOf("private fun ImmersiveQuickMenuTab("),
         )
 
-        val low = lsfgTab.indexOf("AdaptiveFlowPreset.LOW")
-        val balanced = lsfgTab.indexOf("AdaptiveFlowPreset.BALANCED")
-        val quality = lsfgTab.indexOf("AdaptiveFlowPreset.QUALITY")
+        val presetRow = lsfgTab.substring(
+            lsfgTab.indexOf(
+                "listOf(\n                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.",
+            ),
+            lsfgTab.indexOf(
+                ").forEach { (candidate, label) ->",
+                lsfgTab.indexOf(
+                    "listOf(\n                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.",
+                ),
+            ),
+        )
+        val low = presetRow.indexOf("AdaptiveFlowPreset.LOW")
+        val balanced = presetRow.indexOf("AdaptiveFlowPreset.BALANCED")
+        val quality = presetRow.indexOf("AdaptiveFlowPreset.QUALITY")
         assertTrue("Low must be the left preset", low >= 0)
         assertTrue("Balanced must remain in the middle", balanced > low)
         assertTrue("Quality must be the right preset", quality > balanced)

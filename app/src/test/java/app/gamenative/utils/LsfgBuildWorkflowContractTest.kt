@@ -64,6 +64,10 @@ class LsfgBuildWorkflowContractTest {
         val release = repoFile(".github/workflows/legacy-release-build.yml").readText()
         assertTrue(release.contains("name: gamenative-legacy-release"))
         assertTrue(release.contains("gamenative-legacy-release.apk.sha256"))
+        assertFalse(
+            "LegacyRelease must not start a second build for feature pull requests",
+            release.contains("pull_request:"),
+        )
     }
 
     @Test

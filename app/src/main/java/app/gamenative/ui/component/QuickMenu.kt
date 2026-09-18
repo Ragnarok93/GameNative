@@ -1595,6 +1595,18 @@ private fun LsfgQuickMenuTab(
     var adaptiveTargetFps by remember(container?.id) {
         mutableIntStateOf(container?.let { app.gamenative.utils.LsfgQuickMenuHelper.adaptiveTargetFps(it) } ?: 60)
     }
+    var flowScaleMode by remember(container?.id) {
+        mutableStateOf(
+            container?.let { app.gamenative.utils.LsfgQuickMenuHelper.flowScaleMode(it) }
+                ?: app.gamenative.utils.LsfgQuickMenuHelper.FlowScaleMode.FIXED,
+        )
+    }
+    var adaptiveFlowPreset by remember(container?.id) {
+        mutableStateOf(
+            container?.let { app.gamenative.utils.LsfgQuickMenuHelper.adaptiveFlowPreset(it) }
+                ?: app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.QUALITY,
+        )
+    }
 
     LaunchedEffect(multiplier) { frameGenerationEnabled = multiplier >= 2 }
 
@@ -1689,21 +1701,102 @@ private fun LsfgQuickMenuTab(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Spacer(modifier = Modifier.height(4.dp))
-                QuickMenuAdjustmentRow(
-                    title = stringResource(R.string.lsfg_flow_scale),
-                    subtitle = stringResource(R.string.lsfg_flow_scale_desc),
-                    valueText = String.format(java.util.Locale.US, "%.2f", flowScale),
-                    progress = (flowScale - 0.25f) / 0.75f,
-                    onDecrease = {
-                        val next = (flowScale - 0.05f).coerceIn(0.25f, 1.0f)
-                        onFlowScaleChanged(String.format(java.util.Locale.US, "%.2f", next).toFloat())
-                    },
-                    onIncrease = {
-                        val next = (flowScale + 0.05f).coerceIn(0.25f, 1.0f)
-                        onFlowScaleChanged(String.format(java.util.Locale.US, "%.2f", next).toFloat())
-                    },
-                    accentColor = accentColor,
+                QuickMenuSectionHeader(
+                    title = stringResource(R.string.lsfg_flow_mode),
+                    subtitle = stringResource(R.string.lsfg_flow_mode_desc),
                 )
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(
+                        app.gamenative.utils.LsfgQuickMenuHelper.FlowScaleMode.FIXED to
+                            R.string.lsfg_flow_mode_fixed,
+                        app.gamenative.utils.LsfgQuickMenuHelper.FlowScaleMode.ADAPTIVE to
+                            R.string.lsfg_flow_mode_adaptive,
+                    ).forEach { (candidate, label) ->
+                        QuickMenuChoiceChip(
+                            text = stringResource(label),
+                            selected = flowScaleMode == candidate,
+                            accentColor = accentColor,
+                            onClick = {
+                                flowScaleMode = candidate
+                                container?.let {
+                                    app.gamenative.utils.LsfgQuickMenuHelper.setFlowScaleMode(
+                                        it,
+                                        candidate,
+                                    )
+                                }
+                            },
+                            modifier = Modifier.width(96.dp),
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                if (flowScaleMode == app.gamenative.utils.LsfgQuickMenuHelper.FlowScaleMode.FIXED) {
+                    QuickMenuAdjustmentRow(
+                        title = stringResource(R.string.lsfg_flow_scale),
+                        subtitle = stringResource(R.string.lsfg_flow_scale_desc),
+                        valueText = String.format(java.util.Locale.US, "%.2f", flowScale),
+                        progress = (flowScale - 0.25f) / 0.75f,
+                        onDecrease = {
+                            val next = (flowScale - 0.05f).coerceIn(0.25f, 1.0f)
+                            onFlowScaleChanged(
+                                String.format(java.util.Locale.US, "%.2f", next).toFloat(),
+                            )
+                        },
+                        onIncrease = {
+                            val next = (flowScale + 0.05f).coerceIn(0.25f, 1.0f)
+                            onFlowScaleChanged(
+                                String.format(java.util.Locale.US, "%.2f", next).toFloat(),
+                            )
+                        },
+                        accentColor = accentColor,
+                    )
+                } else {
+                    val presetDescription = when (adaptiveFlowPreset) {
+                        app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.QUALITY ->
+                            R.string.lsfg_flow_preset_quality_desc
+                        app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.BALANCED ->
+                            R.string.lsfg_flow_preset_balanced_desc
+                        app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.LOW ->
+                            R.string.lsfg_flow_preset_low_desc
+                    }
+                    QuickMenuSectionHeader(
+                        title = stringResource(R.string.lsfg_flow_preset),
+                        subtitle = stringResource(presetDescription),
+                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(
+                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.QUALITY to
+                                R.string.lsfg_flow_preset_quality,
+                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.BALANCED to
+                                R.string.lsfg_flow_preset_balanced,
+                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.LOW to
+                                R.string.lsfg_flow_preset_low,
+                        ).forEach { (candidate, label) ->
+                            QuickMenuChoiceChip(
+                                text = stringResource(label),
+                                selected = adaptiveFlowPreset == candidate,
+                                accentColor = accentColor,
+                                onClick = {
+                                    adaptiveFlowPreset = candidate
+                                    container?.let {
+                                        app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveFlowPreset(
+                                            it,
+                                            candidate,
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
                 QuickMenuToggleRow(
                     title = stringResource(R.string.lsfg_performance_mode),

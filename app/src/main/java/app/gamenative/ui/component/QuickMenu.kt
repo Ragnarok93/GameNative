@@ -35,7 +35,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -1679,7 +1678,7 @@ private fun LsfgQuickMenuTab(
                             if (frameGenerationEnabled) onMultiplierChanged(value)
                         },
                         modifier = Modifier.weight(1f),
-                    singleLine = true,
+                        singleLine = true,
                     )
                 }
             }
@@ -1744,7 +1743,7 @@ private fun LsfgQuickMenuTab(
                                 }
                             },
                             modifier = Modifier.weight(1f),
-                    singleLine = true,
+                            singleLine = true,
                         )
                     }
                 }
@@ -1811,7 +1810,7 @@ private fun LsfgQuickMenuTab(
                                     }
                                 },
                                 modifier = Modifier.weight(1f),
-                    singleLine = true,
+                                singleLine = true,
                             )
                         }
                     }
@@ -1843,7 +1842,7 @@ private fun LsfgQuickMenuTab(
                             accentColor = accentColor,
                             onClick = { onPresentModeChanged(value) },
                             modifier = Modifier.weight(1f),
-                    singleLine = true,
+                            singleLine = true,
                         )
                     }
                 }

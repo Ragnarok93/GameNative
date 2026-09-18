@@ -112,9 +112,6 @@ class LsfgBuildWorkflowContractTest {
             "actual=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
             "test \"${'$'}expected\" = \"${'$'}B14_NATIVE_REVISION\"",
             "test \"${'$'}actual\" = \"${'$'}B14_NATIVE_REVISION\"",
-            "LSFGVK_ADAPTIVE_RUNTIME: \"1\"",
-            "LSFGVK_B12_DUAL_STAGE_PROFILE: \"0\"",
-            "LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py",
             "candidate-b11-beta4-pow2-mask",
             "candidate-b13-beta4-fused-mask",
             "candidate-b14-mipmaps-tail-fusion",
@@ -131,6 +128,16 @@ class LsfgBuildWorkflowContractTest {
             assertTrue(
                 "B14 promotion workflow is missing provenance, production marker, or rejection token: ${'$'}token",
                 source.contains(token),
+            )
+        }
+        for (staleOverride in listOf(
+            "LSFGVK_ADAPTIVE_RUNTIME",
+            "LSFGVK_B12_DUAL_STAGE_PROFILE",
+            "LSFGVK_MIPMAPS_CANDIDATE_SCRIPT",
+        )) {
+            assertFalse(
+                "promotion workflow must consume the native release production defaults, not override $staleOverride",
+                source.contains(staleOverride),
             )
         }
         assertFalse(

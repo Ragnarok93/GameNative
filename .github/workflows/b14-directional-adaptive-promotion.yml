@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  B14_NATIVE_REVISION: 5fc4bdd0eb4a28b88469b9e8c842e52e7c7814db
+  B14_NATIVE_REVISION: 5a634df5595c3c24797020ae6f15d3714c7bd23e
 
 jobs:
   validate-and-package:
@@ -76,10 +76,6 @@ jobs:
 
       - name: Prepare promoted arm64 B14 runtime
         uses: ./.github/actions/prepare-lsfg-native
-        env:
-          LSFGVK_ADAPTIVE_RUNTIME: "1"
-          LSFGVK_B12_DUAL_STAGE_PROFILE: "0"
-          LSFGVK_MIPMAPS_CANDIDATE_SCRIPT: scripts/apply-candidate-b14-mipmaps-tail-fusion.py
 
       - name: Verify promoted runtime contract
         shell: bash

@@ -39,6 +39,34 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
+    fun apkWorkflowsPublishSingleUnsplitArtifacts() {
+        listOf(
+            ".github/workflows/pluvia-pr-check.yml",
+            ".github/workflows/legacy-release-build.yml",
+        ).forEach { path ->
+            val source = repoFile(path).readText()
+            listOf(
+                "split -n",
+                ".apk.part-",
+                "transfer parts",
+            ).forEach { forbidden ->
+                assertFalse(
+                    "$path must publish the APK as one artifact; found forbidden split token: $forbidden",
+                    source.contains(forbidden, ignoreCase = true),
+                )
+            }
+        }
+
+        val prCheck = repoFile(".github/workflows/pluvia-pr-check.yml").readText()
+        assertTrue(prCheck.contains("name: gamenative-legacy-debug"))
+        assertTrue(prCheck.contains("gamenative-legacy-debug.apk.sha256"))
+
+        val release = repoFile(".github/workflows/legacy-release-build.yml").readText()
+        assertTrue(release.contains("name: gamenative-legacy-release"))
+        assertTrue(release.contains("gamenative-legacy-release.apk.sha256"))
+    }
+
+    @Test
     fun sharedNativePreparationUsesGitlinkAndAndroidPortabilityChecks() {
         val source = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
         listOf(

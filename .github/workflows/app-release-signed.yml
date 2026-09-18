@@ -100,14 +100,29 @@ jobs:
         fi
         yes | "$SDKMANAGER" --install "build-tools;34.0.0"
 
+    - name: Select build scope
+      run: |
+        if [[ "$GITHUB_REF" == refs/heads/fix/* ]]; then
+          echo "BUILD_SCOPE=legacy" >> "$GITHUB_ENV"
+        else
+          echo "BUILD_SCOPE=all" >> "$GITHUB_ENV"
+        fi
+
     - name: Build with Gradle
-      run: ./gradlew :app:bundleLegacyRelease :app:bundleModernRelease :app:bundleLegacyXrRelease
+      run: |
+        if [ "$BUILD_SCOPE" = "legacy" ]; then
+          ./gradlew :app:bundleLegacyRelease
+        else
+          ./gradlew :app:bundleLegacyRelease :app:bundleModernRelease :app:bundleLegacyXrRelease
+        fi
 
     - name: Stage bundles
       run: |
         cp app/build/outputs/bundle/legacyRelease/app-legacy-release.aab app-release.aab
-        cp app/build/outputs/bundle/modernRelease/app-modern-release.aab app-modern-release.aab
-        cp app/build/outputs/bundle/legacyXrRelease/app-legacyXr-release.aab app-legacy-xr-release.aab
+        if [ "$BUILD_SCOPE" = "all" ]; then
+          cp app/build/outputs/bundle/modernRelease/app-modern-release.aab app-modern-release.aab
+          cp app/build/outputs/bundle/legacyXrRelease/app-legacyXr-release.aab app-legacy-xr-release.aab
+        fi
 
     - name: Stop Gradle daemon to free memory
       run: ./gradlew --stop
@@ -116,10 +131,12 @@ jobs:
       run: |
         java -jar tools/bundletool-all-1.17.2.jar build-apks --bundle=app-release.aab --output=app-release.apks --mode=universal
         unzip -o app-release.apks universal.apk
-        java -jar tools/bundletool-all-1.17.2.jar build-apks --bundle=app-modern-release.aab --output=app-modern-release.apks --mode=universal
-        unzip -p app-modern-release.apks universal.apk > universal-modern.apk
-        java -jar tools/bundletool-all-1.17.2.jar build-apks --bundle=app-legacy-xr-release.aab --output=app-legacy-xr-release.apks --mode=universal
-        unzip -p app-legacy-xr-release.apks universal.apk > universal-legacy-xr.apk
+        if [ "$BUILD_SCOPE" = "all" ]; then
+          java -jar tools/bundletool-all-1.17.2.jar build-apks --bundle=app-modern-release.aab --output=app-modern-release.apks --mode=universal
+          unzip -p app-modern-release.apks universal.apk > universal-modern.apk
+          java -jar tools/bundletool-all-1.17.2.jar build-apks --bundle=app-legacy-xr-release.aab --output=app-legacy-xr-release.apks --mode=universal
+          unzip -p app-legacy-xr-release.apks universal.apk > universal-legacy-xr.apk
+        fi
 
     - name: Sign and verify universal APKs
       env:
@@ -135,7 +152,11 @@ jobs:
         if [ ! -d "$BUILD_TOOLS_DIR" ]; then
           BUILD_TOOLS_DIR="${ANDROID_SDK_ROOT}/build-tools/34.0.0"
         fi
-        for apk in universal.apk universal-modern.apk universal-legacy-xr.apk; do
+        apks=(universal.apk)
+        if [ "$BUILD_SCOPE" = "all" ]; then
+          apks+=(universal-modern.apk universal-legacy-xr.apk)
+        fi
+        for apk in "${apks[@]}"; do
           if [ "$SIGNING_MODE" = "dual" ]; then
             cp prod-debug.lineage app/keystores/prod-debug.lineage
             "$BUILD_TOOLS_DIR/apksigner" sign               --lineage app/keystores/prod-debug.lineage               --ks app/keystores/keystore               --ks-key-alias "$DEBUG_ALIAS"               --ks-pass "pass:$DEBUG_STORE_PASS"               --key-pass "pass:$DEBUG_KEY_PASS"               --next-signer --ks app/keystores/prod.keystore               --ks-key-alias "$PROD_ALIAS"               --ks-pass "pass:$PROD_STORE_PASS"               --key-pass "pass:$PROD_KEY_PASS"               --out "${apk%.apk}-signed.apk" "$apk"
@@ -154,12 +175,14 @@ jobs:
         path: ${{ github.workspace }}/universal.apk
 
     - name: Upload Modern APK
+      if: env.BUILD_SCOPE == 'all'
       uses: actions/upload-artifact@v4
       with:
         name: app-release-signed-modern
         path: ${{ github.workspace }}/universal-modern.apk
 
     - name: Upload Legacy XR APK
+      if: env.BUILD_SCOPE == 'all'
       uses: actions/upload-artifact@v4
       with:
         name: app-release-signed-legacy-xr
@@ -181,6 +204,7 @@ jobs:
         } >>"$GITHUB_OUTPUT"
 
     - name: Post to Discord
+      if: github.ref == 'refs/heads/master'
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         # Read via env to avoid shell-quoting traps with multiline changelogs.

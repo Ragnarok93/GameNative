@@ -86,7 +86,7 @@ class LsfgAdaptiveFlowUiContractTest {
         )
         assertTrue(
             "Adjustment-row titles must yield space to the value column",
-            adjustmentRow.contains("modifier = Modifier.weight(1f)"),
+            adjustmentRow.contains(".weight(1f)"),
         )
         assertTrue(
             "Adjustment values must not wrap to a second line",

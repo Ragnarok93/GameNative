@@ -1,5 +1,6 @@
 package app.gamenative.utils
 
+import app.gamenative.diagnostics.LsfgDiagnosticExporter
 import app.gamenative.powercontrol.metrics.CpuUsageSource
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import com.winlator.container.Container
@@ -97,6 +98,58 @@ class LsfgVkManagerTest {
         assertTrue(text.contains("multiplier = 1"))
         assertTrue(text.contains("performance_mode = true"))
         assertTrue(text.contains("experimental_present_mode = \"mailbox\""))
+    }
+
+    @Test
+    fun diagnosticDiscovery_findsCurrentMetricsAndNestedContainer_withoutBroadScan() {
+        val context = RuntimeEnvironment.getApplication().applicationContext
+        val imageRoot = File(context.filesDir, "imagefs")
+        val home = File(imageRoot, "home/xuser-CUSTOM_GAME_DIAG_GATE")
+        val runtimeRoot = File(
+            home,
+            ".wine/dosdevices/z:/home/${home.name}",
+        )
+        val configDir = File(runtimeRoot, ".config/lsfg-vk")
+        val wrapper = File(imageRoot, "usr/tmp/wrapper_diag_diag-gate.txt")
+        val metricsDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "powercontrol")
+        val metrics = File(metricsDir, "metrics-987654321.jsonl")
+
+        try {
+            configDir.mkdirs()
+            File(configDir, "conf.toml").writeText("adaptive_framegen = true\nfps_limit = 60\n")
+            File(configDir, "stats.txt").writeText("adaptive=1\ntarget_fps=60\n")
+
+            val layer = File(runtimeRoot, ".local/lib/liblsfg-vk-layer.so")
+            layer.parentFile?.mkdirs()
+            layer.writeText("layer")
+            val runtimeMarker = File(
+                runtimeRoot,
+                ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
+            )
+            runtimeMarker.parentFile?.mkdirs()
+            runtimeMarker.writeText("diag-gate")
+
+            wrapper.parentFile?.mkdirs()
+            wrapper.writeText("wrapper")
+            metricsDir.mkdirs()
+            metrics.writeText("{\"fps\":60.0}\n")
+
+            val warnings = mutableListOf<String>()
+            val artifacts = LsfgDiagnosticExporter.discoverArtifacts(context, warnings)
+
+            assertEquals(
+                File(configDir, "conf.toml").canonicalFile,
+                artifacts.config?.canonicalFile,
+            )
+            assertEquals(metrics.canonicalFile, artifacts.performanceMetrics?.canonicalFile)
+            assertEquals(wrapper.canonicalFile, artifacts.wrapperDiagnostics?.canonicalFile)
+            assertEquals(0, artifacts.scannedNodes)
+            assertTrue(warnings.none { it.contains("node limit", ignoreCase = true) })
+        } finally {
+            home.deleteRecursively()
+            wrapper.delete()
+            metrics.delete()
+        }
     }
 
     @Test

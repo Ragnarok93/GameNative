@@ -166,6 +166,10 @@ object PerformanceMetricsCollector {
 
         publish(snapshot, frameGeneration)
         if (frameGeneration != FrameTimeRing.generation()) return
+        LsfgVkManager.publishRuntimePressure(
+            PowerManager.activeContainerRootDir(),
+            snapshot,
+        )
         appendLog(snapshot)
 
         sampleCount++
@@ -191,10 +195,6 @@ object PerformanceMetricsCollector {
         PowerManager.currentFps = snapshot.fps
         PowerManager.currentCpuUsage = snapshot.cpuUsagePercent ?: 0f
         PowerManager.currentGpuUsage = snapshot.gpuUsagePercent ?: 0f
-        LsfgVkManager.publishRuntimePressure(
-            PowerManager.activeContainerRootDir(),
-            snapshot,
-        )
         if (frameGeneration != FrameTimeRing.generation()) {
             PowerManager.latestMetrics = null
             PowerManager.currentFps = 0f

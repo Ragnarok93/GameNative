@@ -3,7 +3,6 @@ package app.gamenative.diagnostics
 import android.content.Context
 import android.os.Build
 import app.gamenative.CrashHandler
-import app.gamenative.powercontrol.PowerBaselineScripts
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -193,26 +192,12 @@ object LsfgDiagnosticExporter {
         }
 
         section("LSFG NATIVE EVENTS") {
-            val nativeFile = artifacts.nativeDiagnostics
-            if (nativeFile != null && nativeFile.isFile) {
-                labeledFile(nativeFile, NATIVE_EVENT_TAIL_BYTES)
-            } else {
-                val fallback = appLogcat.lineSequence()
-                    .filter { line ->
-                        line.contains("LSFG", ignoreCase = true) ||
-                            line.contains("framegen", ignoreCase = true) ||
-                            line.contains("generated_", ignoreCase = true) ||
-                            line.contains("adaptive_flow_", ignoreCase = true)
-                    }
-                    .takeLastLines(PRESENTATION_LOG_LINES)
-                if (fallback.isBlank()) {
-                    warnings += "diagnostics.log unavailable: matching artifact not found and no LSFG logcat fallback lines captured"
-                    "unavailable: matching artifact not found"
-                } else {
-                    warnings += "diagnostics.log unavailable: using LSFG logcat fallback"
-                    "source=app_logcat_fallback\n$fallback"
-                }
-            }
+            labeledFileOrUnavailable(
+                artifacts.nativeDiagnostics,
+                NATIVE_EVENT_TAIL_BYTES,
+                warnings,
+                "diagnostics.log",
+            )
         }
 
         section("WRAPPER DIAGNOSTICS") {
@@ -229,7 +214,7 @@ object LsfgDiagnosticExporter {
                 artifacts.performanceMetrics,
                 NATIVE_EVENT_TAIL_BYTES,
                 warnings,
-                "metrics-*.jsonl / performance_metrics_*.jsonl",
+                "performance_metrics_*.jsonl",
             )
         }
 
@@ -280,7 +265,7 @@ object LsfgDiagnosticExporter {
         )
     }
 
-    internal data class DiscoveredArtifacts(
+    private data class DiscoveredArtifacts(
         val scanRoots: List<String>,
         val scannedNodes: Int,
         val config: File?,
@@ -294,10 +279,7 @@ object LsfgDiagnosticExporter {
         val layer: File?,
     )
 
-    internal fun discoverArtifacts(
-        context: Context,
-        warnings: MutableList<String>,
-    ): DiscoveredArtifacts {
+    private fun discoverArtifacts(context: Context, warnings: MutableList<String>): DiscoveredArtifacts {
         val roots = linkedMapOf<String, File>()
         fun addRoot(file: File?) {
             if (file == null || !file.exists()) return
@@ -310,151 +292,46 @@ object LsfgDiagnosticExporter {
         addRoot(context.cacheDir)
 
         var scanned = 0
-        val candidates = linkedMapOf<String, File>()
-
-        fun addCandidate(file: File?) {
-            if (file == null || !file.isFile) return
-            val key = runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
-            candidates[key] = file
-        }
-
-        fun addMatchingFiles(directory: File?, predicate: (File) -> Boolean) {
-            if (directory == null || !directory.isDirectory) return
-            directory.listFiles()
-                ?.asSequence()
-                ?.filter { it.isFile && predicate(it) }
-                ?.forEach(::addCandidate)
-        }
-
-        fun isPerformanceMetrics(file: File): Boolean {
-            if (!file.name.endsWith(".jsonl")) return false
-            return file.name.startsWith("performance_metrics_") ||
-                (file.name.startsWith("metrics-") &&
-                    file.parentFile?.name == PowerBaselineScripts.DIRECTORY_NAME)
-        }
-
-        // Current GameNative layouts are deterministic. Resolve these bounded
-        // directories before any recursive walk so diagnostics cannot lose the
-        // active session merely because app data contains >25k unrelated nodes.
-        // ImageFs.find(context) is backed by context.filesDir/imagefs. Use
-        // the deterministic path directly here so diagnostics do not depend on
-        // process-global ImageFs singleton state from another lifecycle/test.
-        val imageRoot = File(context.filesDir, "imagefs")
-        val homeRoot = File(imageRoot, "home")
-        homeRoot?.listFiles()
-            ?.asSequence()
-            ?.filter { it.isDirectory }
-            ?.take(256)
-            ?.forEach { home ->
-                // Containers normally live directly under imagefs/home, but
-                // GameNative can expose the active root through Wine's z:
-                // mapping. The on-device path is literally
-                // .wine/dosdevices/z:/home/<container>, so check both bounded
-                // locations without recursively scanning the full imagefs.
-                val runtimeRoots = listOf(
-                    home,
-                    File(home, ".wine/dosdevices/z:/home/${home.name}"),
-                )
-                runtimeRoots
-                    .asSequence()
-                    .filter { it.isDirectory }
-                    .forEach { runtimeRoot ->
-                        val configDir = File(runtimeRoot, ".config/lsfg-vk")
-                        listOf(
+        val candidates = mutableListOf<File>()
+        roots.values.forEach { root ->
+            if (scanned >= MAX_SCAN_NODES) return@forEach
+            runCatching {
+                for (file in root.walkTopDown().maxDepth(MAX_SCAN_DEPTH)) {
+                    if (scanned++ >= MAX_SCAN_NODES) break
+                    if (!file.isFile) continue
+                    val name = file.name
+                    val path = file.absolutePath.replace('\\', '/').lowercase(Locale.US)
+                    val isLsfgPath = path.contains("lsfg-vk") || path.contains("lsfg_vk")
+                    if (
+                        (isLsfgPath && name in setOf(
                             "conf.toml",
                             "stats.txt",
                             "vsync.txt",
                             "present-vsync.txt",
                             "diagnostics.log",
-                        ).forEach { name -> addCandidate(File(configDir, name)) }
-                        addCandidate(File(runtimeRoot, ".local/lib/liblsfg-vk-layer.so"))
-                        addCandidate(
-                            File(
-                                runtimeRoot,
-                                ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
-                            ),
-                        )
+                            ".lsfg_vk_runtime_version",
+                            "liblsfg-vk-layer.so",
+                        )) ||
+                        (name.startsWith("wrapper_diag_") && name.endsWith(".txt")) ||
+                        (name.startsWith("performance_metrics_") && name.endsWith(".jsonl"))
+                    ) {
+                        candidates += file
                     }
-            }
-
-        imageRoot?.let { root ->
-            addMatchingFiles(File(root, "usr/tmp")) { file ->
-                file.name.startsWith("wrapper_diag_") && file.name.endsWith(".txt")
-            }
-            addMatchingFiles(File(root, "tmp")) { file ->
-                file.name.startsWith("wrapper_diag_") && file.name.endsWith(".txt")
+                }
+            }.onFailure {
+                warnings += "Artifact scan failed under ${root.absolutePath}: ${safeMessage(it)}"
             }
         }
-
-        // PerformanceMetricsCollector can fall back to internal filesDir
-        // when external storage is unavailable at session start. Diagnostics may
-        // run later when external storage is available again, so target both
-        // deterministic locations instead of assuming the current storage state
-        // matches the state that created the session log.
-        listOfNotNull(
-            context.getExternalFilesDir(null)?.let {
-                File(it, PowerBaselineScripts.DIRECTORY_NAME)
-            },
-            File(context.filesDir, PowerBaselineScripts.DIRECTORY_NAME),
-        )
-            .distinctBy { directory ->
-                runCatching { directory.canonicalPath }
-                    .getOrElse { directory.absolutePath }
-            }
-            .forEach { addMatchingFiles(it, ::isPerformanceMetrics) }
+        if (scanned >= MAX_SCAN_NODES) {
+            warnings += "Artifact scan reached node limit ($MAX_SCAN_NODES); newest matching files found so far were used"
+        }
 
         fun newest(predicate: (File) -> Boolean): File? =
-            candidates.values.asSequence().filter(predicate).maxByOrNull { it.lastModified() }
+            candidates.asSequence().filter(predicate).maxByOrNull { it.lastModified() }
 
-        fun isLsfgPath(file: File): Boolean =
-            file.absolutePath.replace('\\', '/').lowercase(Locale.US).let { path ->
+        fun lsfgNamed(name: String): File? = newest { file ->
+            file.name == name && file.absolutePath.replace('\\', '/').lowercase(Locale.US).let { path ->
                 path.contains("lsfg-vk") || path.contains("lsfg_vk")
-            }
-
-        fun lsfgNamed(name: String): File? =
-            newest { file -> file.name == name && isLsfgPath(file) }
-
-        // Legacy / unusual layouts still get the old best-effort scan, but only
-        // when the current deterministic paths failed to locate core runtime
-        // artifacts. This prevents an optional missing wrapper/diagnostic file
-        // from forcing a 25k-node scan on every export.
-        val targetedCoreComplete =
-            lsfgNamed("conf.toml") != null &&
-                lsfgNamed("stats.txt") != null &&
-                lsfgNamed(".lsfg_vk_runtime_version") != null &&
-                lsfgNamed("liblsfg-vk-layer.so") != null
-
-        if (!targetedCoreComplete) {
-            roots.values.forEach { root ->
-                if (scanned >= MAX_SCAN_NODES) return@forEach
-                runCatching {
-                    for (file in root.walkTopDown().maxDepth(MAX_SCAN_DEPTH)) {
-                        if (scanned++ >= MAX_SCAN_NODES) break
-                        if (!file.isFile) continue
-                        val name = file.name
-                        val isLsfgPath = isLsfgPath(file)
-                        if (
-                            (isLsfgPath && name in setOf(
-                                "conf.toml",
-                                "stats.txt",
-                                "vsync.txt",
-                                "present-vsync.txt",
-                                "diagnostics.log",
-                                ".lsfg_vk_runtime_version",
-                                "liblsfg-vk-layer.so",
-                            )) ||
-                            (name.startsWith("wrapper_diag_") && name.endsWith(".txt")) ||
-                            isPerformanceMetrics(file)
-                        ) {
-                            addCandidate(file)
-                        }
-                    }
-                }.onFailure {
-                    warnings += "Artifact scan failed under ${root.absolutePath}: ${safeMessage(it)}"
-                }
-            }
-            if (scanned >= MAX_SCAN_NODES) {
-                warnings += "Artifact scan reached node limit ($MAX_SCAN_NODES); newest matching files found so far were used"
             }
         }
 
@@ -466,10 +343,8 @@ object LsfgDiagnosticExporter {
             vsync = lsfgNamed("vsync.txt"),
             presentVsync = lsfgNamed("present-vsync.txt"),
             nativeDiagnostics = lsfgNamed("diagnostics.log"),
-            wrapperDiagnostics = newest {
-                it.name.startsWith("wrapper_diag_") && it.name.endsWith(".txt")
-            },
-            performanceMetrics = newest(::isPerformanceMetrics),
+            wrapperDiagnostics = newest { it.name.startsWith("wrapper_diag_") && it.name.endsWith(".txt") },
+            performanceMetrics = newest { it.name.startsWith("performance_metrics_") && it.name.endsWith(".jsonl") },
             runtimeMarker = lsfgNamed(".lsfg_vk_runtime_version"),
             layer = lsfgNamed("liblsfg-vk-layer.so"),
         )

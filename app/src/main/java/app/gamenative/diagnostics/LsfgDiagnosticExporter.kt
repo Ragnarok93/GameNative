@@ -397,7 +397,10 @@ object LsfgDiagnosticExporter {
             },
             File(context.filesDir, PowerBaselineScripts.DIRECTORY_NAME),
         )
-            .distinctBy { runCatching { it.canonicalPath }.getOrElse { it.absolutePath } }
+            .distinctBy { directory ->
+                runCatching { directory.canonicalPath }
+                    .getOrElse { directory.absolutePath }
+            }
             .forEach { addMatchingFiles(it, ::isPerformanceMetrics) }
 
         fun newest(predicate: (File) -> Boolean): File? =

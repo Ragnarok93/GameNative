@@ -153,6 +153,100 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun diagnosticDiscovery_findsInternalMetricsFallback_withoutBroadScan() {
+        val context = RuntimeEnvironment.getApplication().applicationContext
+        val imageRoot = File(context.filesDir, "imagefs")
+        val home = File(imageRoot, "home/xuser-CUSTOM_GAME_DIAG_INTERNAL")
+        val runtimeRoot = File(
+            home,
+            ".wine/dosdevices/z:/home/${home.name}",
+        )
+        val configDir = File(runtimeRoot, ".config/lsfg-vk")
+        val internalDir = File(context.filesDir, "powercontrol")
+        val internalMetrics = File(internalDir, "metrics-987654322.jsonl")
+
+        try {
+            configDir.mkdirs()
+            File(configDir, "conf.toml").writeText(
+                "adaptive_framegen = true\\nfps_limit = 60\\n",
+            )
+            File(configDir, "stats.txt").writeText("adaptive=1\\ntarget_fps=60\\n")
+
+            val layer = File(runtimeRoot, ".local/lib/liblsfg-vk-layer.so")
+            layer.parentFile?.mkdirs()
+            layer.writeText("layer")
+            val runtimeMarker = File(
+                runtimeRoot,
+                ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
+            )
+            runtimeMarker.parentFile?.mkdirs()
+            runtimeMarker.writeText("diag-internal")
+
+            internalDir.mkdirs()
+            internalMetrics.writeText("{\\\"fps\\\":59.5}\\n")
+
+            val warnings = mutableListOf<String>()
+            val artifacts = LsfgDiagnosticExporter.discoverArtifacts(context, warnings)
+
+            assertEquals(
+                internalMetrics.canonicalFile,
+                artifacts.performanceMetrics?.canonicalFile,
+            )
+            assertEquals(0, artifacts.scannedNodes)
+            assertTrue(warnings.none { it.contains("node limit", ignoreCase = true) })
+        } finally {
+            home.deleteRecursively()
+            internalMetrics.delete()
+        }
+    }
+
+    @Test
+    fun diagnosticDiscovery_missingOptionalMetrics_doesNotForceBroadScan() {
+        val context = RuntimeEnvironment.getApplication().applicationContext
+        val imageRoot = File(context.filesDir, "imagefs")
+        val home = File(imageRoot, "home/xuser-CUSTOM_GAME_DIAG_OPTIONAL")
+        val runtimeRoot = File(
+            home,
+            ".wine/dosdevices/z:/home/${home.name}",
+        )
+        val configDir = File(runtimeRoot, ".config/lsfg-vk")
+
+        try {
+            configDir.mkdirs()
+            File(configDir, "conf.toml").writeText(
+                "adaptive_framegen = true\\nfps_limit = 60\\n",
+            )
+            File(configDir, "stats.txt").writeText("adaptive=1\\ntarget_fps=60\\n")
+
+            val layer = File(runtimeRoot, ".local/lib/liblsfg-vk-layer.so")
+            layer.parentFile?.mkdirs()
+            layer.writeText("layer")
+            val runtimeMarker = File(
+                runtimeRoot,
+                ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
+            )
+            runtimeMarker.parentFile?.mkdirs()
+            runtimeMarker.writeText("diag-optional")
+
+            val warnings = mutableListOf<String>()
+            val artifacts = LsfgDiagnosticExporter.discoverArtifacts(context, warnings)
+
+            assertEquals(
+                File(configDir, "conf.toml").canonicalFile,
+                artifacts.config?.canonicalFile,
+            )
+            assertEquals(
+                File(configDir, "stats.txt").canonicalFile,
+                artifacts.stats?.canonicalFile,
+            )
+            assertEquals(0, artifacts.scannedNodes)
+            assertTrue(warnings.none { it.contains("node limit", ignoreCase = true) })
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
     fun publishRuntimePressure_usesSeparateAtomicSidecar() {
         val snapshot = MetricsSnapshot(
             timestampMs = 123456L,

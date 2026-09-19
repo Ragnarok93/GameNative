@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import app.gamenative.CrashHandler
 import app.gamenative.powercontrol.PowerBaselineScripts
-import com.winlator.xenvironment.ImageFs
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -337,8 +336,11 @@ object LsfgDiagnosticExporter {
         // Current GameNative layouts are deterministic. Resolve these bounded
         // directories before any recursive walk so diagnostics cannot lose the
         // active session merely because app data contains >25k unrelated nodes.
-        val imageRoot = runCatching { ImageFs.find(context).rootDir }.getOrNull()
-        val homeRoot = imageRoot?.let { File(it, "home") }
+        // ImageFs.find(context) is backed by context.filesDir/imagefs. Use
+        // the deterministic path directly here so diagnostics do not depend on
+        // process-global ImageFs singleton state from another lifecycle/test.
+        val imageRoot = File(context.filesDir, "imagefs")
+        val homeRoot = File(imageRoot, "home")
         homeRoot?.listFiles()
             ?.asSequence()
             ?.filter { it.isDirectory }

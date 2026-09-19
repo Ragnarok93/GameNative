@@ -69,6 +69,53 @@ class LsfgDiagnosticExporterTest {
     }
 
     @Test
+    fun discoverArtifacts_findsInternalMetricsFallback_withoutBroadScan() {
+        metrics.delete()
+
+        val internalDir = File(
+            context.filesDir,
+            PowerBaselineScripts.DIRECTORY_NAME,
+        ).apply { mkdirs() }
+        val internalMetrics = File(internalDir, "metrics-987654321.jsonl").apply {
+            writeText("{\"fps\":59.5}\n")
+        }
+
+        try {
+            val warnings = mutableListOf<String>()
+            val artifacts = LsfgDiagnosticExporter.discoverArtifacts(context, warnings)
+
+            assertEquals(
+                internalMetrics.canonicalFile,
+                artifacts.performanceMetrics?.canonicalFile,
+            )
+            assertEquals(0, artifacts.scannedNodes)
+            assertTrue(warnings.none { it.contains("node limit", ignoreCase = true) })
+        } finally {
+            internalMetrics.delete()
+        }
+    }
+
+    @Test
+    fun discoverArtifacts_missingOptionalTimeline_doesNotForceGlobalScan() {
+        metrics.delete()
+
+        val warnings = mutableListOf<String>()
+        val artifacts = LsfgDiagnosticExporter.discoverArtifacts(context, warnings)
+
+        assertEquals(
+            File(runtimeRoot, ".config/lsfg-vk/conf.toml").canonicalFile,
+            artifacts.config?.canonicalFile,
+        )
+        assertEquals(
+            File(runtimeRoot, ".config/lsfg-vk/stats.txt").canonicalFile,
+            artifacts.stats?.canonicalFile,
+        )
+        assertEquals(null, artifacts.performanceMetrics)
+        assertEquals(0, artifacts.scannedNodes)
+        assertTrue(warnings.none { it.contains("node limit", ignoreCase = true) })
+    }
+
+    @Test
     fun discoverArtifacts_prefersCurrentKnownPaths_withoutBroadScan() {
         val warnings = mutableListOf<String>()
         val artifacts = LsfgDiagnosticExporter.discoverArtifacts(context, warnings)

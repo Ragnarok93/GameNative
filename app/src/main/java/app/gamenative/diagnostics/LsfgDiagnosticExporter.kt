@@ -386,11 +386,19 @@ object LsfgDiagnosticExporter {
             }
         }
 
-        val metricsRoot = File(
-            context.getExternalFilesDir(null) ?: context.filesDir,
-            PowerBaselineScripts.DIRECTORY_NAME,
+        // PerformanceMetricsCollector can fall back to internal filesDir
+        // when external storage is unavailable at session start. Diagnostics may
+        // run later when external storage is available again, so target both
+        // deterministic locations instead of assuming the current storage state
+        // matches the state that created the session log.
+        listOfNotNull(
+            context.getExternalFilesDir(null)?.let {
+                File(it, PowerBaselineScripts.DIRECTORY_NAME)
+            },
+            File(context.filesDir, PowerBaselineScripts.DIRECTORY_NAME),
         )
-        addMatchingFiles(metricsRoot, ::isPerformanceMetrics)
+            .distinctBy { runCatching { it.canonicalPath }.getOrElse { it.absolutePath } }
+            .forEach { addMatchingFiles(it, ::isPerformanceMetrics) }
 
         fun newest(predicate: (File) -> Boolean): File? =
             candidates.values.asSequence().filter(predicate).maxByOrNull { it.lastModified() }
@@ -411,8 +419,7 @@ object LsfgDiagnosticExporter {
             lsfgNamed("conf.toml") != null &&
                 lsfgNamed("stats.txt") != null &&
                 lsfgNamed(".lsfg_vk_runtime_version") != null &&
-                lsfgNamed("liblsfg-vk-layer.so") != null &&
-                newest(::isPerformanceMetrics) != null
+                lsfgNamed("liblsfg-vk-layer.so") != null
 
         if (!targetedCoreComplete) {
             roots.values.forEach { root ->

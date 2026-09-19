@@ -341,24 +341,38 @@ object LsfgDiagnosticExporter {
         val homeRoot = imageRoot?.let { File(it, "home") }
         homeRoot?.listFiles()
             ?.asSequence()
-            ?.filter(File::isDirectory)
+            ?.filter { it.isDirectory }
             ?.take(256)
             ?.forEach { home ->
-                val configDir = File(home, ".config/lsfg-vk")
-                listOf(
-                    "conf.toml",
-                    "stats.txt",
-                    "vsync.txt",
-                    "present-vsync.txt",
-                    "diagnostics.log",
-                ).forEach { name -> addCandidate(File(configDir, name)) }
-                addCandidate(File(home, ".local/lib/liblsfg-vk-layer.so"))
-                addCandidate(
-                    File(
-                        home,
-                        ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
-                    ),
+                // Containers normally live directly under imagefs/home, but
+                // GameNative can expose the active root through Wine's z:
+                // mapping. The on-device path is literally
+                // .wine/dosdevices/z:/home/<container>, so check both bounded
+                // locations without recursively scanning the full imagefs.
+                val runtimeRoots = listOf(
+                    home,
+                    File(home, ".wine/dosdevices/z:/home/${home.name}"),
                 )
+                runtimeRoots
+                    .asSequence()
+                    .filter { it.isDirectory }
+                    .forEach { runtimeRoot ->
+                        val configDir = File(runtimeRoot, ".config/lsfg-vk")
+                        listOf(
+                            "conf.toml",
+                            "stats.txt",
+                            "vsync.txt",
+                            "present-vsync.txt",
+                            "diagnostics.log",
+                        ).forEach { name -> addCandidate(File(configDir, name)) }
+                        addCandidate(File(runtimeRoot, ".local/lib/liblsfg-vk-layer.so"))
+                        addCandidate(
+                            File(
+                                runtimeRoot,
+                                ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
+                            ),
+                        )
+                    }
             }
 
         imageRoot?.let { root ->

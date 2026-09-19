@@ -16,6 +16,7 @@ import org.robolectric.RuntimeEnvironment
 class LsfgDiagnosticExporterTest {
     private lateinit var context: Context
     private lateinit var home: File
+    private lateinit var runtimeRoot: File
     private lateinit var wrapper: File
     private lateinit var metrics: File
 
@@ -25,7 +26,11 @@ class LsfgDiagnosticExporterTest {
 
         val imageRoot = File(context.filesDir, "imagefs")
         home = File(imageRoot, "home/xuser-CUSTOM_GAME_DIAG_TEST")
-        val configDir = File(home, ".config/lsfg-vk")
+        runtimeRoot = File(
+            home,
+            ".wine/dosdevices/z:/home/${home.name}",
+        )
+        val configDir = File(runtimeRoot, ".config/lsfg-vk")
         configDir.mkdirs()
         File(configDir, "conf.toml").writeText("adaptive_framegen = true\nfps_limit = 60\n")
         File(configDir, "stats.txt").writeText("adaptive=1\ntarget_fps=60\n")
@@ -33,11 +38,11 @@ class LsfgDiagnosticExporterTest {
         File(configDir, "present-vsync.txt").writeText("present")
         File(configDir, "diagnostics.log").writeText("native-event")
 
-        val layer = File(home, ".local/lib/liblsfg-vk-layer.so")
+        val layer = File(runtimeRoot, ".local/lib/liblsfg-vk-layer.so")
         layer.parentFile?.mkdirs()
         layer.writeText("layer")
         val marker = File(
-            home,
+            runtimeRoot,
             ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
         )
         marker.parentFile?.mkdirs()
@@ -69,11 +74,11 @@ class LsfgDiagnosticExporterTest {
         val artifacts = LsfgDiagnosticExporter.discoverArtifacts(context, warnings)
 
         assertEquals(
-            File(home, ".config/lsfg-vk/conf.toml").canonicalFile,
+            File(runtimeRoot, ".config/lsfg-vk/conf.toml").canonicalFile,
             artifacts.config?.canonicalFile,
         )
         assertEquals(
-            File(home, ".config/lsfg-vk/stats.txt").canonicalFile,
+            File(runtimeRoot, ".config/lsfg-vk/stats.txt").canonicalFile,
             artifacts.stats?.canonicalFile,
         )
         assertEquals(wrapper.canonicalFile, artifacts.wrapperDiagnostics?.canonicalFile)

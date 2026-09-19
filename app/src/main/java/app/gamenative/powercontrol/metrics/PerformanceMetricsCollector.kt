@@ -5,6 +5,7 @@ import android.hardware.display.DisplayManager
 import android.view.Display
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
+import app.gamenative.utils.LsfgVkManager
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -190,6 +191,10 @@ object PerformanceMetricsCollector {
         PowerManager.currentFps = snapshot.fps
         PowerManager.currentCpuUsage = snapshot.cpuUsagePercent ?: 0f
         PowerManager.currentGpuUsage = snapshot.gpuUsagePercent ?: 0f
+        LsfgVkManager.publishRuntimePressure(
+            PowerManager.activeContainerRootDir(),
+            snapshot,
+        )
         if (frameGeneration != FrameTimeRing.generation()) {
             PowerManager.latestMetrics = null
             PowerManager.currentFps = 0f

@@ -1,5 +1,7 @@
 package app.gamenative.utils
 
+import app.gamenative.powercontrol.metrics.CpuUsageSource
+import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import com.winlator.container.Container
 import com.winlator.core.envvars.EnvVars
 import java.io.File
@@ -95,6 +97,40 @@ class LsfgVkManagerTest {
         assertTrue(text.contains("multiplier = 1"))
         assertTrue(text.contains("performance_mode = true"))
         assertTrue(text.contains("experimental_present_mode = \"mailbox\""))
+    }
+
+    @Test
+    fun publishRuntimePressure_usesSeparateAtomicSidecar() {
+        val snapshot = MetricsSnapshot(
+            timestampMs = 123456L,
+            fps = 57.5f,
+            frameTimeP50Ms = 16.0f,
+            frameTimeP95Ms = 24.0f,
+            frameTimeMaxMs = 31.0f,
+            slowFrameCount = 3,
+            totalFrameCount = 20,
+            cpuUsagePercent = 50f,
+            cpuUsageSource = CpuUsageSource.PROC_STAT,
+            gpuUsagePercent = 99f,
+            cpuTempC = 60,
+            gpuTempC = 58,
+        )
+
+        assertTrue(LsfgVkManager.publishRuntimePressure(rootDir, snapshot))
+
+        val pressure = File(
+            rootDir,
+            ".config/lsfg-vk/runtime-pressure.txt",
+        ).readText()
+        assertTrue(pressure.contains("timestamp_ms=123456"))
+        assertTrue(pressure.contains("gpu_usage_percent=99.0"))
+        assertTrue(pressure.contains("output_fps=57.50"))
+        assertTrue(pressure.contains("frame_time_p95_ms=24.00"))
+        assertTrue(pressure.contains("slow_frame_ratio=0.1500"))
+
+        assertFalse(
+            File(rootDir, ".config/lsfg-vk/conf.toml").exists(),
+        )
     }
 
     @Test

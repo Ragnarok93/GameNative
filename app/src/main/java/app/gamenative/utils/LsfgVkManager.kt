@@ -1,6 +1,7 @@
 package app.gamenative.utils
 
 import android.content.Context
+import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import java.util.concurrent.Executors
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
@@ -85,6 +86,8 @@ object LsfgVkManager {
 
     // Written by the layer next to conf.toml; measured presented/base fps
     private const val STATS_RELATIVE_PATH = ".config/lsfg-vk/stats.txt"
+    private const val RUNTIME_PRESSURE_RELATIVE_PATH =
+        ".config/lsfg-vk/runtime-pressure.txt"
     private const val STATS_FRESHNESS_MS = 2000L
     private val statsReadExecutor by lazy {
         Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-stats").apply { isDaemon = true } }
@@ -249,6 +252,41 @@ object LsfgVkManager {
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
 
+
+    /**
+     * Publish coarse whole-device pressure telemetry for Adaptive Flow.
+     *
+     * This file is intentionally separate from conf.toml: updating it must never
+     * trigger an LSFG context rebuild. PerformanceMetricsCollector already samples
+     * these values every 500 ms, so this adds no second GPU/sysfs polling path.
+     */
+    internal fun publishRuntimePressure(
+        rootDir: File?,
+        snapshot: MetricsSnapshot,
+    ): Boolean {
+        val root = rootDir ?: return false
+        val gpu = snapshot.gpuUsagePercent
+            ?.takeIf { it.isFinite() && it in 0f..100f }
+            ?: return false
+        val totalFrames = snapshot.totalFrameCount.coerceAtLeast(0)
+        val slowRatio = if (totalFrames > 0) {
+            snapshot.slowFrameCount.coerceIn(0, totalFrames).toDouble() /
+                totalFrames.toDouble()
+        } else {
+            0.0
+        }
+        val text = buildString {
+            appendLine("timestamp_ms=${snapshot.timestampMs}")
+            appendLine("gpu_usage_percent=${String.format(Locale.US, "%.1f", gpu)}")
+            appendLine("output_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
+            appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
+            appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
+        }
+        return writeConfigAtomic(
+            File(root, RUNTIME_PRESSURE_RELATIVE_PATH),
+            text,
+        )
+    }
 
     /**
      * Read the fps the layer actually presented, measured on-device.

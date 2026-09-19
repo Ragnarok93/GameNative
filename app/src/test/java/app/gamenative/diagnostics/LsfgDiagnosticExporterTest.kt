@@ -40,7 +40,7 @@ class LsfgDiagnosticExporterTest {
         File(imageRoot, "usr/tmp/wrapper_diag_diagnostic-test.txt").delete()
         metricsRoot.listFiles()
             ?.filter { it.name.startsWith("metrics-diagnostic-test-") }
-            ?.forEach(File::delete)
+            ?.forEach { it.delete() }
     }
 
     @Test

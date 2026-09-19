@@ -159,6 +159,8 @@ object PowerManager {
     @Volatile
     private var gamePinGeneration: Int = 0
 
+    internal fun activeContainerRootDir(): File? = containerDir
+
     /**
      * Autostart with contain dir and application context
      */

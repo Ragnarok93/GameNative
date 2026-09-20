@@ -1,6 +1,7 @@
 package app.gamenative.diagnostics
 
 import app.gamenative.powercontrol.PowerBaselineScripts
+import app.gamenative.powercontrol.PowerManager
 import java.io.File
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -90,6 +91,66 @@ class LsfgDiagnosticExporterTest {
         assertEquals(metrics.canonicalPath, artifacts.performanceMetrics?.canonicalPath)
         assertEquals(0, artifacts.scannedNodes)
         assertTrue(warnings.none { it.contains("node limit") })
+    }
+
+    @Test
+    fun discoverArtifacts_prefersActiveContainerOverNewerStaleContainerFiles() {
+        val context = RuntimeEnvironment.getApplication()
+        val activeConfig = File(homeRoot, ".config/lsfg-vk/conf.toml").apply {
+            writeText("active=true\n")
+        }
+        val activeStats = File(homeRoot, ".config/lsfg-vk/stats.txt").apply {
+            writeText("active=true\n")
+        }
+        val activeMarker = File(
+            homeRoot,
+            ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
+        ).apply {
+            writeText("active-runtime\n")
+        }
+        val activeLayer = File(homeRoot, ".local/lib/liblsfg-vk-layer.so").apply {
+            writeBytes(byteArrayOf(1))
+        }
+
+        val staleRoot = File(imageRoot, "home/stale-diagnostic-container").apply {
+            mkdirs()
+        }
+        File(staleRoot, ".config/lsfg-vk").mkdirs()
+        File(staleRoot, ".local/lib").mkdirs()
+        File(staleRoot, ".local/share/vulkan/implicit_layer.d").mkdirs()
+        val staleConfig = File(staleRoot, ".config/lsfg-vk/conf.toml").apply {
+            writeText("active=false\n")
+        }
+        File(staleRoot, ".config/lsfg-vk/stats.txt").writeText("stale=true\n")
+        File(
+            staleRoot,
+            ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
+        ).writeText("stale-runtime\n")
+        File(staleRoot, ".local/lib/liblsfg-vk-layer.so")
+            .writeBytes(byteArrayOf(2))
+
+        val containerField = PowerManager::class.java
+            .getDeclaredField("containerDir")
+            .apply { isAccessible = true }
+        containerField.set(PowerManager, homeRoot)
+        try {
+            val now = System.currentTimeMillis()
+            listOf(activeConfig, activeStats, activeMarker, activeLayer).forEach {
+                assertTrue(it.setLastModified(now))
+            }
+            assertTrue(staleConfig.setLastModified(now + 10_000))
+
+            val warnings = mutableListOf<String>()
+            val artifacts = LsfgDiagnosticExporter.discoverArtifacts(context, warnings)
+
+            assertEquals(activeConfig.canonicalPath, artifacts.config?.canonicalPath)
+            assertEquals(activeStats.canonicalPath, artifacts.stats?.canonicalPath)
+            assertEquals(activeMarker.canonicalPath, artifacts.runtimeMarker?.canonicalPath)
+            assertEquals(activeLayer.canonicalPath, artifacts.layer?.canonicalPath)
+        } finally {
+            containerField.set(PowerManager, null)
+            staleRoot.deleteRecursively()
+        }
     }
 
     @Test

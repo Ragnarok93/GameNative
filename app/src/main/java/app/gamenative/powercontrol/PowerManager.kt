@@ -66,6 +66,7 @@ object PowerManager {
     }
 
     private lateinit var appContext: Context
+    @Volatile
     private var containerDir: File? = null
     private lateinit var driver: PerformanceDriver
     private var autoTuner: PerformanceAutoTuner? = null

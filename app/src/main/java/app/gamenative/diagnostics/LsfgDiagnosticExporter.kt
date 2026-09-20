@@ -345,6 +345,7 @@ object LsfgDiagnosticExporter {
     ): DiscoveredArtifacts {
         val roots = linkedMapOf<String, File>()
         val candidates = linkedMapOf<String, File>()
+        var activeContainerArtifactRoot: File? = null
 
         fun canonical(file: File): String =
             runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
@@ -367,9 +368,10 @@ object LsfgDiagnosticExporter {
                 ?.forEach(::addCandidate)
         }
 
-        fun addContainerArtifacts(root: File?) {
+        fun addContainerArtifacts(root: File?, active: Boolean = false) {
             if (root == null || !root.isDirectory) return
             addRoot(root)
+            if (active) activeContainerArtifactRoot = root
             val configDir = File(root, ".config/lsfg-vk")
             listOf(
                 "conf.toml",
@@ -397,7 +399,7 @@ object LsfgDiagnosticExporter {
         val activeContainerRoot = runCatching {
             PowerManager.activeContainerRootDir()
         }.getOrNull()
-        addContainerArtifacts(activeContainerRoot)
+        addContainerArtifacts(activeContainerRoot, active = true)
 
         val imageRoot = File(context.filesDir, "imagefs")
         addRoot(imageRoot)
@@ -434,17 +436,36 @@ object LsfgDiagnosticExporter {
                 path.contains("lsfg-vk") || path.contains("lsfg_vk")
             }
 
+        fun activeLsfgNamed(name: String): File? {
+            val root = activeContainerArtifactRoot ?: return null
+            val file = when (name) {
+                ".lsfg_vk_runtime_version" -> File(
+                    root,
+                    ".local/share/vulkan/implicit_layer.d/$name",
+                )
+                "liblsfg-vk-layer.so" -> File(root, ".local/lib/$name")
+                else -> File(root, ".config/lsfg-vk/$name")
+            }
+            return file.takeIf { it.isFile }
+        }
+
+        // The active container is the authoritative diagnostic session. A
+        // newer artifact from another container must not replace one member of
+        // this set and create a mixed-runtime report. Fall back to the bounded
+        // global search only when the active container does not have that file.
         fun lsfgNamed(name: String): File? =
-            newest { file -> file.name == name && isLsfgPath(file) }
+            activeLsfgNamed(name)
+                ?: newest { file -> file.name == name && isLsfgPath(file) }
 
         // Legacy/unusual layouts get a small bounded fallback only when the
         // core runtime could not be resolved directly. Optional missing logs do
         // not trigger a 25k-node walk.
-        val coreResolved =
-            lsfgNamed("conf.toml") != null &&
-                lsfgNamed("stats.txt") != null &&
-                lsfgNamed(".lsfg_vk_runtime_version") != null &&
-                lsfgNamed("liblsfg-vk-layer.so") != null
+        val coreResolved = listOf(
+            "conf.toml",
+            "stats.txt",
+            ".lsfg_vk_runtime_version",
+            "liblsfg-vk-layer.so",
+        ).all { lsfgNamed(it) != null }
 
         var scanned = 0
         if (!coreResolved) {

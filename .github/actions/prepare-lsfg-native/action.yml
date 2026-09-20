@@ -62,6 +62,20 @@ runs:
         grep -Fq "$expected_prefix" "$runtime_manager"
         git diff --check -- "$runtime_manager"
 
+        echo "Build and run Adaptive LSFG controller tests"
+        g++ -std=c++20 -Wall -Wextra -Werror \
+          -I"$native_dir/include" \
+          "$native_dir/src/adaptive_scheduler.cpp" \
+          "$native_dir/tests/adaptive_scheduler_test.cpp" \
+          -o /tmp/lsfg-adaptive-scheduler-test
+        /tmp/lsfg-adaptive-scheduler-test
+        g++ -std=c++20 -Wall -Wextra -Werror \
+          -I"$native_dir/include" \
+          "$native_dir/src/adaptive_flow_controller.cpp" \
+          "$native_dir/tests/adaptive_flow_controller_test.cpp" \
+          -o /tmp/lsfg-adaptive-flow-controller-test
+        /tmp/lsfg-adaptive-flow-controller-test
+
         mapfile -t android_native_tests < <(find "$native_dir/tests" -maxdepth 1 -type f -name 'android_*_test.py' | sort)
         if [[ "${#android_native_tests[@]}" -eq 0 ]]; then
           echo "ERROR: no Android LSFG native tests were found" >&2

@@ -19,7 +19,6 @@ class LsfgBuildWorkflowContractTest {
             ".github/workflows/legacy-release-build.yml",
             ".github/workflows/tagged-release.yml",
             ".github/workflows/app-release-signed.yml",
-            ".github/workflows/adhoc-signed-build.yml",
         )
 
         workflows.forEach { path ->
@@ -37,6 +36,38 @@ class LsfgBuildWorkflowContractTest {
                 source.contains("git checkout --detach"),
             )
         }
+    }
+
+    @Test
+    fun apkWorkflowsPublishSingleUnsplitArtifacts() {
+        listOf(
+            ".github/workflows/pluvia-pr-check.yml",
+            ".github/workflows/legacy-release-build.yml",
+        ).forEach { path ->
+            val source = repoFile(path).readText()
+            listOf(
+                "split -n",
+                ".apk.part-",
+                "transfer parts",
+            ).forEach { forbidden ->
+                assertFalse(
+                    "$path must publish the APK as one artifact; found forbidden split token: $forbidden",
+                    source.contains(forbidden, ignoreCase = true),
+                )
+            }
+        }
+
+        val prCheck = repoFile(".github/workflows/pluvia-pr-check.yml").readText()
+        assertTrue(prCheck.contains("name: gamenative-legacy-debug"))
+        assertTrue(prCheck.contains("gamenative-legacy-debug.apk.sha256"))
+
+        val release = repoFile(".github/workflows/legacy-release-build.yml").readText()
+        assertTrue(release.contains("name: gamenative-legacy-release"))
+        assertTrue(release.contains("gamenative-legacy-release.apk.sha256"))
+        assertFalse(
+            "LegacyRelease must not start a second build for feature pull requests",
+            release.contains("pull_request:"),
+        )
     }
 
     @Test
@@ -105,48 +136,21 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun b14PromotionWorkflowUsesGitlinkProvenanceAndAuditsCleanProductionRuntime() {
-        val source = repoFile(".github/workflows/b14-directional-adaptive-promotion.yml").readText()
+    fun retiredLsfgStagingWorkflowsStayAbsent() {
+        val workflowDir = repoFile(".github/workflows/pluvia-pr-check.yml").parentFile
         listOf(
-            "expected=\"${'$'}(git rev-parse HEAD:${'$'}{native_dir})\"",
-            "actual=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
-            "test \"${'$'}expected\" = \"${'$'}B14_NATIVE_REVISION\"",
-            "test \"${'$'}actual\" = \"${'$'}B14_NATIVE_REVISION\"",
-            "candidate-b11-beta4-pow2-mask",
-            "candidate-b13-beta4-fused-mask",
-            "candidate-b14-mipmaps-tail-fusion",
-            "ahb-directional-transport",
-            "config-reload-soft-toggle",
-            "candidate-b15-mip4-topology",
-            "candidate-b15-mip4-register-fusion",
-            "candidate-fp16-motion-compaction",
-            "b12-stage-profile-init",
-            "mipmaps_avg_ms=",
-            "beta4_avg_ms=",
-            "unzip -p \"${'$'}apk\" lib/arm64-v8a/liblsfg-vk-layer.so",
-        ).forEach { token ->
-            assertTrue(
-                "B14 promotion workflow is missing provenance, production marker, or rejection token: ${'$'}token",
-                source.contains(token),
-            )
-        }
-        for (staleOverride in listOf(
-            "LSFGVK_ADAPTIVE_RUNTIME",
-            "LSFGVK_B12_DUAL_STAGE_PROFILE",
-            "LSFGVK_MIPMAPS_CANDIDATE_SCRIPT",
-        )) {
+            "adhoc-signed-build.yml",
+            "b14-directional-adaptive-promotion.yml",
+            "b14-fixed-wrapper-validation.yml",
+            "experimental-adaptive-legacydebug.yml",
+            "finalize-adaptive-ui-stage.yml",
+            "integrate-adaptive-stage.yml",
+            "lsfg-legacy-single-apk.yml",
+        ).forEach { name ->
             assertFalse(
-                "promotion workflow must consume the native release production defaults, not override $staleOverride",
-                source.contains(staleOverride),
+                "retired LSFG staging workflow must stay removed: $name",
+                File(workflowDir, name).exists(),
             )
         }
-        assertFalse(
-            "promoted production runtime must keep verbose Mipmaps executable/IR capture disabled",
-            source.contains("LSFGVK_B12_MIPMAPS_EXEC_PROFILE"),
-        )
-        assertFalse(
-            "promoted production runtime must keep generic verbose Mipmaps executable/IR capture disabled",
-            source.contains("LSFGVK_MIPMAPS_EXEC_PROFILE"),
-        )
     }
 }

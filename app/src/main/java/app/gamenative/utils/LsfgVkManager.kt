@@ -63,6 +63,8 @@ object LsfgVkManager {
     const val EXTRA_ARMED = "lsfgEnabled"
     const val EXTRA_MULTIPLIER = "lsfgMultiplier"
     const val EXTRA_FLOW_SCALE = "lsfgFlowScale"
+    const val EXTRA_FLOW_SCALE_MODE = "lsfgFlowScaleMode"
+    const val EXTRA_ADAPTIVE_FLOW_PRESET = "lsfgAdaptiveFlowPreset"
     const val EXTRA_PERFORMANCE_MODE = "lsfgPerformanceMode"
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
     const val EXTRA_FRAMEGEN_MODE = "lsfgFramegenMode"
@@ -71,6 +73,11 @@ object LsfgVkManager {
 
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
+    const val FLOW_MODE_FIXED = "fixed"
+    const val FLOW_MODE_ADAPTIVE = "adaptive"
+    const val ADAPTIVE_FLOW_PRESET_QUALITY = "quality"
+    const val ADAPTIVE_FLOW_PRESET_BALANCED = "balanced"
+    const val ADAPTIVE_FLOW_PRESET_LOW = "low"
     const val MIN_ADAPTIVE_TARGET_FPS = 30
     const val MAX_ADAPTIVE_TARGET_FPS = 120
     const val ADAPTIVE_TARGET_FPS_STEP = 5
@@ -96,7 +103,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-adaptive-5fc4bdd0-r1"
+        "gamenative-adaptive-50ef4ea6-r1"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -203,9 +210,31 @@ object LsfgVkManager {
     private fun frameGenerationActive(container: Container): Boolean =
         isArmed(container) && multiplier(container) >= 2
 
-    /** Get the flow scale (0.25-1.0, default 0.80). */
+    /** Get the persisted Fixed Flow Scale (0.25-1.0, default 0.80). */
     fun flowScale(container: Container): Float =
         container.getExtra(EXTRA_FLOW_SCALE, "0.80").toFloatOrNull()?.coerceIn(0.25f, 1.0f) ?: 0.80f
+
+    /** Fixed preserves the saved slider; Adaptive selects a preset-bounded runtime scale. */
+    fun flowScaleMode(container: Container): String =
+        container.getExtra(EXTRA_FLOW_SCALE_MODE, FLOW_MODE_FIXED)
+            .lowercase(Locale.US)
+            .takeIf { it == FLOW_MODE_FIXED || it == FLOW_MODE_ADAPTIVE }
+            ?: FLOW_MODE_FIXED
+
+    fun sanitizeAdaptiveFlowPreset(preset: String): String =
+        when (preset.lowercase(Locale.US)) {
+            ADAPTIVE_FLOW_PRESET_BALANCED -> ADAPTIVE_FLOW_PRESET_BALANCED
+            ADAPTIVE_FLOW_PRESET_LOW -> ADAPTIVE_FLOW_PRESET_LOW
+            else -> ADAPTIVE_FLOW_PRESET_QUALITY
+        }
+
+    fun adaptiveFlowPreset(container: Container): String =
+        sanitizeAdaptiveFlowPreset(
+            container.getExtra(
+                EXTRA_ADAPTIVE_FLOW_PRESET,
+                ADAPTIVE_FLOW_PRESET_QUALITY,
+            ),
+        )
 
     /** Get whether performance mode is enabled (default true). */
     fun performanceMode(container: Container): Boolean =
@@ -459,6 +488,8 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) runtimeMultiplier else 1,
                 flowScale = flowScale(container),
+                adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+                adaptiveFlowPreset = adaptiveFlowPreset(container),
                 performanceMode = performanceMode(container),
                 adaptiveFramegen = adaptive,
                 fpsLimit = adaptiveTarget,
@@ -755,6 +786,8 @@ object LsfgVkManager {
         enabled: Boolean,
         multiplier: Int,
         flowScale: Float,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
         performanceMode: Boolean,
         adaptiveFramegen: Boolean,
         fpsLimit: Int,
@@ -775,6 +808,8 @@ object LsfgVkManager {
                 appendLine("exe = ${tomlString(processName)}")
                 appendLine("multiplier = $effectiveMultiplier")
                 appendLine("flow_scale = ${formatFlowScale(flowScale)}")
+                appendLine("adaptive_flow_scale = ${if (adaptiveFlowScale) "true" else "false"}")
+                appendLine("adaptive_flow_preset = ${tomlString(sanitizeAdaptiveFlowPreset(adaptiveFlowPreset))}")
                 appendLine("performance_mode = ${if (performanceMode) "true" else "false"}")
                 appendLine("hdr_mode = false")
                 appendLine("adaptive_framegen = ${if (adaptiveFramegen) "true" else "false"}")
@@ -842,6 +877,8 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) effectiveMultiplier else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
+                adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+                adaptiveFlowPreset = adaptiveFlowPreset(container),
                 performanceMode = performanceMode,
                 adaptiveFramegen = adaptive,
                 fpsLimit = effectiveFpsLimit,

@@ -67,6 +67,41 @@ object LsfgDiagnosticExporter {
     fun defaultFileName(now: Date = Date()): String =
         "gamenative-lsfg-${SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(now)}.txt"
 
+    private val runtimeSessionPattern = Regex("""\bruntime_session_id=(\d+)\b""")
+    private val configRevisionPattern = Regex("""\bconfig_revision=(\d+)\b""")
+
+    /**
+     * Group same-UID native LSFG logcat by runtime session and configuration epoch.
+     * Legacy lines remain visible in an explicit unsegmented bucket instead of
+     * being discarded.
+     */
+    internal fun segmentNativeEvents(nativeLogcat: String): String {
+        if (nativeLogcat.isBlank()) return ""
+
+        val grouped = linkedMapOf<Pair<String, String>, MutableList<String>>()
+        nativeLogcat.lineSequence()
+            .filter(String::isNotBlank)
+            .forEach { line ->
+                val session = runtimeSessionPattern.find(line)?.groupValues?.getOrNull(1)
+                val revision = configRevisionPattern.find(line)?.groupValues?.getOrNull(1)
+                val key = if (session != null && revision != null) {
+                    session to revision
+                } else {
+                    "unsegmented" to "unknown"
+                }
+                grouped.getOrPut(key) { mutableListOf() }.add(line)
+            }
+
+        return buildString {
+            grouped.forEach { (key, lines) ->
+                appendLine(
+                    "--- runtime_session_id=${key.first} config_revision=${key.second} ---",
+                )
+                lines.forEach(::appendLine)
+            }
+        }.trimEnd()
+    }
+
     fun buildReport(context: Context): String {
         val appContext = context.applicationContext
         val warnings = mutableListOf<String>()
@@ -214,7 +249,7 @@ object LsfgDiagnosticExporter {
                 .takeLastLines(PRESENTATION_LOG_LINES)
             when {
                 nativeLogcat.isNotBlank() ->
-                    "source=same_uid_logcat\n$nativeLogcat"
+                    "source=same_uid_logcat\n${segmentNativeEvents(nativeLogcat)}"
                 artifacts.nativeDiagnostics?.isFile == true ->
                     labeledFile(artifacts.nativeDiagnostics, NATIVE_EVENT_TAIL_BYTES)
                 else -> {

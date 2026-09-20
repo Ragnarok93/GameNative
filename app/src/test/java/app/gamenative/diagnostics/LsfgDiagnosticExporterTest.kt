@@ -93,6 +93,38 @@ class LsfgDiagnosticExporterTest {
     }
 
     @Test
+    fun segmentNativeEvents_groupsRuntimeSessionsAndConfigEpochs() {
+        val input = """
+            09-20 01:00:00 I/LSFG_METRICS: runtime_session_id=101 config_revision=1 output_fps=60
+            09-20 01:00:01 I/LSFG_EVENT: runtime_session_id=101 config_revision=2 cost_raise=1
+            09-20 01:00:02 I/LSFG_FLOW: runtime_session_id=101 config_revision=1 requested=0.9
+            09-20 01:00:03 I/LSFG_METRICS: runtime_session_id=202 config_revision=1 output_fps=75
+            09-20 01:00:04 I/LSFG: legacy line without epoch fields
+        """.trimIndent()
+
+        val grouped = LsfgDiagnosticExporter.segmentNativeEvents(input)
+
+        val session101Revision1 =
+            "--- runtime_session_id=101 config_revision=1 ---"
+        val session101Revision2 =
+            "--- runtime_session_id=101 config_revision=2 ---"
+        val session202Revision1 =
+            "--- runtime_session_id=202 config_revision=1 ---"
+        val legacy =
+            "--- runtime_session_id=unsegmented config_revision=unknown ---"
+
+        assertTrue(grouped.contains(session101Revision1))
+        assertTrue(grouped.contains(session101Revision2))
+        assertTrue(grouped.contains(session202Revision1))
+        assertTrue(grouped.contains(legacy))
+        assertTrue(grouped.indexOf(session101Revision1) < grouped.indexOf(session101Revision2))
+        assertTrue(grouped.indexOf(session101Revision2) < grouped.indexOf(session202Revision1))
+        assertTrue(grouped.indexOf(session202Revision1) < grouped.indexOf(legacy))
+        assertTrue(grouped.contains("LSFG_METRICS: runtime_session_id=101 config_revision=1"))
+        assertTrue(grouped.contains("LSFG_FLOW: runtime_session_id=101 config_revision=1"))
+    }
+
+    @Test
     fun uidLogcatCommand_collectsSameUidProcessesWithoutPidFilter() {
         val command = LsfgDiagnosticExporter.uidLogcatCommand(
             lineCount = 12_000,

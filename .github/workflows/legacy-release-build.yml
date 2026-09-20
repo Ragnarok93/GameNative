@@ -153,6 +153,9 @@ jobs:
 
           # The exact Release-built LSFG runtime must be packaged for arm64.
           grep -qx 'lib/arm64-v8a/liblsfg-vk-layer\.so' apk-entries.txt
+          expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
+          unzip -p gamenative-legacy-release.apk 'lib/arm64-v8a/liblsfg-vk-layer.so' \
+            | grep -aFq "$expected_native_commit"
 
           apksigner="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
           test -x "$apksigner"

@@ -88,6 +88,9 @@ jobs:
           mkdir -p /tmp/gamenative-legacy-debug
           apk=/tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk
           cp "${apks[0]}" "$apk"
+          expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
+          unzip -p "$apk" 'lib/arm64-v8a/liblsfg-vk-layer.so' \
+            | grep -aFq "$expected_native_commit"
           sha256sum "$apk" | tee /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256
           test -s "$apk"
           test -s /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256

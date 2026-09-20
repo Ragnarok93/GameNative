@@ -71,6 +71,20 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
+    fun apkWorkflowsVerifyThePackagedNativeMarkerMatchesTheGitlink() {
+        listOf(
+            ".github/workflows/pluvia-pr-check.yml",
+            ".github/workflows/legacy-release-build.yml",
+        ).forEach { path ->
+            val source = repoFile(path).readText()
+            assertTrue(source.contains("git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android"))
+            assertTrue(source.contains("unzip -p"))
+            assertTrue(source.contains("lib/arm64-v8a/liblsfg-vk-layer.so"))
+            assertTrue(source.contains("grep -aFq"))
+        }
+    }
+
+    @Test
     fun sharedNativePreparationUsesGitlinkAndAndroidPortabilityChecks() {
         val source = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
         listOf(
@@ -91,29 +105,21 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun sharedNativePreparationDerivesRuntimeMarkerFromGitlinkWithoutMutatingTests() {
+    fun sharedNativePreparationRequiresExactRuntimeMarkerFromGitlink() {
         val source = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
         listOf(
             "runtime_manager=app/src/main/java/app/gamenative/utils/LsfgVkManager.kt",
-            "expected_prefix=\"${'$'}{expected_commit:0:8}\"",
+            "expected_build_id=\"${'$'}expected_commit\"",
             "actual_commit=\"${'$'}(git -C \"${'$'}native_dir\" rev-parse HEAD)\"",
             "if [[ \"${'$'}actual_commit\" != \"${'$'}expected_commit\" ]]; then",
             "LSFG submodule checkout ${'$'}{actual_commit} != GameNative gitlink ${'$'}{expected_commit}",
-            "python3 - \"${'$'}runtime_manager\" \"${'$'}expected_prefix\"",
-            "grep -Fq \"${'$'}expected_prefix\" \"${'$'}runtime_manager\"",
+            "if ! grep -Fq \"${'$'}expected_commit\" \"${'$'}runtime_manager\"; then",
         ).forEach { token ->
-            assertTrue(
-                "shared LSFG preparation action must derive runtime provenance from the gitlink and reject checkout mismatches; missing $token",
-                source.contains(token),
-            )
+            assertTrue("shared LSFG preparation must verify exact gitlink provenance; missing $token", source.contains(token))
         }
         assertFalse(
-            "shared LSFG preparation must not rewrite source tests to match the runtime under test",
-            source.contains("runtime_test="),
-        )
-        assertFalse(
-            "shared LSFG preparation must not rewrite LsfgVkManagerTest.kt",
-            source.contains("LsfgVkManagerTest.kt"),
+            "shared LSFG preparation must not rewrite source files to match the runtime under test",
+            source.contains("manager.write_text"),
         )
     }
 

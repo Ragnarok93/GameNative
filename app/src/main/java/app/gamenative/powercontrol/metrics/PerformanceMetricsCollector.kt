@@ -5,6 +5,7 @@ import android.hardware.display.DisplayManager
 import android.view.Display
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
+import app.gamenative.utils.LsfgVkManager
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -165,6 +166,10 @@ object PerformanceMetricsCollector {
 
         publish(snapshot, frameGeneration)
         if (frameGeneration != FrameTimeRing.generation()) return
+        LsfgVkManager.publishRuntimePressure(
+            PowerManager.activeContainerRootDir(),
+            snapshot,
+        )
         appendLog(snapshot)
 
         sampleCount++

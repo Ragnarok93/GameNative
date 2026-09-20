@@ -3,6 +3,8 @@ package app.gamenative.diagnostics
 import android.content.Context
 import android.os.Build
 import app.gamenative.CrashHandler
+import app.gamenative.powercontrol.PowerBaselineScripts
+import app.gamenative.powercontrol.PowerManager
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -21,9 +23,10 @@ object LsfgDiagnosticExporter {
     private const val TEXT_TAIL_BYTES = 2L * 1024L * 1024L
     private const val NATIVE_EVENT_TAIL_BYTES = 4L * 1024L * 1024L
     private const val LOGCAT_LINES = 8_000
+    private const val UID_LOGCAT_LINES = 12_000
     private const val PRESENTATION_LOG_LINES = 4_000
-    private const val MAX_SCAN_DEPTH = 14
-    private const val MAX_SCAN_NODES = 25_000
+    private const val MAX_SCAN_DEPTH = 8
+    private const val MAX_SCAN_NODES = 4_000
 
     private val graphicsEnvironmentKeys = listOf(
         "VK_ICD_FILENAMES",
@@ -64,6 +67,41 @@ object LsfgDiagnosticExporter {
     fun defaultFileName(now: Date = Date()): String =
         "gamenative-lsfg-${SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(now)}.txt"
 
+    private val runtimeSessionPattern = Regex("""\bruntime_session_id=(\d+)\b""")
+    private val configRevisionPattern = Regex("""\bconfig_revision=(\d+)\b""")
+
+    /**
+     * Group same-UID native LSFG logcat by runtime session and configuration epoch.
+     * Legacy lines remain visible in an explicit unsegmented bucket instead of
+     * being discarded.
+     */
+    internal fun segmentNativeEvents(nativeLogcat: String): String {
+        if (nativeLogcat.isBlank()) return ""
+
+        val grouped = linkedMapOf<Pair<String, String>, MutableList<String>>()
+        nativeLogcat.lineSequence()
+            .filter(String::isNotBlank)
+            .forEach { line ->
+                val session = runtimeSessionPattern.find(line)?.groupValues?.getOrNull(1)
+                val revision = configRevisionPattern.find(line)?.groupValues?.getOrNull(1)
+                val key = if (session != null && revision != null) {
+                    session to revision
+                } else {
+                    "unsegmented" to "unknown"
+                }
+                grouped.getOrPut(key) { mutableListOf() }.add(line)
+            }
+
+        return buildString {
+            grouped.forEach { (key, lines) ->
+                appendLine(
+                    "--- runtime_session_id=${key.first} config_revision=${key.second} ---",
+                )
+                lines.forEach(::appendLine)
+            }
+        }.trimEnd()
+    }
+
     fun buildReport(context: Context): String {
         val appContext = context.applicationContext
         val warnings = mutableListOf<String>()
@@ -75,6 +113,14 @@ object LsfgDiagnosticExporter {
                 warnings += "APP LOGCAT capture failed: ${safeMessage(it)}"
                 ""
             }
+        val uidLogcat = runCatching { captureUidLogcat(UID_LOGCAT_LINES) }
+            .getOrElse {
+                warnings += "UID LOGCAT capture failed: ${safeMessage(it)}"
+                ""
+            }
+        val combinedLogcat = sequenceOf(appLogcat, uidLogcat)
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
 
         fun section(name: String, body: () -> String) {
             report.append("===== ").append(name).append(" =====\n")
@@ -147,7 +193,7 @@ object LsfgDiagnosticExporter {
         }
 
         section("GPU / VULKAN CAPABILITIES") {
-            val capabilityLines = appLogcat.lineSequence()
+            val capabilityLines = combinedLogcat.lineSequence()
                 .filter { line ->
                     line.contains("capability", ignoreCase = true) ||
                         line.contains("AHB", ignoreCase = true) ||
@@ -179,7 +225,7 @@ object LsfgDiagnosticExporter {
         }
 
         section("3X / 4X PRESENTATION LOGCAT") {
-            val filtered = appLogcat.lineSequence()
+            val filtered = combinedLogcat.lineSequence()
                 .filter { line ->
                     val normalized = line.lowercase(Locale.US)
                     presentationKeywords.any(normalized::contains)
@@ -192,12 +238,26 @@ object LsfgDiagnosticExporter {
         }
 
         section("LSFG NATIVE EVENTS") {
-            labeledFileOrUnavailable(
-                artifacts.nativeDiagnostics,
-                NATIVE_EVENT_TAIL_BYTES,
-                warnings,
-                "diagnostics.log",
-            )
+            val nativeLogcat = uidLogcat.lineSequence()
+                .filter { line ->
+                    line.contains("LSFG_METRICS") ||
+                        line.contains("LSFG_EVENT") ||
+                        line.contains("LSFG_FLOW") ||
+                        line.contains(" LSFG ") ||
+                        line.contains("LSFG:")
+                }
+                .takeLastLines(PRESENTATION_LOG_LINES)
+            when {
+                nativeLogcat.isNotBlank() ->
+                    "source=same_uid_logcat\n${segmentNativeEvents(nativeLogcat)}"
+                artifacts.nativeDiagnostics?.isFile == true ->
+                    labeledFile(artifacts.nativeDiagnostics, NATIVE_EVENT_TAIL_BYTES)
+                else -> {
+                    warnings +=
+                        "LSFG native events unavailable: no same-UID LSFG logcat or diagnostics.log"
+                    "unavailable: no same-UID LSFG telemetry captured"
+                }
+            }
         }
 
         section("WRAPPER DIAGNOSTICS") {
@@ -214,7 +274,7 @@ object LsfgDiagnosticExporter {
                 artifacts.performanceMetrics,
                 NATIVE_EVENT_TAIL_BYTES,
                 warnings,
-                "performance_metrics_*.jsonl",
+                "metrics-*.jsonl / performance_metrics_*.jsonl",
             )
         }
 
@@ -265,7 +325,7 @@ object LsfgDiagnosticExporter {
         )
     }
 
-    private data class DiscoveredArtifacts(
+    internal data class DiscoveredArtifacts(
         val scanRoots: List<String>,
         val scannedNodes: Int,
         val config: File?,
@@ -279,59 +339,162 @@ object LsfgDiagnosticExporter {
         val layer: File?,
     )
 
-    private fun discoverArtifacts(context: Context, warnings: MutableList<String>): DiscoveredArtifacts {
+    internal fun discoverArtifacts(
+        context: Context,
+        warnings: MutableList<String>,
+    ): DiscoveredArtifacts {
         val roots = linkedMapOf<String, File>()
+        val candidates = linkedMapOf<String, File>()
+
+        fun canonical(file: File): String =
+            runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
+
         fun addRoot(file: File?) {
             if (file == null || !file.exists()) return
-            val key = runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
-            roots[key] = file
+            roots[canonical(file)] = file
         }
+
+        fun addCandidate(file: File?) {
+            if (file == null || !file.isFile) return
+            candidates[canonical(file)] = file
+        }
+
+        fun addMatchingFiles(directory: File?, predicate: (File) -> Boolean) {
+            if (directory == null || !directory.isDirectory) return
+            directory.listFiles()
+                ?.asSequence()
+                ?.filter { it.isFile && predicate(it) }
+                ?.forEach(::addCandidate)
+        }
+
+        fun addContainerArtifacts(root: File?) {
+            if (root == null || !root.isDirectory) return
+            addRoot(root)
+            val configDir = File(root, ".config/lsfg-vk")
+            listOf(
+                "conf.toml",
+                "stats.txt",
+                "vsync.txt",
+                "present-vsync.txt",
+                "diagnostics.log",
+            ).forEach { name -> addCandidate(File(configDir, name)) }
+            addCandidate(File(root, ".local/lib/liblsfg-vk-layer.so"))
+            addCandidate(
+                File(
+                    root,
+                    ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
+                ),
+            )
+        }
+
+        fun isPerformanceMetrics(file: File): Boolean =
+            file.name.endsWith(".jsonl") &&
+                (file.name.startsWith("metrics-") ||
+                    file.name.startsWith("performance_metrics_"))
+
+        // Common path: direct probes only. These are resolved when diagnostics
+        // are explicitly exported and never run during launch/gameplay.
+        val activeContainerRoot = runCatching {
+            PowerManager.activeContainerRootDir()
+        }.getOrNull()
+        addContainerArtifacts(activeContainerRoot)
+
+        val imageRoot = File(context.filesDir, "imagefs")
+        addRoot(imageRoot)
+        File(imageRoot, "home").listFiles()
+            ?.asSequence()
+            ?.filter(File::isDirectory)
+            ?.take(256)
+            ?.forEach(::addContainerArtifacts)
+
+        addMatchingFiles(File(imageRoot, "usr/tmp")) { file ->
+            file.name.startsWith("wrapper_diag_") && file.name.endsWith(".txt")
+        }
+        addMatchingFiles(File(imageRoot, "tmp")) { file ->
+            file.name.startsWith("wrapper_diag_") && file.name.endsWith(".txt")
+        }
+
+        val metricsRoot = File(
+            context.getExternalFilesDir(null) ?: context.filesDir,
+            PowerBaselineScripts.DIRECTORY_NAME,
+        )
+        addRoot(metricsRoot)
+        addMatchingFiles(metricsRoot, ::isPerformanceMetrics)
 
         addRoot(File(context.applicationInfo.dataDir))
         addRoot(context.getExternalFilesDir(null))
-        addRoot(context.cacheDir)
-
-        var scanned = 0
-        val candidates = mutableListOf<File>()
-        roots.values.forEach { root ->
-            if (scanned >= MAX_SCAN_NODES) return@forEach
-            runCatching {
-                for (file in root.walkTopDown().maxDepth(MAX_SCAN_DEPTH)) {
-                    if (scanned++ >= MAX_SCAN_NODES) break
-                    if (!file.isFile) continue
-                    val name = file.name
-                    val path = file.absolutePath.replace('\\', '/').lowercase(Locale.US)
-                    val isLsfgPath = path.contains("lsfg-vk") || path.contains("lsfg_vk")
-                    if (
-                        (isLsfgPath && name in setOf(
-                            "conf.toml",
-                            "stats.txt",
-                            "vsync.txt",
-                            "present-vsync.txt",
-                            "diagnostics.log",
-                            ".lsfg_vk_runtime_version",
-                            "liblsfg-vk-layer.so",
-                        )) ||
-                        (name.startsWith("wrapper_diag_") && name.endsWith(".txt")) ||
-                        (name.startsWith("performance_metrics_") && name.endsWith(".jsonl"))
-                    ) {
-                        candidates += file
-                    }
-                }
-            }.onFailure {
-                warnings += "Artifact scan failed under ${root.absolutePath}: ${safeMessage(it)}"
-            }
-        }
-        if (scanned >= MAX_SCAN_NODES) {
-            warnings += "Artifact scan reached node limit ($MAX_SCAN_NODES); newest matching files found so far were used"
-        }
 
         fun newest(predicate: (File) -> Boolean): File? =
-            candidates.asSequence().filter(predicate).maxByOrNull { it.lastModified() }
+            candidates.values.asSequence()
+                .filter(predicate)
+                .maxByOrNull { it.lastModified() }
 
-        fun lsfgNamed(name: String): File? = newest { file ->
-            file.name == name && file.absolutePath.replace('\\', '/').lowercase(Locale.US).let { path ->
+        fun isLsfgPath(file: File): Boolean =
+            file.absolutePath.replace('\\', '/').lowercase(Locale.US).let { path ->
                 path.contains("lsfg-vk") || path.contains("lsfg_vk")
+            }
+
+        fun lsfgNamed(name: String): File? =
+            newest { file -> file.name == name && isLsfgPath(file) }
+
+        // Legacy/unusual layouts get a small bounded fallback only when the
+        // core runtime could not be resolved directly. Optional missing logs do
+        // not trigger a 25k-node walk.
+        val coreResolved =
+            lsfgNamed("conf.toml") != null &&
+                lsfgNamed("stats.txt") != null &&
+                lsfgNamed(".lsfg_vk_runtime_version") != null &&
+                lsfgNamed("liblsfg-vk-layer.so") != null
+
+        var scanned = 0
+        if (!coreResolved) {
+            val excludedDirectories = setOf(
+                "cache",
+                "code_cache",
+                ".wine",
+                "drive_c",
+                "windows",
+                "steamapps",
+                ".gradle",
+            )
+            roots.values.distinctBy(::canonical).forEach { root ->
+                if (scanned >= MAX_SCAN_NODES) return@forEach
+                runCatching {
+                    val walk = root.walkTopDown()
+                        .maxDepth(MAX_SCAN_DEPTH)
+                        .onEnter { dir ->
+                            dir == root ||
+                                dir.name.lowercase(Locale.US) !in excludedDirectories
+                        }
+                    for (file in walk) {
+                        if (scanned++ >= MAX_SCAN_NODES) break
+                        if (!file.isFile) continue
+                        val name = file.name
+                        if (
+                            (isLsfgPath(file) && name in setOf(
+                                "conf.toml",
+                                "stats.txt",
+                                "vsync.txt",
+                                "present-vsync.txt",
+                                "diagnostics.log",
+                                ".lsfg_vk_runtime_version",
+                                "liblsfg-vk-layer.so",
+                            )) ||
+                            (name.startsWith("wrapper_diag_") &&
+                                name.endsWith(".txt")) ||
+                            isPerformanceMetrics(file)
+                        ) {
+                            addCandidate(file)
+                        }
+                    }
+                }.onFailure {
+                    warnings +=
+                        "Artifact fallback scan failed under ${root.absolutePath}: ${safeMessage(it)}"
+                }
+            }
+            if (scanned >= MAX_SCAN_NODES) {
+                warnings +=
+                    "Artifact fallback scan reached node limit ($MAX_SCAN_NODES)"
             }
         }
 
@@ -343,11 +506,31 @@ object LsfgDiagnosticExporter {
             vsync = lsfgNamed("vsync.txt"),
             presentVsync = lsfgNamed("present-vsync.txt"),
             nativeDiagnostics = lsfgNamed("diagnostics.log"),
-            wrapperDiagnostics = newest { it.name.startsWith("wrapper_diag_") && it.name.endsWith(".txt") },
-            performanceMetrics = newest { it.name.startsWith("performance_metrics_") && it.name.endsWith(".jsonl") },
+            wrapperDiagnostics = newest {
+                it.name.startsWith("wrapper_diag_") && it.name.endsWith(".txt")
+            },
+            performanceMetrics = newest(::isPerformanceMetrics),
             runtimeMarker = lsfgNamed(".lsfg_vk_runtime_version"),
             layer = lsfgNamed("liblsfg-vk-layer.so"),
         )
+    }
+
+    internal fun uidLogcatCommand(lineCount: Int, uid: Int): List<String> =
+        listOf(
+            "logcat",
+            "-d",
+            "-t",
+            lineCount.coerceIn(1, 20_000).toString(),
+            "--uid=$uid",
+        )
+
+    private fun captureUidLogcat(lineCount: Int): String {
+        val process = ProcessBuilder(
+            uidLogcatCommand(lineCount, android.os.Process.myUid()),
+        )
+            .redirectErrorStream(true)
+            .start()
+        return process.inputStream.bufferedReader().use { it.readText() }
     }
 
     private fun labeledFileOrUnavailable(

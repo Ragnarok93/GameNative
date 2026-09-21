@@ -66,7 +66,8 @@ runs:
         done
 
         sudo apt-get update -qq
-        sudo apt-get install -y cmake ninja-build file
+        sudo apt-get install -y cmake ninja-build file libvulkan-dev
+        python3 "$native_dir/tests/run_android_dispatch_lifetime_test.py"
         sdkmanager --install "ndk;${ANDROID_NDK_VERSION}"
         sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
         if [[ -z "$sdk_root" ]]; then

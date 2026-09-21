@@ -40,6 +40,14 @@ jobs:
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
 
+    - name: Record exact LSFG provenance
+      shell: bash
+      run: |
+        set -euo pipefail
+        git rev-parse HEAD > gamenative-commit.txt
+        git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android > lsfg-commit.txt
+        echo "Validation status: dispatch/lifetime checkpoint; physical device and teardown validation pending" > validation-status.txt
+
     - name: Configure signing
       env:
         KEYSTORE: ${{ secrets.KEYSTORE }}
@@ -146,6 +154,24 @@ jobs:
           "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$apk"
         done
         echo "APK signing mode: $SIGNING_MODE"
+
+    - name: Verify packaged LSFG revision in signed APKs
+      shell: bash
+      run: |
+        set -euo pipefail
+        expected_native_commit="$(cat lsfg-commit.txt)"
+        for apk in universal.apk universal-modern.apk universal-legacy-xr.apk; do
+          unzip -p "$apk" lib/arm64-v8a/liblsfg-vk-layer.so > /tmp/packaged-lsfg-layer.so
+          grep -aFq "$expected_native_commit" /tmp/packaged-lsfg-layer.so
+        done
+    - name: Upload build provenance
+      uses: actions/upload-artifact@v4
+      with:
+        name: lsfg-build-provenance
+        path: |
+          gamenative-commit.txt
+          lsfg-commit.txt
+          validation-status.txt
 
     - name: Upload Legacy APK
       uses: actions/upload-artifact@v4

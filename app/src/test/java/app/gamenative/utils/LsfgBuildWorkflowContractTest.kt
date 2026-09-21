@@ -85,6 +85,17 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
+    fun signedApksVerifyPackagedNativeProvenance() {
+        val source = repoFile(".github/workflows/app-release-signed.yml").readText()
+        assertTrue(source.contains("git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android"))
+        assertTrue(source.contains("for apk in universal.apk universal-modern.apk universal-legacy-xr.apk"))
+        assertTrue(source.contains("lib/arm64-v8a/liblsfg-vk-layer.so > /tmp/packaged-lsfg-layer.so"))
+        assertTrue(source.contains("lsfg-build-provenance"))
+        val prepare = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
+        assertTrue(prepare.contains("run_android_dispatch_lifetime_test.py"))
+    }
+
+    @Test
     fun sharedNativePreparationUsesGitlinkAndAndroidPortabilityChecks() {
         val source = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
         listOf(

@@ -1,6 +1,8 @@
 name: Pull Request build check
 
 on:
+  push:
+    branches: [ "feature/adaptive-unified-integration-20260920" ]
   pull_request:
     branches: [ "master" ]
     paths-ignore:

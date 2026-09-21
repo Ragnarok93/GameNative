@@ -311,7 +311,7 @@ class LsfgVkManagerTest {
         assertEquals(containerManifest.readText(), loaderManifest.readText())
         val runtimeVersion = loaderVersion.readText()
         assertEquals(
-            "gamenative-private-queue-bootstrap-51c7199368220da952b5c4b13822f9e689079a93-r19",
+            "gamenative-private-queue-bootstrap-0d659fc29594f4877c2baa9720bf64b6af4402a6-r20",
             runtimeVersion,
         )
         val loaderLayerDir = loaderManifest.parentFile!!.absolutePath

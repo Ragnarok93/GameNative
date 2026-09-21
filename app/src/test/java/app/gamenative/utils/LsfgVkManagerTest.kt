@@ -310,9 +310,10 @@ class LsfgVkManagerTest {
         assertTrue(loaderLib.readBytes().contentEquals(containerLib.readBytes()))
         assertEquals(containerManifest.readText(), loaderManifest.readText())
         val runtimeVersion = loaderVersion.readText()
-        assertTrue(runtimeVersion.startsWith("gamenative-adaptive-"))
-        assertTrue(runtimeVersion.contains("927204ab93f6d6534b264c01027eecd6014f1285"))
-        assertTrue(runtimeVersion.endsWith("-r1"))
+        assertEquals(
+            "gamenative-adaptive-9c7ec85db3213af50a09925f74cda32f4d460fda-r3",
+            runtimeVersion,
+        )
         val loaderLayerDir = loaderManifest.parentFile!!.absolutePath
         assertEquals(loaderLayerDir, envVars["VK_LAYER_PATH"])
     }
@@ -418,6 +419,7 @@ class LsfgVkManagerTest {
         assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
         assertEquals("VK_LAYER_existing", envVars["VK_LOADER_LAYERS_ENABLE"])
+        assertEquals("1", envVars["DISABLE_LSFG"])
         assertFalse(envVars.has("LSFG_PROCESS"))
         assertFalse(envVars.has("LSFG_PROCESS_EXE"))
         assertFalse(envVars.has("LSFG_CONFIG"))

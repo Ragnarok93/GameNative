@@ -8,6 +8,7 @@ import com.winlator.container.Container
 import com.winlator.core.FileUtils
 import com.winlator.core.envvars.EnvVars
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -92,6 +93,7 @@ object LsfgVkManager {
     private val statsReadExecutor by lazy {
         Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-stats").apply { isDaemon = true } }
     }
+    private val runtimeInstallLock = Any()
 
     // Environment variables consumed by the lsfg-vk layer / Vulkan loader.
     private const val ENV_DISABLE = "DISABLE_LSFG"
@@ -106,7 +108,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-adaptive-9835a02cd50d01fbb38049ecdf4cc9bf1fbeaf43-r2"
+        "gamenative-adaptive-9c7ec85db3213af50a09925f74cda32f4d460fda-r3"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -296,15 +298,24 @@ object LsfgVkManager {
     @JvmStatic
     @Volatile private var cachedMeasuredFps: Float? = null
     @Volatile private var lastStatsReadMs: Long = 0L
+    @Volatile private var cachedMeasuredRoot: String? = null
+    private val measuredFpsCacheLock = Any()
 
     /** Served from a cache refreshed off the main thread; callers poll ~1/s. */
-    fun readMeasuredFps(container: Container): Float? {
+    fun readMeasuredFps(container: Container): Float? = synchronized(measuredFpsCacheLock) {
         val now = System.currentTimeMillis()
-        if (now - lastStatsReadMs >= 500L) {
+        val rootKey = runCatching { container.rootDir.canonicalPath }
+            .getOrElse { container.rootDir.absolutePath }
+        if (rootKey != cachedMeasuredRoot || now - lastStatsReadMs >= 500L) {
+            val rootChanged = rootKey != cachedMeasuredRoot
             lastStatsReadMs = now
+            cachedMeasuredRoot = rootKey
+            if (rootChanged)
+                cachedMeasuredFps = null
+            val requestedRoot = container.rootDir
             statsReadExecutor.execute {
-                cachedMeasuredFps = try {
-                    val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
+                val measured = try {
+                    val statsFile = File(requestedRoot, STATS_RELATIVE_PATH)
                     if (statsFile.isFile &&
                         System.currentTimeMillis() - statsFile.lastModified() <= STATS_FRESHNESS_MS
                     ) {
@@ -318,9 +329,16 @@ object LsfgVkManager {
                 } catch (t: Throwable) {
                     null
                 }
+                // A queued read for a previous container must not overwrite
+                // the HUD value after the active container has changed.
+                synchronized(measuredFpsCacheLock) {
+                    if (cachedMeasuredRoot == rootKey) {
+                        cachedMeasuredFps = measured
+                    }
+                }
             }
         }
-        return cachedMeasuredFps
+        cachedMeasuredFps
     }
 
     /**
@@ -425,6 +443,13 @@ object LsfgVkManager {
     fun ensureRuntimeInstalled(context: Context, container: Container): Boolean {
         if (!isSupported(container)) return false
 
+        return synchronized(runtimeInstallLock) {
+            ensureRuntimeInstalledLocked(context, container)
+        }
+    }
+
+    private fun ensureRuntimeInstalledLocked(context: Context, container: Container): Boolean {
+
         val rootDir = container.rootDir
         val localLibDir = File(rootDir, LIB_RELATIVE_DIR)
         val layerDir = File(rootDir, LAYER_RELATIVE_DIR)
@@ -439,9 +464,27 @@ object LsfgVkManager {
             return false
         }
 
-        val installedVersion = versionFile.takeIf { it.exists() }?.readText()?.trim().orEmpty()
+        val expectedManifest = runCatching {
+            context.assets.open(ASSET_MANIFEST)
+                .bufferedReader().use { it.readText() }
+                .replace(
+                    "\"library_path\": \"$LIB_FILENAME\"",
+                    "\"library_path\": \"$MANIFEST_LIBRARY_PATH\"",
+                )
+        }.getOrElse {
+            Timber.tag(TAG).e(it, "LSFG layer manifest asset is unavailable")
+            return false
+        }
+
+        val installedVersion = runCatching {
+            versionFile.takeIf { it.isFile }?.readText()?.trim().orEmpty()
+        }.getOrDefault("")
+        val installedManifest = runCatching {
+            manifestFile.takeIf { it.isFile }?.readText().orEmpty()
+        }.getOrDefault("")
         val needsInstall = installedVersion != RUNTIME_VERSION ||
-            !filesHaveSameContents(sourceLib, libFile) || !manifestFile.isFile
+            installedManifest != expectedManifest ||
+            !filesHaveSameContents(sourceLib, libFile)
 
         var success = true
 
@@ -450,23 +493,26 @@ object LsfgVkManager {
                 localLibDir.mkdirs()
                 layerDir.mkdirs()
 
-                sourceLib.inputStream().use { input ->
-                    libFile.outputStream().use { output -> input.copyTo(output) }
-                }
-                val manifestText = context.assets.open(ASSET_MANIFEST)
-                    .bufferedReader().use { it.readText() }
-                    .replace(
-                        "\"library_path\": \"$LIB_FILENAME\"",
-                        "\"library_path\": \"$MANIFEST_LIBRARY_PATH\""
-                    )
-                FileUtils.writeString(manifestFile, manifestText)
-                FileUtils.writeString(versionFile, RUNTIME_VERSION)
+                if (!copyFileAtomic(sourceLib, libFile, 0b111101101))
+                    throw IllegalStateException("Failed to publish LSFG native library")
+                if (!writeTextAtomic(manifestFile, expectedManifest, 0b110100100))
+                    throw IllegalStateException("Failed to publish LSFG layer manifest")
+                // Publish the marker last. It is the commit record consumed by
+                // provenance checks and must never describe a partially staged
+                // library or manifest.
+                if (!writeTextAtomic(versionFile, RUNTIME_VERSION, 0b110100100))
+                    throw IllegalStateException("Failed to publish LSFG runtime marker")
 
                 if (libFile.exists()) FileUtils.chmod(libFile, 0b111101101)
                 if (manifestFile.exists()) FileUtils.chmod(manifestFile, 0b110100100)
                 if (versionFile.exists()) FileUtils.chmod(versionFile, 0b110100100)
 
-                val ok = libFile.isFile && manifestFile.isFile && filesHaveSameContents(sourceLib, libFile)
+                val ok = libFile.isFile &&
+                    manifestFile.isFile &&
+                    manifestFile.readText() == expectedManifest &&
+                    versionFile.isFile &&
+                    versionFile.readText().trim() == RUNTIME_VERSION &&
+                    filesHaveSameContents(sourceLib, libFile)
                 if (ok) {
                     Timber.tag(TAG).i("Installed LSFG runtime %s into %s", RUNTIME_VERSION, rootDir)
                 } else {
@@ -487,12 +533,10 @@ object LsfgVkManager {
         val steamDll = findSteamDll()
         if (steamDll != null) {
             try {
-                if (!dllFile.isFile || dllFile.length() != steamDll.length()) {
+                if (!filesHaveSameContents(steamDll, dllFile)) {
                     dllDir.mkdirs()
-                    steamDll.inputStream().use { input ->
-                        dllFile.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    if (dllFile.exists()) FileUtils.chmod(dllFile, 0b110100100)
+                    if (!copyFileAtomic(steamDll, dllFile, 0b110100100))
+                        throw IllegalStateException("Failed to publish Lossless.dll")
                     Timber.tag(TAG).i("Copied Lossless.dll (%d bytes) into %s", dllFile.length(), dllDir)
                 }
             } catch (t: Throwable) {
@@ -545,15 +589,19 @@ object LsfgVkManager {
      * Called during container startup in BionicProgramLauncherComponent.
      */
     @JvmStatic
-    fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean {
+    fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean =
+        synchronized(runtimeInstallLock) {
+            applyLaunchEnvLocked(container, envVars)
+        }
+
+    private fun applyLaunchEnvLocked(container: Container, envVars: EnvVars): Boolean {
         envVars.remove(ENV_DISABLE)
         envVars.remove(ENV_CONFIG)
         envVars.remove(ENV_PROCESS)
         envVars.remove(ENV_PROCESS_EXE)
 
         if (!isSupported(container) || !isFrameGenerationRequested(container)) {
-            removeLsfgVulkanLayerActivation(envVars)
-            disableLayerInContainer(container)
+            disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).i(
                 "LSFG layer disabled for launch (requested=%s, multiplier=%d)",
                 container.getExtra(EXTRA_ARMED, "false"),
@@ -566,8 +614,7 @@ object LsfgVkManager {
         val armed = isArmed(container)
 
         if (!armed) {
-            removeLsfgVulkanLayerActivation(envVars)
-            disableLayerInContainer(container)
+            disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).i(
                 "LSFG layer disabled (requested=%s, dll=%s)",
                 container.getExtra(EXTRA_ARMED, "false"),
@@ -578,6 +625,7 @@ object LsfgVkManager {
 
         val processExecutable = targetExecutable(container)
         if (processExecutable == null) {
+            disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).w("LSFG layer armed but target executable could not be resolved")
             return false
         }
@@ -585,8 +633,21 @@ object LsfgVkManager {
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
         envVars.put(ENV_PROCESS_EXE, processExecutable)
 
-        val loaderLayerDir = synchronizeLoaderVisibleRuntime(container, envVars)
-            ?: File(container.rootDir, LAYER_RELATIVE_DIR)
+        val loaderHomeConfigured = envVars[ENV_HOME]?.trim()?.isNotEmpty() == true
+        val loaderLayerDir = if (loaderHomeConfigured) {
+            synchronizeLoaderVisibleRuntime(container, envVars) ?: run {
+                // A configured loader HOME can shadow the per-container layer.
+                // Do not arm the process if that copy could not be published
+                // and verified byte-for-byte.
+                envVars.remove(ENV_CONFIG)
+                envVars.remove(ENV_PROCESS_EXE)
+                disableLayerForLaunch(container, envVars)
+                Timber.tag(TAG).e("LSFG layer disabled: loader-visible runtime sync failed")
+                return false
+            }
+        } else {
+            File(container.rootDir, LAYER_RELATIVE_DIR)
+        }
         appendUniqueEnvEntry(envVars, ENV_VK_LAYER_PATH, loaderLayerDir.absolutePath)
         appendUniqueEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME)
 
@@ -626,49 +687,56 @@ object LsfgVkManager {
         val targetManifest = File(targetLayerDir, MANIFEST_FILENAME)
         val targetVersion = File(targetLayerDir, VERSION_FILENAME)
 
-        return try {
-            val sourceLibCanonical = sourceLib.canonicalFile
-            val targetLibCanonical = targetLib.canonicalFile
-            val sourceManifestCanonical = sourceManifest.canonicalFile
-            val targetManifestCanonical = targetManifest.canonicalFile
+        return synchronized(runtimeInstallLock) {
+            try {
+                val sourceLibCanonical = sourceLib.canonicalFile
+                val targetLibCanonical = targetLib.canonicalFile
+                val sourceManifestCanonical = sourceManifest.canonicalFile
+                val targetManifestCanonical = targetManifest.canonicalFile
 
-            targetLib.parentFile?.mkdirs()
-            targetLayerDir.mkdirs()
+                targetLib.parentFile?.mkdirs()
+                targetLayerDir.mkdirs()
 
-            if (sourceLibCanonical != targetLibCanonical &&
-                !filesHaveSameContents(sourceLib, targetLib)
-            ) {
-                sourceLib.inputStream().use { input ->
-                    targetLib.outputStream().use { output -> input.copyTo(output) }
+                if (sourceLibCanonical != targetLibCanonical &&
+                    !filesHaveSameContents(sourceLib, targetLib)
+                ) {
+                    if (!copyFileAtomic(sourceLib, targetLib, 0b111101101))
+                        throw IllegalStateException("Failed to publish loader-visible LSFG library")
                 }
-            }
 
-            if (sourceManifestCanonical != targetManifestCanonical) {
-                val sourceText = sourceManifest.readText()
-                if (!targetManifest.isFile || targetManifest.readText() != sourceText) {
-                    FileUtils.writeString(targetManifest, sourceText)
+                if (sourceManifestCanonical != targetManifestCanonical) {
+                    val sourceText = sourceManifest.readText()
+                    if (!targetManifest.isFile || targetManifest.readText() != sourceText) {
+                        if (!writeTextAtomic(targetManifest, sourceText, 0b110100100))
+                            throw IllegalStateException("Failed to publish loader-visible LSFG manifest")
+                    }
                 }
-            }
-            FileUtils.writeString(targetVersion, RUNTIME_VERSION)
+                if (!writeTextAtomic(targetVersion, RUNTIME_VERSION, 0b110100100))
+                    throw IllegalStateException("Failed to publish loader-visible LSFG marker")
 
-            if (targetLib.exists()) FileUtils.chmod(targetLib, 0b111101101)
-            if (targetManifest.exists()) FileUtils.chmod(targetManifest, 0b110100100)
-            if (targetVersion.exists()) FileUtils.chmod(targetVersion, 0b110100100)
+                if (targetLib.exists()) FileUtils.chmod(targetLib, 0b111101101)
+                if (targetManifest.exists()) FileUtils.chmod(targetManifest, 0b110100100)
+                if (targetVersion.exists()) FileUtils.chmod(targetVersion, 0b110100100)
 
-            val verified = targetLib.isFile && targetManifest.isFile &&
-                filesHaveSameContents(sourceLib, targetLib)
-            if (!verified) {
-                Timber.tag(TAG).e(
-                    "LSFG loader runtime sync verification failed home=%s",
-                    loaderHome.absolutePath,
-                )
+                val verified = targetLib.isFile &&
+                    targetManifest.isFile &&
+                    targetManifest.readText() == sourceManifest.readText() &&
+                    targetVersion.isFile &&
+                    targetVersion.readText().trim() == RUNTIME_VERSION &&
+                    filesHaveSameContents(sourceLib, targetLib)
+                if (!verified) {
+                    Timber.tag(TAG).e(
+                        "LSFG loader runtime sync verification failed home=%s",
+                        loaderHome.absolutePath,
+                    )
+                    null
+                } else {
+                    targetLayerDir
+                }
+            } catch (t: Throwable) {
+                Timber.tag(TAG).e(t, "Failed to synchronize LSFG runtime into Vulkan loader HOME")
                 null
-            } else {
-                targetLayerDir
             }
-        } catch (t: Throwable) {
-            Timber.tag(TAG).e(t, "Failed to synchronize LSFG runtime into Vulkan loader HOME")
-            null
         }
     }
 
@@ -687,6 +755,16 @@ object LsfgVkManager {
     private fun removeLsfgVulkanLayerActivation(envVars: EnvVars) {
         removeSeparatedEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME, ":")
         removeSeparatedEnvEntry(envVars, ENV_VK_LOADER_LAYERS_ENABLE, VULKAN_LAYER_NAME, ",")
+    }
+
+    private fun disableLayerForLaunch(container: Container, envVars: EnvVars) {
+        // The loader-visible HOME copy uses a GLOBAL manifest. Removing only
+        // the per-container manifest is therefore insufficient: a shared HOME
+        // can still auto-discover the stale layer. Keep the manifest available
+        // for other launches, but disable it for this process explicitly.
+        envVars.put(ENV_DISABLE, "1")
+        removeLsfgVulkanLayerActivation(envVars)
+        disableLayerInContainer(container)
     }
 
     private fun removeSeparatedEnvEntry(envVars: EnvVars, key: String, value: String, separator: String) {
@@ -770,6 +848,60 @@ object LsfgVkManager {
             }
         }
         return digest.digest()
+    }
+
+    private fun moveIntoPlace(temp: java.nio.file.Path, target: java.nio.file.Path) {
+        try {
+            Files.move(temp, target, ATOMIC_MOVE, REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(temp, target, REPLACE_EXISTING)
+        }
+    }
+
+    private fun copyFileAtomic(source: File, target: File, mode: Int): Boolean {
+        val parent = target.parentFile ?: return false
+        var temp: java.nio.file.Path? = null
+        return try {
+            parent.mkdirs()
+            temp = Files.createTempFile(parent.toPath(), ".${target.name}.", ".tmp")
+            FileOutputStream(temp.toFile()).use { output ->
+                source.inputStream().use { input -> input.copyTo(output) }
+                output.fd.sync()
+            }
+            FileUtils.chmod(temp.toFile(), mode)
+            moveIntoPlace(temp, target.toPath())
+            temp = null
+            FileUtils.chmod(target, mode)
+            target.isFile
+        } catch (t: Throwable) {
+            Timber.tag(TAG).w(t, "Failed to atomically publish %s", target.absolutePath)
+            false
+        } finally {
+            temp?.let { runCatching { Files.deleteIfExists(it) } }
+        }
+    }
+
+    private fun writeTextAtomic(target: File, text: String, mode: Int): Boolean {
+        val parent = target.parentFile ?: return false
+        var temp: java.nio.file.Path? = null
+        return try {
+            parent.mkdirs()
+            temp = Files.createTempFile(parent.toPath(), ".${target.name}.", ".tmp")
+            FileOutputStream(temp.toFile()).use { output ->
+                output.write(text.toByteArray(Charsets.UTF_8))
+                output.fd.sync()
+            }
+            FileUtils.chmod(temp.toFile(), mode)
+            moveIntoPlace(temp, target.toPath())
+            temp = null
+            FileUtils.chmod(target, mode)
+            target.isFile
+        } catch (t: Throwable) {
+            Timber.tag(TAG).w(t, "Failed to atomically publish %s", target.absolutePath)
+            false
+        } finally {
+            temp?.let { runCatching { Files.deleteIfExists(it) } }
+        }
     }
 
     private fun configFile(container: Container): File =

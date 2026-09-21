@@ -5,6 +5,7 @@ import android.os.Build
 import app.gamenative.CrashHandler
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
+import app.gamenative.powercontrol.metrics.PerformanceMetricsCollector
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -422,6 +423,12 @@ object LsfgDiagnosticExporter {
         )
         addRoot(metricsRoot)
         addMatchingFiles(metricsRoot, ::isPerformanceMetrics)
+        // When a collector is active, retain the exact session selected at
+        // start time. A newer file from a previous container must not replace
+        // it merely because it has a later mtime.
+        PerformanceMetricsCollector.activeSessionLogPath
+            ?.let(::File)
+            ?.let(::addCandidate)
 
         addRoot(File(context.applicationInfo.dataDir))
         addRoot(context.getExternalFilesDir(null))
@@ -449,13 +456,15 @@ object LsfgDiagnosticExporter {
             return file.takeIf { it.isFile }
         }
 
-        // The active container is the authoritative diagnostic session. A
-        // newer artifact from another container must not replace one member of
-        // this set and create a mixed-runtime report. Fall back to the bounded
-        // global search only when the active container does not have that file.
+        // The active container is the authoritative diagnostic session. Once
+        // one is known, never fill a missing member with a newer artifact from
+        // another container; that would produce a mixed-runtime report.
         fun lsfgNamed(name: String): File? =
-            activeLsfgNamed(name)
-                ?: newest { file -> file.name == name && isLsfgPath(file) }
+            if (activeContainerArtifactRoot != null) {
+                activeLsfgNamed(name)
+            } else {
+                newest { file -> file.name == name && isLsfgPath(file) }
+            }
 
         // Legacy/unusual layouts get a small bounded fallback only when the
         // core runtime could not be resolved directly. Optional missing logs do
@@ -468,7 +477,7 @@ object LsfgDiagnosticExporter {
         ).all { lsfgNamed(it) != null }
 
         var scanned = 0
-        if (!coreResolved) {
+        if (!coreResolved && activeContainerArtifactRoot == null) {
             val excludedDirectories = setOf(
                 "cache",
                 "code_cache",
@@ -517,6 +526,9 @@ object LsfgDiagnosticExporter {
                 warnings +=
                     "Artifact fallback scan reached node limit ($MAX_SCAN_NODES)"
             }
+        } else if (!coreResolved && activeContainerArtifactRoot != null) {
+            warnings +=
+                "Active container LSFG runtime is incomplete; stale artifacts were not mixed in"
         }
 
         return DiscoveredArtifacts(
@@ -530,7 +542,10 @@ object LsfgDiagnosticExporter {
             wrapperDiagnostics = newest {
                 it.name.startsWith("wrapper_diag_") && it.name.endsWith(".txt")
             },
-            performanceMetrics = newest(::isPerformanceMetrics),
+            performanceMetrics = PerformanceMetricsCollector.activeSessionLogPath
+                ?.let(::File)
+                ?.takeIf(File::isFile)
+                ?: newest(::isPerformanceMetrics),
             runtimeMarker = lsfgNamed(".lsfg_vk_runtime_version"),
             layer = lsfgNamed("liblsfg-vk-layer.so"),
         )

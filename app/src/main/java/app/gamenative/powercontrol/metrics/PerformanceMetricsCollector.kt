@@ -8,6 +8,7 @@ import app.gamenative.powercontrol.PowerManager
 import app.gamenative.utils.LsfgVkManager
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,17 +37,26 @@ object PerformanceMetricsCollector {
     private const val DEFAULT_REFRESH_RATE = 60f
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val lifecycleLock = Any()
+    private val sessionGeneration = AtomicLong(0L)
     private var samplingJob: Job? = null
 
     private val cpuSampler = CpuUsageSampler()
     private val gpuSampler = GpuUsageSampler()
 
-    private val frameScratch = LongArray(FrameTimeRing.capacity())
-    private val deltaScratch = LongArray(FrameTimeRing.capacity())
-
     private val sessionLog = JsonlSessionLog(TAG, "metrics-", MAX_LOG_BYTES, MAX_SESSION_FILES)
     private var sampleCount = 0L
     private var displayRefreshRate = DEFAULT_REFRESH_RATE
+
+    /** The exact log belonging to the currently running collector session. */
+    @Volatile
+    internal var activeSessionLogPath: String? = null
+        private set
+
+    private data class SampleScratch(
+        val frames: LongArray = LongArray(FrameTimeRing.capacity()),
+        val deltas: LongArray = LongArray(FrameTimeRing.capacity()),
+    )
 
     @Volatile
     private var paused = false
@@ -56,52 +66,67 @@ object PerformanceMetricsCollector {
         private set
 
     fun start(context: Context, sessionStartMillis: Long = System.currentTimeMillis()) {
-        if (isRunning) return
+        synchronized(lifecycleLock) {
+            if (isRunning) return
 
-        val appContext = context.applicationContext
-        displayRefreshRate = readDisplayRefreshRate(appContext)
-        cpuSampler.reset()
-        gpuSampler.reset()
-        sampleCount = 0L
-        paused = false
-        FrameTimeRing.start()
-        openLog(appContext, sessionStartMillis)
+            val appContext = context.applicationContext
+            val generation = sessionGeneration.incrementAndGet()
+            displayRefreshRate = readDisplayRefreshRate(appContext)
+            cpuSampler.reset()
+            gpuSampler.reset()
+            sampleCount = 0L
+            paused = false
+            FrameTimeRing.start()
+            PowerManager.latestMetrics = null
+            PowerManager.currentFps = 0f
+            PowerManager.currentCpuUsage = 0f
+            PowerManager.currentGpuUsage = 0f
+            openLog(appContext, sessionStartMillis)
 
-        val gpuPaths = SystemMetricsSources.gpuUsagePaths()
-        Timber.tag(TAG).i(
-            "Collector started: frameSource=frame-hook interval=%dms window=%dms refresh=%.1fHz gpu=[%s] cpuTemp=%s gpuTemp=%s log=%s",
-            SAMPLE_INTERVAL_MS,
-            FRAME_WINDOW_MS,
-            displayRefreshRate,
-            gpuPaths.joinToString(),
-            SystemMetricsSources.cpuTempPaths().firstOrNull() ?: "none",
-            SystemMetricsSources.gpuTempPaths().firstOrNull() ?: "none",
-            sessionLog.path ?: "none",
-        )
+            val gpuPaths = SystemMetricsSources.gpuUsagePaths()
+            Timber.tag(TAG).i(
+                "Collector started: generation=%d frameSource=frame-hook interval=%dms window=%dms refresh=%.1fHz gpu=[%s] cpuTemp=%s gpuTemp=%s log=%s",
+                generation,
+                SAMPLE_INTERVAL_MS,
+                FRAME_WINDOW_MS,
+                displayRefreshRate,
+                gpuPaths.joinToString(),
+                SystemMetricsSources.cpuTempPaths().firstOrNull() ?: "none",
+                SystemMetricsSources.gpuTempPaths().firstOrNull() ?: "none",
+                sessionLog.path ?: "none",
+            )
 
-        isRunning = true
-        samplingJob = scope.launch {
-            while (isActive) {
-                if (!paused) {
-                    runCatching { sampleOnce() }
-                        .onFailure { Timber.tag(TAG).e(it, "Sampling cycle failed") }
+            isRunning = true
+            samplingJob = scope.launch {
+                val scratch = SampleScratch()
+                while (isActive && isSessionCurrent(generation)) {
+                    if (!paused) {
+                        runCatching { sampleOnce(generation, scratch) }
+                            .onFailure { Timber.tag(TAG).e(it, "Sampling cycle failed") }
+                    }
+                    delay(SAMPLE_INTERVAL_MS)
                 }
-                delay(SAMPLE_INTERVAL_MS)
             }
         }
     }
 
     fun stop() {
-        if (!isRunning) return
+        synchronized(lifecycleLock) {
+            if (!isRunning) return
 
-        isRunning = false
-        paused = false
-        samplingJob?.cancel()
-        samplingJob = null
-        FrameTimeRing.stop()
-        closeLog()
-        PowerManager.latestMetrics = null
-        Timber.tag(TAG).i("Collector stopped after %d samples", sampleCount)
+            isRunning = false
+            sessionGeneration.incrementAndGet()
+            paused = false
+            samplingJob?.cancel()
+            samplingJob = null
+            FrameTimeRing.stop()
+            closeLog()
+            PowerManager.latestMetrics = null
+            PowerManager.currentFps = 0f
+            PowerManager.currentCpuUsage = 0f
+            PowerManager.currentGpuUsage = 0f
+            Timber.tag(TAG).i("Collector stopped after %d samples", sampleCount)
+        }
     }
 
     /**
@@ -110,41 +135,48 @@ object PerformanceMetricsCollector {
      */
     @JvmStatic
     fun resetFrameEpoch() {
-        FrameTimeRing.resetEpoch()
-        PowerManager.latestMetrics = null
-        PowerManager.currentFps = 0f
+        synchronized(lifecycleLock) {
+            if (!isRunning) return
+            resetFrameEpochLocked()
+        }
     }
 
     fun pause() {
-        if (!isRunning || paused) return
-        paused = true
-        Timber.tag(TAG).i("Collector paused")
+        synchronized(lifecycleLock) {
+            if (!isRunning || paused) return
+            paused = true
+            resetFrameEpochLocked()
+            Timber.tag(TAG).i("Collector paused")
+        }
     }
 
     fun resume() {
-        if (!isRunning || !paused) return
-        resetFrameEpoch()
-        cpuSampler.reset()
-        gpuSampler.reset()
-        paused = false
-        Timber.tag(TAG).i("Collector resumed with fresh frame epoch")
+        synchronized(lifecycleLock) {
+            if (!isRunning || !paused) return
+            resetFrameEpochLocked()
+            cpuSampler.reset()
+            gpuSampler.reset()
+            paused = false
+            Timber.tag(TAG).i("Collector resumed with fresh frame epoch")
+        }
     }
 
-    private fun sampleOnce() {
+    private fun sampleOnce(generation: Long, scratch: SampleScratch) {
+        if (!isSessionCurrent(generation)) return
         val frameGeneration = FrameTimeRing.generation()
         val now = System.nanoTime()
-        val frameCount = FrameTimeRing.copySince(now - FRAME_WINDOW_MS * 1_000_000L, frameScratch)
+        val frameCount = FrameTimeRing.copySince(now - FRAME_WINDOW_MS * 1_000_000L, scratch.frames)
         val frameStats = computeFrameWindowStats(
-            frameScratch,
+            scratch.frames,
             frameCount,
             slowFrameThresholdNs(),
-            deltaScratch,
+            scratch.deltas,
             PowerManager.frameSampleStride,
         )
 
         // A pacing transition can race this 500 ms collector. Never publish a
         // sample that began before the epoch boundary.
-        if (frameGeneration != FrameTimeRing.generation()) return
+        if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation()) return
 
         val cpu = cpuSampler.sample()
         val gpu = gpuSampler.sample()
@@ -164,16 +196,17 @@ object PerformanceMetricsCollector {
             gpuTempC = SystemMetricsSources.readTemperatureC(SystemMetricsSources.gpuTempPaths()),
         )
 
-        publish(snapshot, frameGeneration)
-        if (frameGeneration != FrameTimeRing.generation()) return
-        LsfgVkManager.publishRuntimePressure(
-            PowerManager.activeContainerRootDir(),
-            snapshot,
-        )
-        appendLog(snapshot)
+        if (!publish(snapshot, generation, frameGeneration)) return
+        synchronized(lifecycleLock) {
+            if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation()) return
+            LsfgVkManager.publishRuntimePressure(
+                PowerManager.activeContainerRootDir(),
+                snapshot,
+            )
+            appendLog(snapshot)
 
-        sampleCount++
-        if (sampleCount % LOG_EVERY_N_SAMPLES == 0L) {
+            sampleCount++
+            if (sampleCount % LOG_EVERY_N_SAMPLES == 0L) {
             Timber.tag(TAG).i(
                 "fps=%.1f p95=%.1fms slow=%d/%d cpu=%s%%(%s) gpu=%s%% cpuTemp=%s gpuTemp=%s",
                 snapshot.fps,
@@ -186,20 +219,27 @@ object PerformanceMetricsCollector {
                 snapshot.cpuTempC?.toString() ?: "-",
                 snapshot.gpuTempC?.toString() ?: "-",
             )
+            }
         }
     }
 
-    private fun publish(snapshot: MetricsSnapshot, frameGeneration: Long) {
-        if (frameGeneration != FrameTimeRing.generation()) return
+    private fun publish(
+        snapshot: MetricsSnapshot,
+        generation: Long,
+        frameGeneration: Long,
+    ): Boolean = synchronized(lifecycleLock) {
+        if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation()) {
+            return@synchronized false
+        }
         PowerManager.latestMetrics = snapshot
         PowerManager.currentFps = snapshot.fps
         PowerManager.currentCpuUsage = snapshot.cpuUsagePercent ?: 0f
         PowerManager.currentGpuUsage = snapshot.gpuUsagePercent ?: 0f
-        if (frameGeneration != FrameTimeRing.generation()) {
-            PowerManager.latestMetrics = null
-            PowerManager.currentFps = 0f
-        }
+        true
     }
+
+    private fun isSessionCurrent(generation: Long): Boolean =
+        isRunning && !paused && sessionGeneration.get() == generation
 
     private fun slowFrameThresholdNs(): Long {
         val targetFps = PowerManager.targetFps
@@ -227,6 +267,7 @@ object PerformanceMetricsCollector {
 
     private fun openLog(context: Context, sessionStartMillis: Long) {
         sessionLog.open(metricsDirectory(context), sessionStartMillis)
+        activeSessionLogPath = sessionLog.path
     }
 
     private fun appendLog(snapshot: MetricsSnapshot) {
@@ -257,5 +298,14 @@ object PerformanceMetricsCollector {
 
     private fun closeLog() {
         sessionLog.close()
+        activeSessionLogPath = null
+    }
+
+    private fun resetFrameEpochLocked() {
+        FrameTimeRing.resetEpoch()
+        PowerManager.latestMetrics = null
+        PowerManager.currentFps = 0f
+        PowerManager.currentCpuUsage = 0f
+        PowerManager.currentGpuUsage = 0f
     }
 }

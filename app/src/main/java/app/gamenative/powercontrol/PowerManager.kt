@@ -30,6 +30,10 @@ import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 data class CpuInfo(
     val currentGovernor: String,
@@ -92,24 +96,28 @@ object PowerManager {
     private val _uiState = MutableStateFlow<PowerControlUiState>(PowerControlUiState.Loading)
     val uiState: StateFlow<PowerControlUiState> = _uiState.asStateFlow()
 
+    @Volatile
     var targetFps: Int = 0
         set(value) {
             // Enforce non-negative values and round/clamp if necessary
             field = value.coerceAtLeast(0)
         }
 
+    @Volatile
     var currentFps: Float = 0f
         set(value) {
             // Enforce non-negative values and round/clamp if necessary
             field = value.coerceAtLeast(0f)
         }
 
+    @Volatile
     var currentCpuUsage: Float = 0f
         set(value) {
             // Enforce 0-100% range
             field = value.coerceIn(0f, 100f)
         }
 
+    @Volatile
     var currentGpuUsage: Float = 0f
         set(value) {
             // Enforce 0-100% range
@@ -479,6 +487,10 @@ object PowerManager {
     @Volatile
     var fpsCapApplier: ((Int) -> Boolean)? = null
 
+    // Prevent a delayed fallback posted from a worker thread from applying an
+    // older cap after a newer request has already been issued.
+    private val fpsCapGeneration = AtomicLong(0L)
+
     /** Frame-ring timestamps per base frame (= LSFG multiplier while frame
      *  generation runs, 1 otherwise) so frame stats stay in base units. */
     @Volatile
@@ -500,24 +512,48 @@ object PowerManager {
     )
 
     internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
+        val generation = fpsCapGeneration.incrementAndGet()
         fpsCapApplier?.let { if (it(limitFps)) return true }
         val xServerView = PluviaApp.xServerView ?: return false
         val presentExtension = xServerView.getxServer()
             ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
 
+        val applied = AtomicBoolean(false)
+        val completed = CountDownLatch(1)
         val apply = Runnable {
-            xServerView.setFrameRateLimit(limitFps)
-            presentExtension?.setFrameRateLimit(limitFps)
-            com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)
+            try {
+                if (generation != fpsCapGeneration.get()) return@Runnable
+                xServerView.setFrameRateLimit(limitFps)
+                presentExtension?.setFrameRateLimit(limitFps)
+                com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)
+                targetFps = limitFps
+                applied.set(true)
+            } catch (t: Throwable) {
+                Timber.tag("PowerManager").w(t, "Failed to apply FPS cap=%d", limitFps)
+            } finally {
+                completed.countDown()
+            }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
             apply.run()
         } else {
-            Handler(Looper.getMainLooper()).post(apply)
+            if (!Handler(Looper.getMainLooper()).post(apply)) {
+                fpsCapGeneration.compareAndSet(generation, generation + 1L)
+                return false
+            }
+            try {
+                if (!completed.await(750L, TimeUnit.MILLISECONDS)) {
+                    fpsCapGeneration.compareAndSet(generation, generation + 1L)
+                    return false
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                fpsCapGeneration.compareAndSet(generation, generation + 1L)
+                return false
+            }
         }
 
-        targetFps = limitFps
-        return true
+        return applied.get()
     }
 
     /**

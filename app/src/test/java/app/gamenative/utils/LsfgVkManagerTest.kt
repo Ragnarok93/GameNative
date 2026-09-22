@@ -1,5 +1,7 @@
 package app.gamenative.utils
 
+import app.gamenative.powercontrol.metrics.CpuUsageSource
+import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import com.winlator.container.Container
 import com.winlator.core.envvars.EnvVars
 import java.io.File
@@ -95,6 +97,40 @@ class LsfgVkManagerTest {
         assertTrue(text.contains("multiplier = 1"))
         assertTrue(text.contains("performance_mode = true"))
         assertTrue(text.contains("experimental_present_mode = \"mailbox\""))
+    }
+
+    @Test
+    fun publishRuntimePressure_usesSeparateAtomicSidecar() {
+        val snapshot = MetricsSnapshot(
+            timestampMs = 123456L,
+            fps = 57.5f,
+            frameTimeP50Ms = 16.0f,
+            frameTimeP95Ms = 24.0f,
+            frameTimeMaxMs = 31.0f,
+            slowFrameCount = 3,
+            totalFrameCount = 20,
+            cpuUsagePercent = 50f,
+            cpuUsageSource = CpuUsageSource.PROC_STAT,
+            gpuUsagePercent = 99f,
+            cpuTempC = 60,
+            gpuTempC = 58,
+        )
+
+        assertTrue(LsfgVkManager.publishRuntimePressure(rootDir, snapshot))
+
+        val pressure = File(
+            rootDir,
+            ".config/lsfg-vk/runtime-pressure.txt",
+        ).readText()
+        assertTrue(pressure.contains("timestamp_ms=123456"))
+        assertTrue(pressure.contains("gpu_usage_percent=99.0"))
+        assertTrue(pressure.contains("output_fps=57.50"))
+        assertTrue(pressure.contains("frame_time_p95_ms=24.00"))
+        assertTrue(pressure.contains("slow_frame_ratio=0.1500"))
+
+        assertFalse(
+            File(rootDir, ".config/lsfg-vk/conf.toml").exists(),
+        )
     }
 
     @Test
@@ -274,8 +310,10 @@ class LsfgVkManagerTest {
         assertTrue(loaderLib.readBytes().contentEquals(containerLib.readBytes()))
         assertEquals(containerManifest.readText(), loaderManifest.readText())
         val runtimeVersion = loaderVersion.readText()
-        assertTrue(runtimeVersion.startsWith("gamenative-adaptive-"))
-        assertTrue(runtimeVersion.endsWith("-r1"))
+        assertEquals(
+            "gamenative-private-volk-dispatch-c0730878e1101fd42863d950135a08635260b645-r22",
+            runtimeVersion,
+        )
         val loaderLayerDir = loaderManifest.parentFile!!.absolutePath
         assertEquals(loaderLayerDir, envVars["VK_LAYER_PATH"])
     }
@@ -290,6 +328,8 @@ class LsfgVkManagerTest {
             Int::class.javaPrimitiveType,
             Float::class.javaPrimitiveType,
             Boolean::class.javaPrimitiveType,
+            String::class.java,
+            Boolean::class.javaPrimitiveType,
             Boolean::class.javaPrimitiveType,
             Int::class.javaPrimitiveType,
             String::class.java,
@@ -302,6 +342,8 @@ class LsfgVkManagerTest {
             true,
             2,
             0.80f,
+            false,
+            "quality",
             true,
             false,
             0,
@@ -310,6 +352,55 @@ class LsfgVkManagerTest {
 
         assertTrue(text.contains("exe = \"FFVIII_LAUNCHER.exe\""))
         assertTrue(text.contains("exe = \"FFVIII_LAUNCHER\""))
+    }
+
+    @Test
+    fun buildConfig_serializesAdaptiveFlowWithoutOverwritingFixedFlowScale() {
+        val method = LsfgVkManager::class.java.getDeclaredMethod(
+            "buildConfigToml",
+            String::class.java,
+            String::class.java,
+            Boolean::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            Float::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            String::class.java,
+            Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            String::class.java,
+        ).apply { isAccessible = true }
+
+        val text = method.invoke(
+            LsfgVkManager,
+            "/tmp/Lossless.dll",
+            "game.exe",
+            true,
+            3,
+            0.65f,
+            true,
+            "balanced",
+            true,
+            false,
+            0,
+            "mailbox",
+        ) as String
+
+        assertTrue(text.contains("flow_scale = 0.65"))
+        assertTrue(text.contains("adaptive_flow_scale = true"))
+        assertTrue(text.contains("adaptive_flow_preset = \"balanced\""))
+    }
+
+    @Test
+    fun adaptiveFlowPresetSanitizerFallsBackToQuality() {
+        assertEquals(
+            LsfgVkManager.ADAPTIVE_FLOW_PRESET_QUALITY,
+            LsfgVkManager.sanitizeAdaptiveFlowPreset("unknown"),
+        )
+        assertEquals(
+            LsfgVkManager.ADAPTIVE_FLOW_PRESET_BALANCED,
+            LsfgVkManager.sanitizeAdaptiveFlowPreset("BALANCED"),
+        )
     }
 
     @Test
@@ -328,6 +419,7 @@ class LsfgVkManagerTest {
         assertEquals("/existing/explicit-layers", envVars["VK_LAYER_PATH"])
         assertEquals("VK_LAYER_existing", envVars["VK_INSTANCE_LAYERS"])
         assertEquals("VK_LAYER_existing", envVars["VK_LOADER_LAYERS_ENABLE"])
+        assertEquals("1", envVars["DISABLE_LSFG"])
         assertFalse(envVars.has("LSFG_PROCESS"))
         assertFalse(envVars.has("LSFG_PROCESS_EXE"))
         assertFalse(envVars.has("LSFG_CONFIG"))
@@ -409,6 +501,14 @@ class LsfgVkManagerTest {
             .thenReturn(multiplier)
         whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80"))
             .thenReturn("0.80")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE_MODE, LsfgVkManager.FLOW_MODE_FIXED))
+            .thenReturn(LsfgVkManager.FLOW_MODE_FIXED)
+        whenever(
+            container.getExtra(
+                LsfgVkManager.EXTRA_ADAPTIVE_FLOW_PRESET,
+                LsfgVkManager.ADAPTIVE_FLOW_PRESET_QUALITY,
+            ),
+        ).thenReturn(LsfgVkManager.ADAPTIVE_FLOW_PRESET_QUALITY)
         whenever(container.getExtra(LsfgVkManager.EXTRA_PERFORMANCE_MODE, "true"))
             .thenReturn("true")
         whenever(container.getExtra(LsfgVkManager.EXTRA_PRESENT_MODE, "mailbox"))

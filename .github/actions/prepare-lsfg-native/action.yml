@@ -22,8 +22,7 @@ runs:
         runtime_manifest=app/src/main/assets/lsfg_vk/android_arm64_v8a/VkLayer_LS_frame_generation.json
         runtime_manager=app/src/main/java/app/gamenative/utils/LsfgVkManager.kt
         expected_commit="$(git rev-parse HEAD:${native_dir})"
-        expected_prefix="${expected_commit:0:8}"
-        expected_build_id="${expected_commit:0:12}"
+        expected_build_id="$expected_commit"
 
         git submodule sync -- "$native_dir"
         git submodule update --init --recursive -- "$native_dir"
@@ -34,33 +33,27 @@ runs:
         fi
         echo "Building GameNative-pinned LSFG native revision ${actual_commit}"
 
-        # The checked-in Kotlin marker describes the checked-in jniLibs payload.
-        # CI replaces only its native SHA token after resolving the gitlink, so
-        # every prepared APK identifies the exact native revision it packages.
-        # Tests validate the stable runtime marker family/revision contract rather
-        # than duplicating a manually maintained native SHA assertion.
-        python3 - "$runtime_manager" "$expected_prefix" <<'PY'
-        import pathlib
-        import re
-        import sys
+        # The checked-in Kotlin marker must identify the exact native gitlink.
+        # Do not rewrite source in CI: a mismatch means the integration commit
+        # failed to update provenance alongside its submodule gitlink.
+        if ! grep -Fq "$expected_commit" "$runtime_manager"; then
+          echo "ERROR: Kotlin LSFG runtime marker does not contain gitlink ${expected_commit}" >&2
+          exit 1
+        fi
 
-        manager = pathlib.Path(sys.argv[1])
-        expected_prefix = sys.argv[2]
-
-        manager_text = manager.read_text(encoding="utf-8")
-        manager_pattern = re.compile(
-            r"(gamenative-[a-z0-9-]+-)[0-9a-f]{8}(-r[0-9]+)"
-        )
-        manager_text, manager_count = manager_pattern.subn(
-            rf"\g<1>{expected_prefix}\g<2>", manager_text, count=1
-        )
-        if manager_count != 1:
-            raise SystemExit("ERROR: could not rewrite the LSFG runtime marker")
-        manager.write_text(manager_text, encoding="utf-8")
-        PY
-
-        grep -Fq "$expected_prefix" "$runtime_manager"
-        git diff --check -- "$runtime_manager"
+        echo "Build and run Adaptive LSFG controller tests"
+        g++ -std=c++20 -Wall -Wextra -Werror \
+          -I"$native_dir/include" \
+          "$native_dir/src/adaptive_scheduler.cpp" \
+          "$native_dir/tests/adaptive_scheduler_test.cpp" \
+          -o /tmp/lsfg-adaptive-scheduler-test
+        /tmp/lsfg-adaptive-scheduler-test
+        g++ -std=c++20 -Wall -Wextra -Werror \
+          -I"$native_dir/include" \
+          "$native_dir/src/adaptive_flow_controller.cpp" \
+          "$native_dir/tests/adaptive_flow_controller_test.cpp" \
+          -o /tmp/lsfg-adaptive-flow-controller-test
+        /tmp/lsfg-adaptive-flow-controller-test
 
         mapfile -t android_native_tests < <(find "$native_dir/tests" -maxdepth 1 -type f -name 'android_*_test.py' | sort)
         if [[ "${#android_native_tests[@]}" -eq 0 ]]; then
@@ -73,7 +66,8 @@ runs:
         done
 
         sudo apt-get update -qq
-        sudo apt-get install -y cmake ninja-build file
+        sudo apt-get install -y cmake ninja-build file libvulkan-dev
+        python3 "$native_dir/tests/run_android_dispatch_lifetime_test.py"
         sdkmanager --install "ndk;${ANDROID_NDK_VERSION}"
         sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
         if [[ -z "$sdk_root" ]]; then

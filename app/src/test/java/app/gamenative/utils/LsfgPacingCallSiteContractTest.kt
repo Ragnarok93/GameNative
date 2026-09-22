@@ -112,6 +112,49 @@ class LsfgPacingCallSiteContractTest {
         assertFalse(invalidator.contains("scheduleLsfgRuntimeHandoff"))
     }
 
+    @Test
+    fun adaptiveCapApplicationAcknowledgesMainThreadCompletion() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
+            Charsets.UTF_8,
+        )
+        val powerManager = String(
+            Files.readAllBytes(sourcePath("app/gamenative/powercontrol/PowerManager.kt")),
+            Charsets.UTF_8,
+        )
+
+        assertTrue(source.contains("CountDownLatch"))
+        assertTrue(source.contains("completed.await(750L, TimeUnit.MILLISECONDS)"))
+        assertTrue(source.contains("adaptiveCapGeneration.compareAndSet"))
+        assertTrue(powerManager.contains("completed.await(750L, TimeUnit.MILLISECONDS)"))
+        assertTrue(powerManager.contains("targetFps = limitFps"))
+        assertTrue(powerManager.contains("fpsCapGeneration"))
+        assertTrue(powerManager.contains("generation != fpsCapGeneration.get()"))
+        assertTrue(powerManager.contains("return applied.get()"))
+    }
+
+    @Test
+    fun metricsAndLoaderStateRejectStaleSessionsAndPartialRuntimePublication() {
+        val metrics = String(
+            Files.readAllBytes(sourcePath("app/gamenative/powercontrol/metrics/PerformanceMetricsCollector.kt")),
+            Charsets.UTF_8,
+        )
+        val manager = String(
+            Files.readAllBytes(sourcePath("app/gamenative/utils/LsfgVkManager.kt")),
+            Charsets.UTF_8,
+        )
+
+        assertTrue(metrics.contains("sessionGeneration"))
+        assertTrue(metrics.contains("isSessionCurrent(generation)"))
+        assertTrue(metrics.contains("activeSessionLogPath"))
+        assertTrue(manager.contains("runtimeInstallLock"))
+        assertTrue(manager.contains("copyFileAtomic"))
+        assertTrue(manager.contains("filesHaveSameContents(steamDll, dllFile)"))
+        assertTrue(manager.contains("expectedManifest"))
+        assertTrue(manager.contains("Publish the marker last"))
+        assertTrue(manager.contains("disableLayerForLaunch"))
+    }
+
     private fun sourcePath(relative: String): Path {
         val modulePath = Paths.get("src/main/java").resolve(relative)
         if (Files.isRegularFile(modulePath)) return modulePath

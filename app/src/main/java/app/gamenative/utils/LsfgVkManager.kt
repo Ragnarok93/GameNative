@@ -1,12 +1,14 @@
 package app.gamenative.utils
 
 import android.content.Context
+import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import java.util.concurrent.Executors
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
 import com.winlator.core.FileUtils
 import com.winlator.core.envvars.EnvVars
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -63,6 +65,8 @@ object LsfgVkManager {
     const val EXTRA_ARMED = "lsfgEnabled"
     const val EXTRA_MULTIPLIER = "lsfgMultiplier"
     const val EXTRA_FLOW_SCALE = "lsfgFlowScale"
+    const val EXTRA_FLOW_SCALE_MODE = "lsfgFlowScaleMode"
+    const val EXTRA_ADAPTIVE_FLOW_PRESET = "lsfgAdaptiveFlowPreset"
     const val EXTRA_PERFORMANCE_MODE = "lsfgPerformanceMode"
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
     const val EXTRA_FRAMEGEN_MODE = "lsfgFramegenMode"
@@ -71,6 +75,11 @@ object LsfgVkManager {
 
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
+    const val FLOW_MODE_FIXED = "fixed"
+    const val FLOW_MODE_ADAPTIVE = "adaptive"
+    const val ADAPTIVE_FLOW_PRESET_QUALITY = "quality"
+    const val ADAPTIVE_FLOW_PRESET_BALANCED = "balanced"
+    const val ADAPTIVE_FLOW_PRESET_LOW = "low"
     const val MIN_ADAPTIVE_TARGET_FPS = 30
     const val MAX_ADAPTIVE_TARGET_FPS = 120
     const val ADAPTIVE_TARGET_FPS_STEP = 5
@@ -78,10 +87,13 @@ object LsfgVkManager {
 
     // Written by the layer next to conf.toml; measured presented/base fps
     private const val STATS_RELATIVE_PATH = ".config/lsfg-vk/stats.txt"
+    private const val RUNTIME_PRESSURE_RELATIVE_PATH =
+        ".config/lsfg-vk/runtime-pressure.txt"
     private const val STATS_FRESHNESS_MS = 2000L
     private val statsReadExecutor by lazy {
         Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-stats").apply { isDaemon = true } }
     }
+    private val runtimeInstallLock = Any()
 
     // Environment variables consumed by the lsfg-vk layer / Vulkan loader.
     private const val ENV_DISABLE = "DISABLE_LSFG"
@@ -96,7 +108,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-adaptive-5fc4bdd0-r1"
+        "gamenative-private-volk-dispatch-c0730878e1101fd42863d950135a08635260b645-r22"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -203,9 +215,31 @@ object LsfgVkManager {
     private fun frameGenerationActive(container: Container): Boolean =
         isArmed(container) && multiplier(container) >= 2
 
-    /** Get the flow scale (0.25-1.0, default 0.80). */
+    /** Get the persisted Fixed Flow Scale (0.25-1.0, default 0.80). */
     fun flowScale(container: Container): Float =
         container.getExtra(EXTRA_FLOW_SCALE, "0.80").toFloatOrNull()?.coerceIn(0.25f, 1.0f) ?: 0.80f
+
+    /** Fixed preserves the saved slider; Adaptive selects a preset-bounded runtime scale. */
+    fun flowScaleMode(container: Container): String =
+        container.getExtra(EXTRA_FLOW_SCALE_MODE, FLOW_MODE_FIXED)
+            .lowercase(Locale.US)
+            .takeIf { it == FLOW_MODE_FIXED || it == FLOW_MODE_ADAPTIVE }
+            ?: FLOW_MODE_FIXED
+
+    fun sanitizeAdaptiveFlowPreset(preset: String): String =
+        when (preset.lowercase(Locale.US)) {
+            ADAPTIVE_FLOW_PRESET_BALANCED -> ADAPTIVE_FLOW_PRESET_BALANCED
+            ADAPTIVE_FLOW_PRESET_LOW -> ADAPTIVE_FLOW_PRESET_LOW
+            else -> ADAPTIVE_FLOW_PRESET_QUALITY
+        }
+
+    fun adaptiveFlowPreset(container: Container): String =
+        sanitizeAdaptiveFlowPreset(
+            container.getExtra(
+                EXTRA_ADAPTIVE_FLOW_PRESET,
+                ADAPTIVE_FLOW_PRESET_QUALITY,
+            ),
+        )
 
     /** Get whether performance mode is enabled (default true). */
     fun performanceMode(container: Container): Boolean =
@@ -222,6 +256,41 @@ object LsfgVkManager {
 
 
     /**
+     * Publish coarse whole-device pressure telemetry for Adaptive Flow.
+     *
+     * This file is intentionally separate from conf.toml: updating it must never
+     * trigger an LSFG context rebuild. PerformanceMetricsCollector already samples
+     * these values every 500 ms, so this adds no second GPU/sysfs polling path.
+     */
+    internal fun publishRuntimePressure(
+        rootDir: File?,
+        snapshot: MetricsSnapshot,
+    ): Boolean {
+        val root = rootDir ?: return false
+        val gpu = snapshot.gpuUsagePercent
+            ?.takeIf { it.isFinite() && it in 0f..100f }
+            ?: return false
+        val totalFrames = snapshot.totalFrameCount.coerceAtLeast(0)
+        val slowRatio = if (totalFrames > 0) {
+            snapshot.slowFrameCount.coerceIn(0, totalFrames).toDouble() /
+                totalFrames.toDouble()
+        } else {
+            0.0
+        }
+        val text = buildString {
+            appendLine("timestamp_ms=${snapshot.timestampMs}")
+            appendLine("gpu_usage_percent=${String.format(Locale.US, "%.1f", gpu)}")
+            appendLine("output_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
+            appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
+            appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
+        }
+        return writeConfigAtomic(
+            File(root, RUNTIME_PRESSURE_RELATIVE_PATH),
+            text,
+        )
+    }
+
+    /**
      * Read the fps the layer actually presented, measured on-device.
      * Returns null when the stats file is missing or stale (layer not running),
      * in which case callers should fall back to their own estimate.
@@ -229,15 +298,24 @@ object LsfgVkManager {
     @JvmStatic
     @Volatile private var cachedMeasuredFps: Float? = null
     @Volatile private var lastStatsReadMs: Long = 0L
+    @Volatile private var cachedMeasuredRoot: String? = null
+    private val measuredFpsCacheLock = Any()
 
     /** Served from a cache refreshed off the main thread; callers poll ~1/s. */
-    fun readMeasuredFps(container: Container): Float? {
+    fun readMeasuredFps(container: Container): Float? = synchronized(measuredFpsCacheLock) {
         val now = System.currentTimeMillis()
-        if (now - lastStatsReadMs >= 500L) {
+        val rootKey = runCatching { container.rootDir.canonicalPath }
+            .getOrElse { container.rootDir.absolutePath }
+        if (rootKey != cachedMeasuredRoot || now - lastStatsReadMs >= 500L) {
+            val rootChanged = rootKey != cachedMeasuredRoot
             lastStatsReadMs = now
+            cachedMeasuredRoot = rootKey
+            if (rootChanged)
+                cachedMeasuredFps = null
+            val requestedRoot = container.rootDir
             statsReadExecutor.execute {
-                cachedMeasuredFps = try {
-                    val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
+                val measured = try {
+                    val statsFile = File(requestedRoot, STATS_RELATIVE_PATH)
                     if (statsFile.isFile &&
                         System.currentTimeMillis() - statsFile.lastModified() <= STATS_FRESHNESS_MS
                     ) {
@@ -251,9 +329,16 @@ object LsfgVkManager {
                 } catch (t: Throwable) {
                     null
                 }
+                // A queued read for a previous container must not overwrite
+                // the HUD value after the active container has changed.
+                synchronized(measuredFpsCacheLock) {
+                    if (cachedMeasuredRoot == rootKey) {
+                        cachedMeasuredFps = measured
+                    }
+                }
             }
         }
-        return cachedMeasuredFps
+        cachedMeasuredFps
     }
 
     /**
@@ -358,6 +443,13 @@ object LsfgVkManager {
     fun ensureRuntimeInstalled(context: Context, container: Container): Boolean {
         if (!isSupported(container)) return false
 
+        return synchronized(runtimeInstallLock) {
+            ensureRuntimeInstalledLocked(context, container)
+        }
+    }
+
+    private fun ensureRuntimeInstalledLocked(context: Context, container: Container): Boolean {
+
         val rootDir = container.rootDir
         val localLibDir = File(rootDir, LIB_RELATIVE_DIR)
         val layerDir = File(rootDir, LAYER_RELATIVE_DIR)
@@ -372,9 +464,27 @@ object LsfgVkManager {
             return false
         }
 
-        val installedVersion = versionFile.takeIf { it.exists() }?.readText()?.trim().orEmpty()
+        val expectedManifest = runCatching {
+            context.assets.open(ASSET_MANIFEST)
+                .bufferedReader().use { it.readText() }
+                .replace(
+                    "\"library_path\": \"$LIB_FILENAME\"",
+                    "\"library_path\": \"$MANIFEST_LIBRARY_PATH\"",
+                )
+        }.getOrElse {
+            Timber.tag(TAG).e(it, "LSFG layer manifest asset is unavailable")
+            return false
+        }
+
+        val installedVersion = runCatching {
+            versionFile.takeIf { it.isFile }?.readText()?.trim().orEmpty()
+        }.getOrDefault("")
+        val installedManifest = runCatching {
+            manifestFile.takeIf { it.isFile }?.readText().orEmpty()
+        }.getOrDefault("")
         val needsInstall = installedVersion != RUNTIME_VERSION ||
-            !filesHaveSameContents(sourceLib, libFile) || !manifestFile.isFile
+            installedManifest != expectedManifest ||
+            !filesHaveSameContents(sourceLib, libFile)
 
         var success = true
 
@@ -383,23 +493,26 @@ object LsfgVkManager {
                 localLibDir.mkdirs()
                 layerDir.mkdirs()
 
-                sourceLib.inputStream().use { input ->
-                    libFile.outputStream().use { output -> input.copyTo(output) }
-                }
-                val manifestText = context.assets.open(ASSET_MANIFEST)
-                    .bufferedReader().use { it.readText() }
-                    .replace(
-                        "\"library_path\": \"$LIB_FILENAME\"",
-                        "\"library_path\": \"$MANIFEST_LIBRARY_PATH\""
-                    )
-                FileUtils.writeString(manifestFile, manifestText)
-                FileUtils.writeString(versionFile, RUNTIME_VERSION)
+                if (!copyFileAtomic(sourceLib, libFile, 0b111101101))
+                    throw IllegalStateException("Failed to publish LSFG native library")
+                if (!writeTextAtomic(manifestFile, expectedManifest, 0b110100100))
+                    throw IllegalStateException("Failed to publish LSFG layer manifest")
+                // Publish the marker last. It is the commit record consumed by
+                // provenance checks and must never describe a partially staged
+                // library or manifest.
+                if (!writeTextAtomic(versionFile, RUNTIME_VERSION, 0b110100100))
+                    throw IllegalStateException("Failed to publish LSFG runtime marker")
 
                 if (libFile.exists()) FileUtils.chmod(libFile, 0b111101101)
                 if (manifestFile.exists()) FileUtils.chmod(manifestFile, 0b110100100)
                 if (versionFile.exists()) FileUtils.chmod(versionFile, 0b110100100)
 
-                val ok = libFile.isFile && manifestFile.isFile && filesHaveSameContents(sourceLib, libFile)
+                val ok = libFile.isFile &&
+                    manifestFile.isFile &&
+                    manifestFile.readText() == expectedManifest &&
+                    versionFile.isFile &&
+                    versionFile.readText().trim() == RUNTIME_VERSION &&
+                    filesHaveSameContents(sourceLib, libFile)
                 if (ok) {
                     Timber.tag(TAG).i("Installed LSFG runtime %s into %s", RUNTIME_VERSION, rootDir)
                 } else {
@@ -420,12 +533,10 @@ object LsfgVkManager {
         val steamDll = findSteamDll()
         if (steamDll != null) {
             try {
-                if (!dllFile.isFile || dllFile.length() != steamDll.length()) {
+                if (!filesHaveSameContents(steamDll, dllFile)) {
                     dllDir.mkdirs()
-                    steamDll.inputStream().use { input ->
-                        dllFile.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    if (dllFile.exists()) FileUtils.chmod(dllFile, 0b110100100)
+                    if (!copyFileAtomic(steamDll, dllFile, 0b110100100))
+                        throw IllegalStateException("Failed to publish Lossless.dll")
                     Timber.tag(TAG).i("Copied Lossless.dll (%d bytes) into %s", dllFile.length(), dllDir)
                 }
             } catch (t: Throwable) {
@@ -459,6 +570,8 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) runtimeMultiplier else 1,
                 flowScale = flowScale(container),
+                adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+                adaptiveFlowPreset = adaptiveFlowPreset(container),
                 performanceMode = performanceMode(container),
                 adaptiveFramegen = adaptive,
                 fpsLimit = adaptiveTarget,
@@ -476,15 +589,19 @@ object LsfgVkManager {
      * Called during container startup in BionicProgramLauncherComponent.
      */
     @JvmStatic
-    fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean {
+    fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean =
+        synchronized(runtimeInstallLock) {
+            applyLaunchEnvLocked(container, envVars)
+        }
+
+    private fun applyLaunchEnvLocked(container: Container, envVars: EnvVars): Boolean {
         envVars.remove(ENV_DISABLE)
         envVars.remove(ENV_CONFIG)
         envVars.remove(ENV_PROCESS)
         envVars.remove(ENV_PROCESS_EXE)
 
         if (!isSupported(container) || !isFrameGenerationRequested(container)) {
-            removeLsfgVulkanLayerActivation(envVars)
-            disableLayerInContainer(container)
+            disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).i(
                 "LSFG layer disabled for launch (requested=%s, multiplier=%d)",
                 container.getExtra(EXTRA_ARMED, "false"),
@@ -497,8 +614,7 @@ object LsfgVkManager {
         val armed = isArmed(container)
 
         if (!armed) {
-            removeLsfgVulkanLayerActivation(envVars)
-            disableLayerInContainer(container)
+            disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).i(
                 "LSFG layer disabled (requested=%s, dll=%s)",
                 container.getExtra(EXTRA_ARMED, "false"),
@@ -509,6 +625,7 @@ object LsfgVkManager {
 
         val processExecutable = targetExecutable(container)
         if (processExecutable == null) {
+            disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).w("LSFG layer armed but target executable could not be resolved")
             return false
         }
@@ -516,8 +633,21 @@ object LsfgVkManager {
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
         envVars.put(ENV_PROCESS_EXE, processExecutable)
 
-        val loaderLayerDir = synchronizeLoaderVisibleRuntime(container, envVars)
-            ?: File(container.rootDir, LAYER_RELATIVE_DIR)
+        val loaderHomeConfigured = envVars[ENV_HOME]?.trim()?.isNotEmpty() == true
+        val loaderLayerDir = if (loaderHomeConfigured) {
+            synchronizeLoaderVisibleRuntime(container, envVars) ?: run {
+                // A configured loader HOME can shadow the per-container layer.
+                // Do not arm the process if that copy could not be published
+                // and verified byte-for-byte.
+                envVars.remove(ENV_CONFIG)
+                envVars.remove(ENV_PROCESS_EXE)
+                disableLayerForLaunch(container, envVars)
+                Timber.tag(TAG).e("LSFG layer disabled: loader-visible runtime sync failed")
+                return false
+            }
+        } else {
+            File(container.rootDir, LAYER_RELATIVE_DIR)
+        }
         appendUniqueEnvEntry(envVars, ENV_VK_LAYER_PATH, loaderLayerDir.absolutePath)
         appendUniqueEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME)
 
@@ -557,49 +687,56 @@ object LsfgVkManager {
         val targetManifest = File(targetLayerDir, MANIFEST_FILENAME)
         val targetVersion = File(targetLayerDir, VERSION_FILENAME)
 
-        return try {
-            val sourceLibCanonical = sourceLib.canonicalFile
-            val targetLibCanonical = targetLib.canonicalFile
-            val sourceManifestCanonical = sourceManifest.canonicalFile
-            val targetManifestCanonical = targetManifest.canonicalFile
+        return synchronized(runtimeInstallLock) {
+            try {
+                val sourceLibCanonical = sourceLib.canonicalFile
+                val targetLibCanonical = targetLib.canonicalFile
+                val sourceManifestCanonical = sourceManifest.canonicalFile
+                val targetManifestCanonical = targetManifest.canonicalFile
 
-            targetLib.parentFile?.mkdirs()
-            targetLayerDir.mkdirs()
+                targetLib.parentFile?.mkdirs()
+                targetLayerDir.mkdirs()
 
-            if (sourceLibCanonical != targetLibCanonical &&
-                !filesHaveSameContents(sourceLib, targetLib)
-            ) {
-                sourceLib.inputStream().use { input ->
-                    targetLib.outputStream().use { output -> input.copyTo(output) }
+                if (sourceLibCanonical != targetLibCanonical &&
+                    !filesHaveSameContents(sourceLib, targetLib)
+                ) {
+                    if (!copyFileAtomic(sourceLib, targetLib, 0b111101101))
+                        throw IllegalStateException("Failed to publish loader-visible LSFG library")
                 }
-            }
 
-            if (sourceManifestCanonical != targetManifestCanonical) {
-                val sourceText = sourceManifest.readText()
-                if (!targetManifest.isFile || targetManifest.readText() != sourceText) {
-                    FileUtils.writeString(targetManifest, sourceText)
+                if (sourceManifestCanonical != targetManifestCanonical) {
+                    val sourceText = sourceManifest.readText()
+                    if (!targetManifest.isFile || targetManifest.readText() != sourceText) {
+                        if (!writeTextAtomic(targetManifest, sourceText, 0b110100100))
+                            throw IllegalStateException("Failed to publish loader-visible LSFG manifest")
+                    }
                 }
-            }
-            FileUtils.writeString(targetVersion, RUNTIME_VERSION)
+                if (!writeTextAtomic(targetVersion, RUNTIME_VERSION, 0b110100100))
+                    throw IllegalStateException("Failed to publish loader-visible LSFG marker")
 
-            if (targetLib.exists()) FileUtils.chmod(targetLib, 0b111101101)
-            if (targetManifest.exists()) FileUtils.chmod(targetManifest, 0b110100100)
-            if (targetVersion.exists()) FileUtils.chmod(targetVersion, 0b110100100)
+                if (targetLib.exists()) FileUtils.chmod(targetLib, 0b111101101)
+                if (targetManifest.exists()) FileUtils.chmod(targetManifest, 0b110100100)
+                if (targetVersion.exists()) FileUtils.chmod(targetVersion, 0b110100100)
 
-            val verified = targetLib.isFile && targetManifest.isFile &&
-                filesHaveSameContents(sourceLib, targetLib)
-            if (!verified) {
-                Timber.tag(TAG).e(
-                    "LSFG loader runtime sync verification failed home=%s",
-                    loaderHome.absolutePath,
-                )
+                val verified = targetLib.isFile &&
+                    targetManifest.isFile &&
+                    targetManifest.readText() == sourceManifest.readText() &&
+                    targetVersion.isFile &&
+                    targetVersion.readText().trim() == RUNTIME_VERSION &&
+                    filesHaveSameContents(sourceLib, targetLib)
+                if (!verified) {
+                    Timber.tag(TAG).e(
+                        "LSFG loader runtime sync verification failed home=%s",
+                        loaderHome.absolutePath,
+                    )
+                    null
+                } else {
+                    targetLayerDir
+                }
+            } catch (t: Throwable) {
+                Timber.tag(TAG).e(t, "Failed to synchronize LSFG runtime into Vulkan loader HOME")
                 null
-            } else {
-                targetLayerDir
             }
-        } catch (t: Throwable) {
-            Timber.tag(TAG).e(t, "Failed to synchronize LSFG runtime into Vulkan loader HOME")
-            null
         }
     }
 
@@ -618,6 +755,16 @@ object LsfgVkManager {
     private fun removeLsfgVulkanLayerActivation(envVars: EnvVars) {
         removeSeparatedEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME, ":")
         removeSeparatedEnvEntry(envVars, ENV_VK_LOADER_LAYERS_ENABLE, VULKAN_LAYER_NAME, ",")
+    }
+
+    private fun disableLayerForLaunch(container: Container, envVars: EnvVars) {
+        // The loader-visible HOME copy uses a GLOBAL manifest. Removing only
+        // the per-container manifest is therefore insufficient: a shared HOME
+        // can still auto-discover the stale layer. Keep the manifest available
+        // for other launches, but disable it for this process explicitly.
+        envVars.put(ENV_DISABLE, "1")
+        removeLsfgVulkanLayerActivation(envVars)
+        disableLayerInContainer(container)
     }
 
     private fun removeSeparatedEnvEntry(envVars: EnvVars, key: String, value: String, separator: String) {
@@ -703,6 +850,60 @@ object LsfgVkManager {
         return digest.digest()
     }
 
+    private fun moveIntoPlace(temp: java.nio.file.Path, target: java.nio.file.Path) {
+        try {
+            Files.move(temp, target, ATOMIC_MOVE, REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(temp, target, REPLACE_EXISTING)
+        }
+    }
+
+    private fun copyFileAtomic(source: File, target: File, mode: Int): Boolean {
+        val parent = target.parentFile ?: return false
+        var temp: java.nio.file.Path? = null
+        return try {
+            parent.mkdirs()
+            temp = Files.createTempFile(parent.toPath(), ".${target.name}.", ".tmp")
+            FileOutputStream(temp.toFile()).use { output ->
+                source.inputStream().use { input -> input.copyTo(output) }
+                output.fd.sync()
+            }
+            FileUtils.chmod(temp.toFile(), mode)
+            moveIntoPlace(temp, target.toPath())
+            temp = null
+            FileUtils.chmod(target, mode)
+            target.isFile
+        } catch (t: Throwable) {
+            Timber.tag(TAG).w(t, "Failed to atomically publish %s", target.absolutePath)
+            false
+        } finally {
+            temp?.let { runCatching { Files.deleteIfExists(it) } }
+        }
+    }
+
+    private fun writeTextAtomic(target: File, text: String, mode: Int): Boolean {
+        val parent = target.parentFile ?: return false
+        var temp: java.nio.file.Path? = null
+        return try {
+            parent.mkdirs()
+            temp = Files.createTempFile(parent.toPath(), ".${target.name}.", ".tmp")
+            FileOutputStream(temp.toFile()).use { output ->
+                output.write(text.toByteArray(Charsets.UTF_8))
+                output.fd.sync()
+            }
+            FileUtils.chmod(temp.toFile(), mode)
+            moveIntoPlace(temp, target.toPath())
+            temp = null
+            FileUtils.chmod(target, mode)
+            target.isFile
+        } catch (t: Throwable) {
+            Timber.tag(TAG).w(t, "Failed to atomically publish %s", target.absolutePath)
+            false
+        } finally {
+            temp?.let { runCatching { Files.deleteIfExists(it) } }
+        }
+    }
+
     private fun configFile(container: Container): File =
         File(container.rootDir, CONFIG_RELATIVE_PATH)
 
@@ -755,6 +956,8 @@ object LsfgVkManager {
         enabled: Boolean,
         multiplier: Int,
         flowScale: Float,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
         performanceMode: Boolean,
         adaptiveFramegen: Boolean,
         fpsLimit: Int,
@@ -775,6 +978,8 @@ object LsfgVkManager {
                 appendLine("exe = ${tomlString(processName)}")
                 appendLine("multiplier = $effectiveMultiplier")
                 appendLine("flow_scale = ${formatFlowScale(flowScale)}")
+                appendLine("adaptive_flow_scale = ${if (adaptiveFlowScale) "true" else "false"}")
+                appendLine("adaptive_flow_preset = ${tomlString(sanitizeAdaptiveFlowPreset(adaptiveFlowPreset))}")
                 appendLine("performance_mode = ${if (performanceMode) "true" else "false"}")
                 appendLine("hdr_mode = false")
                 appendLine("adaptive_framegen = ${if (adaptiveFramegen) "true" else "false"}")
@@ -842,6 +1047,8 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) effectiveMultiplier else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
+                adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+                adaptiveFlowPreset = adaptiveFlowPreset(container),
                 performanceMode = performanceMode,
                 adaptiveFramegen = adaptive,
                 fpsLimit = effectiveFpsLimit,

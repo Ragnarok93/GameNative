@@ -9,13 +9,6 @@ on:
       - 'app/build.gradle.kts'
       - 'gradle/libs.versions.toml'
       - 'settings.gradle.kts'
-  pull_request:
-    paths:
-      - '.github/workflows/legacy-release-build.yml'
-      - '.github/actions/prepare-lsfg-native/**'
-      - 'app/build.gradle.kts'
-      - 'gradle/libs.versions.toml'
-      - 'settings.gradle.kts'
   workflow_dispatch:
 
 concurrency:
@@ -160,6 +153,9 @@ jobs:
 
           # The exact Release-built LSFG runtime must be packaged for arm64.
           grep -qx 'lib/arm64-v8a/liblsfg-vk-layer\.so' apk-entries.txt
+          expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
+          unzip -p gamenative-legacy-release.apk 'lib/arm64-v8a/liblsfg-vk-layer.so' \
+            | grep -aFq "$expected_native_commit"
 
           apksigner="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
           test -x "$apksigner"
@@ -168,17 +164,6 @@ jobs:
           sha256sum gamenative-legacy-release.apk | tee gamenative-legacy-release.apk.sha256
           ls -lh gamenative-legacy-release.apk
 
-      - name: Split APK for reliable transfer
-        run: |
-          set -euo pipefail
-          mkdir -p legacy-release-parts
-          split -n 4 -d -a 1 gamenative-legacy-release.apk legacy-release-parts/gamenative-legacy-release.apk.part-
-          for part in 0 1 2 3; do
-            test -s "legacy-release-parts/gamenative-legacy-release.apk.part-${part}"
-          done
-          cmp gamenative-legacy-release.apk <(cat legacy-release-parts/gamenative-legacy-release.apk.part-{0,1,2,3})
-          cp gamenative-legacy-release.apk.sha256 legacy-release-parts/
-
       - name: Upload LegacyRelease APK
         uses: actions/upload-artifact@v4
         with:
@@ -186,13 +171,5 @@ jobs:
           path: |
             gamenative-legacy-release.apk
             gamenative-legacy-release.apk.sha256
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload LegacyRelease transfer parts
-        uses: actions/upload-artifact@v4
-        with:
-          name: gamenative-legacy-release-parts
-          path: legacy-release-parts/
           if-no-files-found: error
           compression-level: 0

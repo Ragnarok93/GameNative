@@ -9,4 +9,15 @@
     <string name="lsfg_adaptive_target">Target frame rate</string>
     <string name="lsfg_adaptive_target_desc">Adaptive uses up to 4x generation only as needed to approach this output target.</string>
     <string name="lsfg_adaptive_target_value">%1$d FPS</string>
+    <string name="lsfg_flow_mode">Flow Scale mode</string>
+    <string name="lsfg_flow_mode_desc">Fixed uses the saved Flow Scale. Adaptive seeks the selected quality target and steps down only under sustained LSFG load.</string>
+    <string name="lsfg_flow_mode_fixed">Fixed</string>
+    <string name="lsfg_flow_mode_adaptive">Adaptive</string>
+    <string name="lsfg_flow_preset">Flow Scale quality</string>
+    <string name="lsfg_flow_preset_quality">Quality</string>
+    <string name="lsfg_flow_preset_balanced">Balanced</string>
+    <string name="lsfg_flow_preset_low">Low</string>
+    <string name="lsfg_flow_preset_quality_desc">Target 1.00 · minimum 0.70. Keeps maximum optical-flow detail when headroom is available.</string>
+    <string name="lsfg_flow_preset_balanced_desc">Target 0.80 · minimum 0.55. Balances optical-flow detail with GPU headroom.</string>
+    <string name="lsfg_flow_preset_low_desc">Target 0.55 · minimum 0.25. Prioritizes LSFG throughput under heavier GPU load.</string>
 </resources>

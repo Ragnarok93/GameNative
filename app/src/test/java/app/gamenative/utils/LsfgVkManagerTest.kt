@@ -310,10 +310,10 @@ class LsfgVkManagerTest {
         assertTrue(loaderLib.readBytes().contentEquals(containerLib.readBytes()))
         assertEquals(containerManifest.readText(), loaderManifest.readText())
         val runtimeVersion = loaderVersion.readText()
-        assertEquals(
-            "gamenative-adaptive-e7b2e36a047ddef31b627ce937b5ad3c70c812fa-r6",
-            runtimeVersion,
-        )
+        val runtimeVersionField = LsfgVkManager::class.java
+            .getDeclaredField("RUNTIME_VERSION")
+            .apply { isAccessible = true }
+        assertEquals(runtimeVersionField.get(null) as String, runtimeVersion)
         val loaderLayerDir = loaderManifest.parentFile!!.absolutePath
         assertEquals(loaderLayerDir, envVars["VK_LAYER_PATH"])
     }

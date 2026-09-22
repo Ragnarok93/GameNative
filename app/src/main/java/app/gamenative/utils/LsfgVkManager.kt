@@ -104,6 +104,7 @@ object LsfgVkManager {
     private const val ENV_VK_LAYER_PATH = "VK_LAYER_PATH"
     private const val ENV_VK_INSTANCE_LAYERS = "VK_INSTANCE_LAYERS"
     private const val ENV_VK_LOADER_LAYERS_ENABLE = "VK_LOADER_LAYERS_ENABLE"
+    private const val ENV_MESA_VK_WSI_PRESENT_MODE = "MESA_VK_WSI_PRESENT_MODE"
 
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
@@ -590,11 +591,31 @@ object LsfgVkManager {
      */
     @JvmStatic
     fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean =
+        applyLaunchEnv(
+            container,
+            envVars,
+            protectedAdrenoPresentation = false,
+        )
+
+    @JvmStatic
+    fun applyLaunchEnv(
+        container: Container,
+        envVars: EnvVars,
+        protectedAdrenoPresentation: Boolean,
+    ): Boolean =
         synchronized(runtimeInstallLock) {
-            applyLaunchEnvLocked(container, envVars)
+            applyLaunchEnvLocked(
+                container,
+                envVars,
+                protectedAdrenoPresentation,
+            )
         }
 
-    private fun applyLaunchEnvLocked(container: Container, envVars: EnvVars): Boolean {
+    private fun applyLaunchEnvLocked(
+        container: Container,
+        envVars: EnvVars,
+        protectedAdrenoPresentation: Boolean,
+    ): Boolean {
         envVars.remove(ENV_DISABLE)
         envVars.remove(ENV_CONFIG)
         envVars.remove(ENV_PROCESS)
@@ -632,6 +653,20 @@ object LsfgVkManager {
 
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
         envVars.put(ENV_PROCESS_EXE, processExecutable)
+
+        if (protectedAdrenoPresentation && frameGenerationActive(container)) {
+            // Mesa's process-level WSI override wins over the Vulkan
+            // VkSwapchainCreateInfoKHR present mode. Deferred single-queue
+            // Adreno therefore needs FIFO while generated frames are active:
+            // MAILBOX may replace multiple accepted synthetic/source presents
+            // before scanout. Keep this launch-local and do not alter source-only
+            // or non-Adreno/Xclipse environments.
+            envVars.put(ENV_MESA_VK_WSI_PRESENT_MODE, "fifo")
+            Timber.tag(TAG).i(
+                "LSFG protected Adreno presentation enabled: %s=fifo",
+                ENV_MESA_VK_WSI_PRESENT_MODE,
+            )
+        }
 
         val loaderHomeConfigured = envVars[ENV_HOME]?.trim()?.isNotEmpty() == true
         val loaderLayerDir = if (loaderHomeConfigured) {

@@ -233,6 +233,60 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun applyLaunchEnv_activeAdrenoUsesFifoSoSyntheticPresentsCannotBeMailboxReplaced() {
+        val container = container(armed = true)
+        val envVars = EnvVars().apply {
+            put("MESA_VK_WSI_PRESENT_MODE", "mailbox")
+        }
+
+        assertTrue(
+            LsfgVkManager.applyLaunchEnv(
+                container,
+                envVars,
+                protectedAdrenoPresentation = true,
+            ),
+        )
+
+        assertEquals("fifo", envVars["MESA_VK_WSI_PRESENT_MODE"])
+    }
+
+    @Test
+    fun applyLaunchEnv_nonAdrenoPreservesExistingPresentMode() {
+        val container = container(armed = true)
+        val envVars = EnvVars().apply {
+            put("MESA_VK_WSI_PRESENT_MODE", "mailbox")
+        }
+
+        assertTrue(
+            LsfgVkManager.applyLaunchEnv(
+                container,
+                envVars,
+                protectedAdrenoPresentation = false,
+            ),
+        )
+
+        assertEquals("mailbox", envVars["MESA_VK_WSI_PRESENT_MODE"])
+    }
+
+    @Test
+    fun applyLaunchEnv_sourceOnlyResidentAdrenoDoesNotOverridePresentMode() {
+        val container = container(armed = true, multiplier = "0")
+        val envVars = EnvVars().apply {
+            put("MESA_VK_WSI_PRESENT_MODE", "mailbox")
+        }
+
+        assertTrue(
+            LsfgVkManager.applyLaunchEnv(
+                container,
+                envVars,
+                protectedAdrenoPresentation = true,
+            ),
+        )
+
+        assertEquals("mailbox", envVars["MESA_VK_WSI_PRESENT_MODE"])
+    }
+
+    @Test
     fun applyLaunchEnv_isDriverAgnosticAndPreservesSelectedIcd() {
         val container = container(armed = true)
         val envVars = EnvVars().apply {

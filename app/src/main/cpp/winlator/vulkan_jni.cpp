@@ -2,7 +2,8 @@
 #include <android/native_window_jni.h>
 #include <dlfcn.h>
 
-static constexpr const char* kGameNativeApexVulkanTargetVersion =
+extern "C" __attribute__((used, visibility("default")))
+const char gamenative_apex_vulkan_target_version[] =
     "gamenative-apex-vulkan-target-v1";
 #include <sys/stat.h>
 #include <unistd.h>

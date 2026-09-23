@@ -350,17 +350,15 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         }
 
         if (LsfgVkManager.isFrameGenerationRequested(container)) {
-            LsfgVkManager.ensureRuntimeInstalled(environment.getContext(), container);
-            LsfgVkManager.writeConfig(container);
-            final boolean protectedAdrenoPresentation =
+            final boolean useKnownGoodAdrenoRuntime =
                     renderer != null
                     && renderer.toLowerCase(Locale.ENGLISH).contains("adreno");
-            LsfgVkManager.applyLaunchEnv(
-                    container, envVars, protectedAdrenoPresentation);
+            LsfgVkManager.ensureRuntimeInstalled(
+                    environment.getContext(), container, useKnownGoodAdrenoRuntime);
+            LsfgVkManager.writeConfig(container);
+            LsfgVkManager.applyLaunchEnv(container, envVars);
         } else if (LsfgVkManager.isSupported(container)) {
-            // Keep the resident source-only path on the user's existing WSI
-            // policy. The Adreno FIFO override exists only while FG is active.
-            LsfgVkManager.applyLaunchEnv(container, envVars, false);
+            LsfgVkManager.applyLaunchEnv(container, envVars);
         }
 
         Log.d("BionicProgramLauncherComponent", "env vars are " + envVars.toString());

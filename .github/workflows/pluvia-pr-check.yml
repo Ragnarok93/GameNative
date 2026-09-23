@@ -75,6 +75,7 @@ jobs:
           ./gradlew :app:testLegacyDebugUnitTest --no-daemon
           --tests app.gamenative.framegen.FrameGenerationBackendTest
           --tests app.gamenative.framegen.ApexVulkanTargetContractTest
+          --tests app.gamenative.framegen.ApexVulkanPresenterContractTest
           --tests app.gamenative.utils.LsfgVkManagerTest
           --tests app.gamenative.utils.LsfgQuickMenuHelperModeTest
           --tests app.gamenative.utils.LsfgAdaptiveFlowUiContractTest

@@ -30,7 +30,7 @@ class LsfgAdrenoHistoricalParityContractTest {
         assertTrue(action.contains("liblsfg-vk-layer-adreno18.so"))
         assertTrue(
             action.contains(
-                "git -C \"${dollar}native_dir\" checkout --detach " +
+                "git -C \"${dollar}native_dir\" checkout --force --detach " +
                     "\"${dollar}ADRENO_KNOWN_GOOD_COMMIT\"",
             ),
         )
@@ -43,7 +43,7 @@ class LsfgAdrenoHistoricalParityContractTest {
         assertTrue(action.contains("ADRENO_KNOWN_GOOD_SHA256"))
         assertTrue(
             action.contains(
-                "git -C \"${dollar}native_dir\" checkout --detach " +
+                "git -C \"${dollar}native_dir\" checkout --force --detach " +
                     "\"${dollar}expected_commit\"",
             ),
         )

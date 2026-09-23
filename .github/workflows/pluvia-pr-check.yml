@@ -2,7 +2,7 @@ name: Pull Request build check
 
 on:
   push:
-    branches: [ "feature/adaptive-unified-integration-20260920", "fix/**" ]
+    branches: [ "feature/adaptive-unified-integration-20260920", "feature/apex-frame-generation", "fix/**" ]
   pull_request:
     branches: [ "master" ]
     paths-ignore:
@@ -41,6 +41,9 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
 
+      - name: Prepare GameNative Apex native runtime
+        uses: ./.github/actions/prepare-apex-native
+
       - name: Inject credentials
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -64,9 +67,10 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Run LSFG and FrameRating Legacy tests
+      - name: Run frame-generation and FrameRating Legacy tests
         run: >-
           ./gradlew :app:testLegacyDebugUnitTest --no-daemon
+          --tests app.gamenative.framegen.FrameGenerationBackendTest
           --tests app.gamenative.utils.LsfgVkManagerTest
           --tests app.gamenative.utils.LsfgQuickMenuHelperModeTest
           --tests app.gamenative.utils.LsfgAdaptiveFlowUiContractTest
@@ -93,6 +97,8 @@ jobs:
           expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
           unzip -p "$apk" 'lib/arm64-v8a/liblsfg-vk-layer.so' \
             | grep -aFq "$expected_native_commit"
+          unzip -p "$apk" 'lib/arm64-v8a/libgamenative_apex.so' \
+            | grep -aFq 'd3339806904fc5da0d8db64f4c8e5d77648975d9'
           sha256sum "$apk" | tee /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256
           test -s "$apk"
           test -s /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256

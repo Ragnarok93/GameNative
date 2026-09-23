@@ -1,0 +1,55 @@
+name: Prepare GameNative Apex native runtime
+description: Build and verify the source-available native Apex frame-generation runtime
+inputs:
+  ndk-version:
+    description: Android NDK revision used by GameNative
+    required: false
+    default: '27.3.13750724'
+runs:
+  using: composite
+  steps:
+    - name: Test Apex GPU profile selection
+      shell: bash
+      run: |
+        set -euo pipefail
+        native_dir=app/src/main/cpp/apex
+        g++ -std=c++17 -Wall -Wextra -Werror           "$native_dir/apex_gpu_profile.cpp"           "$native_dir/tests/apex_gpu_profile_test.cpp"           -o /tmp/gamenative-apex-gpu-profile-test
+        /tmp/gamenative-apex-gpu-profile-test
+
+    - name: Build arm64 Apex native library
+      shell: bash
+      env:
+        ANDROID_NDK_VERSION: ${{ inputs.ndk-version }}
+      run: |
+        set -euo pipefail
+        native_dir=app/src/main/cpp/apex
+        build_dir=/tmp/gamenative-apex-android
+        output_dir=app/src/main/jniLibs/arm64-v8a
+        expected_base="d3339806904fc5da0d8db64f4c8e5d77648975d9"
+
+        sudo apt-get update -qq
+        sudo apt-get install -y cmake ninja-build file
+        sdkmanager --install "ndk;${ANDROID_NDK_VERSION}"
+
+        sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+        test -n "$sdk_root"
+        ndk_root="$sdk_root/ndk/${ANDROID_NDK_VERSION}"
+        toolchain="$ndk_root/build/cmake/android.toolchain.cmake"
+        readelf_bin="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+        test -f "$toolchain"
+        test -x "$readelf_bin"
+
+        rm -rf "$build_dir"
+        cmake -S "$native_dir" -B "$build_dir" -G Ninja           -DCMAKE_TOOLCHAIN_FILE="$toolchain"           -DANDROID_ABI=arm64-v8a           -DANDROID_PLATFORM=android-26           -DCMAKE_BUILD_TYPE=Release
+        cmake --build "$build_dir" --target gamenative_apex
+
+        built="$build_dir/libgamenative_apex.so"
+        test -s "$built"
+        grep -aFq "$expected_base" "$built"
+        "$readelf_bin" -Ws "$built" | grep -q 'Java_app_gamenative_framegen_ApexNativeBridge_nativeInit'
+        "$readelf_bin" -Ws "$built" | grep -q 'Java_app_gamenative_framegen_ApexNativeBridge_nativeSelectGpuProfile'
+
+        mkdir -p "$output_dir"
+        cp "$built" "$output_dir/libgamenative_apex.so"
+        file "$output_dir/libgamenative_apex.so"
+        sha256sum "$output_dir/libgamenative_apex.so"

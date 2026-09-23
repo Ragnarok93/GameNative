@@ -109,7 +109,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-adaptive-2302f56ec75eaf20529484a4630fafed5e19585b-r24"
+        "gamenative-adaptive-ce16a9c0e5c6fee2e302c80f7dfb3511e0aec8f5-r25"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -656,8 +656,8 @@ object LsfgVkManager {
 
         if (protectedAdrenoPresentation && frameGenerationActive(container)) {
             // Mesa's process-level WSI override wins over the Vulkan
-            // VkSwapchainCreateInfoKHR present mode. Deferred single-queue
-            // Adreno therefore needs FIFO while generated frames are active:
+            // VkSwapchainCreateInfoKHR present mode. The protected Adreno
+            // generated-present route keeps FIFO while frame generation is active:
             // MAILBOX may replace multiple accepted synthetic/source presents
             // before scanout. Keep this launch-local and do not alter source-only
             // or non-Adreno/Xclipse environments.

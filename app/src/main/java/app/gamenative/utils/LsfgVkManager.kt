@@ -708,11 +708,13 @@ object LsfgVkManager {
 
         val sourceLib = File(container.rootDir, "$LIB_RELATIVE_DIR/$LIB_FILENAME")
         val sourceManifest = File(container.rootDir, "$LAYER_RELATIVE_DIR/$MANIFEST_FILENAME")
-        if (!sourceLib.isFile || !sourceManifest.isFile) {
+        val sourceVersion = File(container.rootDir, "$LAYER_RELATIVE_DIR/$VERSION_FILENAME")
+        if (!sourceLib.isFile || !sourceManifest.isFile || !sourceVersion.isFile) {
             Timber.tag(TAG).w(
-                "LSFG loader runtime sync skipped: source runtime incomplete lib=%s manifest=%s",
+                "LSFG loader runtime sync skipped: source runtime incomplete lib=%s manifest=%s version=%s",
                 sourceLib.isFile,
                 sourceManifest.isFile,
+                sourceVersion.isFile,
             )
             return null
         }
@@ -746,7 +748,10 @@ object LsfgVkManager {
                             throw IllegalStateException("Failed to publish loader-visible LSFG manifest")
                     }
                 }
-                if (!writeTextAtomic(targetVersion, RUNTIME_VERSION, 0b110100100))
+                val sourceVersionText = sourceVersion.readText().trim()
+                if (sourceVersionText.isEmpty())
+                    throw IllegalStateException("Source LSFG runtime marker is empty")
+                if (!writeTextAtomic(targetVersion, sourceVersionText, 0b110100100))
                     throw IllegalStateException("Failed to publish loader-visible LSFG marker")
 
                 if (targetLib.exists()) FileUtils.chmod(targetLib, 0b111101101)
@@ -757,7 +762,7 @@ object LsfgVkManager {
                     targetManifest.isFile &&
                     targetManifest.readText() == sourceManifest.readText() &&
                     targetVersion.isFile &&
-                    targetVersion.readText().trim() == RUNTIME_VERSION &&
+                    targetVersion.readText().trim() == sourceVersionText &&
                     filesHaveSameContents(sourceLib, targetLib)
                 if (!verified) {
                     Timber.tag(TAG).e(

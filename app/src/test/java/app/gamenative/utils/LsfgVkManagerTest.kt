@@ -296,6 +296,14 @@ class LsfgVkManagerTest {
             parentFile?.mkdirs()
             writeText("container-manifest")
         }
+        val runtimeVersionField = LsfgVkManager::class.java
+            .getDeclaredField("RUNTIME_VERSION")
+            .apply { isAccessible = true }
+        val expectedRuntimeVersion = runtimeVersionField.get(null) as String
+        File(
+            rootDir,
+            ".local/share/vulkan/implicit_layer.d/.lsfg_vk_runtime_version",
+        ).writeText(expectedRuntimeVersion)
         val loaderHome = File(rootDir, "loader-home")
         val loaderLib = File(loaderHome, ".local/lib/liblsfg-vk-layer.so").apply {
             parentFile?.mkdirs()
@@ -321,10 +329,7 @@ class LsfgVkManagerTest {
         assertTrue(loaderLib.readBytes().contentEquals(containerLib.readBytes()))
         assertEquals(containerManifest.readText(), loaderManifest.readText())
         val runtimeVersion = loaderVersion.readText()
-        val runtimeVersionField = LsfgVkManager::class.java
-            .getDeclaredField("RUNTIME_VERSION")
-            .apply { isAccessible = true }
-        assertEquals(runtimeVersionField.get(null) as String, runtimeVersion)
+        assertEquals(expectedRuntimeVersion, runtimeVersion)
         val loaderLayerDir = loaderManifest.parentFile!!.absolutePath
         assertEquals(loaderLayerDir, envVars["VK_LAYER_PATH"])
     }

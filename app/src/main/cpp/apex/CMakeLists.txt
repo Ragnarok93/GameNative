@@ -5,6 +5,7 @@ add_library(gamenative_apex SHARED
     apex_pipeline.cpp
     apex_pacing.cpp
     apex_gpu_profile.cpp
+    apex_frame_target_ring.cpp
     apex_jni_bridge.cpp
 )
 

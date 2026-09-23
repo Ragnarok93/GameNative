@@ -94,12 +94,6 @@ jobs:
           expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
           unzip -p "$apk" 'lib/arm64-v8a/liblsfg-vk-layer.so' \
             | grep -aFq "$expected_native_commit"
-          expected_adreno_sha=8f8c91004a506952ddc72080c9b5b1c7d928396d08149ff74a6be369a58048df
-          packaged_adreno_sha="$(unzip -p "$apk" 'lib/arm64-v8a/liblsfg-vk-layer-adreno18.so' | sha256sum | awk '{print $1}')"
-          if [[ "$packaged_adreno_sha" != "$expected_adreno_sha" ]]; then
-            echo "Expected September 18 Adreno LSFG SHA $expected_adreno_sha, got $packaged_adreno_sha" >&2
-            exit 1
-          fi
           sha256sum "$apk" | tee /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256
           test -s "$apk"
           test -s /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256

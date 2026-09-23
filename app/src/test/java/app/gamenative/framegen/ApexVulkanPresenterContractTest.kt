@@ -79,4 +79,26 @@ class ApexVulkanPresenterContractTest {
             native.contains("destroyImportedSource"),
         )
     }
+    @Test
+    fun presenterStopsBeforeNativeTargetTeardown() {
+        val renderer = repoFile(
+            "app/src/main/java/com/winlator/renderer/VulkanRenderer.java",
+        ).readText()
+
+        val methodStart = renderer.indexOf("public boolean setApexFrameTargetEnabled(boolean enabled)")
+        val pollStart = renderer.indexOf("public ApexFrame pollApexFrame()", methodStart)
+        assertTrue(methodStart >= 0 && pollStart > methodStart)
+        val method = renderer.substring(methodStart, pollStart)
+
+        val disableBranch = method.indexOf("} else {")
+        val stopPresenter = method.indexOf("releaseApexPresenterSurface();", disableBranch)
+        val nativeDisable = method.indexOf("nativeDisableApexTarget", disableBranch)
+
+        assertTrue("disable branch must exist", disableBranch >= 0)
+        assertTrue(
+            "presenter must stop and release consumer-owned frames before native target teardown",
+            stopPresenter >= 0 && nativeDisable >= 0 && stopPresenter < nativeDisable,
+        )
+    }
+
 }

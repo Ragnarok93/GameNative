@@ -51,6 +51,8 @@ object LsfgVkManager {
     private const val LAYER_RELATIVE_DIR = ".local/share/vulkan/implicit_layer.d"
     private const val DLL_RELATIVE_DIR = ".local/share/lsfg-vk"
     private const val LIB_FILENAME = "liblsfg-vk-layer.so"
+    private const val ADRENO_KNOWN_GOOD_LIB_FILENAME =
+        "liblsfg-vk-layer-adreno18.so"
     private const val MANIFEST_FILENAME = "VkLayer_LS_frame_generation.json"
     private const val VERSION_FILENAME = ".lsfg_vk_runtime_version"
     private const val VULKAN_LAYER_NAME = "VK_LAYER_LS_frame_generation"
@@ -104,12 +106,15 @@ object LsfgVkManager {
     private const val ENV_VK_LAYER_PATH = "VK_LAYER_PATH"
     private const val ENV_VK_INSTANCE_LAYERS = "VK_INSTANCE_LAYERS"
     private const val ENV_VK_LOADER_LAYERS_ENABLE = "VK_LOADER_LAYERS_ENABLE"
-    private const val ENV_MESA_VK_WSI_PRESENT_MODE = "MESA_VK_WSI_PRESENT_MODE"
 
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
         "gamenative-adaptive-38abd548f86c4caf17f3076ceb52af4724812f8a-r29"
+    private const val ADRENO_KNOWN_GOOD_REVISION =
+        "364178afb7a35c5e83ebdf284be7281b24b00172"
+    private const val ADRENO_KNOWN_GOOD_RUNTIME_VERSION =
+        "gamenative-adreno-known-good-364178afb7a35c5e83ebdf284be7281b24b00172-r1"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -441,16 +446,42 @@ object LsfgVkManager {
      * - Lossless.dll → ~/.local/share/lsfg-vk/  (copied from Steam install dir)
      */
     @JvmStatic
-    fun ensureRuntimeInstalled(context: Context, container: Container): Boolean {
+    fun ensureRuntimeInstalled(context: Context, container: Container): Boolean =
+        ensureRuntimeInstalled(context, container, useKnownGoodAdrenoRuntime = false)
+
+    @JvmStatic
+    fun ensureRuntimeInstalled(
+        context: Context,
+        container: Container,
+        useKnownGoodAdrenoRuntime: Boolean,
+    ): Boolean {
         if (!isSupported(container)) return false
 
         return synchronized(runtimeInstallLock) {
-            ensureRuntimeInstalledLocked(context, container)
+            ensureRuntimeInstalledLocked(
+                context,
+                container,
+                useKnownGoodAdrenoRuntime,
+            )
         }
     }
 
-    private fun ensureRuntimeInstalledLocked(context: Context, container: Container): Boolean {
+    private fun ensureRuntimeInstalledLocked(
+        context: Context,
+        container: Container,
+        useKnownGoodAdrenoRuntime: Boolean,
+    ): Boolean {
 
+        val sourceLibFilename = if (useKnownGoodAdrenoRuntime) {
+            ADRENO_KNOWN_GOOD_LIB_FILENAME
+        } else {
+            LIB_FILENAME
+        }
+        val runtimeVersion = if (useKnownGoodAdrenoRuntime) {
+            ADRENO_KNOWN_GOOD_RUNTIME_VERSION
+        } else {
+            RUNTIME_VERSION
+        }
         val rootDir = container.rootDir
         val localLibDir = File(rootDir, LIB_RELATIVE_DIR)
         val layerDir = File(rootDir, LAYER_RELATIVE_DIR)
@@ -458,7 +489,10 @@ object LsfgVkManager {
         val libFile = File(localLibDir, LIB_FILENAME)
         val manifestFile = File(layerDir, MANIFEST_FILENAME)
         val versionFile = File(layerDir, VERSION_FILENAME)
-        val sourceLib = File(context.applicationInfo.nativeLibraryDir, LIB_FILENAME)
+        val sourceLib = File(
+            context.applicationInfo.nativeLibraryDir,
+            sourceLibFilename,
+        )
 
         if (!sourceLib.isFile) {
             Timber.tag(TAG).e("Native library not found: %s", sourceLib.absolutePath)
@@ -483,7 +517,7 @@ object LsfgVkManager {
         val installedManifest = runCatching {
             manifestFile.takeIf { it.isFile }?.readText().orEmpty()
         }.getOrDefault("")
-        val needsInstall = installedVersion != RUNTIME_VERSION ||
+        val needsInstall = installedVersion != runtimeVersion ||
             installedManifest != expectedManifest ||
             !filesHaveSameContents(sourceLib, libFile)
 
@@ -501,7 +535,7 @@ object LsfgVkManager {
                 // Publish the marker last. It is the commit record consumed by
                 // provenance checks and must never describe a partially staged
                 // library or manifest.
-                if (!writeTextAtomic(versionFile, RUNTIME_VERSION, 0b110100100))
+                if (!writeTextAtomic(versionFile, runtimeVersion, 0b110100100))
                     throw IllegalStateException("Failed to publish LSFG runtime marker")
 
                 if (libFile.exists()) FileUtils.chmod(libFile, 0b111101101)
@@ -512,10 +546,10 @@ object LsfgVkManager {
                     manifestFile.isFile &&
                     manifestFile.readText() == expectedManifest &&
                     versionFile.isFile &&
-                    versionFile.readText().trim() == RUNTIME_VERSION &&
+                    versionFile.readText().trim() == runtimeVersion &&
                     filesHaveSameContents(sourceLib, libFile)
                 if (ok) {
-                    Timber.tag(TAG).i("Installed LSFG runtime %s into %s", RUNTIME_VERSION, rootDir)
+                    Timber.tag(TAG).i("Installed LSFG runtime %s into %s", runtimeVersion, rootDir)
                 } else {
                     Timber.tag(TAG).e("Runtime installation verification failed")
                     success = false
@@ -525,7 +559,7 @@ object LsfgVkManager {
                 success = false
             }
         } else {
-            Timber.tag(TAG).d("Runtime %s already installed in %s", RUNTIME_VERSION, rootDir)
+            Timber.tag(TAG).d("Runtime %s already installed in %s", runtimeVersion, rootDir)
         }
 
         // Runtime installation must not delete or mutate unrelated containers.
@@ -591,30 +625,13 @@ object LsfgVkManager {
      */
     @JvmStatic
     fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean =
-        applyLaunchEnv(
-            container,
-            envVars,
-            protectedAdrenoPresentation = false,
-        )
-
-    @JvmStatic
-    fun applyLaunchEnv(
-        container: Container,
-        envVars: EnvVars,
-        protectedAdrenoPresentation: Boolean,
-    ): Boolean =
         synchronized(runtimeInstallLock) {
-            applyLaunchEnvLocked(
-                container,
-                envVars,
-                protectedAdrenoPresentation,
-            )
+            applyLaunchEnvLocked(container, envVars)
         }
 
     private fun applyLaunchEnvLocked(
         container: Container,
         envVars: EnvVars,
-        protectedAdrenoPresentation: Boolean,
     ): Boolean {
         envVars.remove(ENV_DISABLE)
         envVars.remove(ENV_CONFIG)
@@ -654,26 +671,9 @@ object LsfgVkManager {
         envVars.put(ENV_CONFIG, configFile(container).absolutePath)
         envVars.put(ENV_PROCESS_EXE, processExecutable)
 
-        if (protectedAdrenoPresentation && frameGenerationActive(container)) {
-            // Mesa's process-level WSI override wins over the Vulkan
-            // VkSwapchainCreateInfoKHR present mode. The protected Adreno
-            // generated-present route keeps FIFO while frame generation is active:
-            // MAILBOX may replace multiple accepted synthetic/source presents
-            // before scanout. Keep this launch-local and do not alter source-only
-            // or non-Adreno/Xclipse environments.
-            envVars.put(ENV_MESA_VK_WSI_PRESENT_MODE, "fifo")
-            Timber.tag(TAG).i(
-                "LSFG protected Adreno presentation enabled: %s=fifo",
-                ENV_MESA_VK_WSI_PRESENT_MODE,
-            )
-        }
-
         val loaderHomeConfigured = envVars[ENV_HOME]?.trim()?.isNotEmpty() == true
         val loaderLayerDir = if (loaderHomeConfigured) {
             synchronizeLoaderVisibleRuntime(container, envVars) ?: run {
-                // A configured loader HOME can shadow the per-container layer.
-                // Do not arm the process if that copy could not be published
-                // and verified byte-for-byte.
                 envVars.remove(ENV_CONFIG)
                 envVars.remove(ENV_PROCESS_EXE)
                 disableLayerForLaunch(container, envVars)

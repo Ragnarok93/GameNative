@@ -18,7 +18,7 @@ runs:
         set -euo pipefail
         native_dir=app/src/main/cpp/lsfg-vk-android
         layer=app/src/main/jniLibs/arm64-v8a/liblsfg-vk-layer.so
-        adreno_layer=app/src/main/jniLibs/arm64-v8a/liblsfg-vk-layer-adreno18.so
+        adreno_oracle=/tmp/liblsfg-vk-layer-adreno18-oracle.so
         ADRENO_KNOWN_GOOD_COMMIT=364178afb7a35c5e83ebdf284be7281b24b00172
         ADRENO_KNOWN_GOOD_SHA256=8f8c91004a506952ddc72080c9b5b1c7d928396d08149ff74a6be369a58048df
         native_manifest="$native_dir/VkLayer_LS_frame_generation.json"
@@ -107,10 +107,10 @@ runs:
         file "$layer"
         sha256sum "$layer"
 
-        # Adreno 6xx is deliberately pinned to the exact September 18 runtime.
-        # Build that historical commit with the same NDK/environment used by its
-        # original successful Android Actions run, and refuse to package it unless
-        # the resulting bytes match the original artifact SHA-256 exactly.
+        # Build the exact September 18 Adreno runtime only as a CI oracle.
+        # Production packages use the current gitlink runtime; its Qualcomm path
+        # is contract-tested against the historical transaction while retaining
+        # the newer governors and diagnostics.
         echo "Building exact September 18 Adreno runtime ${ADRENO_KNOWN_GOOD_COMMIT}"
         git -C "$native_dir" fetch --no-tags origin "$ADRENO_KNOWN_GOOD_COMMIT"
         git -C "$native_dir" reset --hard "$expected_commit"
@@ -131,10 +131,10 @@ runs:
           echo "ERROR: rebuilt September 18 Adreno runtime SHA ${historical_sha} != original artifact ${ADRENO_KNOWN_GOOD_SHA256}" >&2
           exit 1
         fi
-        cp "$historical_built" "$adreno_layer"
-        test -s "$adreno_layer"
-        file "$adreno_layer"
-        sha256sum "$adreno_layer"
+        cp "$historical_built" "$adreno_oracle"
+        test -s "$adreno_oracle"
+        file "$adreno_oracle"
+        sha256sum "$adreno_oracle"
 
         # Restore the GameNative gitlink checkout before deriving current loader
         # metadata or running any later repository checks.
@@ -186,7 +186,7 @@ runs:
           exit 1
         fi
 
-        adreno_needed="$($readelf_bin -d "$adreno_layer")"
+        adreno_needed="$($readelf_bin -d "$adreno_oracle")"
         printf '%s\n' "$adreno_needed"
         grep -q 'Shared library: \[libnativewindow.so\]' <<<"$adreno_needed"
         if grep -q 'Shared library: \[libandroid.so\]' <<<"$adreno_needed"; then

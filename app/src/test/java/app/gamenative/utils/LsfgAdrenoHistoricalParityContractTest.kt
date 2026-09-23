@@ -13,7 +13,7 @@ class LsfgAdrenoHistoricalParityContractTest {
     }
 
     @Test
-    fun buildVerifiesExactSeptember18AdrenoOracleWithoutPackagingIt() {
+    fun buildUsesSeptember18SourceTopologyAsOracleWithoutHistoricalPayload() {
         val action = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
         val dollar = '$'
 
@@ -24,31 +24,24 @@ class LsfgAdrenoHistoricalParityContractTest {
         )
         assertTrue(
             action.contains(
-                "ADRENO_KNOWN_GOOD_SHA256=8f8c91004a506952ddc72080c9b5b1c7d928396d08149ff74a6be369a58048df",
-            ),
-        )
-        assertTrue(action.contains("ADRENO_KNOWN_GOOD_SHA256"))
-        assertFalse(
-            "The historical binary is a CI oracle, not a production runtime",
-            action.contains("app/src/main/jniLibs/arm64-v8a/liblsfg-vk-layer-adreno18.so"),
-        )
-        assertTrue(
-            action.contains(
-                "git -C \"${dollar}native_dir\" checkout --force --detach " +
+                "git -C \"${dollar}native_dir\" fetch --no-tags origin " +
                     "\"${dollar}ADRENO_KNOWN_GOOD_COMMIT\"",
             ),
         )
         assertTrue(
             action.contains(
-                "LSFGVK_ADAPTIVE_RUNTIME=1 bash ./scripts/build/android.sh Release",
+                "git -C \"${dollar}native_dir\" cat-file -e " +
+                    "\"${dollar}{ADRENO_KNOWN_GOOD_COMMIT}^{commit}\"",
             ),
         )
-        assertTrue(action.contains("historical_sha"))
-        assertTrue(action.contains("ADRENO_KNOWN_GOOD_SHA256"))
-        assertTrue(
+        assertFalse(action.contains("ADRENO_KNOWN_GOOD_SHA256"))
+        assertFalse(action.contains("historical_built"))
+        assertFalse(action.contains("historical_sha"))
+        assertFalse(action.contains("liblsfg-vk-layer-adreno18.so"))
+        assertFalse(
+            "CI must not detach production native sources to the historical commit",
             action.contains(
-                "git -C \"${dollar}native_dir\" checkout --force --detach " +
-                    "\"${dollar}expected_commit\"",
+                "checkout --force --detach \"${dollar}ADRENO_KNOWN_GOOD_COMMIT\"",
             ),
         )
     }

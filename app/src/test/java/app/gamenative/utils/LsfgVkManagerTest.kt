@@ -507,13 +507,15 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun ensureRuntimeInstalled_selectsHistoricalAdrenoPayloadAndMarker() {
+    fun ensureRuntimeInstalled_alwaysUsesCurrentGovernorCompatibleRuntime() {
         val context = RuntimeEnvironment.getApplication()
-        val sourceDir = File(rootDir, "apk-native-adreno").apply { mkdirs() }
+        val sourceDir = File(rootDir, "apk-native").apply { mkdirs() }
         val currentLib = File(sourceDir, "liblsfg-vk-layer.so").apply {
             writeBytes(byteArrayOf(1, 2, 3, 4))
         }
-        val adrenoLib = File(sourceDir, "liblsfg-vk-layer-adreno18.so").apply {
+        // A historical oracle may exist in CI/build staging, but production
+        // runtime installation must never select it implicitly.
+        File(sourceDir, "liblsfg-vk-layer-adreno18.so").apply {
             writeBytes(byteArrayOf(9, 8, 7, 6))
         }
         val installedLib = File(rootDir, ".local/lib/liblsfg-vk-layer.so")
@@ -526,17 +528,9 @@ class LsfgVkManagerTest {
 
         try {
             context.applicationInfo.nativeLibraryDir = sourceDir.absolutePath
-
-            assertTrue(
-                LsfgVkManager.ensureRuntimeInstalled(
-                    context,
-                    container,
-                    useKnownGoodAdrenoRuntime = true,
-                ),
-            )
-            assertTrue(installedLib.readBytes().contentEquals(adrenoLib.readBytes()))
-            assertFalse(installedLib.readBytes().contentEquals(currentLib.readBytes()))
-            assertTrue(
+            assertTrue(LsfgVkManager.ensureRuntimeInstalled(context, container))
+            assertTrue(installedLib.readBytes().contentEquals(currentLib.readBytes()))
+            assertFalse(
                 installedVersion.readText().contains(
                     "364178afb7a35c5e83ebdf284be7281b24b00172",
                 ),
@@ -545,6 +539,7 @@ class LsfgVkManagerTest {
             context.applicationInfo.nativeLibraryDir = originalNativeLibraryDir
         }
     }
+
 
     @Test
     fun ensureRuntimeInstalled_refreshesContainerLibraryWhenPackagedBytesChangeWithoutMarkerChange() {

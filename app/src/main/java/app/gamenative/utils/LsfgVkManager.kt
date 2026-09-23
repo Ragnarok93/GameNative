@@ -51,8 +51,6 @@ object LsfgVkManager {
     private const val LAYER_RELATIVE_DIR = ".local/share/vulkan/implicit_layer.d"
     private const val DLL_RELATIVE_DIR = ".local/share/lsfg-vk"
     private const val LIB_FILENAME = "liblsfg-vk-layer.so"
-    private const val ADRENO_KNOWN_GOOD_LIB_FILENAME =
-        "liblsfg-vk-layer-adreno18.so"
     private const val MANIFEST_FILENAME = "VkLayer_LS_frame_generation.json"
     private const val VERSION_FILENAME = ".lsfg_vk_runtime_version"
     private const val VULKAN_LAYER_NAME = "VK_LAYER_LS_frame_generation"
@@ -111,10 +109,6 @@ object LsfgVkManager {
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
         "gamenative-adaptive-38abd548f86c4caf17f3076ceb52af4724812f8a-r29"
-    private const val ADRENO_KNOWN_GOOD_REVISION =
-        "364178afb7a35c5e83ebdf284be7281b24b00172"
-    private const val ADRENO_KNOWN_GOOD_RUNTIME_VERSION =
-        "gamenative-adreno-known-good-364178afb7a35c5e83ebdf284be7281b24b00172-r1"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -446,42 +440,18 @@ object LsfgVkManager {
      * - Lossless.dll → ~/.local/share/lsfg-vk/  (copied from Steam install dir)
      */
     @JvmStatic
-    fun ensureRuntimeInstalled(context: Context, container: Container): Boolean =
-        ensureRuntimeInstalled(context, container, useKnownGoodAdrenoRuntime = false)
-
-    @JvmStatic
-    fun ensureRuntimeInstalled(
-        context: Context,
-        container: Container,
-        useKnownGoodAdrenoRuntime: Boolean,
-    ): Boolean {
+    fun ensureRuntimeInstalled(context: Context, container: Container): Boolean {
         if (!isSupported(container)) return false
 
         return synchronized(runtimeInstallLock) {
-            ensureRuntimeInstalledLocked(
-                context,
-                container,
-                useKnownGoodAdrenoRuntime,
-            )
+            ensureRuntimeInstalledLocked(context, container)
         }
     }
 
     private fun ensureRuntimeInstalledLocked(
         context: Context,
         container: Container,
-        useKnownGoodAdrenoRuntime: Boolean,
     ): Boolean {
-
-        val sourceLibFilename = if (useKnownGoodAdrenoRuntime) {
-            ADRENO_KNOWN_GOOD_LIB_FILENAME
-        } else {
-            LIB_FILENAME
-        }
-        val runtimeVersion = if (useKnownGoodAdrenoRuntime) {
-            ADRENO_KNOWN_GOOD_RUNTIME_VERSION
-        } else {
-            RUNTIME_VERSION
-        }
         val rootDir = container.rootDir
         val localLibDir = File(rootDir, LIB_RELATIVE_DIR)
         val layerDir = File(rootDir, LAYER_RELATIVE_DIR)
@@ -489,10 +459,7 @@ object LsfgVkManager {
         val libFile = File(localLibDir, LIB_FILENAME)
         val manifestFile = File(layerDir, MANIFEST_FILENAME)
         val versionFile = File(layerDir, VERSION_FILENAME)
-        val sourceLib = File(
-            context.applicationInfo.nativeLibraryDir,
-            sourceLibFilename,
-        )
+        val sourceLib = File(context.applicationInfo.nativeLibraryDir, LIB_FILENAME)
 
         if (!sourceLib.isFile) {
             Timber.tag(TAG).e("Native library not found: %s", sourceLib.absolutePath)
@@ -517,7 +484,7 @@ object LsfgVkManager {
         val installedManifest = runCatching {
             manifestFile.takeIf { it.isFile }?.readText().orEmpty()
         }.getOrDefault("")
-        val needsInstall = installedVersion != runtimeVersion ||
+        val needsInstall = installedVersion != RUNTIME_VERSION ||
             installedManifest != expectedManifest ||
             !filesHaveSameContents(sourceLib, libFile)
 
@@ -532,10 +499,7 @@ object LsfgVkManager {
                     throw IllegalStateException("Failed to publish LSFG native library")
                 if (!writeTextAtomic(manifestFile, expectedManifest, 0b110100100))
                     throw IllegalStateException("Failed to publish LSFG layer manifest")
-                // Publish the marker last. It is the commit record consumed by
-                // provenance checks and must never describe a partially staged
-                // library or manifest.
-                if (!writeTextAtomic(versionFile, runtimeVersion, 0b110100100))
+                if (!writeTextAtomic(versionFile, RUNTIME_VERSION, 0b110100100))
                     throw IllegalStateException("Failed to publish LSFG runtime marker")
 
                 if (libFile.exists()) FileUtils.chmod(libFile, 0b111101101)
@@ -546,10 +510,10 @@ object LsfgVkManager {
                     manifestFile.isFile &&
                     manifestFile.readText() == expectedManifest &&
                     versionFile.isFile &&
-                    versionFile.readText().trim() == runtimeVersion &&
+                    versionFile.readText().trim() == RUNTIME_VERSION &&
                     filesHaveSameContents(sourceLib, libFile)
                 if (ok) {
-                    Timber.tag(TAG).i("Installed LSFG runtime %s into %s", runtimeVersion, rootDir)
+                    Timber.tag(TAG).i("Installed LSFG runtime %s into %s", RUNTIME_VERSION, rootDir)
                 } else {
                     Timber.tag(TAG).e("Runtime installation verification failed")
                     success = false
@@ -559,11 +523,9 @@ object LsfgVkManager {
                 success = false
             }
         } else {
-            Timber.tag(TAG).d("Runtime %s already installed in %s", runtimeVersion, rootDir)
+            Timber.tag(TAG).d("Runtime %s already installed in %s", RUNTIME_VERSION, rootDir)
         }
 
-        // Runtime installation must not delete or mutate unrelated containers.
-        // Legacy cleanup is intentionally left to the normal container-management UI.
         val dllFile = File(dllDir, LOSSLESS_DLL_NAME)
         val steamDll = findSteamDll()
         if (steamDll != null) {

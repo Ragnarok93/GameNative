@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <inttypes.h>
 #include <dlfcn.h>
+#include <unistd.h>
 #include "window_vert.h"
 #include "window_frag.h"
 
@@ -39,6 +40,7 @@ VulkanRendererContext::~VulkanRendererContext() {
         if (wt.stg  != VK_NULL_HANDLE) { vk_.DestroyBuffer(device, wt.stg, nullptr); vk_.FreeMemory(device, wt.stgMem, nullptr); }
     }
     deleteQueue.clear();
+    destroyApexTargetResources();
     destroyXrTargetResources();
     cleanupSwapchain(); cleanupCursorTex();
     
@@ -150,6 +152,10 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(WaitForFences);
     LOAD_D2(ResetFences);
     LOAD_D2(GetFenceStatus);
+    vk_.GetSemaphoreFdKHR =
+        (PFN_vkGetSemaphoreFdKHR)d("vkGetSemaphoreFdKHR");
+    vk_.ImportSemaphoreFdKHR =
+        (PFN_vkImportSemaphoreFdKHR)d("vkImportSemaphoreFdKHR");
 
     vk_.GetAndroidHardwareBufferPropertiesANDROID =
         (PFN_vkGetAndroidHardwareBufferPropertiesANDROID)d("vkGetAndroidHardwareBufferPropertiesANDROID");
@@ -221,11 +227,15 @@ void VulkanRendererContext::createLogicalDevice() {
       for (auto& e:av) {
           if (strcmp(e.extensionName,"VK_EXT_filter_cubic")==0
            || strcmp(e.extensionName,"VK_IMG_filter_cubic")==0) cubicSupported=true;
+          if (strcmp(e.extensionName,VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME)==0)
+              externalSemaphoreFdSupported=true;
       } }
     std::vector<const char*> extList = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME
     };
+    if (externalSemaphoreFdSupported)
+        extList.push_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
     if (cubicSupported) extList.push_back("VK_EXT_filter_cubic");
     VkDeviceCreateInfo ci{}; ci.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     ci.pQueueCreateInfos=&qi; ci.queueCreateInfoCount=1;
@@ -233,6 +243,10 @@ void VulkanRendererContext::createLogicalDevice() {
     if (vk_.CreateDevice(physicalDevice,&ci,nullptr,&device)!=VK_SUCCESS) throw std::runtime_error("device");
     vk_.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)gipa(instance, "vkGetDeviceProcAddr");
     loadDeviceDispatch();
+    externalSemaphoreFdSupported =
+        externalSemaphoreFdSupported &&
+        vk_.GetSemaphoreFdKHR != nullptr &&
+        vk_.ImportSemaphoreFdKHR != nullptr;
     vk_.GetDeviceQueue(device,graphicsQueueFamilyIndex,0,&graphicsQueue);
 
     vk_.GetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -673,7 +687,7 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
     VkBuffer cursorUpload, bool hasCursorUpload,
     float ox, float oy, float sx, float sy, float cw, float ch,
     short ptrX, short ptrY, short curHotX, short curHotY,
-    short curW, short curH, bool curVis)
+    short curW, short curH, bool curVis, int apexSlot)
 {
     VkCommandBufferBeginInfo bi{}; bi.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     if (vk_.BeginCommandBuffer(cb,&bi)!=VK_SUCCESS) throw std::runtime_error("begin cb");
@@ -747,17 +761,21 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
             0, 0, nullptr, 0, nullptr, (uint32_t)postUpload.size(), postUpload.data());
 
 
-    bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
-    VkExtent2D tgtExt = toXr ? xrExt : swapchainExt;
+    const bool toApex =
+        apexSlot >= 0 && apexSlot < APEX_TARGET_COUNT &&
+        apexTargets[apexSlot].framebuffer != VK_NULL_HANDLE;
+    bool toXr = !toApex && xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
+    VkExtent2D tgtExt = toApex ? apexExt : (toXr ? xrExt : swapchainExt);
     VkRenderPassBeginInfo rpi{}; rpi.sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpi.renderPass = toXr ? xrRp : renderPass;
-    rpi.framebuffer = toXr ? xrFb : swapchainFBs[imgIdx];
+    rpi.renderPass = toApex ? apexRp : (toXr ? xrRp : renderPass);
+    rpi.framebuffer = toApex ? apexTargets[apexSlot].framebuffer
+        : (toXr ? xrFb : swapchainFBs[imgIdx]);
     rpi.renderArea={{0,0},tgtExt};
     VkClearValue clr={{{0.f,0.f,0.f,1.f}}}; rpi.clearValueCount=1; rpi.pClearValues=&clr;
 
     vk_.CmdBeginRenderPass(cb, &rpi, VK_SUBPASS_CONTENTS_INLINE);
-    // The immersive quad flips vertically to suit the per-window game buffers, so the scene
-    // target must match their orientation: render it upside down via a negative viewport.
+    // XR intentionally flips its offscreen target. Apex keeps display orientation and
+    // leaves any GL texture-coordinate adjustment to the presenter.
     VkViewport vp = toXr
         ? VkViewport{0,(float)tgtExt.height,(float)tgtExt.width,-(float)tgtExt.height,0,1}
         : VkViewport{0,0,(float)tgtExt.width,(float)tgtExt.height,0,1};
@@ -816,6 +834,566 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
         RLOG_E("recordCmdBuf: EndCommandBuffer failed with status=%d (swapRB=%d draws=%zu imgIdx=%u)",
             (int)endStatus, (int)swapRB, draws.size(), imgIdx);
         throw std::runtime_error("end cb");
+    }
+}
+
+
+
+static int apexTokenSlot(int64_t token) {
+    const int encoded = static_cast<int>(token & 0xff);
+    return encoded > 0 ? encoded - 1 : -1;
+}
+
+static uint64_t apexTokenSequence(int64_t token) {
+    return static_cast<uint64_t>(token) >> 8;
+}
+
+static int64_t makeApexToken(int slot, uint64_t sequence) {
+    return static_cast<int64_t>((sequence << 8) | static_cast<uint64_t>(slot + 1));
+}
+
+bool VulkanRendererContext::recreateApexProducerSemaphore(ApexTargetSlot& slot) {
+    if (!externalSemaphoreFdSupported) return true;
+    if (slot.producerReadySemaphore != VK_NULL_HANDLE) {
+        vk_.DestroySemaphore(device, slot.producerReadySemaphore, nullptr);
+        slot.producerReadySemaphore = VK_NULL_HANDLE;
+    }
+    VkExportSemaphoreCreateInfo exportInfo{};
+    exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+    exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+    VkSemaphoreCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    createInfo.pNext = &exportInfo;
+    if (vk_.CreateSemaphore(device, &createInfo, nullptr, &slot.producerReadySemaphore) != VK_SUCCESS) {
+        externalSemaphoreFdSupported = false;
+        slot.producerSemaphoreUsable = false;
+        return false;
+    }
+    slot.producerSemaphoreUsable = true;
+    return true;
+}
+
+bool VulkanRendererContext::createApexTargetResources(uint32_t w, uint32_t h) {
+    if (w == 0 || h == 0 || device == VK_NULL_HANDLE) return false;
+
+    VkAttachmentDescription att{};
+    att.format = VK_FORMAT_R8G8B8A8_UNORM;
+    att.samples = VK_SAMPLE_COUNT_1_BIT;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sub{};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &colorRef;
+    VkSubpassDependency dep{};
+    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass = 0;
+    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    VkRenderPassCreateInfo rpInfo{};
+    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpInfo.attachmentCount = 1;
+    rpInfo.pAttachments = &att;
+    rpInfo.subpassCount = 1;
+    rpInfo.pSubpasses = &sub;
+    rpInfo.dependencyCount = 1;
+    rpInfo.pDependencies = &dep;
+    if (vk_.CreateRenderPass(device, &rpInfo, nullptr, &apexRp) != VK_SUCCESS)
+        return false;
+
+    for (int i = 0; i < APEX_TARGET_COUNT; ++i) {
+        ApexTargetSlot& slot = apexTargets[i];
+        AHardwareBuffer_Desc desc{};
+        desc.width = w;
+        desc.height = h;
+        desc.layers = 1;
+        desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+        desc.usage =
+            AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+            AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER;
+        if (AHardwareBuffer_allocate(&desc, &slot.ahb) != 0 || slot.ahb == nullptr) {
+            RLOG_E("apexTarget: AHB allocation failed slot=%d %ux%u", i, w, h);
+            destroyApexTargetResources();
+            return false;
+        }
+
+        VkAndroidHardwareBufferPropertiesANDROID props{};
+        props.sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID;
+        if (!vk_.GetAndroidHardwareBufferPropertiesANDROID ||
+            vk_.GetAndroidHardwareBufferPropertiesANDROID(device, slot.ahb, &props) != VK_SUCCESS) {
+            RLOG_E("apexTarget: AHB properties failed slot=%d", i);
+            destroyApexTargetResources();
+            return false;
+        }
+
+        VkExternalMemoryImageCreateInfo externalInfo{};
+        externalInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+        externalInfo.handleTypes =
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.pNext = &externalInfo;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.extent = {w, h, 1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vk_.CreateImage(device, &imageInfo, nullptr, &slot.image) != VK_SUCCESS) {
+            RLOG_E("apexTarget: image creation failed slot=%d", i);
+            destroyApexTargetResources();
+            return false;
+        }
+
+        VkImportAndroidHardwareBufferInfoANDROID importInfo{};
+        importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID;
+        importInfo.buffer = slot.ahb;
+        VkMemoryDedicatedAllocateInfo dedicatedInfo{};
+        dedicatedInfo.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+        dedicatedInfo.pNext = &importInfo;
+        dedicatedInfo.image = slot.image;
+        uint32_t memoryType = 0;
+        while (memoryType < 32 && !(props.memoryTypeBits & (1u << memoryType))) ++memoryType;
+        if (memoryType >= 32) {
+            RLOG_E("apexTarget: no AHB memory type slot=%d", i);
+            destroyApexTargetResources();
+            return false;
+        }
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.pNext = &dedicatedInfo;
+        allocInfo.allocationSize = props.allocationSize;
+        allocInfo.memoryTypeIndex = memoryType;
+        if (vk_.AllocateMemory(device, &allocInfo, nullptr, &slot.memory) != VK_SUCCESS ||
+            vk_.BindImageMemory(device, slot.image, slot.memory, 0) != VK_SUCCESS) {
+            RLOG_E("apexTarget: memory bind failed slot=%d", i);
+            destroyApexTargetResources();
+            return false;
+        }
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = slot.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        if (vk_.CreateImageView(device, &viewInfo, nullptr, &slot.view) != VK_SUCCESS) {
+            RLOG_E("apexTarget: image view failed slot=%d", i);
+            destroyApexTargetResources();
+            return false;
+        }
+
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass = apexRp;
+        fbInfo.attachmentCount = 1;
+        fbInfo.pAttachments = &slot.view;
+        fbInfo.width = w;
+        fbInfo.height = h;
+        fbInfo.layers = 1;
+        if (vk_.CreateFramebuffer(device, &fbInfo, nullptr, &slot.framebuffer) != VK_SUCCESS) {
+            RLOG_E("apexTarget: framebuffer failed slot=%d", i);
+            destroyApexTargetResources();
+            return false;
+        }
+
+        VkCommandBufferAllocateInfo commandInfo{};
+        commandInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        commandInfo.commandPool = cmdPool;
+        commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        commandInfo.commandBufferCount = 1;
+        if (vk_.AllocateCommandBuffers(device, &commandInfo, &slot.commandBuffer) != VK_SUCCESS) {
+            RLOG_E("apexTarget: command buffer failed slot=%d", i);
+            destroyApexTargetResources();
+            return false;
+        }
+
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        if (vk_.CreateFence(device, &fenceInfo, nullptr, &slot.producerFence) != VK_SUCCESS) {
+            RLOG_E("apexTarget: producer fence failed slot=%d", i);
+            destroyApexTargetResources();
+            return false;
+        }
+
+        if (externalSemaphoreFdSupported) {
+            if (!recreateApexProducerSemaphore(slot)) {
+                RLOG("apexTarget: SYNC_FD producer export unavailable; using fence-polled compatibility path");
+            }
+            VkSemaphoreCreateInfo semaphoreInfo{};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if (vk_.CreateSemaphore(device, &semaphoreInfo, nullptr, &slot.consumerDoneSemaphore) != VK_SUCCESS) {
+                RLOG("apexTarget: consumer SYNC_FD import unavailable; using completion-guaranteed compatibility release");
+                externalSemaphoreFdSupported = false;
+            }
+        }
+    }
+
+    apexExt = {w, h};
+    apexTargetRing.reset();
+    RLOG("apexTarget: created %dx%u %ux%u syncFd=%d",
+        APEX_TARGET_COUNT, 1u, w, h, externalSemaphoreFdSupported ? 1 : 0);
+    return true;
+}
+
+void VulkanRendererContext::destroyApexTargetResources() {
+    for (int i = 0; i < APEX_TARGET_COUNT; ++i) {
+        ApexTargetSlot& slot = apexTargets[i];
+        if (slot.producerFenceFd >= 0) {
+            close(slot.producerFenceFd);
+            slot.producerFenceFd = -1;
+        }
+        if (slot.consumerReleaseFenceFd >= 0) {
+            close(slot.consumerReleaseFenceFd);
+            slot.consumerReleaseFenceFd = -1;
+        }
+        if (slot.producerReadySemaphore != VK_NULL_HANDLE) {
+            vk_.DestroySemaphore(device, slot.producerReadySemaphore, nullptr);
+            slot.producerReadySemaphore = VK_NULL_HANDLE;
+        }
+        if (slot.consumerDoneSemaphore != VK_NULL_HANDLE) {
+            vk_.DestroySemaphore(device, slot.consumerDoneSemaphore, nullptr);
+            slot.consumerDoneSemaphore = VK_NULL_HANDLE;
+        }
+        if (slot.producerFence != VK_NULL_HANDLE) {
+            vk_.DestroyFence(device, slot.producerFence, nullptr);
+            slot.producerFence = VK_NULL_HANDLE;
+        }
+        if (slot.commandBuffer != VK_NULL_HANDLE && cmdPool != VK_NULL_HANDLE) {
+            vk_.FreeCommandBuffers(device, cmdPool, 1, &slot.commandBuffer);
+            slot.commandBuffer = VK_NULL_HANDLE;
+        }
+        if (slot.framebuffer != VK_NULL_HANDLE) {
+            vk_.DestroyFramebuffer(device, slot.framebuffer, nullptr);
+            slot.framebuffer = VK_NULL_HANDLE;
+        }
+        if (slot.view != VK_NULL_HANDLE) {
+            vk_.DestroyImageView(device, slot.view, nullptr);
+            slot.view = VK_NULL_HANDLE;
+        }
+        if (slot.image != VK_NULL_HANDLE) {
+            vk_.DestroyImage(device, slot.image, nullptr);
+            slot.image = VK_NULL_HANDLE;
+        }
+        if (slot.memory != VK_NULL_HANDLE) {
+            vk_.FreeMemory(device, slot.memory, nullptr);
+            slot.memory = VK_NULL_HANDLE;
+        }
+        if (slot.ahb != nullptr) {
+            AHardwareBuffer_release(slot.ahb);
+            slot.ahb = nullptr;
+        }
+        slot.consumerSequence = 0;
+        slot.producerPending = false;
+        slot.producerSemaphoreUsable = true;
+    }
+    if (apexRp != VK_NULL_HANDLE) {
+        vk_.DestroyRenderPass(device, apexRp, nullptr);
+        apexRp = VK_NULL_HANDLE;
+    }
+    apexExt = {0, 0};
+    apexTargetRing.reset();
+}
+
+bool VulkanRendererContext::enableApexTarget() {
+    std::unique_lock<std::shared_mutex> frameLock(frameMutex);
+    std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+    if (device == VK_NULL_HANDLE || xrTargetActive.load()) return false;
+    if (apexTargetActive.load() && apexRp != VK_NULL_HANDLE) return true;
+    if (apexTargetRing.hasOutstandingConsumer()) return false;
+
+    for (auto& slot : apexTargets) {
+        if (slot.producerFence != VK_NULL_HANDLE) {
+            vk_.WaitForFences(device, 1, &slot.producerFence, VK_TRUE, UINT64_MAX);
+        }
+    }
+    destroyApexTargetResources();
+
+    const uint32_t width = static_cast<uint32_t>(std::max(surfaceWidth, 0));
+    const uint32_t height = static_cast<uint32_t>(std::max(surfaceHeight, 0));
+    if (!createApexTargetResources(width, height)) return false;
+
+    apexTargetActive.store(true, std::memory_order_release);
+    needsRender.store(true, std::memory_order_release);
+    dirtyCV.notify_one();
+    return true;
+}
+
+bool VulkanRendererContext::disableApexTarget() {
+    std::unique_lock<std::shared_mutex> frameLock(frameMutex);
+    std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+    apexTargetActive.store(false, std::memory_order_release);
+
+    for (auto& slot : apexTargets) {
+        if (slot.producerFence != VK_NULL_HANDLE) {
+            vk_.WaitForFences(device, 1, &slot.producerFence, VK_TRUE, UINT64_MAX);
+        }
+    }
+    if (apexTargetRing.hasOutstandingConsumer()) {
+        return false;
+    }
+
+    destroyApexTargetResources();
+    needsRender.store(true, std::memory_order_release);
+    dirtyCV.notify_one();
+    return true;
+}
+
+int64_t VulkanRendererContext::dequeueApexFrame() {
+    std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+    if (!apexTargetActive.load(std::memory_order_acquire)) return 0;
+
+    for (int i = 0; i < APEX_TARGET_COUNT; ++i) {
+        ApexTargetSlot& slot = apexTargets[i];
+        if (!slot.producerPending || slot.producerFence == VK_NULL_HANDLE) continue;
+        if (vk_.GetFenceStatus &&
+            vk_.GetFenceStatus(device, slot.producerFence) == VK_SUCCESS) {
+            slot.producerPending = false;
+            apexTargetRing.markReady(i);
+        }
+    }
+
+    const auto token = apexTargetRing.dequeueForConsumer();
+    if (!token.valid()) return 0;
+    apexTargets[token.slot].consumerSequence = token.sequence;
+    return makeApexToken(token.slot, token.sequence);
+}
+
+int64_t VulkanRendererContext::apexFrameBufferPtr(int64_t token) {
+    std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+    const int slotIndex = apexTokenSlot(token);
+    const uint64_t sequence = apexTokenSequence(token);
+    if (slotIndex < 0 || slotIndex >= APEX_TARGET_COUNT ||
+        apexTargets[slotIndex].consumerSequence != sequence) {
+        return 0;
+    }
+    return reinterpret_cast<int64_t>(apexTargets[slotIndex].ahb);
+}
+
+int VulkanRendererContext::takeApexFrameFenceFd(int64_t token) {
+    std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+    const int slotIndex = apexTokenSlot(token);
+    const uint64_t sequence = apexTokenSequence(token);
+    if (slotIndex < 0 || slotIndex >= APEX_TARGET_COUNT ||
+        apexTargets[slotIndex].consumerSequence != sequence) {
+        return -1;
+    }
+    const int fd = apexTargets[slotIndex].producerFenceFd;
+    apexTargets[slotIndex].producerFenceFd = -1;
+    return fd;
+}
+
+bool VulkanRendererContext::releaseApexFrame(int64_t token, int consumerReleaseFenceFd) {
+    std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+    const int slotIndex = apexTokenSlot(token);
+    const uint64_t sequence = apexTokenSequence(token);
+    if (slotIndex < 0 || slotIndex >= APEX_TARGET_COUNT ||
+        apexTargets[slotIndex].consumerSequence != sequence) {
+        if (consumerReleaseFenceFd >= 0) close(consumerReleaseFenceFd);
+        return false;
+    }
+
+    ApexTargetSlot& slot = apexTargets[slotIndex];
+    if (slot.producerFenceFd >= 0) {
+        close(slot.producerFenceFd);
+        slot.producerFenceFd = -1;
+    }
+    if (slot.consumerReleaseFenceFd >= 0) close(slot.consumerReleaseFenceFd);
+    slot.consumerReleaseFenceFd = consumerReleaseFenceFd;
+
+    if (!apexTargetRing.releaseFromConsumer(slotIndex, sequence)) {
+        if (slot.consumerReleaseFenceFd >= 0) {
+            close(slot.consumerReleaseFenceFd);
+            slot.consumerReleaseFenceFd = -1;
+        }
+        return false;
+    }
+    slot.consumerSequence = 0;
+    needsRender.store(true, std::memory_order_release);
+    dirtyCV.notify_one();
+    return true;
+}
+
+int64_t VulkanRendererContext::apexTargetExtentPacked() {
+    std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+    return (static_cast<int64_t>(apexExt.width) << 32) |
+        static_cast<int64_t>(apexExt.height);
+}
+
+void VulkanRendererContext::renderApexFrame() {
+    int apexSlot = -1;
+    {
+        std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+        apexSlot = apexTargetRing.acquireForProducer();
+    }
+    if (apexTargetActive.load() && apexSlot < 0) return;
+
+    ApexTargetSlot& slot = apexTargets[apexSlot];
+    if (slot.commandBuffer == VK_NULL_HANDLE ||
+        slot.framebuffer == VK_NULL_HANDLE ||
+        slot.producerFence == VK_NULL_HANDLE) {
+        std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+        apexTargetRing.cancelProducer(apexSlot);
+        return;
+    }
+
+    if (vk_.GetFenceStatus &&
+        vk_.GetFenceStatus(device, slot.producerFence) == VK_NOT_READY) {
+        std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+        apexTargetRing.cancelProducer(apexSlot);
+        return;
+    }
+
+    if (externalSemaphoreFdSupported && !slot.producerSemaphoreUsable) {
+        if (!recreateApexProducerSemaphore(slot)) {
+            externalSemaphoreFdSupported = false;
+        }
+    }
+
+    VkSemaphore consumerWaitSemaphore = VK_NULL_HANDLE;
+    {
+        std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+        if (slot.consumerReleaseFenceFd >= 0) {
+            if (externalSemaphoreFdSupported &&
+                vk_.ImportSemaphoreFdKHR != nullptr &&
+                slot.consumerDoneSemaphore != VK_NULL_HANDLE) {
+                VkImportSemaphoreFdInfoKHR importInfo{};
+                importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR;
+                importInfo.semaphore = slot.consumerDoneSemaphore;
+                importInfo.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
+                importInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+                importInfo.fd = slot.consumerReleaseFenceFd;
+                if (vk_.ImportSemaphoreFdKHR(device, &importInfo) == VK_SUCCESS) {
+                    slot.consumerReleaseFenceFd = -1;
+                    consumerWaitSemaphore = slot.consumerDoneSemaphore;
+                } else {
+                    close(slot.consumerReleaseFenceFd);
+                    slot.consumerReleaseFenceFd = -1;
+                    apexTargetRing.cancelProducer(apexSlot);
+                    return;
+                }
+            } else {
+                // Compatibility consumers must complete GL work before releasing with fd=-1.
+                close(slot.consumerReleaseFenceFd);
+                slot.consumerReleaseFenceFd = -1;
+                apexTargetRing.cancelProducer(apexSlot);
+                return;
+            }
+        }
+    }
+
+    vk_.ResetCommandBuffer(slot.commandBuffer, 0);
+
+    float ox, oy, sx, sy, cw, ch;
+    short ptrX, ptrY, curHotX, curHotY, curW, curH;
+    bool curVis;
+    {
+        std::lock_guard<std::mutex> lk(renderMutex);
+        ox = sceneOffsetX; oy = sceneOffsetY; sx = sceneScaleX; sy = sceneScaleY;
+        cw = static_cast<float>(containerWidth);
+        ch = static_cast<float>(containerHeight);
+        ptrX = static_cast<short>(pointerX.load());
+        ptrY = static_cast<short>(pointerY.load());
+        curHotX = cursorHotX; curHotY = cursorHotY;
+        curW = cursorTexW; curH = cursorTexH;
+        curVis = cursorVisible.load();
+
+        frameDraws.clear();
+        for (auto& re : renderList) {
+            auto it = texMap.find(re.id);
+            if (it == texMap.end()) continue;
+            WinTex& wt = it->second;
+            if (wt.ds == VK_NULL_HANDLE) continue;
+            DrawEntry de{wt.img, wt.ds, VK_NULL_HANDLE, re.x, re.y, wt.w, wt.h};
+            de.isAHB = wt.isAHB;
+            if (wt.needsTransition) {
+                de.needsTransition = true;
+                wt.needsTransition = false;
+            }
+            if (wt.dirty && !wt.isAHB && wt.stg != VK_NULL_HANDLE) {
+                de.upload = wt.stg;
+                wt.dirty = false;
+            } else if (wt.isAHB) {
+                wt.dirty = false;
+            }
+            frameDraws.push_back(de);
+        }
+    }
+
+    const bool toApex = true;
+    bool effectiveCurVis = curVis && !scanoutActive.load() && !toApex;
+    recordCmdBuf(
+        slot.commandBuffer, 0, frameDraws,
+        frameAhbTransitions, framePreUpload, framePostUpload,
+        VK_NULL_HANDLE, false,
+        ox, oy, sx, sy, cw, ch,
+        ptrX, ptrY, curHotX, curHotY, curW, curH,
+        effectiveCurVis, apexSlot);
+
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    if (consumerWaitSemaphore != VK_NULL_HANDLE) {
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = &consumerWaitSemaphore;
+        submitInfo.pWaitDstStageMask = &waitStage;
+    }
+    if (externalSemaphoreFdSupported &&
+        slot.producerReadySemaphore != VK_NULL_HANDLE &&
+        slot.producerSemaphoreUsable) {
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &slot.producerReadySemaphore;
+    }
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &slot.commandBuffer;
+
+    vk_.ResetFences(device, 1, &slot.producerFence);
+    if (vk_.QueueSubmit(graphicsQueue, 1, &submitInfo, slot.producerFence) != VK_SUCCESS) {
+        vk_.DestroyFence(device, slot.producerFence, nullptr);
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        vk_.CreateFence(device, &fenceInfo, nullptr, &slot.producerFence);
+        std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+        apexTargetRing.cancelProducer(apexSlot);
+        return;
+    }
+
+    bool exported = false;
+    if (externalSemaphoreFdSupported &&
+        slot.producerReadySemaphore != VK_NULL_HANDLE &&
+        vk_.GetSemaphoreFdKHR != nullptr) {
+        VkSemaphoreGetFdInfoKHR fdInfo{};
+        fdInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+        fdInfo.semaphore = slot.producerReadySemaphore;
+        fdInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        int fd = -1;
+        if (vk_.GetSemaphoreFdKHR(device, &fdInfo, &fd) == VK_SUCCESS && fd >= 0) {
+            std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+            slot.producerFenceFd = fd;
+            apexTargetRing.markReady(apexSlot);
+            exported = true;
+        }
+    }
+
+    if (!exported) {
+        std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+        slot.producerPending = true;
+        if (externalSemaphoreFdSupported && slot.producerReadySemaphore != VK_NULL_HANDLE)
+            slot.producerSemaphoreUsable = false;
     }
 }
 
@@ -990,6 +1568,11 @@ void VulkanRendererContext::renderFrame() {
     needsRender.store(false,std::memory_order_relaxed);
     cursorMoved.store(false,std::memory_order_relaxed);
 
+    if (apexTargetActive.load(std::memory_order_acquire)) {
+        renderApexFrame();
+        return;
+    }
+
     if (surfaceDetached.load(std::memory_order_acquire)) return;
     if (scanoutActive.load()) {
         applyScanoutBuffer();
@@ -1112,7 +1695,7 @@ ok=true;}catch(...){}
     recordCmdBuf(cmdBufs[currentFrame],imgIdx,frameDraws,
         frameAhbTransitions,framePreUpload,framePostUpload,
         curUpload,hasCurUpload,
-        ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis);
+        ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis,-1);
 
     VkSemaphore wSem[]={imgAvailSems[currentFrame]}, sSem[]={renderDoneSems[currentFrame]};
     VkPipelineStageFlags wStage[]={VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};

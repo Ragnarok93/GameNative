@@ -1,6 +1,9 @@
 #include <jni.h>
 #include <android/native_window_jni.h>
 #include <dlfcn.h>
+
+static constexpr const char* kGameNativeApexVulkanTargetVersion =
+    "gamenative-apex-vulkan-target-v1";
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cstdlib>
@@ -113,6 +116,45 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeGetXrTargetExtent(JNIEnv*, jobject, jlong handle) {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
     return r ? (jlong)r->xrTargetExtentPacked() : 0;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeEnableApexTarget(JNIEnv*, jobject, jlong handle) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r && r->enableApexTarget() ? JNI_TRUE : JNI_FALSE;
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeDisableApexTarget(JNIEnv*, jobject, jlong handle) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r && r->disableApexTarget() ? JNI_TRUE : JNI_FALSE;
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeDequeueApexFrame(JNIEnv*, jobject, jlong handle) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r ? static_cast<jlong>(r->dequeueApexFrame()) : 0;
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetApexFrameBuffer(
+    JNIEnv*, jobject, jlong handle, jlong token) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r ? static_cast<jlong>(r->apexFrameBufferPtr(token)) : 0;
+}
+extern "C" JNIEXPORT jint JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeTakeApexFrameFenceFd(
+    JNIEnv*, jobject, jlong handle, jlong token) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r ? static_cast<jint>(r->takeApexFrameFenceFd(token)) : -1;
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeReleaseApexFrame(
+    JNIEnv*, jobject, jlong handle, jlong token, jint consumerReleaseFenceFd) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r && r->releaseApexFrame(token, consumerReleaseFenceFd) ? JNI_TRUE : JNI_FALSE;
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetApexTargetExtent(JNIEnv*, jobject, jlong handle) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r ? static_cast<jlong>(r->apexTargetExtentPacked()) : 0;
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetTransform(

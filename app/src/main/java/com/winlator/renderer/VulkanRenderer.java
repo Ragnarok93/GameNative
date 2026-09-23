@@ -68,6 +68,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private boolean xRenderingPausedForScanout = false;
     private volatile VulkanXrFrameBridge xrFrameBridge = null;
     private volatile long xrTargetAhbPtr = 0;
+    private volatile boolean apexFrameTargetActive = false;
 
     /** See VulkanXrFrameBridge's kdoc — null except for the Meta Quest immersive path. */
     public void setVulkanXrFrameBridge(VulkanXrFrameBridge xrFrameBridge) {
@@ -166,11 +167,104 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native long nativeEnableXrTarget(long handle);
     private native void nativeDisableXrTarget(long handle);
     private native long nativeGetXrTargetExtent(long handle);
+    private native boolean nativeEnableApexTarget(long handle);
+    private native boolean nativeDisableApexTarget(long handle);
+    private native long nativeDequeueApexFrame(long handle);
+    private native long nativeGetApexFrameBuffer(long handle, long token);
+    private native int nativeTakeApexFrameFenceFd(long handle, long token);
+    private native boolean nativeReleaseApexFrame(long handle, long token, int consumerReleaseFenceFd);
+    private native long nativeGetApexTargetExtent(long handle);
 
     private static volatile boolean gpuImageChecked = false;
 
     private long did(Drawable d) {
         return drawableIds.computeIfAbsent(d, k -> ID_GEN.getAndIncrement());
+    }
+
+    public static final class ApexFrame {
+        public final long token;
+        public final long hardwareBufferPtr;
+        public final int acquireFenceFd;
+        public final int width;
+        public final int height;
+
+        private ApexFrame(long token, long hardwareBufferPtr, int acquireFenceFd, int width, int height) {
+            this.token = token;
+            this.hardwareBufferPtr = hardwareBufferPtr;
+            this.acquireFenceFd = acquireFenceFd;
+            this.width = width;
+            this.height = height;
+        }
+    }
+
+    /**
+     * Dormant bridge used by the upcoming Apex GLES presenter. Enabling it forces
+     * Vulkan composition and disables direct SurfaceControl scanout while active.
+     */
+    public boolean setApexFrameTargetEnabled(boolean enabled) {
+        if (enabled == apexFrameTargetActive) return true;
+        if (enabled && xrFrameBridge != null) return false;
+
+        boolean previousRequirement = effectsRequireCompositor;
+        if (enabled) {
+            apexFrameTargetActive = true;
+            effectsRequireCompositor = computeEffectsRequireCompositor();
+            if (nativeMode && !previousRequirement && effectsRequireCompositor) tearDownScanout();
+
+            synchronized (lock) {
+                if (nativeHandle != 0 && !nativeEnableApexTarget(nativeHandle)) {
+                    apexFrameTargetActive = false;
+                    effectsRequireCompositor = computeEffectsRequireCompositor();
+                    if (nativeMode && !effectsRequireCompositor) establishScanout();
+                    return false;
+                }
+            }
+        } else {
+            synchronized (lock) {
+                if (nativeHandle != 0 && !nativeDisableApexTarget(nativeHandle)) {
+                    return false;
+                }
+            }
+            apexFrameTargetActive = false;
+            effectsRequireCompositor = computeEffectsRequireCompositor();
+            if (nativeMode && previousRequirement && !effectsRequireCompositor) establishScanout();
+        }
+        xServerView.queueEvent(this::updateScene);
+        return true;
+    }
+
+    public ApexFrame pollApexFrame() {
+        synchronized (lock) {
+            if (!apexFrameTargetActive || nativeHandle == 0) return null;
+            long token = nativeDequeueApexFrame(nativeHandle);
+            if (token == 0) return null;
+            long buffer = nativeGetApexFrameBuffer(nativeHandle, token);
+            if (buffer == 0) {
+                nativeReleaseApexFrame(nativeHandle, token, -1);
+                return null;
+            }
+            int acquireFenceFd = nativeTakeApexFrameFenceFd(nativeHandle, token);
+            long extent = nativeGetApexTargetExtent(nativeHandle);
+            return new ApexFrame(
+                token,
+                buffer,
+                acquireFenceFd,
+                (int)(extent >>> 32),
+                (int)(extent & 0xFFFFFFFFL)
+            );
+        }
+    }
+
+    public boolean releaseApexFrame(ApexFrame frame, int consumerReleaseFenceFd) {
+        if (frame == null) return false;
+        synchronized (lock) {
+            if (nativeHandle == 0) return false;
+            return nativeReleaseApexFrame(
+                nativeHandle,
+                frame.token,
+                consumerReleaseFenceFd
+            );
+        }
     }
 
     public void queueSceneUpdate() {
@@ -214,6 +308,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         pendingEffectMask, pendingBrightness, pendingContrast, pendingGamma);
                     updateTransform();
                     nativeSetCursorVisible(nativeHandle, cursorVisible);
+                    if (apexFrameTargetActive && !nativeEnableApexTarget(nativeHandle)) {
+                        apexFrameTargetActive = false;
+                        effectsRequireCompositor = computeEffectsRequireCompositor();
+                    }
                     if (nativeMode && !effectsRequireCompositor) {
                         xServerView.post(() -> {
                             releaseScanoutSurfaces();
@@ -800,6 +898,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     // take visible effect when content is routed through the textured-quad path.
     private boolean computeEffectsRequireCompositor() {
         return pendingEffectId != EFFECT_NONE
+            || apexFrameTargetActive
             || pendingEffectMask != 0
             || pendingBrightness != 0.0f
             || pendingContrast != 0.0f

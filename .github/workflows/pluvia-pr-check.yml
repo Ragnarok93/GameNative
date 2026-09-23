@@ -44,6 +44,9 @@ jobs:
       - name: Prepare GameNative Apex native runtime
         uses: ./.github/actions/prepare-apex-native
 
+      - name: Prepare GameNative Vulkan renderer
+        uses: ./.github/actions/prepare-vulkan-renderer
+
       - name: Inject credentials
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -100,6 +103,9 @@ jobs:
             | grep -aFq "$expected_native_commit"
           unzip -p "$apk" 'lib/arm64-v8a/libgamenative_apex.so' \
             | grep -aFq 'd3339806904fc5da0d8db64f4c8e5d77648975d9'
+          renderer=/tmp/gamenative-vulkan-renderer-from-apk.so
+          unzip -p "$apk" 'lib/arm64-v8a/libvulkan_renderer.so' > "$renderer"
+          strings "$renderer" | grep -Fq 'gamenative-apex-vulkan-target-v1'
           sha256sum "$apk" | tee /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256
           test -s "$apk"
           test -s /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256

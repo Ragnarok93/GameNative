@@ -49,6 +49,7 @@ add_library(vulkan_renderer SHARED
             winlator/vulkan_jni.cpp
             winlator/VulkanRendererContext.cpp
             winlator/VulkanRendererScanout.cpp
+            apex/apex_frame_target_ring.cpp
             ${CMAKE_CURRENT_BINARY_DIR}/window_vert.h
             ${CMAKE_CURRENT_BINARY_DIR}/window_frag.h)
 

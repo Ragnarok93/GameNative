@@ -1,0 +1,50 @@
+name: Prepare GameNative Vulkan renderer
+description: Build the branch Vulkan compositor with the Apex AHardwareBuffer handoff
+inputs:
+  ndk-version:
+    description: Android NDK revision used by GameNative
+    required: false
+    default: '27.3.13750724'
+runs:
+  using: composite
+  steps:
+    - name: Build arm64 Vulkan renderer
+      shell: bash
+      env:
+        ANDROID_NDK_VERSION: ${{ inputs.ndk-version }}
+      run: |
+        set -euo pipefail
+        source_dir=app/src/main/cpp/vulkan_renderer_build
+        build_dir=/tmp/gamenative-vulkan-renderer
+        legacy_out=app/src/legacy/jniLibs/arm64-v8a/libvulkan_renderer.so
+        modern_out=app/src/modern/jniLibs/arm64-v8a/libvulkan_renderer.so
+
+        sudo apt-get update -qq
+        sudo apt-get install -y cmake ninja-build file glslang-tools
+        sdkmanager --install "ndk;${ANDROID_NDK_VERSION}"
+
+        sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+        test -n "$sdk_root"
+        ndk_root="$sdk_root/ndk/${ANDROID_NDK_VERSION}"
+        toolchain="$ndk_root/build/cmake/android.toolchain.cmake"
+        readelf_bin="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+        test -f "$toolchain"
+        test -x "$readelf_bin"
+
+        rm -rf "$build_dir"
+        cmake -S "$source_dir" -B "$build_dir" -G Ninja           -DCMAKE_TOOLCHAIN_FILE="$toolchain"           -DANDROID_ABI=arm64-v8a           -DANDROID_PLATFORM=android-26           -DCMAKE_BUILD_TYPE=Release
+        cmake --build "$build_dir" --target vulkan_renderer
+
+        built="$build_dir/libvulkan_renderer.so"
+        test -s "$built"
+        strings "$built" | grep -Fq 'gamenative-apex-vulkan-target-v1'
+        symbols="$("$readelf_bin" -Ws "$built")"
+        for symbol in           Java_com_winlator_renderer_VulkanRenderer_nativeEnableApexTarget           Java_com_winlator_renderer_VulkanRenderer_nativeDequeueApexFrame           Java_com_winlator_renderer_VulkanRenderer_nativeReleaseApexFrame; do
+          grep -q "$symbol" <<<"$symbols"
+        done
+
+        mkdir -p "$(dirname "$legacy_out")" "$(dirname "$modern_out")"
+        cp "$built" "$legacy_out"
+        cp "$built" "$modern_out"
+        file "$legacy_out"
+        sha256sum "$legacy_out" "$modern_out"

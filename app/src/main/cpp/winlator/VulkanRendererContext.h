@@ -2,6 +2,7 @@
 #include <vulkan/vulkan.h>
 #include <list>
 #include <vulkan/vulkan_android.h>
+#include "../apex/apex_frame_target_ring.h"
 struct VkTable {
 
     PFN_vkCreateInstance CreateInstance;
@@ -87,6 +88,8 @@ struct VkTable {
     PFN_vkWaitForFences WaitForFences;
     PFN_vkResetFences ResetFences;
     PFN_vkGetFenceStatus GetFenceStatus;
+    PFN_vkGetSemaphoreFdKHR GetSemaphoreFdKHR;
+    PFN_vkImportSemaphoreFdKHR ImportSemaphoreFdKHR;
 
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID GetAndroidHardwareBufferPropertiesANDROID;
 };
@@ -131,6 +134,14 @@ public:
     int64_t enableXrTarget();
     void disableXrTarget();
     int64_t xrTargetExtentPacked();
+
+    bool enableApexTarget();
+    bool disableApexTarget();
+    int64_t dequeueApexFrame();
+    int64_t apexFrameBufferPtr(int64_t token);
+    int takeApexFrameFenceFd(int64_t token);
+    bool releaseApexFrame(int64_t token, int consumerReleaseFenceFd);
+    int64_t apexTargetExtentPacked();
     VulkanRendererContext(ANativeWindow* window, int cWidth, int cHeight, void* adrenotoolsHandle = nullptr);
     ~VulkanRendererContext();
 
@@ -326,6 +337,35 @@ private:
     bool createXrTargetResources(uint32_t w, uint32_t h);
     void destroyXrTargetResources();
 
+    static constexpr int APEX_TARGET_COUNT = 3;
+    struct ApexTargetSlot {
+        AHardwareBuffer* ahb = nullptr;
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkFramebuffer framebuffer = VK_NULL_HANDLE;
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        VkFence producerFence = VK_NULL_HANDLE;
+        VkSemaphore producerReadySemaphore = VK_NULL_HANDLE;
+        VkSemaphore consumerDoneSemaphore = VK_NULL_HANDLE;
+        int producerFenceFd = -1;
+        int consumerReleaseFenceFd = -1;
+        uint64_t consumerSequence = 0;
+        bool producerPending = false;
+        bool producerSemaphoreUsable = true;
+    };
+    ApexTargetSlot apexTargets[APEX_TARGET_COUNT]{};
+    gamenative::apex::FrameTargetRing apexTargetRing{APEX_TARGET_COUNT};
+    VkRenderPass apexRp = VK_NULL_HANDLE;
+    VkExtent2D apexExt{0,0};
+    std::atomic<bool> apexTargetActive{false};
+    bool externalSemaphoreFdSupported = false;
+    std::mutex apexTargetMutex;
+    bool createApexTargetResources(uint32_t w, uint32_t h);
+    void destroyApexTargetResources();
+    bool recreateApexProducerSemaphore(ApexTargetSlot& slot);
+    void renderApexFrame();
+
     VkRenderPass          renderPass  = VK_NULL_HANDLE;
     VkDescriptorSetLayout dsLayout    = VK_NULL_HANDLE;
     VkPipelineLayout      pipeLayout  = VK_NULL_HANDLE;
@@ -388,7 +428,7 @@ private:
         VkBuffer cursorUpload, bool hasCursorUpload,
         float ox, float oy, float sx, float sy, float cw, float ch,
         short ptrX, short ptrY, short curHotX, short curHotY,
-        short curW, short curH, bool curVis);
+        short curW, short curH, bool curVis, int apexSlot = -1);
     void renderLoop();
     void renderFrame();
 

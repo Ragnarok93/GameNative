@@ -101,7 +101,16 @@ class LsfgBuildWorkflowContractTest {
             )
         }
         assertFalse(source.contains("LSFG_NATIVE_COMMIT"))
-        assertFalse(source.contains("git checkout --detach"))
+        assertTrue(
+            source.contains(
+                "git -C \"$native_dir\" checkout --detach \"$ADRENO_KNOWN_GOOD_COMMIT\"",
+            ),
+        )
+        assertTrue(
+            source.contains(
+                "git -C \"$native_dir\" checkout --detach \"$expected_commit\"",
+            ),
+        )
     }
 
     @Test

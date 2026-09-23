@@ -46,8 +46,9 @@ runs:
         built="$build_dir/libgamenative_apex.so"
         test -s "$built"
         grep -aFq "$expected_base" "$built"
-        "$readelf_bin" -Ws "$built" | grep -q 'Java_app_gamenative_framegen_ApexNativeBridge_nativeInit'
-        "$readelf_bin" -Ws "$built" | grep -q 'Java_app_gamenative_framegen_ApexNativeBridge_nativeSelectGpuProfile'
+        symbols="$("$readelf_bin" -Ws "$built")"
+        grep -q 'Java_app_gamenative_framegen_ApexNativeBridge_nativeInit' <<<"$symbols"
+        grep -q 'Java_app_gamenative_framegen_ApexNativeBridge_nativeSelectGpuProfile' <<<"$symbols"
 
         mkdir -p "$output_dir"
         cp "$built" "$output_dir/libgamenative_apex.so"

@@ -350,11 +350,11 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         }
 
         if (LsfgVkManager.isFrameGenerationRequested(container)) {
-            final boolean useKnownGoodAdrenoRuntime =
-                    renderer != null
-                    && renderer.toLowerCase(Locale.ENGLISH).contains("adreno");
-            LsfgVkManager.ensureRuntimeInstalled(
-                    environment.getContext(), container, useKnownGoodAdrenoRuntime);
+            // All GPUs install the current gitlink runtime. Qualcomm/Adreno
+            // selects its September 18 compatibility island inside the native
+            // layer so newer governors remain available without changing the
+            // proven synchronization/presentation transaction.
+            LsfgVkManager.ensureRuntimeInstalled(environment.getContext(), container);
             LsfgVkManager.writeConfig(container);
             LsfgVkManager.applyLaunchEnv(container, envVars);
         } else if (LsfgVkManager.isSupported(container)) {

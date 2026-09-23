@@ -244,6 +244,38 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun applyLaunchEnv_protectedAdrenoPreservesHistoricalWsiEnvironment() {
+        val container = container(armed = true)
+
+        val existing = EnvVars().apply {
+            put("MESA_VK_WSI_PRESENT_MODE", "mailbox")
+        }
+        assertTrue(
+            LsfgVkManager.applyLaunchEnv(
+                container,
+                existing,
+                protectedAdrenoPresentation = true,
+            ),
+        )
+        assertEquals(
+            "mailbox",
+            existing["MESA_VK_WSI_PRESENT_MODE"],
+        )
+
+        val absent = EnvVars()
+        assertTrue(
+            LsfgVkManager.applyLaunchEnv(
+                container,
+                absent,
+                protectedAdrenoPresentation = true,
+            ),
+        )
+        assertFalse(
+            absent.has("MESA_VK_WSI_PRESENT_MODE"),
+        )
+    }
+
+    @Test
     fun applyLaunchEnv_isDriverAgnosticAndPreservesSelectedIcd() {
         val container = container(armed = true)
         val envVars = EnvVars().apply {

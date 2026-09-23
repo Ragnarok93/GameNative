@@ -113,9 +113,12 @@ runs:
         # the resulting bytes match the original artifact SHA-256 exactly.
         echo "Building exact September 18 Adreno runtime ${ADRENO_KNOWN_GOOD_COMMIT}"
         git -C "$native_dir" fetch --no-tags origin "$ADRENO_KNOWN_GOOD_COMMIT"
-        git -C "$native_dir" checkout --detach "$ADRENO_KNOWN_GOOD_COMMIT"
+        git -C "$native_dir" reset --hard "$expected_commit"
+        git -C "$native_dir" clean -fdx
+        git -C "$native_dir" submodule foreach --recursive 'git reset --hard; git clean -fdx' || true
+        git -C "$native_dir" checkout --force --detach "$ADRENO_KNOWN_GOOD_COMMIT"
         git -C "$native_dir" submodule sync --recursive
-        git -C "$native_dir" submodule update --init --recursive
+        git -C "$native_dir" submodule update --init --recursive --force
         rm -rf "$native_dir/build-android-arm64-v8a"
         (
           cd "$native_dir"
@@ -135,9 +138,12 @@ runs:
 
         # Restore the GameNative gitlink checkout before deriving current loader
         # metadata or running any later repository checks.
-        git -C "$native_dir" checkout --detach "$expected_commit"
+        git -C "$native_dir" reset --hard
+        git -C "$native_dir" clean -fdx
+        git -C "$native_dir" submodule foreach --recursive 'git reset --hard; git clean -fdx' || true
+        git -C "$native_dir" checkout --force --detach "$expected_commit"
         git -C "$native_dir" submodule sync --recursive
-        git -C "$native_dir" submodule update --init --recursive
+        git -C "$native_dir" submodule update --init --recursive --force
         restored_commit="$(git -C "$native_dir" rev-parse HEAD)"
         if [[ "$restored_commit" != "$expected_commit" ]]; then
           echo "ERROR: failed to restore GameNative LSFG gitlink ${expected_commit}" >&2

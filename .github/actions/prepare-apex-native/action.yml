@@ -16,6 +16,12 @@ runs:
         g++ -std=c++17 -Wall -Wextra -Werror           "$native_dir/apex_gpu_profile.cpp"           "$native_dir/tests/apex_gpu_profile_test.cpp"           -o /tmp/gamenative-apex-gpu-profile-test
         /tmp/gamenative-apex-gpu-profile-test
 
+        g++ -std=c++17 -Wall -Wextra -Werror \
+          "$native_dir/apex_frame_target_ring.cpp" \
+          "$native_dir/tests/apex_frame_target_ring_test.cpp" \
+          -o /tmp/gamenative-apex-frame-target-ring-test
+        /tmp/gamenative-apex-frame-target-ring-test
+
     - name: Build arm64 Apex native library
       shell: bash
       env:

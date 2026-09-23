@@ -758,7 +758,11 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
     if (viewWidth <= 0 || viewHeight <= 0) {
         viewX = 0; viewY = 0; viewWidth = width; viewHeight = height;
     }
-    if (viewWidth <= 0 || viewHeight <= 0 || inputTextureId == 0) {
+    if (viewWidth <= 0 || viewHeight <= 0) {
+        mFallbackCount++;
+        return;
+    }
+    if (isNewRealFrame && inputTextureId == 0) {
         mFallbackCount++;
         return;
     }

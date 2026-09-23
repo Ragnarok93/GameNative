@@ -55,6 +55,9 @@ runs:
         symbols="$("$readelf_bin" -Ws "$built")"
         grep -q 'Java_app_gamenative_framegen_ApexNativeBridge_nativeInit' <<<"$symbols"
         grep -q 'Java_app_gamenative_framegen_ApexNativeBridge_nativeSelectGpuProfile' <<<"$symbols"
+        grep -q 'Java_app_gamenative_framegen_ApexVulkanPresenter_nativeCreatePresenter' <<<"$symbols"
+        grep -q 'Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame' <<<"$symbols"
+        grep -q 'Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame' <<<"$symbols"
 
         mkdir -p "$output_dir"
         cp "$built" "$output_dir/libgamenative_apex.so"

@@ -7,6 +7,7 @@ add_library(gamenative_apex SHARED
     apex_gpu_profile.cpp
     apex_frame_target_ring.cpp
     apex_jni_bridge.cpp
+    apex_vulkan_presenter.cpp
 )
 
 target_compile_features(gamenative_apex PRIVATE cxx_std_17)

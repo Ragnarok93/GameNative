@@ -1112,7 +1112,16 @@ bool VulkanRendererContext::enableApexTarget() {
     std::unique_lock<std::shared_mutex> frameLock(frameMutex);
     std::lock_guard<std::mutex> apexLock(apexTargetMutex);
     if (device == VK_NULL_HANDLE || xrTargetActive.load()) return false;
-    if (apexTargetActive.load() && apexRp != VK_NULL_HANDLE) return true;
+
+    const uint32_t width = static_cast<uint32_t>(std::max(surfaceWidth, 0));
+    const uint32_t height = static_cast<uint32_t>(std::max(surfaceHeight, 0));
+    if (width == 0 || height == 0) return false;
+    if (apexTargetActive.load() &&
+        apexRp != VK_NULL_HANDLE &&
+        apexExt.width == width &&
+        apexExt.height == height) {
+        return true;
+    }
     if (apexTargetRing.hasOutstandingConsumer()) return false;
 
     for (auto& slot : apexTargets) {
@@ -1120,10 +1129,9 @@ bool VulkanRendererContext::enableApexTarget() {
             vk_.WaitForFences(device, 1, &slot.producerFence, VK_TRUE, UINT64_MAX);
         }
     }
+    apexTargetActive.store(false, std::memory_order_release);
     destroyApexTargetResources();
 
-    const uint32_t width = static_cast<uint32_t>(std::max(surfaceWidth, 0));
-    const uint32_t height = static_cast<uint32_t>(std::max(surfaceHeight, 0));
     if (!createApexTargetResources(width, height)) return false;
 
     apexTargetActive.store(true, std::memory_order_release);

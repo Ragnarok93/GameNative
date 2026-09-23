@@ -69,6 +69,9 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private volatile VulkanXrFrameBridge xrFrameBridge = null;
     private volatile long xrTargetAhbPtr = 0;
     private volatile boolean apexFrameTargetActive = false;
+    private volatile app.gamenative.framegen.ApexVulkanPresenter apexPresenter = null;
+    private android.view.SurfaceControl apexGameSurfaceControl = null;
+    private android.view.Surface apexGameSurface = null;
 
     /** See VulkanXrFrameBridge's kdoc — null except for the Meta Quest immersive path. */
     public void setVulkanXrFrameBridge(VulkanXrFrameBridge xrFrameBridge) {
@@ -229,8 +232,61 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             effectsRequireCompositor = computeEffectsRequireCompositor();
             if (nativeMode && previousRequirement && !effectsRequireCompositor) establishScanout();
         }
+        if (enabled) {
+            xServerView.post(this::establishApexPresenterSurface);
+        } else {
+            releaseApexPresenterSurface();
+        }
         xServerView.queueEvent(this::updateScene);
         return true;
+    }
+
+    private void establishApexPresenterSurface() {
+        if (!apexFrameTargetActive || apexPresenter != null || nativeHandle == 0) return;
+        try {
+            android.view.SurfaceControl parent = xServerView.getSurfaceControl();
+            apexGameSurfaceControl = new android.view.SurfaceControl.Builder()
+                .setParent(parent)
+                .setName("gamenative_apex_presenter")
+                .setOpaque(true)
+                .build();
+            apexGameSurface = new android.view.Surface(apexGameSurfaceControl);
+            new android.view.SurfaceControl.Transaction()
+                .setLayer(apexGameSurfaceControl, 3)
+                .setVisibility(apexGameSurfaceControl, true)
+                .apply();
+            app.gamenative.framegen.ApexVulkanPresenter presenter =
+                new app.gamenative.framegen.ApexVulkanPresenter(this, apexGameSurface);
+            apexPresenter = presenter;
+            presenter.start();
+        } catch (Throwable t) {
+            android.util.Log.e("VulkanRenderer", "Failed to establish Apex presenter surface", t);
+            releaseApexPresenterSurface();
+            onApexPresenterFailure();
+        }
+    }
+
+    private void releaseApexPresenterSurface() {
+        app.gamenative.framegen.ApexVulkanPresenter presenter = apexPresenter;
+        apexPresenter = null;
+        if (presenter != null) presenter.stop();
+
+        if (apexGameSurface != null) {
+            apexGameSurface.release();
+            apexGameSurface = null;
+        }
+        if (apexGameSurfaceControl != null) {
+            apexGameSurfaceControl.release();
+            apexGameSurfaceControl = null;
+        }
+    }
+
+    public void onApexPresenterFailure() {
+        xServerView.post(() -> {
+            if (!apexFrameTargetActive) return;
+            android.util.Log.w("VulkanRenderer", "Apex presenter rejected runtime; restoring source presentation");
+            setApexFrameTargetEnabled(false);
+        });
     }
 
     public ApexFrame pollApexFrame() {
@@ -311,6 +367,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     if (apexFrameTargetActive && !nativeEnableApexTarget(nativeHandle)) {
                         apexFrameTargetActive = false;
                         effectsRequireCompositor = computeEffectsRequireCompositor();
+                    } else if (apexFrameTargetActive) {
+                        xServerView.post(this::establishApexPresenterSurface);
                     }
                     if (nativeMode && !effectsRequireCompositor) {
                         xServerView.post(() -> {
@@ -373,12 +431,22 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 // Recreate the XR scene target at the new extent and republish the
                 // replacement buffer; a no-op (same pointer back) when the size is unchanged.
                 if (xrFrameBridge != null) enableXrTargetLocked();
+                if (apexFrameTargetActive) {
+                    releaseApexPresenterSurface();
+                    if (!nativeEnableApexTarget(nativeHandle)) {
+                        apexFrameTargetActive = false;
+                        effectsRequireCompositor = computeEffectsRequireCompositor();
+                    } else {
+                        xServerView.post(this::establishApexPresenterSurface);
+                    }
+                }
             }
         }
     }
 
     public void onSurfaceDestroyed() {
         initComplete = false;
+        releaseApexPresenterSurface();
         if (initExecutor != null) {
             initExecutor.shutdownNow();
             try { initExecutor.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS); }

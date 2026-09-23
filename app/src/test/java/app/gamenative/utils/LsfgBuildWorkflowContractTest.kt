@@ -85,15 +85,19 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
-    fun sharedNativePreparationUsesGitlinkAndAndroidPortabilityChecks() {
+    fun sharedNativePreparationUsesGitlinkAndSourceTopologyOracle() {
         val source = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
+        val dollar = '$'
         listOf(
-            "git rev-parse HEAD:${'$'}{native_dir}",
+            "git rev-parse HEAD:${dollar}{native_dir}",
             "git submodule update --init --recursive",
             "scripts/build/android.sh Release",
             "liblsfg-vk-layer.so",
             "libnativewindow.so",
             "libandroid.so",
+            "ADRENO_KNOWN_GOOD_COMMIT=364178afb7a35c5e83ebdf284be7281b24b00172",
+            "fetch --no-tags origin \"${dollar}ADRENO_KNOWN_GOOD_COMMIT\"",
+            "cat-file -e \"${dollar}{ADRENO_KNOWN_GOOD_COMMIT}^{commit}\"",
         ).forEach { token ->
             assertTrue(
                 "shared LSFG preparation action is missing $token",
@@ -101,14 +105,12 @@ class LsfgBuildWorkflowContractTest {
             )
         }
         assertFalse(source.contains("LSFG_NATIVE_COMMIT"))
-        assertTrue(
+        assertFalse(source.contains("ADRENO_KNOWN_GOOD_SHA256"))
+        assertFalse(source.contains("historical_built"))
+        assertFalse(
+            "Historical oracle must never replace the production gitlink checkout",
             source.contains(
-                "git -C \"$native_dir\" checkout --force --detach \"$ADRENO_KNOWN_GOOD_COMMIT\"",
-            ),
-        )
-        assertTrue(
-            source.contains(
-                "git -C \"$native_dir\" checkout --force --detach \"$expected_commit\"",
+                "checkout --force --detach \"${dollar}ADRENO_KNOWN_GOOD_COMMIT\"",
             ),
         )
     }

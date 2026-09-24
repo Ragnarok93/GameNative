@@ -1,6 +1,7 @@
 package app.gamenative.framegen
 
 import kotlin.math.ceil
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -126,12 +127,16 @@ class ApexSourceProtectedScheduler {
                 protectedSourceFps * 0.80f + sourceFps * 0.20f,
             )
         } else if (lastAdmittedBudget == 0) {
-            // Only re-anchor downward when synthetic work is already out of the
-            // way. This prevents Apex-induced source loss from redefining the
-            // degraded cadence as the new healthy baseline.
+            // Only re-anchor downward when synthetic work is fully out of the
+            // way. Decay by elapsed source time rather than by frame count so a
+            // 10 FPS source and a 60 FPS source converge on the same wall-clock
+            // timescale.
+            val sourceIntervalNanos =
+                sourcePeriodNanos.coerceIn(MIN_SOURCE_PERIOD_NS.toDouble(), MAX_SOURCE_PERIOD_NS.toDouble())
+            val decay = exp(-sourceIntervalNanos / SOURCE_REFERENCE_DECAY_TIME_NS).toFloat()
             protectedSourceFps = max(
                 sourceFps,
-                protectedSourceFps * SOURCE_REFERENCE_DECAY,
+                protectedSourceFps * decay,
             )
         }
 
@@ -271,15 +276,11 @@ class ApexSourceProtectedScheduler {
         // reference, so a falling source rate can never request more generated
         // frames. Severe loss sheds all synthetic work immediately.
         when {
-            sourceHealthRatio < SOURCE_SEVERE_RATIO -> {
-                admitted = 0
-                sourceProtectionActive = true
-                sourceRecoveryStreak = 0
-                adaptiveExtraBudget = 0
-            }
-
             sourceHealthRatio < SOURCE_DEGRADED_RATIO -> {
-                admitted = min(admitted, 1)
+                // A protected measurement must be synthetic-free; otherwise a
+                // permanently lower baseline could simply be Apex load that we
+                // accidentally normalize as healthy.
+                admitted = 0
                 sourceProtectionActive = true
                 sourceRecoveryStreak = 0
                 adaptiveExtraBudget = 0
@@ -312,10 +313,9 @@ class ApexSourceProtectedScheduler {
         private const val MAX_SOURCE_PERIOD_NS = 250_000_000L
         private const val MIN_RESERVE_NS = 750_000L
 
-        private const val SOURCE_SEVERE_RATIO = 0.80f
         private const val SOURCE_DEGRADED_RATIO = 0.92f
         private const val SOURCE_RECOVERED_RATIO = 0.97f
-        private const val SOURCE_REFERENCE_DECAY = 0.95f
+        private const val SOURCE_REFERENCE_DECAY_TIME_NS = 3_000_000_000.0
         private const val SOURCE_RECOVERY_SAMPLES = 3
     }
 }

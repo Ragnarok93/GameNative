@@ -223,6 +223,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 }
             }
         } else {
+            // Stop the EGL/Choreographer consumer before retiring the native
+            // AHB ring. The presenter can still own a dequeued slot and must
+            // return its release fence while the Vulkan target is alive.
+            releaseApexPresenterSurface();
             synchronized (lock) {
                 if (nativeHandle != 0 && !nativeDisableApexTarget(nativeHandle)) {
                     return false;
@@ -234,8 +238,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         }
         if (enabled) {
             xServerView.post(this::establishApexPresenterSurface);
-        } else {
-            releaseApexPresenterSurface();
         }
         xServerView.queueEvent(this::updateScene);
         return true;

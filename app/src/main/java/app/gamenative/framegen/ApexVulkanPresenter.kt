@@ -191,10 +191,16 @@ class ApexVulkanPresenter(
         if (callbacksSinceTelemetryLog < 120) return
         callbacksSinceTelemetryLog = 0
         val stats = ApexPresentationTelemetry.snapshot()
+        val adaptive = ApexNativeBridge.nativeIsAdaptiveFrameGeneration()
+        val targetFps = ApexNativeBridge.nativeGetTargetFPS()
+        val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: sourceIn=%.1f sourceOut=%.1f generated=%.1f repeats=%.1f output=%.1f opportunities=%.1f budget=%d totals(in=%d dropped=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
+            "display cadence: mode=%s target=%d fixed=%dx sourceIn=%.1f sourceOut=%.1f generated=%.1f repeats=%.1f output=%.1f opportunities=%.1f budget=%d totals(in=%d dropped=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
                 java.util.Locale.US,
+                if (adaptive) "adaptive" else "fixed",
+                targetFps,
+                fixedMultiplier,
                 stats.sourceInputFps,
                 stats.sourceFps,
                 stats.generatedFps,

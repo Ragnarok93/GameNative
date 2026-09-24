@@ -142,6 +142,100 @@ class ApexSourceProtectedSchedulerTest {
         assertEquals(1, budget)
     }
 
+
+    @Test
+    fun adaptiveSourceCollapseTripsProtectionInsteadOfIncreasingBudget() {
+        val scheduler = ApexSourceProtectedScheduler()
+        var t = 6_000_000_000L
+        repeat(12) {
+            scheduler.recordDisplayOpportunity(t)
+            t += 8_333_333L
+        }
+        scheduler.recordSourceArrival(6_000_000_000L)
+        scheduler.recordSourceArrival(6_033_333_333L)
+
+        val healthyBudget = scheduler.generationBudget(
+            adaptive = true,
+            fixedGeneratedCeiling = 3,
+            targetFps = 90,
+            presentation = populatedTelemetry(30f, 30f, 30f, 60f, 120f),
+        )
+        assertEquals(2, healthyBudget)
+
+        scheduler.recordSourceArrival(6_133_333_333L)
+        val collapsedBudget = scheduler.generationBudget(
+            adaptive = true,
+            fixedGeneratedCeiling = 3,
+            targetFps = 90,
+            presentation = populatedTelemetry(10f, 10f, 10f, 20f, 120f),
+        )
+
+        assertEquals(
+            "falling source cadence must shed synthetic work instead of requesting a larger ratio",
+            0,
+            collapsedBudget,
+        )
+    }
+
+    @Test
+    fun adaptiveRecoversGenerationGraduallyAfterSourceProtectionTrips() {
+        val scheduler = ApexSourceProtectedScheduler()
+        var t = 7_000_000_000L
+        repeat(12) {
+            scheduler.recordDisplayOpportunity(t)
+            t += 8_333_333L
+        }
+        scheduler.recordSourceArrival(7_000_000_000L)
+        scheduler.recordSourceArrival(7_033_333_333L)
+
+        assertEquals(
+            2,
+            scheduler.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 90,
+                presentation = populatedTelemetry(30f, 30f, 30f, 60f, 120f),
+            ),
+        )
+
+        scheduler.recordSourceArrival(7_133_333_333L)
+        assertEquals(
+            0,
+            scheduler.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 90,
+                presentation = populatedTelemetry(10f, 10f, 10f, 20f, 120f),
+            ),
+        )
+
+        scheduler.recordSourceArrival(7_166_666_666L)
+        val firstRecovered = scheduler.generationBudget(
+            adaptive = true,
+            fixedGeneratedCeiling = 3,
+            targetFps = 90,
+            presentation = populatedTelemetry(30f, 30f, 30f, 60f, 120f),
+        )
+        scheduler.recordSourceArrival(7_199_999_999L)
+        val secondRecovered = scheduler.generationBudget(
+            adaptive = true,
+            fixedGeneratedCeiling = 3,
+            targetFps = 90,
+            presentation = populatedTelemetry(30f, 30f, 30f, 60f, 120f),
+        )
+        scheduler.recordSourceArrival(7_233_333_332L)
+        val thirdRecovered = scheduler.generationBudget(
+            adaptive = true,
+            fixedGeneratedCeiling = 3,
+            targetFps = 90,
+            presentation = populatedTelemetry(30f, 30f, 30f, 60f, 120f),
+        )
+
+        assertEquals(1, firstRecovered)
+        assertEquals(1, secondRecovered)
+        assertEquals(2, thirdRecovered)
+    }
+
     @Test
     fun adaptiveUsesMeasuredCapacityAndOutputDeficit() {
         val scheduler = ApexSourceProtectedScheduler()

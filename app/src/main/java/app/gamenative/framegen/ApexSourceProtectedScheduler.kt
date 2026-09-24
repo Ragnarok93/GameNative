@@ -289,15 +289,19 @@ class ApexSourceProtectedScheduler {
             sourceProtectionActive -> {
                 if (sourceHealthRatio >= SOURCE_RECOVERED_RATIO) {
                     sourceRecoveryStreak++
+                    if (sourceRecoveryStreak < SOURCE_RECOVERY_SAMPLES) {
+                        admitted = min(admitted, 1)
+                    } else {
+                        sourceProtectionActive = false
+                        sourceRecoveryStreak = 0
+                    }
                 } else {
+                    // Keep the protected measurement synthetic-free until the
+                    // reference has genuinely converged on the lower source
+                    // cadence. Otherwise one admitted synthetic can pin an old
+                    // reference forever.
                     sourceRecoveryStreak = 0
-                }
-
-                if (sourceRecoveryStreak < SOURCE_RECOVERY_SAMPLES) {
-                    admitted = min(admitted, 1)
-                } else {
-                    sourceProtectionActive = false
-                    sourceRecoveryStreak = 0
+                    admitted = 0
                 }
             }
         }

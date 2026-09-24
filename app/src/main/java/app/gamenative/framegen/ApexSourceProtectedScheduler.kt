@@ -13,8 +13,21 @@ import kotlin.math.min
  * Fixed multipliers are ceilings; Adaptive chooses the minimum synthetic count
  * needed for the requested output cadence, bounded by observed Choreographer
  * capacity and by recent source-delivery health.
+ *
+ * The protected source reference is deliberately independent from the current
+ * interpolation ratio. Synthetic work may never turn a falling source cadence
+ * into a request for even more synthetic work. When source cadence regresses
+ * while generation is active, generation sheds immediately and recovers only
+ * after the source timeline has remained healthy for several samples.
  */
 class ApexSourceProtectedScheduler {
+    data class Diagnostics(
+        val protectedSourceFps: Float,
+        val sourceHealthRatio: Float,
+        val sourceProtectionActive: Boolean,
+        val recoveryStreak: Int,
+    )
+
     private var lastOpportunityNanos = 0L
     private var displayPeriodNanos = 0.0
     private var lastSourceArrivalNanos = 0L
@@ -23,6 +36,12 @@ class ApexSourceProtectedScheduler {
     private var adaptiveExtraBudget = 0
     private var adaptiveDeficitStreak = 0
     private var adaptiveSatisfiedStreak = 0
+
+    private var protectedSourceFps = 0f
+    private var lastSourceHealthRatio = 1f
+    private var sourceProtectionActive = false
+    private var sourceRecoveryStreak = 0
+    private var lastAdmittedBudget = 0
 
     fun reset() {
         lastOpportunityNanos = 0L
@@ -33,6 +52,11 @@ class ApexSourceProtectedScheduler {
         adaptiveExtraBudget = 0
         adaptiveDeficitStreak = 0
         adaptiveSatisfiedStreak = 0
+        protectedSourceFps = 0f
+        lastSourceHealthRatio = 1f
+        sourceProtectionActive = false
+        sourceRecoveryStreak = 0
+        lastAdmittedBudget = 0
     }
 
     fun recordDisplayOpportunity(nowNanos: Long) {
@@ -73,10 +97,47 @@ class ApexSourceProtectedScheduler {
     fun measuredCapacityFps(): Float =
         if (displayPeriodNanos > 0.0) (1_000_000_000.0 / displayPeriodNanos).toFloat() else 0f
 
+    fun diagnostics(): Diagnostics =
+        Diagnostics(
+            protectedSourceFps = protectedSourceFps,
+            sourceHealthRatio = lastSourceHealthRatio,
+            sourceProtectionActive = sourceProtectionActive,
+            recoveryStreak = sourceRecoveryStreak,
+        )
+
     fun shouldPresentSourceNow(nowNanos: Long): Boolean {
         if (pendingSourceDeadlineNanos <= 0L || displayPeriodNanos <= 0.0) return false
         val reserve = max(MIN_RESERVE_NS.toDouble(), displayPeriodNanos * 0.15).toLong()
         return nowNanos + displayPeriodNanos.toLong() + reserve >= pendingSourceDeadlineNanos
+    }
+
+    private fun updateProtectedSourceReference(sourceFps: Float): Float {
+        if (sourceFps <= 1f) {
+            lastSourceHealthRatio = 0f
+            return 0f
+        }
+
+        if (protectedSourceFps <= 1f) {
+            protectedSourceFps = sourceFps
+        } else if (sourceFps >= protectedSourceFps) {
+            // Follow genuine source improvements reasonably quickly.
+            protectedSourceFps = max(
+                protectedSourceFps,
+                protectedSourceFps * 0.80f + sourceFps * 0.20f,
+            )
+        } else if (lastAdmittedBudget == 0) {
+            // Only re-anchor downward when synthetic work is already out of the
+            // way. This prevents Apex-induced source loss from redefining the
+            // degraded cadence as the new healthy baseline.
+            protectedSourceFps = max(
+                sourceFps,
+                protectedSourceFps * SOURCE_REFERENCE_DECAY,
+            )
+        }
+
+        lastSourceHealthRatio =
+            (sourceFps / protectedSourceFps.coerceAtLeast(1f)).coerceIn(0f, 1.25f)
+        return lastSourceHealthRatio
     }
 
     fun generationBudget(
@@ -95,19 +156,29 @@ class ApexSourceProtectedScheduler {
             measuredCapacityFps(),
         )
 
-        if (sourceFps <= 1f || capacityFps <= 1f || displayPeriodNanos <= 0.0 || sourcePeriodNanos <= 0.0) {
+        if (
+            sourceFps <= 1f ||
+            capacityFps <= 1f ||
+            displayPeriodNanos <= 0.0 ||
+            sourcePeriodNanos <= 0.0
+        ) {
+            lastAdmittedBudget = 0
             return 0
         }
+
+        val sourceHealthRatio = updateProtectedSourceReference(sourceFps)
+        val planningSourceFps = max(sourceFps, protectedSourceFps)
 
         val reserve = max(MIN_RESERVE_NS.toDouble(), displayPeriodNanos * 0.15)
         val safeByDeadline = floor(
             max(0.0, sourcePeriodNanos - reserve) / displayPeriodNanos,
         ).toInt().coerceIn(0, 3)
-        val safeByCapacity = (floor(capacityFps / sourceFps).toInt() - 1).coerceIn(0, 3)
+        val safeByCapacity =
+            (floor(capacityFps / planningSourceFps).toInt() - 1).coerceIn(0, 3)
 
         val baseRequested = if (adaptive) {
             val boundedTarget = min(targetFps.coerceAtLeast(1).toFloat(), capacityFps * 0.98f)
-            (ceil(boundedTarget / sourceFps).toInt() - 1).coerceIn(0, 3)
+            (ceil(boundedTarget / planningSourceFps).toInt() - 1).coerceIn(0, 3)
         } else {
             fixedGeneratedCeiling.coerceIn(0, 3)
         }
@@ -116,10 +187,12 @@ class ApexSourceProtectedScheduler {
         // that single in-flight real frame when judging source-delivery health so
         // normal interpolation latency is not misclassified as source loss.
         val countDeliveryRatio = if (presentation.sourceArrivals > 0L) {
-            (min(
-                presentation.sourceArrivals,
-                presentation.sourcePresented + 1L,
-            ).toFloat() / presentation.sourceArrivals.toFloat())
+            (
+                min(
+                    presentation.sourceArrivals,
+                    presentation.sourcePresented + 1L,
+                ).toFloat() / presentation.sourceArrivals.toFloat()
+            )
         } else {
             1f
         }
@@ -135,15 +208,18 @@ class ApexSourceProtectedScheduler {
             if (presentation.outputPresented >= 4L) {
                 val boundedTarget =
                     min(targetFps.coerceAtLeast(1).toFloat(), capacityFps * 0.98f)
-                val tolerance = max(0.75f, sourceFps * 0.08f)
+                val tolerance = max(0.75f, planningSourceFps * 0.08f)
                 val deficit = boundedTarget - presentation.outputFps
 
                 when {
-                    deliveryRatio < 0.95f -> {
+                    deliveryRatio < 0.95f ||
+                        sourceHealthRatio < SOURCE_RECOVERED_RATIO ||
+                        sourceProtectionActive -> {
                         adaptiveExtraBudget = 0
                         adaptiveDeficitStreak = 0
                         adaptiveSatisfiedStreak = 0
                     }
+
                     deficit > tolerance &&
                         baseRequested + adaptiveExtraBudget < 3 -> {
                         adaptiveDeficitStreak++
@@ -154,6 +230,7 @@ class ApexSourceProtectedScheduler {
                             adaptiveDeficitStreak = 0
                         }
                     }
+
                     deficit <= tolerance -> {
                         adaptiveSatisfiedStreak++
                         adaptiveDeficitStreak = 0
@@ -162,6 +239,7 @@ class ApexSourceProtectedScheduler {
                             adaptiveSatisfiedStreak = 0
                         }
                     }
+
                     else -> {
                         adaptiveDeficitStreak = 0
                         adaptiveSatisfiedStreak = 0
@@ -188,7 +266,43 @@ class ApexSourceProtectedScheduler {
             }
         }
 
-        return admitted.coerceIn(0, 3)
+        // Protect source production itself, not merely Apex's ability to display
+        // frames it already received. The planning ratio uses the protected
+        // reference, so a falling source rate can never request more generated
+        // frames. Severe loss sheds all synthetic work immediately.
+        when {
+            sourceHealthRatio < SOURCE_SEVERE_RATIO -> {
+                admitted = 0
+                sourceProtectionActive = true
+                sourceRecoveryStreak = 0
+                adaptiveExtraBudget = 0
+            }
+
+            sourceHealthRatio < SOURCE_DEGRADED_RATIO -> {
+                admitted = min(admitted, 1)
+                sourceProtectionActive = true
+                sourceRecoveryStreak = 0
+                adaptiveExtraBudget = 0
+            }
+
+            sourceProtectionActive -> {
+                if (sourceHealthRatio >= SOURCE_RECOVERED_RATIO) {
+                    sourceRecoveryStreak++
+                } else {
+                    sourceRecoveryStreak = 0
+                }
+
+                if (sourceRecoveryStreak < SOURCE_RECOVERY_SAMPLES) {
+                    admitted = min(admitted, 1)
+                } else {
+                    sourceProtectionActive = false
+                    sourceRecoveryStreak = 0
+                }
+            }
+        }
+
+        lastAdmittedBudget = admitted.coerceIn(0, 3)
+        return lastAdmittedBudget
     }
 
     companion object {
@@ -197,5 +311,11 @@ class ApexSourceProtectedScheduler {
         private const val MIN_SOURCE_PERIOD_NS = 4_000_000L
         private const val MAX_SOURCE_PERIOD_NS = 250_000_000L
         private const val MIN_RESERVE_NS = 750_000L
+
+        private const val SOURCE_SEVERE_RATIO = 0.80f
+        private const val SOURCE_DEGRADED_RATIO = 0.92f
+        private const val SOURCE_RECOVERED_RATIO = 0.97f
+        private const val SOURCE_REFERENCE_DECAY = 0.95f
+        private const val SOURCE_RECOVERY_SAMPLES = 3
     }
 }

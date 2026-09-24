@@ -96,6 +96,53 @@ class ApexSourceProtectedSchedulerTest {
     }
 
     @Test
+    fun adaptivePersistentOutputDeficitCanRaiseSafeBudgetWithoutSacrificingSource() {
+        val scheduler = ApexSourceProtectedScheduler()
+        var time = 5_000_000_000L
+        repeat(12) {
+            scheduler.recordDisplayOpportunity(time)
+            time += 8_333_333L
+        }
+        scheduler.recordSourceArrival(5_000_000_000L)
+        scheduler.recordSourceArrival(5_033_333_333L)
+
+        val underTarget = populatedTelemetry(
+            sourceInFps = 30f,
+            sourceOutFps = 30f,
+            generatedFps = 15f,
+            outputFps = 45f,
+            opportunityFps = 120f,
+        )
+        var budget = 0
+        repeat(3) {
+            budget = scheduler.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 60,
+                presentation = underTarget,
+            )
+        }
+        assertEquals(2, budget)
+
+        val recovered = populatedTelemetry(
+            sourceInFps = 30f,
+            sourceOutFps = 30f,
+            generatedFps = 30f,
+            outputFps = 60f,
+            opportunityFps = 120f,
+        )
+        repeat(2) {
+            budget = scheduler.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 60,
+                presentation = recovered,
+            )
+        }
+        assertEquals(1, budget)
+    }
+
+    @Test
     fun adaptiveUsesMeasuredCapacityAndOutputDeficit() {
         val scheduler = ApexSourceProtectedScheduler()
         var t = 4_000_000_000L

@@ -20,6 +20,9 @@ class ApexSourceProtectedScheduler {
     private var lastSourceArrivalNanos = 0L
     private var sourcePeriodNanos = 0.0
     private var pendingSourceDeadlineNanos = 0L
+    private var adaptiveExtraBudget = 0
+    private var adaptiveDeficitStreak = 0
+    private var adaptiveSatisfiedStreak = 0
 
     fun reset() {
         lastOpportunityNanos = 0L
@@ -27,6 +30,9 @@ class ApexSourceProtectedScheduler {
         lastSourceArrivalNanos = 0L
         sourcePeriodNanos = 0.0
         pendingSourceDeadlineNanos = 0L
+        adaptiveExtraBudget = 0
+        adaptiveDeficitStreak = 0
+        adaptiveSatisfiedStreak = 0
     }
 
     fun recordDisplayOpportunity(nowNanos: Long) {
@@ -99,40 +105,86 @@ class ApexSourceProtectedScheduler {
         ).toInt().coerceIn(0, 3)
         val safeByCapacity = (floor(capacityFps / sourceFps).toInt() - 1).coerceIn(0, 3)
 
-        val requested = if (adaptive) {
+        val baseRequested = if (adaptive) {
             val boundedTarget = min(targetFps.coerceAtLeast(1).toFloat(), capacityFps * 0.98f)
             (ceil(boundedTarget / sourceFps).toInt() - 1).coerceIn(0, 3)
         } else {
             fixedGeneratedCeiling.coerceIn(0, 3)
         }
 
-        var admitted = min(requested, min(safeByDeadline, safeByCapacity))
+        // One source may legitimately be buffered behind synthetics. Account for
+        // that single in-flight real frame when judging source-delivery health so
+        // normal interpolation latency is not misclassified as source loss.
+        val countDeliveryRatio = if (presentation.sourceArrivals > 0L) {
+            (min(
+                presentation.sourceArrivals,
+                presentation.sourcePresented + 1L,
+            ).toFloat() / presentation.sourceArrivals.toFloat())
+        } else {
+            1f
+        }
+        val cadenceDeliveryRatio = if (presentation.sourceInputFps > 1f) {
+            presentation.sourceFps / presentation.sourceInputFps
+        } else {
+            1f
+        }
+        val deliveryRatio = max(countDeliveryRatio, cadenceDeliveryRatio)
 
-        // Presentation feedback closes the loop that native source/target ratio
-        // alone cannot see. If synthetics are displacing real frames, shed them
-        // immediately until source delivery recovers.
-        if (presentation.sourceArrivals >= 4L && presentation.sourceInputFps > 1f) {
-            val deliveryRatio = presentation.sourceFps / presentation.sourceInputFps
-            if (deliveryRatio < 0.80f) {
-                admitted = 0
-            } else if (deliveryRatio < 0.95f) {
-                admitted = (admitted - 1).coerceAtLeast(0)
+        var requested = baseRequested
+        if (adaptive) {
+            if (presentation.outputPresented >= 4L) {
+                val boundedTarget =
+                    min(targetFps.coerceAtLeast(1).toFloat(), capacityFps * 0.98f)
+                val tolerance = max(0.75f, sourceFps * 0.08f)
+                val deficit = boundedTarget - presentation.outputFps
+
+                when {
+                    deliveryRatio < 0.95f -> {
+                        adaptiveExtraBudget = 0
+                        adaptiveDeficitStreak = 0
+                        adaptiveSatisfiedStreak = 0
+                    }
+                    deficit > tolerance &&
+                        baseRequested + adaptiveExtraBudget < 3 -> {
+                        adaptiveDeficitStreak++
+                        adaptiveSatisfiedStreak = 0
+                        if (adaptiveDeficitStreak >= 3) {
+                            adaptiveExtraBudget =
+                                (adaptiveExtraBudget + 1).coerceAtMost(3 - baseRequested)
+                            adaptiveDeficitStreak = 0
+                        }
+                    }
+                    deficit <= tolerance -> {
+                        adaptiveSatisfiedStreak++
+                        adaptiveDeficitStreak = 0
+                        if (adaptiveSatisfiedStreak >= 2 && adaptiveExtraBudget > 0) {
+                            adaptiveExtraBudget--
+                            adaptiveSatisfiedStreak = 0
+                        }
+                    }
+                    else -> {
+                        adaptiveDeficitStreak = 0
+                        adaptiveSatisfiedStreak = 0
+                    }
+                }
             }
+            requested = (baseRequested + adaptiveExtraBudget).coerceIn(0, 3)
+        } else {
+            adaptiveExtraBudget = 0
+            adaptiveDeficitStreak = 0
+            adaptiveSatisfiedStreak = 0
         }
 
-        // Adaptive is target-seeking, not multiplier-seeking. Once measured OUT
-        // is effectively at the bounded target, do not request extra synthetic
-        // work merely because a higher multiplier is theoretically possible.
-        if (adaptive && presentation.outputPresented >= 4L) {
-            val boundedTarget = min(targetFps.coerceAtLeast(1).toFloat(), capacityFps * 0.98f)
-            val deficit = boundedTarget - presentation.outputFps
-            if (deficit <= max(0.5f, sourceFps * 0.10f)) {
-                val observedGeneratedPerSource = if (sourceFps > 1f) {
-                    ceil(presentation.generatedFps / sourceFps).toInt().coerceIn(0, 3)
-                } else {
-                    0
-                }
-                admitted = min(admitted, observedGeneratedPerSource)
+        var admitted = min(requested, min(safeByDeadline, safeByCapacity))
+
+        // Synthetic work is always subordinate to source delivery. Fixed mode
+        // and Adaptive share this invariant.
+        if (presentation.sourceArrivals >= 4L) {
+            if (deliveryRatio < 0.80f) {
+                admitted = 0
+                adaptiveExtraBudget = 0
+            } else if (deliveryRatio < 0.95f) {
+                admitted = (admitted - 1).coerceAtLeast(0)
             }
         }
 

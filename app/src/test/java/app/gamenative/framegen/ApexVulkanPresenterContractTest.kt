@@ -83,7 +83,7 @@ class ApexVulkanPresenterContractTest {
         )
         assertTrue(
             "Vulkan AHB source ingestion must request the one-time vertical-origin correction",
-            native.contains("true,\n        true);"),
+            native.contains("true,\n        true,\n        std::clamp"),
         )
         assertTrue(
             "presenter telemetry must classify the frame only after swap outcome is known",

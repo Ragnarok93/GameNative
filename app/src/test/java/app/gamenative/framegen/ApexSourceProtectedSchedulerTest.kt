@@ -282,9 +282,10 @@ class ApexSourceProtectedSchedulerTest {
             )
         }
 
-        assertTrue(
-            "a sustained lower source cadence must eventually become the protected baseline once Apex load is absent",
-            resumedBudget > 0,
+        assertEquals(
+            "a sustained lower source cadence must fully re-anchor before Adaptive restores the requested ratio",
+            3,
+            resumedBudget,
         )
     }
 

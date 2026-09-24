@@ -13,7 +13,7 @@ class ApexPresentationHandoffContractTest {
     }
 
     @Test
-    fun disablingApexKeepsLatchedLayerUntilNormalPresentationIsConfirmed() {
+    fun disablingApexExplicitlyHidesLatchedLayerAfterNormalPresentationIsConfirmed() {
         val renderer = repoFile(
             "app/src/main/java/com/winlator/renderer/VulkanRenderer.java",
         ).readText()
@@ -27,6 +27,7 @@ class ApexPresentationHandoffContractTest {
             "retireApexPresenter()",
             "nativeGetNormalPresentSerial",
             "awaitNormalPresentationBeforeApexRelease",
+            "hideApexPresenterLayerAfterNormalPresentation",
         ).forEach { token ->
             assertTrue("transactional Apex disable is missing $token", method.contains(token))
         }
@@ -40,6 +41,24 @@ class ApexPresentationHandoffContractTest {
         assertFalse(
             "Apex layer must not be destroyed synchronously before the normal path presents",
             method.substring(retire, awaitNormal).contains("releaseApexPresenterLayer()"),
+        )
+
+        val hideStart = renderer.indexOf(
+            "private void hideApexPresenterLayerAfterNormalPresentation",
+            methodStart,
+        )
+        val pollMethod = renderer.indexOf("public ApexFrame pollApexFrame()", hideStart)
+        assertTrue(hideStart > awaitNormal && pollMethod > hideStart)
+        val hideMethod = renderer.substring(hideStart, pollMethod)
+
+        assertTrue(
+            "normal presentation acknowledgement must explicitly hide the opaque Apex child layer",
+            hideMethod.contains("setVisibility(layer, false)"),
+        )
+        assertTrue(
+            "Apex SurfaceControl handles must be released only after the hide transaction has crossed a frame boundary",
+            hideMethod.contains("postOnAnimation") &&
+                hideMethod.contains("releaseApexPresenterLayer()"),
         )
     }
 

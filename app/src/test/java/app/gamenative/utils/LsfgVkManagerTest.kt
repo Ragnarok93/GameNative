@@ -108,6 +108,8 @@ class LsfgVkManagerTest {
         )
         assertTrue(LsfgVkManager.writeConfig(container))
         assertTrue(LsfgVkManager.shouldPublishRuntimePressure(rootDir))
+        val configFile = File(rootDir, ".config/lsfg-vk/conf.toml")
+        val configBeforePressure = configFile.readText()
 
         val snapshot = MetricsSnapshot(
             timestampMs = 123456L,
@@ -136,8 +138,11 @@ class LsfgVkManagerTest {
         assertTrue(pressure.contains("frame_time_p95_ms=24.00"))
         assertTrue(pressure.contains("slow_frame_ratio=0.1500"))
 
-        assertFalse(
-            File(rootDir, ".config/lsfg-vk/conf.toml").exists(),
+        assertTrue(configFile.exists())
+        assertEquals(
+            "Runtime pressure publication must not rewrite conf.toml",
+            configBeforePressure,
+            configFile.readText(),
         )
     }
 
@@ -628,6 +633,8 @@ class LsfgVkManagerTest {
             .thenReturn("0.80")
         whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE_MODE, LsfgVkManager.FLOW_MODE_FIXED))
             .thenReturn(flowMode)
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAMEGEN_MODE, LsfgVkManager.MODE_FIXED))
+            .thenReturn(LsfgVkManager.MODE_FIXED)
         whenever(
             container.getExtra(
                 LsfgVkManager.EXTRA_ADAPTIVE_FLOW_PRESET,

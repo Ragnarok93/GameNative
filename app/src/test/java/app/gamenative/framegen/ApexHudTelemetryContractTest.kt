@@ -23,7 +23,7 @@ class ApexHudTelemetryContractTest {
 
         assertTrue(screen.contains("if (presentation.active)"))
         assertTrue(screen.contains("presentation.outputFps"))
-        assertTrue(screen.contains("\"FPS %.1f | SRC %.1f | GEN %.1f%s\""))
+        assertTrue(screen.contains("\"SRC %.1f | OUT %.1f | GEN %.1f%s\""))
         assertFalse(
             "Apex-owned HUD must not fall back to source FPS just because no swap has completed yet",
             screen.contains("presentation.active && presentation.outputPresented > 0L"),

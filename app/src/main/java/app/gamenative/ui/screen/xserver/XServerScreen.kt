@@ -1091,9 +1091,9 @@ fun XServerScreen(
                     }
                     String.format(
                         Locale.US,
-                        "FPS %.1f | SRC %.1f | GEN %.1f%s",
-                        presentation.outputFps,
+                        "SRC %.1f | OUT %.1f | GEN %.1f%s",
                         presentation.sourceInputFps,
+                        presentation.outputFps,
                         presentation.generatedFps,
                         repeatSuffix,
                     )

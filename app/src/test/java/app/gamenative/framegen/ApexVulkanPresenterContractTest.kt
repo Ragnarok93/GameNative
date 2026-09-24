@@ -158,14 +158,18 @@ class ApexVulkanPresenterContractTest {
         assertTrue(methodStart >= 0 && pollStart > methodStart)
         val method = renderer.substring(methodStart, pollStart)
 
-        val disableBranch = method.indexOf("} else {")
-        val stopPresenter = method.indexOf("releaseApexPresenterSurface();", disableBranch)
-        val nativeDisable = method.indexOf("nativeDisableApexTarget", disableBranch)
+        val retirePresenter = method.indexOf("retireApexPresenter()")
+        val nativeDisable = method.indexOf("nativeDisableApexTarget", retirePresenter)
 
-        assertTrue("disable branch must exist", disableBranch >= 0)
+        assertTrue("transactional disable must retire the presenter", retirePresenter >= 0)
         assertTrue(
             "presenter must stop and release consumer-owned frames before native target teardown",
-            stopPresenter >= 0 && nativeDisable >= 0 && stopPresenter < nativeDisable,
+            nativeDisable > retirePresenter,
+        )
+        assertFalse(
+            "transactional disable must keep the last Apex child layer latched until a normal present",
+            method.substring(retirePresenter, nativeDisable)
+                .contains("releaseApexPresenterLayer()"),
         )
     }
 

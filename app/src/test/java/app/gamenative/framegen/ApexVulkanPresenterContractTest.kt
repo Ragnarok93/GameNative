@@ -198,4 +198,41 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+
+    @Test
+    fun queuedSourceDoesNotPreemptTheActiveSyntheticInterval() {
+        val presenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
+
+        assertTrue(
+            "queued source arrival time must be retained until that source becomes the active interval",
+            presenter.contains("pendingSourceArrivalNanos"),
+        )
+        assertFalse(
+            "a newly queued source must not immediately abort the current interval's remaining synthetic slots",
+            presenter.contains(
+                "pendingSourceFrame != null || scheduler.shouldPresentSourceNow(frameTimeNanos)",
+            ),
+        )
+
+        val pendingStart = presenter.indexOf("if (nativeHasPendingSource(handle))")
+        val pendingEnd = presenter.indexOf("} else {", pendingStart)
+        assertTrue(pendingStart >= 0 && pendingEnd > pendingStart)
+        val pendingBranch = presenter.substring(pendingStart, pendingEnd)
+        assertTrue(
+            "the protected source deadline must remain the reason an active interval yields early",
+            pendingBranch.contains("scheduler.shouldPresentSourceNow(frameTimeNanos)"),
+        )
+        assertFalse(
+            "queued input alone is not a source-deadline signal",
+            pendingBranch.contains("pendingSourceFrame != null"),
+        )
+
+        assertTrue(
+            "source cadence must be observed when the queued frame becomes the active Apex interval",
+            presenter.contains("scheduler.recordSourceArrival(sourceArrivalNanos)"),
+        )
+    }
+
 }

@@ -13,6 +13,7 @@ class ApexPresentationTelemetryTest {
 
         ApexPresentationTelemetry.recordSourceArrival(start + 10_000_000L)
         ApexPresentationTelemetry.recordSourceArrival(start + 20_000_000L)
+        ApexPresentationTelemetry.recordSourceArrival(start + 30_000_000L)
         ApexPresentationTelemetry.recordSourceDropped()
         ApexPresentationTelemetry.record(
             ApexPresentationTelemetry.OUTPUT_GENERATED,
@@ -27,12 +28,24 @@ class ApexPresentationTelemetryTest {
 
         val snapshot = ApexPresentationTelemetry.snapshot(start + 40_000_000L)
         assertTrue(snapshot.active)
-        assertEquals(2L, snapshot.sourceArrivals)
+        assertEquals(3L, snapshot.sourceArrivals)
         assertEquals(1L, snapshot.sourceDropped)
         assertEquals(1L, snapshot.sourcePresented)
         assertEquals(1L, snapshot.generatedPresented)
         assertEquals(2L, snapshot.outputPresented)
         assertTrue(snapshot.sourceInputFps > snapshot.sourceFps)
+
+        val sourceStats = ApexPresentationTelemetry.sourceFrameStats(
+            nowNanos = start + 40_000_000L,
+            windowNanos = 100_000_000L,
+            slowThresholdNanos = 15_000_000L,
+        )
+        assertEquals(100f, sourceStats.fps, 0.01f)
+        assertEquals(10f, sourceStats.p50Ms, 0.01f)
+        assertEquals(10f, sourceStats.p95Ms, 0.01f)
+        assertEquals(10f, sourceStats.maxMs, 0.01f)
+        assertEquals(0, sourceStats.slowFrameCount)
+        assertEquals(3, sourceStats.totalFrameCount)
 
         ApexPresentationTelemetry.endSession(start + 50_000_000L)
         assertFalse(ApexPresentationTelemetry.snapshot(start + 60_000_000L).active)

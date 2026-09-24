@@ -33,6 +33,15 @@ object ApexPresentationTelemetry {
         val swapFailures: Long,
     )
 
+    data class SourceFrameStats(
+        val fps: Float,
+        val p50Ms: Float,
+        val p95Ms: Float,
+        val maxMs: Float,
+        val slowFrameCount: Int,
+        val totalFrameCount: Int,
+    )
+
     private class TimestampRing {
         private val timestamps = LongArray(CAPACITY)
         private var writeIndex = 0L
@@ -57,6 +66,72 @@ object ApexPresentationTelemetry {
                 index++
             }
             return count
+        }
+
+        fun intervalStatsSince(
+            cutoffNanos: Long,
+            slowThresholdNanos: Long,
+        ): SourceFrameStats {
+            val end = writeIndex
+            val start = (end - CAPACITY).coerceAtLeast(0L)
+            val deltas = LongArray(CAPACITY)
+            var deltaCount = 0
+            var frameCount = 0
+            var first = 0L
+            var last = 0L
+            var previous = 0L
+            var slow = 0
+            var index = start
+            while (index < end) {
+                val timestamp = timestamps[(index % CAPACITY).toInt()]
+                if (timestamp >= cutoffNanos && timestamp > 0L) {
+                    if (first == 0L) first = timestamp
+                    if (previous > 0L) {
+                        val delta = timestamp - previous
+                        if (delta > 0L && deltaCount < deltas.size) {
+                            deltas[deltaCount++] = delta
+                            if (slowThresholdNanos > 0L && delta > slowThresholdNanos) slow++
+                        }
+                    }
+                    previous = timestamp
+                    last = timestamp
+                    frameCount++
+                }
+                index++
+            }
+
+            if (deltaCount == 0 || first == 0L || last <= first) {
+                return SourceFrameStats(
+                    fps = 0f,
+                    p50Ms = 0f,
+                    p95Ms = 0f,
+                    maxMs = 0f,
+                    slowFrameCount = 0,
+                    totalFrameCount = frameCount,
+                )
+            }
+
+            java.util.Arrays.sort(deltas, 0, deltaCount)
+            fun percentileIndex(percentile: Double): Int =
+                kotlin.math.ceil((deltaCount - 1) * percentile).toInt().coerceIn(0, deltaCount - 1)
+            val p50 = deltas[percentileIndex(0.50)]
+            val p95 = deltas[percentileIndex(0.95)]
+            val max = deltas[deltaCount - 1]
+            val elapsed = last - first
+            val fps = if (elapsed > 0L) {
+                ((frameCount - 1).coerceAtLeast(0) * 1_000_000_000.0 / elapsed.toDouble()).toFloat()
+            } else {
+                0f
+            }
+
+            return SourceFrameStats(
+                fps = fps,
+                p50Ms = p50 / 1_000_000f,
+                p95Ms = p95 / 1_000_000f,
+                maxMs = max / 1_000_000f,
+                slowFrameCount = slow,
+                totalFrameCount = frameCount,
+            )
         }
     }
 
@@ -153,6 +228,20 @@ object ApexPresentationTelemetry {
                 }
             }
         }
+
+    fun sourceFrameStats(
+        nowNanos: Long = System.nanoTime(),
+        windowNanos: Long = 2_000_000_000L,
+        slowThresholdNanos: Long = 0L,
+    ): SourceFrameStats = synchronized(lock) {
+        if (!active) {
+            return@synchronized SourceFrameStats(0f, 0f, 0f, 0f, 0, 0)
+        }
+        sourceInputRing.intervalStatsSince(
+            cutoffNanos = nowNanos - windowNanos.coerceAtLeast(1L),
+            slowThresholdNanos = slowThresholdNanos,
+        )
+    }
 
     fun snapshot(nowNanos: Long = System.nanoTime()): Snapshot = synchronized(lock) {
         val start = if (epochStartNanos == 0L) nowNanos else epochStartNanos

@@ -2154,6 +2154,15 @@
     <string name="apex_frame_generation_enable">Enable Apex Frame Generation</string>
     <string name="apex_frame_generation_description">Generate intermediate frames with GameNative’s native Apex pipeline. Uses the Adreno-optimized path or the Xclipse compatibility path selected from live GPU capabilities.</string>
     <string name="apex_frame_generation_requires_vulkan">Apex Frame Generation requires the Vulkan display renderer.</string>
+    <string name="apex_quick_menu_title">Apex Frame Generation</string>
+    <string name="apex_mode">Frame Generation Mode</string>
+    <string name="apex_adaptive_target_desc">Target output cadence. Apex adjusts generated-frame count while protecting source-frame delivery.</string>
+    <string name="apex_flow_scale_desc">Scales Apex motion-vector displacement during interpolation.</string>
+    <string name="apex_quality_preset">Optical Flow Quality</string>
+    <string name="apex_quality_preset_desc">Changes Apex DIS flow-resolution workload. Higher quality costs more GPU time.</string>
+    <string name="apex_quality_fast">Fast</string>
+    <string name="apex_quality_balanced">Balanced</string>
+    <string name="apex_quality_quality">Quality</string>
 
     <!-- LSFG Frame Generation -->
     <string name="lsfg_tab_title">LSFG-VK</string>

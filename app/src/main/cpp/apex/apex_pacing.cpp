@@ -47,17 +47,19 @@ void ApexEngine::onFrameCaptured(int64_t nowNanos, bool isActualNewFrame) {
 
     int currentGen = mPlannedGen;
     int proposedGen = 0;
+    const bool adaptive = mAdaptiveFrameGeneration.load(std::memory_order_acquire);
 
-    // Aggressive Target FPS logic:
-    // We want (Source * Multiplier) >= Target.
-    // Therefore, Multiplier >= Target / Source.
-    if (target > 0 && sourceFps >= static_cast<float>(target) - 0.5f) {
-        proposedGen = 0; // Game already at target
+    if (!adaptive) {
+        // Fixed mode still treats the selected multiplier as a ceiling: the
+        // existing cost-limit logic below may reduce generated work to protect
+        // the real/source timeline under sustained saturation.
+        proposedGen = std::clamp(mFixedMultiplier.load(std::memory_order_acquire) - 1, 1, 3);
+    } else if (target > 0 && sourceFps >= static_cast<float>(target) - 0.5f) {
+        proposedGen = 0;
     } else {
-        // Hysteresis: for 28-30 FPS targeting 60, maintain 2x (proposedGen = 1)
-        // to avoid unnecessary 3x/4x GPU overload on normal emulator jitter.
+        // Adaptive mode preserves the mature WinNative target-driven governor.
         if (ratio <= 2.20f) {
-            proposedGen = 1; // 2x multiplier
+            proposedGen = 1;
         } else {
             int requiredMultiplier = static_cast<int>(std::ceil(ratio - 0.20f));
             proposedGen = std::clamp(requiredMultiplier - 1, 1, 3);
@@ -105,8 +107,8 @@ void ApexEngine::onFrameCaptured(int64_t nowNanos, bool isActualNewFrame) {
             mDeltaAtRaise = mTypicalDeltaNanos;
             mLastCostChangeNanos = nowNanos;
             if (mLoggingEnabled.load(std::memory_order_relaxed)) {
-                APEX_LOGI("ApexDIS Multiplier stepped UP to %dx (Source: %.1f FPS, Target: %d FPS)",
-                          mPlannedGen + 1, sourceFps, target);
+                APEX_LOGI("ApexDIS Multiplier stepped UP to %dx (mode=%s Source: %.1f FPS, Target: %d FPS)",
+                          mPlannedGen + 1, adaptive ? "adaptive" : "fixed", sourceFps, target);
             }
         }
     } else if (proposedGen < currentGen) {
@@ -118,8 +120,8 @@ void ApexEngine::onFrameCaptured(int64_t nowNanos, bool isActualNewFrame) {
             mDeltaAtRaise = mTypicalDeltaNanos;
             mLastCostChangeNanos = nowNanos;
             if (mLoggingEnabled.load(std::memory_order_relaxed)) {
-                APEX_LOGI("ApexDIS Multiplier stepped DOWN to %dx (Source: %.1f FPS, Target: %d FPS)",
-                          mPlannedGen + 1, sourceFps, target);
+                APEX_LOGI("ApexDIS Multiplier stepped DOWN to %dx (mode=%s Source: %.1f FPS, Target: %d FPS)",
+                          mPlannedGen + 1, adaptive ? "adaptive" : "fixed", sourceFps, target);
             }
         }
     } else {

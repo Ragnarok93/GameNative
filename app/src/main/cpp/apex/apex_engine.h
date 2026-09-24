@@ -114,6 +114,10 @@ public:
     bool isLoggingEnabled() const { return mLoggingEnabled.load(); }
     void setTargetFPS(int f) { mTargetFPS.store(f); }
     int getTargetFPS() const { return mTargetFPS.load(); }
+    void setAdaptiveFrameGeneration(bool e) { mAdaptiveFrameGeneration.store(e); }
+    bool isAdaptiveFrameGeneration() const { return mAdaptiveFrameGeneration.load(); }
+    void setFixedMultiplier(int m) { mFixedMultiplier.store(m < 2 ? 2 : (m > 4 ? 4 : m)); }
+    int getFixedMultiplier() const { return mFixedMultiplier.load(); }
     void setShutterGain(float g) { mShutterGain.store(g); }
     float getShutterGain() const { return mShutterGain.load(); }
     void setFlowScale(float s) { mFlowScale.store(s); }
@@ -205,7 +209,8 @@ private:
 
     // Atomics
     std::atomic<bool> mActive{false}, mLoggingEnabled{false}, mDebugOverlay{false}, mPendingRealFrame{false}, mRenderingGeneratedFrame{false};
-    std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mPlannedGen{1}, mAutoMultiplier{2};
+    std::atomic<bool> mAdaptiveFrameGeneration{true};
+    std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
     std::atomic<float> mShutterGain{0.0f}, mFlowScale{1.0f}, mLiquidFeel{0.5f}, mEdgeGuard{0.5f}, mRenderScale{1.0f}, mAutoMultiplierVal{2.0f};
 
     // Pacing History

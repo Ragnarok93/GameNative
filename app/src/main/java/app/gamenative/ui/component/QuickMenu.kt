@@ -321,7 +321,9 @@ class PerformanceQuickMenuState(
 /** LSFG hot-reload state/callbacks as one QuickMenu parameter instead of seven — same
  * register-limit reason as [PerformanceQuickMenuState]. Tab only visible when [isAvailable]. */
 class LsfgQuickMenuState(
+    /** True when either the selected LSFG backend or Apex backend is available. */
     val isAvailable: Boolean = false,
+    val isApex: Boolean = false,
     val multiplier: Int = 2,
     val flowScale: Float = 0.80f,
     val performanceMode: Boolean = true,
@@ -329,6 +331,20 @@ class LsfgQuickMenuState(
     val onMultiplierChanged: (Int) -> Unit = {},
     val onFlowScaleChanged: (Float) -> Unit = {},
     val onPerformanceModeChanged: (Boolean) -> Unit = {},
+    val apexRuntimeEnabled: Boolean = false,
+    val apexMode: app.gamenative.framegen.ApexFrameGenerationManager.GenerationMode =
+        app.gamenative.framegen.ApexFrameGenerationManager.GenerationMode.ADAPTIVE,
+    val apexFixedMultiplier: Int = 2,
+    val apexAdaptiveTargetFps: Int = 60,
+    val apexFlowScale: Float = 1.0f,
+    val apexQualityPreset: app.gamenative.framegen.ApexFrameGenerationManager.QualityPreset =
+        app.gamenative.framegen.ApexFrameGenerationManager.QualityPreset.BALANCED,
+    val onApexRuntimeEnabledChanged: (Boolean) -> Unit = {},
+    val onApexModeChanged: (app.gamenative.framegen.ApexFrameGenerationManager.GenerationMode) -> Unit = {},
+    val onApexFixedMultiplierChanged: (Int) -> Unit = {},
+    val onApexAdaptiveTargetFpsChanged: (Int) -> Unit = {},
+    val onApexFlowScaleChanged: (Float) -> Unit = {},
+    val onApexQualityPresetChanged: (app.gamenative.framegen.ApexFrameGenerationManager.QualityPreset) -> Unit = {},
 )
 
 @Composable
@@ -366,7 +382,9 @@ fun QuickMenu(
     val onPerformanceHudConfigChanged = performance.onHudConfigChanged
     val onFpsLimiterEnabledChanged = performance.onFpsLimiterEnabledChanged
     val onFpsLimiterChanged = performance.onFpsLimiterChanged
-    val isLsfgAvailable = lsfg.isAvailable
+    val isFrameGenerationAvailable = lsfg.isAvailable
+    val isApexBackend = lsfg.isApex
+    val isLsfgAvailable = isFrameGenerationAvailable && !isApexBackend
     val lsfgMultiplier = lsfg.multiplier
     val lsfgFlowScale = lsfg.flowScale
     val lsfgPerformanceMode = lsfg.performanceMode
@@ -480,7 +498,7 @@ fun QuickMenu(
     var selectedTab by rememberSaveable {
         mutableIntStateOf(
             when {
-                PrefManager.quickMenuLastTab == QuickMenuTab.LSFG && !isLsfgAvailable -> QuickMenuTab.HUD
+                PrefManager.quickMenuLastTab == QuickMenuTab.LSFG && !isFrameGenerationAvailable -> QuickMenuTab.HUD
                 PrefManager.quickMenuLastTab == QuickMenuTab.INVITE && inviteMenu == null -> QuickMenuTab.HUD
                 PrefManager.quickMenuLastTab == QuickMenuTab.POWER -> QuickMenuTab.HUD
                 PrefManager.quickMenuLastTab == QuickMenuTab.IMMERSIVE && immersiveControls == null -> QuickMenuTab.HUD
@@ -490,7 +508,7 @@ fun QuickMenu(
     }
     val selectedTabLabelResId = when (selectedTab) {
         QuickMenuTab.HUD -> R.string.performance_hud
-        QuickMenuTab.LSFG -> R.string.lsfg_tab_title
+        QuickMenuTab.LSFG -> if (isApexBackend) R.string.apex_quick_menu_title else R.string.lsfg_tab_title
         QuickMenuTab.EFFECTS -> R.string.screen_effects
         QuickMenuTab.TOOLS -> R.string.task_manager
         QuickMenuTab.INVITE -> R.string.steam_invite_tab_title
@@ -553,11 +571,11 @@ fun QuickMenu(
 
     // Only the tabs actually shown in the rail, in on-screen order — mirrors the conditions each
     // QuickMenuTabButton below is gated on (isLsfgAvailable, a renderer being available, etc).
-    val availableTabs = remember(isLsfgAvailable, renderer, glRenderer, immersiveControls, inviteMenu)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           {
+    val availableTabs = remember(isFrameGenerationAvailable, renderer, glRenderer, immersiveControls, inviteMenu)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           {
         buildList {
             add(QuickMenuTab.HUD)
             add(QuickMenuTab.POWER)
-            if (isLsfgAvailable) add(QuickMenuTab.LSFG)
+            if (isFrameGenerationAvailable) add(QuickMenuTab.LSFG)
             if (inviteMenu != null) add(QuickMenuTab.INVITE)
             if (renderer != null || glRenderer != null) add(QuickMenuTab.EFFECTS)
             add(QuickMenuTab.CONTROLLER)
@@ -763,10 +781,11 @@ fun QuickMenu(
                                     modifier = Modifier.width(56.dp),
                                     focusRequester = powerTabFocusRequester,
                                 )
-                                if (isLsfgAvailable) {
+                                if (isFrameGenerationAvailable) {
                                     QuickMenuTabButton(
                                         icon = Icons.Default.Speed,
-                                        contentDescriptionResId = R.string.lsfg_tab_title,
+                                        contentDescriptionResId =
+                                            if (isApexBackend) R.string.apex_quick_menu_title else R.string.lsfg_tab_title,
                                         selected = selectedTab == QuickMenuTab.LSFG,
                                         accentColor = PluviaTheme.colors.accentPurple,
                                         onSelected = {
@@ -910,26 +929,47 @@ fun QuickMenu(
                                     }
 
                                     QuickMenuTab.LSFG -> {
-                                        LsfgQuickMenuTab(
-                                            container = container,
-                                            multiplier = lsfgMultiplier,
-                                            flowScale = lsfgFlowScale,
-                                            performanceMode = lsfgPerformanceMode,
-                                            runtimeStatus = lsfgRuntimeStatus,
-                                            onMultiplierChanged = onLsfgMultiplierChanged,
-                                            onFlowScaleChanged = onLsfgFlowScaleChanged,
-                                            onPerformanceModeChanged = onLsfgPerformanceModeChanged,
-                                            presentMode = lsfgPresentMode,
-                                            onPresentModeChanged = { mode ->
-                                                lsfgPresentMode = mode
-                                                container?.let {
-                                                    app.gamenative.utils.LsfgQuickMenuHelper.applyPresentMode(it, mode)
-                                                }
-                                            },
-                                            scrollState = lsfgScrollState,
-                                            focusRequester = lsfgItemFocusRequester,
-                                            modifier = Modifier.fillMaxSize(),
-                                        )
+                                        if (isApexBackend) {
+                                            ApexQuickMenuTab(
+                                                runtimeEnabled = lsfg.apexRuntimeEnabled,
+                                                mode = lsfg.apexMode,
+                                                fixedMultiplier = lsfg.apexFixedMultiplier,
+                                                adaptiveTargetFps = lsfg.apexAdaptiveTargetFps,
+                                                flowScale = lsfg.apexFlowScale,
+                                                qualityPreset = lsfg.apexQualityPreset,
+                                                runtimeStatus = lsfgRuntimeStatus,
+                                                onRuntimeEnabledChanged = lsfg.onApexRuntimeEnabledChanged,
+                                                onModeChanged = lsfg.onApexModeChanged,
+                                                onFixedMultiplierChanged = lsfg.onApexFixedMultiplierChanged,
+                                                onAdaptiveTargetFpsChanged = lsfg.onApexAdaptiveTargetFpsChanged,
+                                                onFlowScaleChanged = lsfg.onApexFlowScaleChanged,
+                                                onQualityPresetChanged = lsfg.onApexQualityPresetChanged,
+                                                scrollState = lsfgScrollState,
+                                                focusRequester = lsfgItemFocusRequester,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        } else {
+                                            LsfgQuickMenuTab(
+                                                container = container,
+                                                multiplier = lsfgMultiplier,
+                                                flowScale = lsfgFlowScale,
+                                                performanceMode = lsfgPerformanceMode,
+                                                runtimeStatus = lsfgRuntimeStatus,
+                                                onMultiplierChanged = onLsfgMultiplierChanged,
+                                                onFlowScaleChanged = onLsfgFlowScaleChanged,
+                                                onPerformanceModeChanged = onLsfgPerformanceModeChanged,
+                                                presentMode = lsfgPresentMode,
+                                                onPresentModeChanged = { mode ->
+                                                    lsfgPresentMode = mode
+                                                    container?.let {
+                                                        app.gamenative.utils.LsfgQuickMenuHelper.applyPresentMode(it, mode)
+                                                    }
+                                                },
+                                                scrollState = lsfgScrollState,
+                                                focusRequester = lsfgItemFocusRequester,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        }
                                     }
 
                                     QuickMenuTab.INVITE -> {
@@ -1560,6 +1600,161 @@ private fun PerformanceHudQuickMenuTab(
                 },
                 accentColor = accentColor,
             )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun ApexQuickMenuTab(
+    runtimeEnabled: Boolean,
+    mode: app.gamenative.framegen.ApexFrameGenerationManager.GenerationMode,
+    fixedMultiplier: Int,
+    adaptiveTargetFps: Int,
+    flowScale: Float,
+    qualityPreset: app.gamenative.framegen.ApexFrameGenerationManager.QualityPreset,
+    runtimeStatus: String,
+    onRuntimeEnabledChanged: (Boolean) -> Unit,
+    onModeChanged: (app.gamenative.framegen.ApexFrameGenerationManager.GenerationMode) -> Unit,
+    onFixedMultiplierChanged: (Int) -> Unit,
+    onAdaptiveTargetFpsChanged: (Int) -> Unit,
+    onFlowScaleChanged: (Float) -> Unit,
+    onQualityPresetChanged: (app.gamenative.framegen.ApexFrameGenerationManager.QualityPreset) -> Unit,
+    scrollState: ScrollState,
+    focusRequester: FocusRequester? = null,
+    modifier: Modifier = Modifier,
+) {
+    val accentColor = PluviaTheme.colors.accentPurple
+
+    Column(
+        modifier = modifier.verticalScroll(scrollState).focusGroup(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        QuickMenuToggleRow(
+            title = stringResource(R.string.apex_quick_menu_title),
+            subtitle = runtimeStatus.takeIf { it.isNotBlank() }
+                ?: stringResource(R.string.apex_frame_generation_description),
+            enabled = runtimeEnabled,
+            onToggle = { onRuntimeEnabledChanged(!runtimeEnabled) },
+            accentColor = accentColor,
+            focusRequester = focusRequester,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+        QuickMenuSectionHeader(title = stringResource(R.string.apex_mode))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(
+                app.gamenative.framegen.ApexFrameGenerationManager.GenerationMode.FIXED to
+                    R.string.lsfg_mode_fixed,
+                app.gamenative.framegen.ApexFrameGenerationManager.GenerationMode.ADAPTIVE to
+                    R.string.lsfg_mode_adaptive,
+            ).forEach { (candidate, label) ->
+                QuickMenuChoiceChip(
+                    text = stringResource(label),
+                    selected = mode == candidate,
+                    accentColor = accentColor,
+                    onClick = { onModeChanged(candidate) },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+        if (mode == app.gamenative.framegen.ApexFrameGenerationManager.GenerationMode.FIXED) {
+            QuickMenuSectionHeader(title = stringResource(R.string.lsfg_fixed_multiplier))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(2, 3, 4).forEach { value ->
+                    QuickMenuChoiceChip(
+                        text = "${value}x",
+                        selected = fixedMultiplier == value,
+                        accentColor = accentColor,
+                        onClick = { onFixedMultiplierChanged(value) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                    )
+                }
+            }
+        } else {
+            QuickMenuAdjustmentRow(
+                title = stringResource(R.string.lsfg_adaptive_target),
+                subtitle = stringResource(R.string.apex_adaptive_target_desc),
+                valueText = stringResource(R.string.lsfg_adaptive_target_value, adaptiveTargetFps),
+                progress = adaptiveTargetFpsProgress(adaptiveTargetFps),
+                onDecrease = {
+                    val next = previousAdaptiveTargetFps(adaptiveTargetFps)
+                    if (next != adaptiveTargetFps) onAdaptiveTargetFpsChanged(next)
+                },
+                onIncrease = {
+                    val next = nextAdaptiveTargetFps(adaptiveTargetFps)
+                    if (next != adaptiveTargetFps) onAdaptiveTargetFpsChanged(next)
+                },
+                accentColor = accentColor,
+            )
+        }
+
+        AnimatedVisibility(
+            visible = runtimeEnabled,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Spacer(modifier = Modifier.height(4.dp))
+                QuickMenuAdjustmentRow(
+                    title = stringResource(R.string.lsfg_flow_scale),
+                    subtitle = stringResource(R.string.apex_flow_scale_desc),
+                    valueText = String.format(java.util.Locale.US, "%.2f", flowScale),
+                    progress = (flowScale - 0.25f) / 0.75f,
+                    onDecrease = {
+                        val next = (flowScale - 0.05f).coerceIn(0.25f, 1.0f)
+                        onFlowScaleChanged(
+                            String.format(java.util.Locale.US, "%.2f", next).toFloat(),
+                        )
+                    },
+                    onIncrease = {
+                        val next = (flowScale + 0.05f).coerceIn(0.25f, 1.0f)
+                        onFlowScaleChanged(
+                            String.format(java.util.Locale.US, "%.2f", next).toFloat(),
+                        )
+                    },
+                    accentColor = accentColor,
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+                QuickMenuSectionHeader(
+                    title = stringResource(R.string.apex_quality_preset),
+                    subtitle = stringResource(R.string.apex_quality_preset_desc),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(
+                        app.gamenative.framegen.ApexFrameGenerationManager.QualityPreset.FAST to
+                            R.string.apex_quality_fast,
+                        app.gamenative.framegen.ApexFrameGenerationManager.QualityPreset.BALANCED to
+                            R.string.apex_quality_balanced,
+                        app.gamenative.framegen.ApexFrameGenerationManager.QualityPreset.QUALITY to
+                            R.string.apex_quality_quality,
+                    ).forEach { (candidate, label) ->
+                        QuickMenuChoiceChip(
+                            text = stringResource(label),
+                            selected = qualityPreset == candidate,
+                            accentColor = accentColor,
+                            onClick = { onQualityPresetChanged(candidate) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                        )
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))

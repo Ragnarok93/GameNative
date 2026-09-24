@@ -1113,8 +1113,16 @@ bool VulkanRendererContext::enableApexTarget() {
     std::lock_guard<std::mutex> apexLock(apexTargetMutex);
     if (device == VK_NULL_HANDLE || xrTargetActive.load()) return false;
 
-    const uint32_t width = static_cast<uint32_t>(std::max(surfaceWidth, 0));
-    const uint32_t height = static_cast<uint32_t>(std::max(surfaceHeight, 0));
+    // nativeInit receives the container's logical size before Android reports
+    // the real Surface extent. The swapchain is authoritative once created;
+    // using the stale logical size here produced a 1280x720 Apex child surface
+    // on a 2340x1080 display.
+    const uint32_t width =
+        swapchainExt.width > 0 ? swapchainExt.width
+                              : static_cast<uint32_t>(std::max(surfaceWidth, 0));
+    const uint32_t height =
+        swapchainExt.height > 0 ? swapchainExt.height
+                               : static_cast<uint32_t>(std::max(surfaceHeight, 0));
     if (width == 0 || height == 0) return false;
     if (apexTargetActive.load() &&
         apexRp != VK_NULL_HANDLE &&

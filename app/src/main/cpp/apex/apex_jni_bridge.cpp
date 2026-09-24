@@ -130,6 +130,34 @@ Java_app_gamenative_framegen_ApexNativeBridge_nativeGetTargetFPS(JNIEnv* env, jc
 }
 
 JNIEXPORT void JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeSetAdaptiveFrameGeneration(
+    JNIEnv* env, jclass clazz, jboolean enabled) {
+    (void)env; (void)clazz;
+    apex::ApexEngine::getInstance().setAdaptiveFrameGeneration(enabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeIsAdaptiveFrameGeneration(
+    JNIEnv* env, jclass clazz) {
+    (void)env; (void)clazz;
+    return apex::ApexEngine::getInstance().isAdaptiveFrameGeneration() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeSetFixedMultiplier(
+    JNIEnv* env, jclass clazz, jint multiplier) {
+    (void)env; (void)clazz;
+    apex::ApexEngine::getInstance().setFixedMultiplier(multiplier);
+}
+
+JNIEXPORT jint JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeGetFixedMultiplier(
+    JNIEnv* env, jclass clazz) {
+    (void)env; (void)clazz;
+    return apex::ApexEngine::getInstance().getFixedMultiplier();
+}
+
+JNIEXPORT void JNICALL
 Java_app_gamenative_framegen_ApexNativeBridge_nativeSetShutterGain(JNIEnv* env, jclass clazz, jfloat gain) {
     (void)env; (void)clazz;
     apex::ApexEngine::getInstance().setShutterGain(gain);

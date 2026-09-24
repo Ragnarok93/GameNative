@@ -621,7 +621,29 @@ fun XServerScreen(
     var fpsLimiterEnabled by rememberSaveable(container.id) { mutableStateOf(initialFpsLimiterEnabled(container)) }
     var fpsLimiterTarget by rememberSaveable(container.id) { mutableIntStateOf(initialFpsLimiterTarget(container)) }
 
-    // LSFG tab in QuickMenu only visible when enabled in container settings
+    // Frame-generation quick-menu tab follows the backend selected in container settings.
+    val isApexAvailable = ApexFrameGenerationManager.isRequested(container)
+    val initialApexSettings = remember(container.id) {
+        ApexFrameGenerationManager.readSettings(container)
+    }
+    var apexRuntimeEnabled by rememberSaveable(container.id) { mutableStateOf(isApexAvailable) }
+    var apexGenerationMode by rememberSaveable(container.id) {
+        mutableStateOf(initialApexSettings.mode)
+    }
+    var apexFixedMultiplier by rememberSaveable(container.id) {
+        mutableIntStateOf(initialApexSettings.fixedMultiplier)
+    }
+    var apexAdaptiveTargetFps by rememberSaveable(container.id) {
+        mutableIntStateOf(initialApexSettings.adaptiveTargetFps)
+    }
+    var apexFlowScale by rememberSaveable(container.id) {
+        mutableStateOf(initialApexSettings.flowScale)
+    }
+    var apexQualityPreset by rememberSaveable(container.id) {
+        mutableStateOf(initialApexSettings.qualityPreset)
+    }
+
+    // LSFG remains available only when Apex is not selected.
     val isLsfgAvailable = LsfgQuickMenuHelper.isAvailable(container)
     val initialLsfgSettings = remember(container.id) { LsfgQuickMenuHelper.readSettings(container) }
     var lsfgMultiplier by rememberSaveable(container.id) { mutableIntStateOf(initialLsfgSettings.multiplier) }
@@ -766,6 +788,56 @@ fun XServerScreen(
 
     fun effectiveFpsLimit(): Int =
         if (fpsLimiterEnabled) fpsLimiterTarget else 0
+
+    fun currentApexSettings() =
+        ApexFrameGenerationManager.Settings(
+            mode = apexGenerationMode,
+            fixedMultiplier = apexFixedMultiplier,
+            adaptiveTargetFps = apexAdaptiveTargetFps,
+            flowScale = apexFlowScale,
+            qualityPreset = apexQualityPreset,
+        )
+
+    fun persistAndApplyApexSettings() {
+        ApexFrameGenerationManager.applySettings(container, currentApexSettings())
+    }
+
+    fun applyApexRuntimeEnabled(enabled: Boolean) {
+        val renderer = xServerView?.renderer as? VulkanRenderer ?: return
+        if (enabled) {
+            ApexFrameGenerationManager.applyRuntimeSettings(currentApexSettings())
+        }
+        if (renderer.setApexFrameTargetEnabled(enabled)) {
+            apexRuntimeEnabled = enabled
+        } else {
+            Timber.w("QuickMenu Apex runtime transition rejected enabled=%b", enabled)
+        }
+    }
+
+    fun applyApexMode(mode: ApexFrameGenerationManager.GenerationMode) {
+        apexGenerationMode = mode
+        persistAndApplyApexSettings()
+    }
+
+    fun applyApexFixedMultiplier(multiplier: Int) {
+        apexFixedMultiplier = ApexFrameGenerationManager.sanitizeMultiplier(multiplier)
+        persistAndApplyApexSettings()
+    }
+
+    fun applyApexAdaptiveTargetFps(target: Int) {
+        apexAdaptiveTargetFps = ApexFrameGenerationManager.sanitizeTargetFps(target)
+        persistAndApplyApexSettings()
+    }
+
+    fun applyApexFlowScale(scale: Float) {
+        apexFlowScale = ApexFrameGenerationManager.sanitizeFlowScale(scale)
+        persistAndApplyApexSettings()
+    }
+
+    fun applyApexQualityPreset(preset: ApexFrameGenerationManager.QualityPreset) {
+        apexQualityPreset = preset
+        persistAndApplyApexSettings()
+    }
 
     fun applyLsfgSettings() {
         Timber.i(
@@ -2141,10 +2213,14 @@ fun XServerScreen(
                     }
                     renderer.setVkPresentMode(vkMode)
                     if (ApexFrameGenerationManager.isRequested(container)) {
+                        ApexFrameGenerationManager.applyRuntimeSettings(container)
                         if (!renderer.setApexFrameTargetEnabled(true)) {
+                            apexRuntimeEnabled = false
                             Timber.w(
                                 "Apex frame generation requested but Vulkan presenter activation was rejected",
                             )
+                        } else {
+                            apexRuntimeEnabled = true
                         }
                     }
                 }
@@ -3011,16 +3087,34 @@ fun XServerScreen(
                 if (isShooterModeActive) add(QuickMenuAction.SHOOTER_MODE)
                 if (isDisableMouseInput) add(QuickMenuAction.DISABLE_MOUSE)
             },
-            // LSFG hot-reload (tab only visible when enabled in container settings)
+            // Shared frame-generation tab: LSFG keeps its mature controls while
+            // Apex exposes live fixed/adaptive, target, flow and quality controls.
             lsfg = LsfgQuickMenuState(
-                isAvailable = isLsfgAvailable,
+                isAvailable = isApexAvailable || isLsfgAvailable,
+                isApex = isApexAvailable,
                 multiplier = lsfgMultiplier,
                 flowScale = lsfgFlowScale,
                 performanceMode = lsfgPerformanceMode,
-                runtimeStatus = lsfgRuntimeMode.label,
+                runtimeStatus = if (isApexAvailable) {
+                    if (apexRuntimeEnabled) "Apex active" else "Apex paused"
+                } else {
+                    lsfgRuntimeMode.label
+                },
                 onMultiplierChanged = ::applyLsfgMultiplier,
                 onFlowScaleChanged = ::applyLsfgFlowScale,
                 onPerformanceModeChanged = ::applyLsfgPerformanceMode,
+                apexRuntimeEnabled = apexRuntimeEnabled,
+                apexMode = apexGenerationMode,
+                apexFixedMultiplier = apexFixedMultiplier,
+                apexAdaptiveTargetFps = apexAdaptiveTargetFps,
+                apexFlowScale = apexFlowScale,
+                apexQualityPreset = apexQualityPreset,
+                onApexRuntimeEnabledChanged = ::applyApexRuntimeEnabled,
+                onApexModeChanged = ::applyApexMode,
+                onApexFixedMultiplierChanged = ::applyApexFixedMultiplier,
+                onApexAdaptiveTargetFpsChanged = ::applyApexAdaptiveTargetFps,
+                onApexFlowScaleChanged = ::applyApexFlowScale,
+                onApexQualityPresetChanged = ::applyApexQualityPreset,
             ),
             onRequestOpen = { showQuickMenu = true },
             // Immersive tab (tab only visible when hosted by ImmersiveXrActivity)

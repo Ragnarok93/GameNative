@@ -3,8 +3,8 @@ package app.gamenative.framegen
 /**
  * JNI boundary for the source-available native Apex engine.
  *
- * This is deliberately not called by VulkanRenderer yet: presentation remains
- * unchanged until the AHardwareBuffer/EGL handoff is implemented and verified.
+ * Runtime settings are backend-neutral at the Kotlin layer; Vulkan presentation
+ * remains owned by ApexVulkanPresenter and its AHardwareBuffer/EGL fence bridge.
  */
 object ApexNativeBridge {
     init {
@@ -82,6 +82,10 @@ object ApexNativeBridge {
     @JvmStatic external fun nativeIsLoggingEnabled(): Boolean
     @JvmStatic external fun nativeSetTargetFPS(fps: Int)
     @JvmStatic external fun nativeGetTargetFPS(): Int
+    @JvmStatic external fun nativeSetAdaptiveFrameGeneration(enabled: Boolean)
+    @JvmStatic external fun nativeIsAdaptiveFrameGeneration(): Boolean
+    @JvmStatic external fun nativeSetFixedMultiplier(multiplier: Int)
+    @JvmStatic external fun nativeGetFixedMultiplier(): Int
     @JvmStatic external fun nativeSetShutterGain(gain: Float)
     @JvmStatic external fun nativeGetShutterGain(): Float
     @JvmStatic external fun nativeSetFlowScale(scale: Float)

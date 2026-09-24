@@ -1067,9 +1067,7 @@ fun XServerScreen(
             fpsProvider = {
                 val raw = frameRating?.currentFPS ?: 0f
                 when {
-                    ApexPresentationTelemetry.snapshot().let {
-                        it.active && it.outputPresented > 0L
-                    } -> {
+                    ApexPresentationTelemetry.snapshot().let { it.active } -> {
                         ApexPresentationTelemetry.snapshot().outputFps
                     }
                     isLsfgAvailable && lsfgMultiplier >= 2 -> {
@@ -1085,7 +1083,7 @@ fun XServerScreen(
             initialCompactMode = PrefManager.performanceHudCompactMode,
             fpsTextProvider = {
                 val presentation = ApexPresentationTelemetry.snapshot()
-                if (presentation.active && presentation.outputPresented > 0L) {
+                if (presentation.active) {
                     val repeatSuffix = if (presentation.repeatedFps >= 0.5f) {
                         String.format(Locale.US, " | REP %.1f", presentation.repeatedFps)
                     } else {
@@ -1093,9 +1091,9 @@ fun XServerScreen(
                     }
                     String.format(
                         Locale.US,
-                        "SRC %.1f | OUT %.1f | GEN %.1f%s",
-                        presentation.sourceInputFps,
+                        "FPS %.1f | SRC %.1f | GEN %.1f%s",
                         presentation.outputFps,
+                        presentation.sourceInputFps,
                         presentation.generatedFps,
                         repeatSuffix,
                     )

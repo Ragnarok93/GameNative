@@ -1783,6 +1783,9 @@ ok=true;}catch(...){}
         VkPresentInfoKHR pi{}; pi.sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         pi.waitSemaphoreCount=1; pi.pWaitSemaphores=sSem; pi.swapchainCount=1; pi.pSwapchains=scs; pi.pImageIndices=&imgIdx;
         res=vk_.QueuePresentKHR(graphicsQueue,&pi);
+        if (res==VK_SUCCESS || res==VK_SUBOPTIMAL_KHR) {
+            normalPresentSerial.fetch_add(1, std::memory_order_release);
+        }
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR) fbResized.store(true);
     } else {
         // The XR session samples xrAhb from its own GL context with no fence handoff;

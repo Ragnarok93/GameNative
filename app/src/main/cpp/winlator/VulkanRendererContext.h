@@ -169,6 +169,10 @@ public:
     void scanoutSetCursorPos(short x, short y, short hotX, short hotY);
     std::atomic<bool> scanoutActive{false};
     std::atomic<bool> gameFrameDelivered{false};
+    // Monotonic acknowledgement used only for Apex -> normal-path ownership
+    // transitions. It advances after a successful normal swapchain present or
+    // game-buffer SurfaceControl apply; it never gates normal frame delivery.
+    std::atomic<uint64_t> normalPresentSerial{0};
     std::atomic<bool> surfaceDetached{false};
 
     void detachSurface();

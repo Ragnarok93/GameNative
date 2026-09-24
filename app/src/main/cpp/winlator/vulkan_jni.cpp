@@ -293,6 +293,14 @@ Java_com_winlator_renderer_VulkanRenderer_nativeIsGameFrameDelivered(JNIEnv*, jo
     return r ? (jboolean)r->gameFrameDelivered.load() : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetNormalPresentSerial(JNIEnv*, jobject, jlong handle) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r ? static_cast<jlong>(
+        r->normalPresentSerial.load(std::memory_order_acquire)
+    ) : 0;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFilterMode(JNIEnv*, jobject, jlong handle, jint mode) {
     auto* r = reinterpret_cast<VulkanRendererContext*>(handle);

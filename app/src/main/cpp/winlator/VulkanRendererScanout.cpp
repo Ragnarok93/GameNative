@@ -197,6 +197,7 @@ void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y,
 
     ST_APPLY(t);
 
+    normalPresentSerial.fetch_add(1, std::memory_order_release);
     gameFrameDelivered.store(true, std::memory_order_release);
     AHardwareBuffer_release(ahb);
 }

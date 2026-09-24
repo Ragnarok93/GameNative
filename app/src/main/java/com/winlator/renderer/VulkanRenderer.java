@@ -76,6 +76,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     // direct present has been observed recently.
     private final java.util.concurrent.atomic.AtomicLong apexSourceSequence =
         new java.util.concurrent.atomic.AtomicLong(0);
+    private final java.util.concurrent.atomic.AtomicLong apexPresentationTransition =
+        new java.util.concurrent.atomic.AtomicLong(0);
+    private static final long APEX_HANDOFF_POLL_MS = 8L;
+    private static final long APEX_HANDOFF_WARN_MS = 2000L;
     private volatile long lastApexDirectPresentNanos = 0L;
     private static final long APEX_DIRECT_SOURCE_GRACE_NS = 250_000_000L;
     private android.view.SurfaceControl apexGameSurfaceControl = null;
@@ -166,6 +170,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeScanoutSetCursorPos(long handle, short x, short y, short hotX, short hotY);
     private native boolean nativeIsScanoutActive(long handle);
     private native boolean nativeIsGameFrameDelivered(long handle);
+    private native long nativeGetNormalPresentSerial(long handle);
     private native void nativeSetScanoutWindow(long handle, android.view.Surface game, android.view.Surface cursor);
     private native void nativeScanoutSetDst(long handle, int x, int y, int w, int h);
     private native void nativeSetVerboseLog(long handle, boolean v);
@@ -233,6 +238,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         if (enabled == apexFrameTargetActive) return true;
         if (enabled && xrFrameBridge != null) return false;
 
+        final long transition = apexPresentationTransition.incrementAndGet();
         boolean previousRequirement = effectsRequireCompositor;
         if (enabled) {
             apexSourceSequence.set(0L);
@@ -249,39 +255,60 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     return false;
                 }
             }
-        } else {
-            // Stop the EGL/Choreographer consumer before retiring the native
-            // AHB ring. The presenter can still own a dequeued slot and must
-            // return its release fence while the Vulkan target is alive.
-            releaseApexPresenterSurface();
-            synchronized (lock) {
-                if (nativeHandle != 0 && !nativeDisableApexTarget(nativeHandle)) {
-                    return false;
-                }
-            }
-            apexFrameTargetActive = false;
-            apexSourceSequence.set(0L);
-            lastApexDirectPresentNanos = 0L;
-            effectsRequireCompositor = computeEffectsRequireCompositor();
-            if (nativeMode && previousRequirement && !effectsRequireCompositor) establishScanout();
-        }
-        if (enabled) {
             xServerView.post(this::establishApexPresenterSurface);
+            xServerView.queueEvent(this::updateScene);
+            return true;
         }
+
+        // Transactional disable:
+        // 1) stop Apex consumption/generation but leave the last child buffer
+        //    visibly latched;
+        // 2) retire the native offscreen target;
+        // 3) re-arm and force the ordinary presentation path;
+        // 4) release the Apex child layer only after a normal present is observed.
+        retireApexPresenter();
+        final long baselineNormalPresent;
+        synchronized (lock) {
+            baselineNormalPresent = nativeHandle != 0
+                ? nativeGetNormalPresentSerial(nativeHandle)
+                : 0L;
+            if (nativeHandle != 0 && !nativeDisableApexTarget(nativeHandle)) {
+                // Native target is still active. Restart the presenter on the
+                // retained SurfaceControl so the failed transition is reversible.
+                xServerView.post(this::establishApexPresenterSurface);
+                return false;
+            }
+        }
+
+        apexFrameTargetActive = false;
+        apexSourceSequence.set(0L);
+        lastApexDirectPresentNanos = 0L;
+        effectsRequireCompositor = computeEffectsRequireCompositor();
+        if (nativeMode && previousRequirement && !effectsRequireCompositor) {
+            establishScanout();
+        }
+
         xServerView.queueEvent(this::updateScene);
+        awaitNormalPresentationBeforeApexRelease(
+            transition,
+            baselineNormalPresent,
+            android.os.SystemClock.uptimeMillis()
+        );
         return true;
     }
 
     private void establishApexPresenterSurface() {
         if (!apexFrameTargetActive || apexPresenter != null || nativeHandle == 0) return;
         try {
-            android.view.SurfaceControl parent = xServerView.getSurfaceControl();
-            apexGameSurfaceControl = new android.view.SurfaceControl.Builder()
-                .setParent(parent)
-                .setName("gamenative_apex_presenter")
-                .setOpaque(true)
-                .build();
-            apexGameSurface = new android.view.Surface(apexGameSurfaceControl);
+            if (apexGameSurfaceControl == null || apexGameSurface == null) {
+                android.view.SurfaceControl parent = xServerView.getSurfaceControl();
+                apexGameSurfaceControl = new android.view.SurfaceControl.Builder()
+                    .setParent(parent)
+                    .setName("gamenative_apex_presenter")
+                    .setOpaque(true)
+                    .build();
+                apexGameSurface = new android.view.Surface(apexGameSurfaceControl);
+            }
             new android.view.SurfaceControl.Transaction()
                 .setLayer(apexGameSurfaceControl, 3)
                 .setVisibility(apexGameSurfaceControl, true)
@@ -297,11 +324,15 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         }
     }
 
-    private void releaseApexPresenterSurface() {
+    /** Stops the Apex consumer but intentionally keeps its last child layer latched. */
+    private void retireApexPresenter() {
         app.gamenative.framegen.ApexVulkanPresenter presenter = apexPresenter;
         apexPresenter = null;
         if (presenter != null) presenter.stop();
+    }
 
+    /** Releases only the retained Apex child layer after the normal path is visible. */
+    private void releaseApexPresenterLayer() {
         if (apexGameSurface != null) {
             apexGameSurface.release();
             apexGameSurface = null;
@@ -310,6 +341,56 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             apexGameSurfaceControl.release();
             apexGameSurfaceControl = null;
         }
+    }
+
+    private void releaseApexPresenterSurface() {
+        apexPresentationTransition.incrementAndGet();
+        retireApexPresenter();
+        releaseApexPresenterLayer();
+    }
+
+    private void awaitNormalPresentationBeforeApexRelease(
+        long transition,
+        long baselineNormalPresent,
+        long startedAtMs
+    ) {
+        xServerView.postDelayed(new Runnable() {
+            private boolean warned = false;
+
+            @Override
+            public void run() {
+                if (transition != apexPresentationTransition.get() || apexFrameTargetActive) {
+                    return;
+                }
+
+                final long serial;
+                synchronized (lock) {
+                    serial = nativeHandle != 0
+                        ? nativeGetNormalPresentSerial(nativeHandle)
+                        : baselineNormalPresent + 1L;
+                }
+
+                if (serial > baselineNormalPresent) {
+                    android.util.Log.i(
+                        "VulkanRenderer",
+                        "Apex disable handoff complete: normal presentation serial " +
+                            baselineNormalPresent + " -> " + serial
+                    );
+                    releaseApexPresenterLayer();
+                    return;
+                }
+
+                long elapsed = android.os.SystemClock.uptimeMillis() - startedAtMs;
+                if (!warned && elapsed >= APEX_HANDOFF_WARN_MS) {
+                    warned = true;
+                    android.util.Log.w(
+                        "VulkanRenderer",
+                        "Apex disable waiting for first normal presentation; retaining last Apex layer"
+                    );
+                }
+                xServerView.postDelayed(this, APEX_HANDOFF_POLL_MS);
+            }
+        }, 0L);
     }
 
     public void onApexPresenterFailure() {
@@ -477,6 +558,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     public void onSurfaceDestroyed() {
         initComplete = false;
+        apexPresentationTransition.incrementAndGet();
         releaseApexPresenterSurface();
         if (initExecutor != null) {
             initExecutor.shutdownNow();

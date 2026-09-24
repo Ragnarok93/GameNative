@@ -76,6 +76,8 @@ jobs:
           --tests app.gamenative.framegen.FrameGenerationBackendTest
           --tests app.gamenative.framegen.ApexVulkanTargetContractTest
           --tests app.gamenative.framegen.ApexVulkanPresenterContractTest
+          --tests app.gamenative.framegen.ApexXclipseCompatibilityContractTest
+          --tests app.gamenative.framegen.ApexContainerSettingsContractTest
           --tests app.gamenative.utils.LsfgVkManagerTest
           --tests app.gamenative.utils.LsfgQuickMenuHelperModeTest
           --tests app.gamenative.utils.LsfgAdaptiveFlowUiContractTest

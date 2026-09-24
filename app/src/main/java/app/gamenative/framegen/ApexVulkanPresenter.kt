@@ -32,6 +32,7 @@ class ApexVulkanPresenter(
     private var callbacksSinceTelemetryLog = 0
     private var nextSourceDeadlineNanos = 0L
     private var pendingSourceFrame: VulkanRenderer.ApexFrame? = null
+    private var pendingSourceArrivalNanos = 0L
     private val scheduler = ApexSourceProtectedScheduler()
 
     private val frameCallback = object : Choreographer.FrameCallback {
@@ -51,8 +52,8 @@ class ApexVulkanPresenter(
                 if (frame != null) {
                     if (shouldAcceptSource(frameTimeNanos)) {
                         pendingSourceFrame = frame
+                        pendingSourceArrivalNanos = frameTimeNanos
                         ApexPresentationTelemetry.recordSourceArrival(frameTimeNanos)
-                        scheduler.recordSourceArrival(frameTimeNanos)
                     } else {
                         // The source cap owns this decision. Return the producer
                         // fence unchanged because GLES never imported the AHB.
@@ -63,10 +64,11 @@ class ApexVulkanPresenter(
             }
 
             if (nativeHasPendingSource(handle)) {
-                // A real source frame is already buffered inside Apex. A newer
-                // source arrival or the reserved deadline always wins over
-                // additional synthetic work.
-                if (pendingSourceFrame != null || scheduler.shouldPresentSourceNow(frameTimeNanos)) {
+                // A real source frame already owns this interval. A newer
+                // source may queue behind it, but only the protected deadline
+                // may terminate the interval before its planned synthetic slots
+                // have been consumed.
+                if (scheduler.shouldPresentSourceNow(frameTimeNanos)) {
                     presentPendingSource(handle)
                 } else {
                     presentGeneratedOpportunity(handle)
@@ -74,7 +76,15 @@ class ApexVulkanPresenter(
             } else {
                 val frame = pendingSourceFrame
                 if (frame != null) {
+                    val sourceArrivalNanos =
+                        pendingSourceArrivalNanos.takeIf { it > 0L } ?: frameTimeNanos
                     pendingSourceFrame = null
+                    pendingSourceArrivalNanos = 0L
+                    // Source cadence is observed when this queued frame becomes
+                    // the active Apex interval. This prevents a newer queued
+                    // frame from re-phasing the deadline of the interval that
+                    // is still being presented.
+                    scheduler.recordSourceArrival(sourceArrivalNanos)
                     val presentation = ApexPresentationTelemetry.snapshot(frameTimeNanos)
                     val adaptive = ApexNativeBridge.nativeIsAdaptiveFrameGeneration()
                     val requestedCeiling = if (adaptive) {
@@ -117,6 +127,7 @@ class ApexVulkanPresenter(
         callbacksSinceTelemetryLog = 0
         nextSourceDeadlineNanos = 0L
         pendingSourceFrame = null
+        pendingSourceArrivalNanos = 0L
         scheduler.reset()
         running = true
         thread.start()
@@ -197,7 +208,7 @@ class ApexVulkanPresenter(
         val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: mode=%s target=%d fixed=%dx sourceIn=%.1f sourceOut=%.1f sourceRef=%.1f sourceHealth=%.2f protect=%s recovery=%d generated=%.1f repeats=%.1f output=%.1f opportunities=%.1f budget=%d totals(in=%d dropped=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
+            "display cadence: mode=%s target=%d fixed=%dx sourceIn=%.1f sourceOut=%.1f sourcePlan=%.1f demand=%.2f phase=%.3f cost=%d measuredOpportunities=%.1f generated=%.1f repeats=%.1f output=%.1f opportunities=%.1f budget=%d totals(in=%d dropped=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
                 java.util.Locale.US,
                 if (adaptive) "adaptive" else "fixed",
                 targetFps,
@@ -205,9 +216,10 @@ class ApexVulkanPresenter(
                 stats.sourceInputFps,
                 stats.sourceFps,
                 schedulerDiagnostics.protectedSourceFps,
-                schedulerDiagnostics.sourceHealthRatio,
-                schedulerDiagnostics.sourceProtectionActive,
+                schedulerDiagnostics.wantedGeneratedFrames,
+                schedulerDiagnostics.fractionalPhase,
                 schedulerDiagnostics.recoveryStreak,
+                schedulerDiagnostics.measuredOpportunityFps,
                 stats.generatedFps,
                 stats.repeatedFps,
                 stats.outputFps,
@@ -264,6 +276,7 @@ class ApexVulkanPresenter(
                     renderer.releaseApexFrame(pending, pending.acquireFenceFd)
                 }
                 pendingSourceFrame = null
+                pendingSourceArrivalNanos = 0L
                 if (handle != 0L) nativeDestroyPresenter(handle)
                 hasSourceHistory = false
                 nextSourceDeadlineNanos = 0L

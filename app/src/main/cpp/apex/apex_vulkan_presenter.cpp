@@ -407,7 +407,7 @@ bool initializePresenter(Presenter& presenter) {
     eglSwapInterval(presenter.display, 0);
     apex::ApexEngine::getInstance().setActive(true);
     PRES_LOGI(
-        "Apex presenter ready: EGL %d.%d, renderer=%s, profile=%s storage=%s r32f=%d rgba16f=%d rgba32f=%d",
+        "Apex presenter ready: EGL %d.%d, renderer=%s, profile=%s storage=%s r32f=%d rgba16f=%d rgba32f=%d orientation=v-flip",
         major,
         minor,
         renderer ? renderer : "unknown",

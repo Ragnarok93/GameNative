@@ -79,7 +79,7 @@ class ApexVulkanPresenterContractTest {
             native.contains("destroyImportedSource"),
         )
         assertTrue(
-            "Vulkan AHB source ingestion must request the one-time half-turn correction",
+            "Vulkan AHB source ingestion must request the one-time vertical-origin correction",
             native.contains("true,\n        true);"),
         )
         assertTrue(
@@ -101,9 +101,13 @@ class ApexVulkanPresenterContractTest {
         val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
         val screen = repoFile("app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt").readText()
 
-        assertTrue(pipeline.contains("sourceHalfTurn"))
-        assertTrue(pipeline.contains("sourceUSpan = sourceHalfTurn ? -sourceUScale : sourceUScale"))
-        assertTrue(pipeline.contains("sourceVSpan = sourceHalfTurn ? -sourceVScale : sourceVScale"))
+        assertTrue(pipeline.contains("sourceVerticalFlip"))
+        assertTrue(pipeline.contains("const float sourceUSpan = sourceUScale"))
+        assertTrue(pipeline.contains("sourceVSpan = sourceVerticalFlip ? -sourceVScale : sourceVScale"))
+        assertFalse(
+            "Apex Vulkan ingestion must not horizontally mirror the source",
+            pipeline.contains("sourceUSpan = sourceVerticalFlip ? -sourceUScale"),
+        )
         assertTrue(engine.contains("mQualityPreset.exchange"))
         assertTrue(engine.contains("mResourcesDirty.store(true"))
         assertTrue(screen.contains("ApexPresentationTelemetry.snapshot()"))

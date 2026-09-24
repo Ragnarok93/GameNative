@@ -790,7 +790,7 @@ std::string ApexEngine::getDiagnostics() {
 
 void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                               int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
-                              bool sourceHalfTurn) {
+                              bool sourceVerticalFlip) {
     mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
     mRenderingGeneratedFrame.store(false, std::memory_order_relaxed);
     if (!mActive.load(std::memory_order_relaxed)) return;
@@ -811,14 +811,17 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 
     const float sourceUScale = static_cast<float>(viewWidth) / static_cast<float>(width);
     const float sourceVScale = static_cast<float>(viewHeight) / static_cast<float>(height);
-    const float sourceUMin = sourceHalfTurn
-        ? static_cast<float>(viewX + viewWidth) / static_cast<float>(width)
-        : static_cast<float>(viewX) / static_cast<float>(width);
-    const float sourceVMin = sourceHalfTurn
+    // Vulkan render targets and GLES textures disagree on the vertical origin.
+    // The previous "half-turn" compensation inverted both axes, which introduced
+    // a horizontal mirror on top of the required vertical correction. Keep U
+    // untouched and flip V exactly once as the imported source enters Apex.
+    const float sourceUMin =
+        static_cast<float>(viewX) / static_cast<float>(width);
+    const float sourceVMin = sourceVerticalFlip
         ? static_cast<float>(viewY + viewHeight) / static_cast<float>(height)
         : static_cast<float>(viewY) / static_cast<float>(height);
-    const float sourceUSpan = sourceHalfTurn ? -sourceUScale : sourceUScale;
-    const float sourceVSpan = sourceHalfTurn ? -sourceVScale : sourceVScale;
+    const float sourceUSpan = sourceUScale;
+    const float sourceVSpan = sourceVerticalFlip ? -sourceVScale : sourceVScale;
 
     ensureResources(viewWidth, viewHeight);
 

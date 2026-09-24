@@ -83,7 +83,7 @@ public:
 
     void processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                       int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
-                      bool sourceHalfTurn = false);
+                      bool sourceVerticalFlip = false);
 
     // Legacy support for JNI bridge
     void processFrameWithData(GLuint i, GLuint d, GLuint h, GLuint o, int w, int height);

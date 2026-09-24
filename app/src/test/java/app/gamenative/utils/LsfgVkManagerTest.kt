@@ -101,6 +101,14 @@ class LsfgVkManagerTest {
 
     @Test
     fun publishRuntimePressure_usesSeparateAtomicSidecar() {
+        val container = container(
+            armed = true,
+            multiplier = "2",
+            flowMode = LsfgVkManager.FLOW_MODE_ADAPTIVE,
+        )
+        assertTrue(LsfgVkManager.writeConfig(container))
+        assertTrue(LsfgVkManager.shouldPublishRuntimePressure(rootDir))
+
         val snapshot = MetricsSnapshot(
             timestampMs = 123456L,
             fps = 57.5f,
@@ -131,6 +139,44 @@ class LsfgVkManagerTest {
         assertFalse(
             File(rootDir, ".config/lsfg-vk/conf.toml").exists(),
         )
+    }
+
+    @Test
+    fun publishRuntimePressure_isSilentWhenGenerationOrAdaptiveFlowIsInactive() {
+        val snapshot = MetricsSnapshot(
+            timestampMs = 123456L,
+            fps = 15f,
+            frameTimeP50Ms = 60f,
+            frameTimeP95Ms = 80f,
+            frameTimeMaxMs = 90f,
+            slowFrameCount = 10,
+            totalFrameCount = 20,
+            cpuUsagePercent = 50f,
+            cpuUsageSource = CpuUsageSource.PROC_STAT,
+            gpuUsagePercent = 20f,
+            cpuTempC = 55,
+            gpuTempC = 50,
+        )
+
+        val fixed = container(
+            armed = true,
+            multiplier = "2",
+            flowMode = LsfgVkManager.FLOW_MODE_FIXED,
+        )
+        assertTrue(LsfgVkManager.writeConfig(fixed))
+        assertFalse(LsfgVkManager.shouldPublishRuntimePressure(rootDir))
+        assertFalse(LsfgVkManager.publishRuntimePressure(rootDir, snapshot))
+        assertFalse(File(rootDir, ".config/lsfg-vk/runtime-pressure.txt").exists())
+
+        val offAdaptive = container(
+            armed = true,
+            multiplier = "0",
+            flowMode = LsfgVkManager.FLOW_MODE_ADAPTIVE,
+        )
+        assertTrue(LsfgVkManager.writeConfig(offAdaptive))
+        assertFalse(LsfgVkManager.shouldPublishRuntimePressure(rootDir))
+        assertFalse(LsfgVkManager.publishRuntimePressure(rootDir, snapshot))
+        assertFalse(File(rootDir, ".config/lsfg-vk/runtime-pressure.txt").exists())
     }
 
     @Test
@@ -560,7 +606,11 @@ class LsfgVkManagerTest {
         }
     }
 
-    private fun container(armed: Boolean, multiplier: String = "2"): Container {
+    private fun container(
+        armed: Boolean,
+        multiplier: String = "2",
+        flowMode: String = LsfgVkManager.FLOW_MODE_FIXED,
+    ): Container {
         File(rootDir, ".local/share/lsfg-vk/Lossless.dll").apply {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf(1))
@@ -577,7 +627,7 @@ class LsfgVkManagerTest {
         whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80"))
             .thenReturn("0.80")
         whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE_MODE, LsfgVkManager.FLOW_MODE_FIXED))
-            .thenReturn(LsfgVkManager.FLOW_MODE_FIXED)
+            .thenReturn(flowMode)
         whenever(
             container.getExtra(
                 LsfgVkManager.EXTRA_ADAPTIVE_FLOW_PRESET,

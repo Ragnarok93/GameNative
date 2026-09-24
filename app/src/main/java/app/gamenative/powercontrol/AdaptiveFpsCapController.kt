@@ -17,6 +17,9 @@ import timber.log.Timber
  * happens to be running, its clock state is folded into the decision - the cap only steps down
  * once the tuner has nothing left to give, and an upward probe reopens the tuner's clocks.
  */
+internal fun adaptiveFpsCapMayAdjustSource(frameGenerationActive: Boolean): Boolean =
+    !frameGenerationActive
+
 object AdaptiveFpsCapController {
     private const val TAG = "PowerTuner"
     private const val CYCLE_INTERVAL_MS = 1000L
@@ -110,6 +113,15 @@ object AdaptiveFpsCapController {
 
         val targetFps = PowerManager.targetFps
         cap.observeCap(targetFps)
+
+        if (!adaptiveFpsCapMayAdjustSource(PowerManager.frameSampleStride > 1)) {
+            // LSFG owns presentation cadence while generation is active.
+            // Generated-output collapse must never feed back into the game
+            // source limiter; that turns an LSFG regression into a second
+            // source-pacing regression.
+            cap.interrupt()
+            return
+        }
 
         val snapshot = PowerManager.latestMetrics
         if (targetFps <= 0 ||

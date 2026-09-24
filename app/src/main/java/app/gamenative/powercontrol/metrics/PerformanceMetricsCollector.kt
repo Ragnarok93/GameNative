@@ -199,10 +199,13 @@ object PerformanceMetricsCollector {
         if (!publish(snapshot, generation, frameGeneration)) return
         synchronized(lifecycleLock) {
             if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation()) return
-            LsfgVkManager.publishRuntimePressure(
-                PowerManager.activeContainerRootDir(),
-                snapshot,
-            )
+            val pressureRoot = PowerManager.activeContainerRootDir()
+            if (LsfgVkManager.shouldPublishRuntimePressure(pressureRoot)) {
+                LsfgVkManager.publishRuntimePressure(
+                    pressureRoot,
+                    snapshot,
+                )
+            }
             appendLog(snapshot)
 
             sampleCount++

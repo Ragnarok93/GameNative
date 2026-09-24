@@ -255,6 +255,31 @@ object LsfgVkManager {
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
 
 
+    private data class RuntimePressurePublication(
+        val rootKey: String?,
+        val enabled: Boolean,
+    )
+
+    @Volatile
+    private var runtimePressurePublication = RuntimePressurePublication(null, false)
+
+    private fun runtimePressureRootKey(root: File): String =
+        runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
+
+    private fun setRuntimePressurePublishing(container: Container, enabled: Boolean) {
+        runtimePressurePublication = RuntimePressurePublication(
+            runtimePressureRootKey(container.rootDir),
+            enabled,
+        )
+    }
+
+    internal fun shouldPublishRuntimePressure(rootDir: File?): Boolean {
+        val root = rootDir ?: return false
+        val publication = runtimePressurePublication
+        return publication.enabled &&
+            publication.rootKey == runtimePressureRootKey(root)
+    }
+
     /**
      * Publish coarse whole-device pressure telemetry for Adaptive Flow.
      *
@@ -267,6 +292,7 @@ object LsfgVkManager {
         snapshot: MetricsSnapshot,
     ): Boolean {
         val root = rootDir ?: return false
+        if (!shouldPublishRuntimePressure(root)) return false
         val gpu = snapshot.gpuUsagePercent
             ?.takeIf { it.isFinite() && it in 0f..100f }
             ?: return false
@@ -558,6 +584,8 @@ object LsfgVkManager {
             val savedMultiplier = multiplier(container)
             val frameGenActive = frameGenerationActive(container) && processExecutable != null
             val adaptive = frameGenActive && generationMode(container) == MODE_ADAPTIVE
+            val adaptiveFlow =
+                frameGenActive && flowScaleMode(container) == FLOW_MODE_ADAPTIVE
             val runtimeMultiplier = if (adaptive) 4 else savedMultiplier
             val adaptiveTarget = if (adaptive) adaptiveTargetFps(container) else 0
             val configFile = File(container.rootDir, CONFIG_RELATIVE_PATH)
@@ -567,14 +595,16 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) runtimeMultiplier else 1,
                 flowScale = flowScale(container),
-                adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+                adaptiveFlowScale = adaptiveFlow,
                 adaptiveFlowPreset = adaptiveFlowPreset(container),
                 performanceMode = performanceMode(container),
                 adaptiveFramegen = adaptive,
                 fpsLimit = adaptiveTarget,
                 presentMode = presentMode(container),
             )
-            writeConfigAtomic(configFile, configText)
+            val ok = writeConfigAtomic(configFile, configText)
+            if (ok) setRuntimePressurePublishing(container, adaptiveFlow)
+            ok
         } catch (t: Throwable) {
             Timber.tag(TAG).e(t, "Failed to write LSFG conf.toml")
             false
@@ -601,6 +631,7 @@ object LsfgVkManager {
         envVars.remove(ENV_PROCESS_EXE)
 
         if (!isSupported(container) || !isFrameGenerationRequested(container)) {
+            setRuntimePressurePublishing(container, false)
             disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).i(
                 "LSFG layer disabled for launch (requested=%s, multiplier=%d)",
@@ -614,6 +645,7 @@ object LsfgVkManager {
         val armed = isArmed(container)
 
         if (!armed) {
+            setRuntimePressurePublishing(container, false)
             disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).i(
                 "LSFG layer disabled (requested=%s, dll=%s)",
@@ -625,6 +657,7 @@ object LsfgVkManager {
 
         val processExecutable = targetExecutable(container)
         if (processExecutable == null) {
+            setRuntimePressurePublishing(container, false)
             disableLayerForLaunch(container, envVars)
             Timber.tag(TAG).w("LSFG layer armed but target executable could not be resolved")
             return false
@@ -638,6 +671,7 @@ object LsfgVkManager {
             synchronizeLoaderVisibleRuntime(container, envVars) ?: run {
                 envVars.remove(ENV_CONFIG)
                 envVars.remove(ENV_PROCESS_EXE)
+                setRuntimePressurePublishing(container, false)
                 disableLayerForLaunch(container, envVars)
                 Timber.tag(TAG).e("LSFG layer disabled: loader-visible runtime sync failed")
                 return false
@@ -647,6 +681,11 @@ object LsfgVkManager {
         }
         appendUniqueEnvEntry(envVars, ENV_VK_LAYER_PATH, loaderLayerDir.absolutePath)
         appendUniqueEnvEntry(envVars, ENV_VK_INSTANCE_LAYERS, VULKAN_LAYER_NAME)
+        setRuntimePressurePublishing(
+            container,
+            frameGenerationActive(container) &&
+                flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+        )
 
         Timber.tag(TAG).i(
             "LSFG layer armed target=%s multiplier=%d",
@@ -1041,6 +1080,8 @@ object LsfgVkManager {
             val frameGenActive = enabled && multiplier >= 2 &&
                 dllPath != null && processExecutable != null
             val adaptive = frameGenActive && generationMode(container) == MODE_ADAPTIVE
+            val adaptiveFlow =
+                frameGenActive && flowScaleMode(container) == FLOW_MODE_ADAPTIVE
             val effectiveMultiplier = if (adaptive) 4 else multiplier.coerceIn(2, 4)
             val effectiveFpsLimit = if (adaptive) adaptiveTargetFps(container) else 0
             val configText = buildConfigToml(
@@ -1049,7 +1090,7 @@ object LsfgVkManager {
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) effectiveMultiplier else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
-                adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+                adaptiveFlowScale = adaptiveFlow,
                 adaptiveFlowPreset = adaptiveFlowPreset(container),
                 performanceMode = performanceMode,
                 adaptiveFramegen = adaptive,
@@ -1059,6 +1100,7 @@ object LsfgVkManager {
 
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
+                setRuntimePressurePublishing(container, adaptiveFlow)
                 Timber.tag(TAG).i("LSFG configuration hot-reloaded")
             }
             ok

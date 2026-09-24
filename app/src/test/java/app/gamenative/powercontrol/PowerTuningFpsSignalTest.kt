@@ -2,10 +2,18 @@ package app.gamenative.powercontrol
 
 import app.gamenative.powercontrol.autotuning.AdaptiveFpsCap
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PowerTuningFpsSignalTest {
+    @Test
+    fun `adaptive fps cap never retunes source pacing while frame generation is active`() {
+        assertFalse(adaptiveFpsCapMayAdjustSource(frameGenerationActive = true))
+        assertTrue(adaptiveFpsCapMayAdjustSource(frameGenerationActive = false))
+    }
+
     @Test
     fun `active frame generation uses fresh post-LSFG output cadence`() {
         assertEquals(60f, selectPowerTuningFps(15f, true, 60f))

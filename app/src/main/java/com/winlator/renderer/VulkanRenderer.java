@@ -371,12 +371,11 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 }
 
                 if (serial > baselineNormalPresent) {
-                    android.util.Log.i(
-                        "VulkanRenderer",
-                        "Apex disable handoff complete: normal presentation serial " +
-                            baselineNormalPresent + " -> " + serial
+                    hideApexPresenterLayerAfterNormalPresentation(
+                        transition,
+                        baselineNormalPresent,
+                        serial
                     );
-                    releaseApexPresenterLayer();
                     return;
                 }
 
@@ -391,6 +390,64 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 xServerView.postDelayed(this, APEX_HANDOFF_POLL_MS);
             }
         }, 0L);
+    }
+
+    private void hideApexPresenterLayerAfterNormalPresentation(
+        long transition,
+        long baselineNormalPresent,
+        long confirmedNormalPresent
+    ) {
+        final android.view.SurfaceControl layer = apexGameSurfaceControl;
+        if (layer == null) {
+            android.util.Log.i(
+                "VulkanRenderer",
+                "Apex disable handoff complete: normal presentation serial " +
+                    baselineNormalPresent + " -> " + confirmedNormalPresent +
+                    "; presenter layer already absent"
+            );
+            releaseApexPresenterLayer();
+            return;
+        }
+
+        try {
+            // normalPresentSerial only proves the normal producer submitted work.
+            // The Apex child is opaque and sits above that producer, so explicitly
+            // hide it before releasing our local SurfaceControl references.
+            new android.view.SurfaceControl.Transaction()
+                .setVisibility(layer, false)
+                .apply();
+        } catch (Throwable t) {
+            android.util.Log.e(
+                "VulkanRenderer",
+                "Failed to hide Apex presenter layer during disable handoff",
+                t
+            );
+            releaseApexPresenterLayer();
+            return;
+        }
+
+        final Runnable releaseAfterHide = () -> {
+            if (transition != apexPresentationTransition.get() || apexFrameTargetActive) {
+                return;
+            }
+            if (apexGameSurfaceControl != layer) {
+                return;
+            }
+
+            android.util.Log.i(
+                "VulkanRenderer",
+                "Apex disable handoff complete: normal presentation serial " +
+                    baselineNormalPresent + " -> " + confirmedNormalPresent +
+                    "; Apex presenter layer hidden"
+            );
+            releaseApexPresenterLayer();
+        };
+
+        // Let SurfaceFlinger consume the hide transaction before dropping the
+        // final Java handles. The delayed callback is only a fallback for cases
+        // where the view is temporarily not producing animation callbacks.
+        xServerView.postOnAnimation(releaseAfterHide);
+        xServerView.postDelayed(releaseAfterHide, 100L);
     }
 
     public void onApexPresenterFailure() {

@@ -31,16 +31,15 @@ class ApexPresentationHandoffContractTest {
             assertTrue("transactional Apex disable is missing $token", method.contains(token))
         }
 
-        val disableBranch = method.indexOf("} else {")
-        val retire = method.indexOf("retireApexPresenter()", disableBranch)
-        val nativeDisable = method.indexOf("nativeDisableApexTarget", disableBranch)
-        val awaitNormal = method.indexOf("awaitNormalPresentationBeforeApexRelease", disableBranch)
+        val retire = method.indexOf("retireApexPresenter()")
+        val nativeDisable = method.indexOf("nativeDisableApexTarget", retire)
+        val awaitNormal = method.indexOf("awaitNormalPresentationBeforeApexRelease", nativeDisable)
 
         assertTrue(retire >= 0 && nativeDisable > retire)
         assertTrue(awaitNormal > nativeDisable)
         assertFalse(
             "Apex layer must not be destroyed synchronously before the normal path presents",
-            method.substring(disableBranch, awaitNormal).contains("releaseApexPresenterLayer()"),
+            method.substring(retire, awaitNormal).contains("releaseApexPresenterLayer()"),
         )
     }
 

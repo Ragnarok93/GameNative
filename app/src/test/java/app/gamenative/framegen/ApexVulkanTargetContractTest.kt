@@ -55,6 +55,20 @@ class ApexVulkanTargetContractTest {
             "Apex source frames must omit the compositor cursor so the presenter can keep cursor motion real",
             source.contains("curVis && !scanoutActive.load() && !toApex"),
         )
+        assertTrue(
+            "each AHB capture must carry the guest-content generation snapshot",
+            header.contains("sourceGeneration") &&
+                source.contains("slot.sourceGeneration = apexSourceGeneration.load"),
+        )
+        assertTrue(
+            "duplicate compositor redraws must be collapsed before GLES history",
+            source.contains("sourceGeneration <= apexLastDequeuedSourceGeneration"),
+        )
+        assertTrue(
+            "Java must tag direct PresentExtension content separately from auxiliary redraws",
+            java.contains("markApexSourceFrame(true)") &&
+                java.contains("APEX_DIRECT_SOURCE_GRACE_NS"),
+        )
 
         val enableStart = source.indexOf("bool VulkanRendererContext::enableApexTarget()")
         val disableStart = source.indexOf("bool VulkanRendererContext::disableApexTarget()")

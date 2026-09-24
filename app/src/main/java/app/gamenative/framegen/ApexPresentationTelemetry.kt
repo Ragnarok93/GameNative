@@ -25,6 +25,7 @@ object ApexPresentationTelemetry {
         val outputFps: Float,
         val attempts: Long,
         val sourceArrivals: Long,
+        val sourceDropped: Long,
         val sourcePresented: Long,
         val generatedPresented: Long,
         val repeatedPresented: Long,
@@ -70,6 +71,7 @@ object ApexPresentationTelemetry {
     private var active = false
     private var attempts = 0L
     private var sourceArrivals = 0L
+    private var sourceDropped = 0L
     private var sourcePresented = 0L
     private var generatedPresented = 0L
     private var repeatedPresented = 0L
@@ -85,6 +87,7 @@ object ApexPresentationTelemetry {
         epochStartNanos = nowNanos
         attempts = 0L
         sourceArrivals = 0L
+        sourceDropped = 0L
         sourcePresented = 0L
         generatedPresented = 0L
         repeatedPresented = 0L
@@ -107,10 +110,20 @@ object ApexPresentationTelemetry {
         resetLocked(nowNanos)
     }
 
+    /**
+     * Records a source frame only after the Vulkan compositor has identified a
+     * new guest-content generation and the optional source cap has admitted it.
+     * Cursor/transform redraws and cap-rejected source frames are not SRC FPS.
+     */
     fun recordSourceArrival(nowNanos: Long = System.nanoTime()) = synchronized(lock) {
         if (!active) return@synchronized
         sourceArrivals++
         sourceInputRing.record(nowNanos)
+    }
+
+    fun recordSourceDropped() = synchronized(lock) {
+        if (!active) return@synchronized
+        sourceDropped++
     }
 
     fun record(outputKind: Int, swapSucceeded: Boolean, nowNanos: Long = System.nanoTime()) =
@@ -156,6 +169,7 @@ object ApexPresentationTelemetry {
             outputFps = (outputRing.countSince(cutoff) * scale).toFloat(),
             attempts = attempts,
             sourceArrivals = sourceArrivals,
+            sourceDropped = sourceDropped,
             sourcePresented = sourcePresented,
             generatedPresented = generatedPresented,
             repeatedPresented = repeatedPresented,

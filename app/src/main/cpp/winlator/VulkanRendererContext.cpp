@@ -1097,6 +1097,7 @@ void VulkanRendererContext::destroyApexTargetResources() {
             slot.ahb = nullptr;
         }
         slot.consumerSequence = 0;
+        slot.sourceGeneration = 0;
         slot.producerPending = false;
         slot.producerSemaphoreUsable = true;
     }
@@ -1143,6 +1144,8 @@ bool VulkanRendererContext::enableApexTarget() {
     if (!createApexTargetResources(width, height)) return false;
 
     apexProducerBacklogged.store(false, std::memory_order_release);
+    apexSourceGeneration.store(0, std::memory_order_release);
+    apexLastDequeuedSourceGeneration = 0;
     apexTargetActive.store(true, std::memory_order_release);
     needsRender.store(true, std::memory_order_release);
     dirtyCV.notify_one();
@@ -1154,6 +1157,8 @@ bool VulkanRendererContext::disableApexTarget() {
     std::lock_guard<std::mutex> apexLock(apexTargetMutex);
     apexTargetActive.store(false, std::memory_order_release);
     apexProducerBacklogged.store(false, std::memory_order_release);
+    apexSourceGeneration.store(0, std::memory_order_release);
+    apexLastDequeuedSourceGeneration = 0;
 
     for (auto& slot : apexTargets) {
         if (slot.producerFence != VK_NULL_HANDLE) {
@@ -1184,10 +1189,36 @@ int64_t VulkanRendererContext::dequeueApexFrame() {
         }
     }
 
-    const auto token = apexTargetRing.dequeueForConsumer();
-    if (!token.valid()) return 0;
-    apexTargets[token.slot].consumerSequence = token.sequence;
-    return makeApexToken(token.slot, token.sequence);
+    // A renderer redraw is not necessarily a new game/source frame. Collapse
+    // captures that carry the same source generation before exporting their
+    // AHB/fence to GLES. This is what prevents cursor/transform/compositor work
+    // from resetting Apex history at display refresh rate.
+    for (int attempt = 0; attempt < APEX_TARGET_COUNT; ++attempt) {
+        const auto token = apexTargetRing.dequeueForConsumer();
+        if (!token.valid()) return 0;
+        ApexTargetSlot& slot = apexTargets[token.slot];
+        const uint64_t sourceGeneration = slot.sourceGeneration;
+        if (sourceGeneration == 0 ||
+            sourceGeneration <= apexLastDequeuedSourceGeneration) {
+            if (slot.producerFenceFd >= 0) {
+                close(slot.producerFenceFd);
+                slot.producerFenceFd = -1;
+            }
+            apexTargetRing.releaseFromConsumer(token.slot, token.sequence);
+            slot.consumerSequence = 0;
+            const bool retryBackloggedFrame =
+                apexProducerBacklogged.exchange(false, std::memory_order_acq_rel);
+            if (retryBackloggedFrame) {
+                needsRender.store(true, std::memory_order_release);
+                dirtyCV.notify_one();
+            }
+            continue;
+        }
+        apexLastDequeuedSourceGeneration = sourceGeneration;
+        slot.consumerSequence = token.sequence;
+        return makeApexToken(token.slot, token.sequence);
+    }
+    return 0;
 }
 
 int64_t VulkanRendererContext::apexFrameBufferPtr(int64_t token) {
@@ -1340,6 +1371,10 @@ void VulkanRendererContext::renderApexFrame() {
         curHotX = cursorHotX; curHotY = cursorHotY;
         curW = cursorTexW; curH = cursorTexH;
         curVis = cursorVisible.load();
+        // Snapshot the source generation under the same scene lock as the
+        // texture/render-list snapshot, so the AHB token describes exactly the
+        // guest content generation that was composited into it.
+        slot.sourceGeneration = apexSourceGeneration.load(std::memory_order_acquire);
 
         frameDraws.clear();
         for (auto& re : renderList) {
@@ -1835,7 +1870,8 @@ void VulkanRendererContext::updateCursorImage(void* px, short w, short h, short 
     isCursorImageDirty.store(true); needsRender.store(true); dirtyCV.notify_one();
 }
 
-void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, short h, short stride, int, int) {
+void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, short h, short stride, int, int,
+                                                uint64_t sourceSequence) {
     if (!px||w<=0||h<=0) return;
 
     void* mapped=nullptr;
@@ -1862,10 +1898,14 @@ void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, s
         auto it=texMap.find(id);
         if (it!=texMap.end()) it->second.dirty=true;
     }
+    if (sourceSequence > 0) {
+        apexSourceGeneration.store(sourceSequence, std::memory_order_release);
+    }
     needsRender.store(true); dirtyCV.notify_one();
 }
 
-void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* ahb, short, short, int, int) {
+void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* ahb, short, short, int, int,
+                                                   uint64_t sourceSequence) {
     if (!ahb) return;
     std::lock_guard<std::mutex> lk(renderMutex);
 
@@ -1903,6 +1943,9 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     if (src.needsTransition) {
         wt.needsTransition  = true;
         src.needsTransition = false;
+    }
+    if (sourceSequence > 0) {
+        apexSourceGeneration.store(sourceSequence, std::memory_order_release);
     }
     needsRender.store(true); dirtyCV.notify_one();
 }

@@ -83,7 +83,7 @@ public:
 
     void processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                       int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
-                      bool sourceVerticalFlip = false);
+                      bool sourceVerticalFlip = false, int generatedOpportunityBudget = -1);
 
     // Legacy support for JNI bridge
     void processFrameWithData(GLuint i, GLuint d, GLuint h, GLuint o, int w, int height);
@@ -229,6 +229,8 @@ private:
     std::atomic<bool> mResourcesDirty{false};
     std::atomic<int> mLastOutputKind{APEX_OUTPUT_NONE};
     std::atomic<bool> mAdaptiveFrameGeneration{true};
+    std::atomic<bool> mPendingRealPresentation{false};
+    std::atomic<int> mActiveGenerationBudget{0};
     std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
     std::atomic<float> mShutterGain{0.0f}, mFlowScale{1.0f}, mLiquidFeel{0.5f}, mEdgeGuard{0.5f}, mRenderScale{1.0f}, mAutoMultiplierVal{2.0f};
 

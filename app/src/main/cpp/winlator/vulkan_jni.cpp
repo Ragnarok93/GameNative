@@ -88,20 +88,24 @@ Java_com_winlator_renderer_VulkanRenderer_nativeDestroy(JNIEnv*, jobject, jlong 
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContent(
-    JNIEnv* env, jobject, jlong handle, jlong id, jobject buf, jshort w, jshort h, jshort stride, jint x, jint y)
+    JNIEnv* env, jobject, jlong handle, jlong id, jobject buf, jshort w, jshort h, jshort stride, jint x, jint y,
+    jlong sourceSequence)
 {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
     if (!r||!buf) return;
     void* px=env->GetDirectBufferAddress(buf);
     if (px && env->GetDirectBufferCapacity(buf)>=(jlong)w*h*4)
-        r->updateWindowContent(id,px,w,h,stride,x,y);
+        r->updateWindowContent(id,px,w,h,stride,x,y,static_cast<uint64_t>(sourceSequence));
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContentAHB(
-    JNIEnv*, jobject, jlong handle, jlong id, jlong ahbPtr, jshort w, jshort h, jint x, jint y)
+    JNIEnv*, jobject, jlong handle, jlong id, jlong ahbPtr, jshort w, jshort h, jint x, jint y,
+    jlong sourceSequence)
 {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
-    if (r&&ahbPtr) r->updateWindowContentAHB(id,reinterpret_cast<AHardwareBuffer*>(ahbPtr),w,h,x,y);
+    if (r&&ahbPtr) r->updateWindowContentAHB(
+        id,reinterpret_cast<AHardwareBuffer*>(ahbPtr),w,h,x,y,
+        static_cast<uint64_t>(sourceSequence));
 }
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeEnableXrTarget(JNIEnv*, jobject, jlong handle) {

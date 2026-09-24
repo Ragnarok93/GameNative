@@ -790,7 +790,7 @@ std::string ApexEngine::getDiagnostics() {
 
 void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                               int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
-                              bool sourceVerticalFlip) {
+                              bool sourceVerticalFlip, int generatedOpportunityBudget) {
     mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
     mRenderingGeneratedFrame.store(false, std::memory_order_relaxed);
     if (!mActive.load(std::memory_order_relaxed)) return;
@@ -846,6 +846,26 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
     if (isNewRealFrame) {
+        const int64_t previousRealNanos =
+            mLastRealFrameTimeNanos.load(std::memory_order_acquire);
+        const bool discontinuity =
+            previousRealNanos > 0 && nowNanos - previousRealNanos > 250000000LL;
+        if (discontinuity) {
+            // Suspend/loading boundaries must not interpolate across stale
+            // history. The next pair starts clean.
+            mRealFramesCaptured.store(0, std::memory_order_release);
+            mFramesSinceReal.store(0, std::memory_order_release);
+            mPendingRealPresentation.store(false, std::memory_order_release);
+            mActiveGenerationBudget.store(0, std::memory_order_release);
+            mLastRealFrameTimeNanos.store(0, std::memory_order_release);
+            mTypicalDeltaNanos = 0.0f;
+            mHistoryIdx = 0;
+            mDeltaHistory.fill(0.0f);
+            mSortedHistory.fill(0.0f);
+        }
+
+        const bool sourcePreemptsPending =
+            mPendingRealPresentation.exchange(false, std::memory_order_acq_rel);
         onFrameCaptured(nowNanos, true);
         mRealFramesCaptured.fetch_add(1);
         mRealFramesCapturedCount.fetch_add(1);
@@ -867,6 +887,14 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+        // Every accepted real source becomes the template for the next pair.
+        // The old path returned before building the first pyramid, so the first
+        // generated pair sampled uninitialized previous-frame luma/gradients.
+        dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot], mCurrentSlot);
+        for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
+            dispatchLumaGrad(i, mLevels[i - 1].lumaTex[mCurrentSlot], mCurrentSlot);
+        }
+
         if (mRealFramesCaptured.load() < 2) {
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
             glViewport(viewX, viewY, viewWidth, viewHeight);
@@ -875,8 +903,18 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mTotalRealFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
+            mActiveGenerationBudget.store(0, std::memory_order_release);
+            mPendingRealPresentation.store(false, std::memory_order_release);
             return;
         }
+
+        const int opportunityLimit = generatedOpportunityBudget < 0
+            ? 3
+            : std::clamp(generatedOpportunityBudget, 0, 3);
+        const int generationBudget =
+            sourcePreemptsPending
+                ? 0
+                : std::min(mPlannedGen.load(std::memory_order_acquire), opportunityLimit);
 
         // Pacing & Target FPS Governor:
         int targetFPS = mTargetFPS.load(std::memory_order_relaxed);
@@ -884,8 +922,10 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 
         // Relaxed Governor: In Continuous Mode, Java handles the main throttle.
         // We only bypass here if we are rendering faster than 250 FPS to avoid GPU flooding.
-        if (mPlannedGen == 0 || (targetFPS > 0 && lastPres > 0 && (nowNanos - lastPres < 4000000LL))) {
-            // Multiplier 1x or safety ceiling reached:
+        if (generationBudget <= 0 ||
+            (targetFPS > 0 && lastPres > 0 && (nowNanos - lastPres < 4000000LL))) {
+            // No proven display slot is available for synthesis, or a newer
+            // source preempted a buffered interval. Deliver source immediately.
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
             glViewport(viewX, viewY, viewWidth, viewHeight);
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
@@ -893,6 +933,8 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mTotalRealFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
+            mActiveGenerationBudget.store(0, std::memory_order_release);
+            mPendingRealPresentation.store(false, std::memory_order_release);
             return;
         }
 
@@ -904,13 +946,9 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         }
 
-        // Passes 1-4: Luma & Gradient Pyramid for all levels
-        dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot], mCurrentSlot);
-        for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
-            dispatchLumaGrad(i, mLevels[i - 1].lumaTex[mCurrentSlot], mCurrentSlot);
-        }
+        // Passes 5-12: Coarse-to-fine. Source pyramids were prepared above for
+        // every accepted source, including source-only intervals.
 
-        // Passes 5-12: Coarse-to-fine
         GLuint coarseFlow = 0;
         int coarseLevel = MAX_PYR_LEVELS - 1;
         for (int i = coarseLevel; i >= 0; i--) {
@@ -949,10 +987,11 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 
         DisLevel& l0 = mLevels[0];
 
-        // Pass 14: Hardware-Accelerated Interpolator
-        // Exact multiplier step: 2x -> t = 0.50f, 3x -> t = 0.333f, 4x -> t = 0.25f
-        int mult = std::max(2, mPlannedGen + 1);
-        float t = 1.0f / static_cast<float>(mult);
+        // Pass 14: Hardware-Accelerated Interpolator. Quantize interpolation
+        // positions to the synthetic slots that can actually be delivered this
+        // interval, rather than the requested multiplier in isolation.
+        const int mult = generationBudget + 1;
+        const float t = 1.0f / static_cast<float>(mult);
         dispatchInterpolate(mColorRingTex[mPreviousSlot], mColorRingTex[mCurrentSlot],
                             l0.denseFlowTex, l0.denseFlowTex, mInterpOutTex, t, mScaledWidth, mScaledHeight);
 
@@ -965,9 +1004,15 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
         mLastOutputKind.store(APEX_OUTPUT_GENERATED, std::memory_order_relaxed);
         mRenderingGeneratedFrame.store(true, std::memory_order_relaxed);
+        mActiveGenerationBudget.store(generationBudget, std::memory_order_release);
+        mPendingRealPresentation.store(true, std::memory_order_release);
     } else {
-        // Off-VSYNC pulse from Choreographer
-        if (mRealFramesCaptured.load() < 2 || mPlannedGen == 0) {
+        // Display opportunity with no newly accepted source.
+        const int activeBudget =
+            mActiveGenerationBudget.load(std::memory_order_acquire);
+        if (mRealFramesCaptured.load() < 2 ||
+            activeBudget <= 0 ||
+            !mPendingRealPresentation.load(std::memory_order_acquire)) {
             // The window surface retains its last successful swap. Do not burn
             // a display callback/GPU pass repeating an unchanged source frame.
             mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
@@ -975,11 +1020,9 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         }
 
         int fs = mFramesSinceReal.fetch_add(1) + 1;
-        if (fs < mPlannedGen) {
-            // Multi-generation (3x or 4x): output intermediate frame G_t
-            // For 3x (fs=1): t = 2/3 = 0.667f; For 4x (fs=1): t = 2/4 = 0.50f; (fs=2): t = 3/4 = 0.75f
-            int mult = std::max(2, mPlannedGen + 1);
-            float t = static_cast<float>(fs + 1) / static_cast<float>(mult);
+        if (fs < activeBudget) {
+            const int mult = activeBudget + 1;
+            const float t = static_cast<float>(fs + 1) / static_cast<float>(mult);
             dispatchInterpolate(mColorRingTex[mPreviousSlot], mColorRingTex[mCurrentSlot],
                                 mLevels[0].denseFlowTex, mLevels[0].denseFlowTex, mInterpOutTex, t, mScaledWidth, mScaledHeight);
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
@@ -990,8 +1033,9 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
             mLastOutputKind.store(APEX_OUTPUT_GENERATED, std::memory_order_relaxed);
             mRenderingGeneratedFrame.store(true, std::memory_order_relaxed);
-        } else if (fs == mPlannedGen) {
-            // PRESENT BUFFERED REAL FRAME SECOND
+        } else if (fs == activeBudget) {
+            // Deliver the buffered real frame exactly once after its finite
+            // synthetic budget has been consumed.
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
             glViewport(viewX, viewY, viewWidth, viewHeight);
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
@@ -999,6 +1043,8 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mTotalRealFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
+            mPendingRealPresentation.store(false, std::memory_order_release);
+            mActiveGenerationBudget.store(0, std::memory_order_release);
         } else {
             // The planned generated slots and the buffered real frame for this
             // source interval have already been delivered. Keep the most recent

@@ -13,6 +13,7 @@ class ApexPresentationTelemetryTest {
 
         ApexPresentationTelemetry.recordSourceArrival(start + 10_000_000L)
         ApexPresentationTelemetry.recordSourceArrival(start + 20_000_000L)
+        ApexPresentationTelemetry.recordSourceDropped()
         ApexPresentationTelemetry.record(
             ApexPresentationTelemetry.OUTPUT_GENERATED,
             swapSucceeded = true,
@@ -27,6 +28,7 @@ class ApexPresentationTelemetryTest {
         val snapshot = ApexPresentationTelemetry.snapshot(start + 40_000_000L)
         assertTrue(snapshot.active)
         assertEquals(2L, snapshot.sourceArrivals)
+        assertEquals(1L, snapshot.sourceDropped)
         assertEquals(1L, snapshot.sourcePresented)
         assertEquals(1L, snapshot.generatedPresented)
         assertEquals(2L, snapshot.outputPresented)

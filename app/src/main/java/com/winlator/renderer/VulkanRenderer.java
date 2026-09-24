@@ -70,6 +70,14 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private volatile long xrTargetAhbPtr = 0;
     private volatile boolean apexFrameTargetActive = false;
     private volatile app.gamenative.framegen.ApexVulkanPresenter apexPresenter = null;
+    // Apex must distinguish guest/source presents from compositor redraws (cursor,
+    // transforms, SurfaceControl churn). Direct PresentExtension updates are the
+    // authoritative source clock; generic updates are only a fallback when no
+    // direct present has been observed recently.
+    private final java.util.concurrent.atomic.AtomicLong apexSourceSequence =
+        new java.util.concurrent.atomic.AtomicLong(0);
+    private volatile long lastApexDirectPresentNanos = 0L;
+    private static final long APEX_DIRECT_SOURCE_GRACE_NS = 250_000_000L;
     private android.view.SurfaceControl apexGameSurfaceControl = null;
     private android.view.Surface apexGameSurface = null;
 
@@ -138,9 +146,9 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeResize(long handle, int width, int height);
     private native void nativeDestroy(long handle);
     private native void nativeUpdateWindowContent(long handle, long id, java.nio.ByteBuffer pixels,
-        short width, short height, short stride, int x, int y);
+        short width, short height, short stride, int x, int y, long apexSourceSequence);
     private native void nativeUpdateWindowContentAHB(long handle, long id, long ahbPtr,
-        short width, short height, int x, int y);
+        short width, short height, int x, int y, long apexSourceSequence);
     private native void nativeSetTransform(long handle, float ox, float oy, float sx, float sy);
     private native void nativeSetPointerPos(long handle, short x, short y);
     private native void nativeSetCursorVisible(long handle, boolean visible);
@@ -184,6 +192,23 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         return drawableIds.computeIfAbsent(d, k -> ID_GEN.getAndIncrement());
     }
 
+    private long markApexSourceFrame(boolean directPresent) {
+        if (!apexFrameTargetActive) return 0L;
+        final long now = System.nanoTime();
+        if (directPresent) {
+            lastApexDirectPresentNanos = now;
+            return apexSourceSequence.incrementAndGet();
+        }
+        // Once PresentExtension is active, ordinary X11 redraws are auxiliary
+        // scene updates, not new game/source frames. Keeping the same sequence
+        // lets the native AHB ring collapse them before they reach DIS history.
+        if (lastApexDirectPresentNanos != 0L &&
+            now - lastApexDirectPresentNanos < APEX_DIRECT_SOURCE_GRACE_NS) {
+            return apexSourceSequence.get();
+        }
+        return apexSourceSequence.incrementAndGet();
+    }
+
     public static final class ApexFrame {
         public final long token;
         public final long hardwareBufferPtr;
@@ -210,6 +235,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
         boolean previousRequirement = effectsRequireCompositor;
         if (enabled) {
+            apexSourceSequence.set(0L);
+            lastApexDirectPresentNanos = 0L;
             apexFrameTargetActive = true;
             effectsRequireCompositor = computeEffectsRequireCompositor();
             if (nativeMode && !previousRequirement && effectsRequireCompositor) tearDownScanout();
@@ -233,6 +260,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 }
             }
             apexFrameTargetActive = false;
+            apexSourceSequence.set(0L);
+            lastApexDirectPresentNanos = 0L;
             effectsRequireCompositor = computeEffectsRequireCompositor();
             if (nativeMode && previousRequirement && !effectsRequireCompositor) establishScanout();
         }
@@ -650,6 +679,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         if (nativeHandle == 0 || pixmap == null) return;
         Drawable targetDrawable = window.getContent();
         long targetId = did(targetDrawable);
+        final long sourceSequence = markApexSourceFrame(true);
         int rx = window.getRootX() + xOff;
         int ry = window.getRootY() + yOff;
         synchronized (pixmap.renderLock) {
@@ -673,7 +703,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                             return;
                         }
                         nativeUpdateWindowContentAHB(nativeHandle, targetId, ahbPtr,
-                            pixmap.width, pixmap.height, rx, ry);
+                            pixmap.width, pixmap.height, rx, ry, sourceSequence);
                     }
                     return;
                 }
@@ -681,7 +711,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 if (vd != null) {
                     short s = g.getStride() > 0 ? g.getStride() : pixmap.width;
                     nativeUpdateWindowContent(nativeHandle, targetId, vd,
-                        pixmap.width, pixmap.height, s, rx, ry);
+                        pixmap.width, pixmap.height, s, rx, ry, sourceSequence);
                     return;
                 }
             }
@@ -689,7 +719,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             if (buf == null) return;
             short stride = (short)(buf.capacity() / (pixmap.height * 4));
             nativeUpdateWindowContent(nativeHandle, targetId, buf,
-                pixmap.width, pixmap.height, stride, rx, ry);
+                pixmap.width, pixmap.height, stride, rx, ry, sourceSequence);
         }
     }
 
@@ -709,6 +739,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         int rx = window.getRootX();
         int ry = window.getRootY();
         long drawableId = did(drawable);
+        final long sourceSequence = markApexSourceFrame(false);
 
         synchronized (drawable.renderLock) {
             if (drawable.getTexture() instanceof GPUImage) {
@@ -729,7 +760,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         }
                     } else if (!scanoutNow) {
                         nativeUpdateWindowContentAHB(handle, drawableId, ahbPtr,
-                            drawable.width, drawable.height, rx, ry);
+                            drawable.width, drawable.height, rx, ry, sourceSequence);
                     }
                     return;
                 }
@@ -737,7 +768,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 if (vd != null) {
                     short s = g.getStride() > 0 ? g.getStride() : drawable.width;
                     nativeUpdateWindowContent(handle, drawableId, vd,
-                        drawable.width, drawable.height, s, rx, ry);
+                        drawable.width, drawable.height, s, rx, ry, sourceSequence);
                     return;
                 }
             }
@@ -745,7 +776,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             if (buf == null) return;
             short stride = (short)(buf.capacity() / (drawable.height * 4));
             nativeUpdateWindowContent(handle, drawableId, buf,
-                drawable.width, drawable.height, stride, rx, ry);
+                drawable.width, drawable.height, stride, rx, ry, sourceSequence);
         }
     }
 

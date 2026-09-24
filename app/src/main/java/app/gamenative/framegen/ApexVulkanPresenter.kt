@@ -30,6 +30,8 @@ class ApexVulkanPresenter(
     private var choreographer: Choreographer? = null
     private var hasSourceHistory = false
     private var callbacksSinceTelemetryLog = 0
+    private var emptyCallbacksSinceSource = 0
+    private var nextSourceDeadlineNanos = 0L
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -41,7 +43,9 @@ class ApexVulkanPresenter(
             }
 
             val frame = renderer.pollApexFrame()
-            if (frame != null) {
+            if (frame != null && shouldAcceptSource(frameTimeNanos)) {
+                val generationOpportunities = emptyCallbacksSinceSource.coerceIn(0, 3)
+                emptyCallbacksSinceSource = 0
                 ApexPresentationTelemetry.recordSourceArrival(frameTimeNanos)
                 val result = nativePresentSourceFrame(
                     handle,
@@ -49,6 +53,7 @@ class ApexVulkanPresenter(
                     frame.acquireFenceFd,
                     frame.width,
                     frame.height,
+                    generationOpportunities,
                 )
                 val releaseFenceFd = result.toInt()
                 val outputKind = ((result ushr 32) and 0xffL).toInt()
@@ -59,14 +64,18 @@ class ApexVulkanPresenter(
                 }
                 hasSourceHistory = true
                 maybeLogPresentationTelemetry()
-            } else if (hasSourceHistory) {
-                val result = nativePresentGeneratedFrame(handle)
-                val outputKind = result and 0xff
-                val swapSucceeded = (result and 0x100) != 0
-                if (outputKind != ApexPresentationTelemetry.OUTPUT_NONE) {
-                    ApexPresentationTelemetry.record(outputKind, swapSucceeded)
+            } else {
+                if (frame != null) {
+                    // The user-selected source cap owns this frame. Returning the
+                    // producer acquire fence as the release dependency safely
+                    // discards it without importing/processing the AHB in GLES.
+                    renderer.releaseApexFrame(frame, frame.acquireFenceFd)
+                    ApexPresentationTelemetry.recordSourceDropped()
                 }
-                maybeLogPresentationTelemetry()
+                if (hasSourceHistory) {
+                    emptyCallbacksSinceSource = (emptyCallbacksSinceSource + 1).coerceAtMost(3)
+                    presentGeneratedOpportunity(handle)
+                }
             }
 
             if (running) choreographer?.postFrameCallback(this)
@@ -77,6 +86,8 @@ class ApexVulkanPresenter(
         if (running) return
         ApexPresentationTelemetry.beginSession()
         callbacksSinceTelemetryLog = 0
+        emptyCallbacksSinceSource = 0
+        nextSourceDeadlineNanos = 0L
         running = true
         thread.start()
         val localHandler = Handler(thread.looper)
@@ -100,6 +111,36 @@ class ApexVulkanPresenter(
         renderer.onApexPresenterFailure()
     }
 
+    private fun shouldAcceptSource(frameTimeNanos: Long): Boolean {
+        val sourceCap = renderer.fpsLimit
+        if (sourceCap <= 0) {
+            nextSourceDeadlineNanos = 0L
+            return true
+        }
+        val periodNanos = 1_000_000_000L / sourceCap.coerceAtLeast(1)
+        if (nextSourceDeadlineNanos == 0L) {
+            nextSourceDeadlineNanos = frameTimeNanos + periodNanos
+            return true
+        }
+        // Half-millisecond tolerance avoids alternating accept/drop decisions
+        // from normal Choreographer timestamp jitter.
+        if (frameTimeNanos + 500_000L < nextSourceDeadlineNanos) return false
+        do {
+            nextSourceDeadlineNanos += periodNanos
+        } while (nextSourceDeadlineNanos <= frameTimeNanos)
+        return true
+    }
+
+    private fun presentGeneratedOpportunity(handle: Long) {
+        val result = nativePresentGeneratedFrame(handle)
+        val outputKind = result and 0xff
+        val swapSucceeded = (result and 0x100) != 0
+        if (outputKind != ApexPresentationTelemetry.OUTPUT_NONE) {
+            ApexPresentationTelemetry.record(outputKind, swapSucceeded)
+        }
+        maybeLogPresentationTelemetry()
+    }
+
     private fun maybeLogPresentationTelemetry() {
         callbacksSinceTelemetryLog++
         if (callbacksSinceTelemetryLog < 120) return
@@ -107,7 +148,7 @@ class ApexVulkanPresenter(
         val stats = ApexPresentationTelemetry.snapshot()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: sourceIn=%.1f sourceOut=%.1f generated=%.1f repeats=%.1f output=%.1f totals(in=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
+            "display cadence: sourceIn=%.1f sourceOut=%.1f generated=%.1f repeats=%.1f output=%.1f totals(in=%d dropped=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
                 java.util.Locale.US,
                 stats.sourceInputFps,
                 stats.sourceFps,
@@ -115,6 +156,7 @@ class ApexVulkanPresenter(
                 stats.repeatedFps,
                 stats.outputFps,
                 stats.sourceArrivals,
+                stats.sourceDropped,
                 stats.sourcePresented,
                 stats.generatedPresented,
                 stats.repeatedPresented,
@@ -142,6 +184,8 @@ class ApexVulkanPresenter(
                 nativeHandle = 0L
                 if (handle != 0L) nativeDestroyPresenter(handle)
                 hasSourceHistory = false
+                emptyCallbacksSinceSource = 0
+                nextSourceDeadlineNanos = 0L
                 latch.countDown()
             }
         }
@@ -168,6 +212,7 @@ class ApexVulkanPresenter(
             acquireFenceFd: Int,
             width: Int,
             height: Int,
+            generationOpportunities: Int,
         ): Long
 
         @JvmStatic

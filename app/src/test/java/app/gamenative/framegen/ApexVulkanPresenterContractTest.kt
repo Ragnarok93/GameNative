@@ -97,6 +97,16 @@ class ApexVulkanPresenterContractTest {
             "presenter must count source arrivals independently from displayed source frames",
             presenter.contains("ApexPresentationTelemetry.recordSourceArrival"),
         )
+        assertTrue(
+            "source admission must honor the source cap before DIS history advances",
+            presenter.contains("shouldAcceptSource(frameTimeNanos)") &&
+                presenter.contains("renderer.fpsLimit"),
+        )
+        assertTrue(
+            "generated work must be bounded by observed empty display opportunities",
+            presenter.contains("generationOpportunities") &&
+                presenter.contains("emptyCallbacksSinceSource"),
+        )
     }
     @Test
     fun sourceOrientationAndRuntimeSettingsAreStableContracts() {
@@ -113,6 +123,10 @@ class ApexVulkanPresenterContractTest {
         )
         assertTrue(engine.contains("mQualityPreset.exchange"))
         assertTrue(engine.contains("mResourcesDirty.store(true"))
+        assertTrue(engine.contains("mPendingRealPresentation"))
+        assertTrue(engine.contains("mActiveGenerationBudget"))
+        assertTrue(pipeline.contains("sourcePreemptsPending"))
+        assertTrue(pipeline.contains("generationBudget"))
         assertTrue(screen.contains("ApexPresentationTelemetry.snapshot()"))
         assertTrue(screen.contains("presentation.active"))
         assertTrue(screen.contains("presentation.sourceInputFps"))

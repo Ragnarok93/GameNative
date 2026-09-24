@@ -236,6 +236,59 @@ class ApexSourceProtectedSchedulerTest {
         assertEquals(2, thirdRecovered)
     }
 
+
+    @Test
+    fun adaptiveProtectionReanchorsToAStableLowerSourceOnlyWhileSyntheticWorkIsOff() {
+        val scheduler = ApexSourceProtectedScheduler()
+        var t = 8_000_000_000L
+        repeat(12) {
+            scheduler.recordDisplayOpportunity(t)
+            t += 8_333_333L
+        }
+        scheduler.recordSourceArrival(8_000_000_000L)
+        scheduler.recordSourceArrival(8_033_333_333L)
+
+        assertEquals(
+            2,
+            scheduler.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 90,
+                presentation = populatedTelemetry(30f, 30f, 30f, 60f, 120f),
+            ),
+        )
+
+        var sourceTime = 8_071_794_871L
+        scheduler.recordSourceArrival(sourceTime)
+        assertEquals(
+            0,
+            scheduler.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 90,
+                presentation = populatedTelemetry(26f, 26f, 0f, 26f, 120f),
+            ),
+        )
+
+        var resumedBudget = 0
+        repeat(24) {
+            sourceTime += 38_461_538L
+            scheduler.recordSourceArrival(sourceTime)
+            resumedBudget = scheduler.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 90,
+                presentation = populatedTelemetry(26f, 26f, 0f, 26f, 120f),
+            )
+        }
+
+        assertTrue(
+            "a sustained lower source cadence must eventually become the protected baseline once Apex load is absent",
+            resumedBudget > 0,
+        )
+    }
+
+
     @Test
     fun adaptiveUsesMeasuredCapacityAndOutputDeficit() {
         val scheduler = ApexSourceProtectedScheduler()

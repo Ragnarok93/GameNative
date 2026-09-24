@@ -43,8 +43,13 @@ class ApexVulkanTargetContractTest {
         }
 
         assertTrue(
-            "ring saturation must drop the Apex capture rather than block or steal a consumer buffer",
-            source.contains("if (apexTargetActive.load() && apexSlot < 0) return;"),
+            "ring saturation must defer the real capture rather than block or steal a consumer buffer",
+            source.contains("apexProducerBacklogged.store(true"),
+        )
+        assertTrue(
+            "consumer release must not create a self-sustaining source-render loop",
+            source.contains("apexProducerBacklogged.exchange(false") &&
+                !source.contains("slot.consumerSequence = 0;\n    needsRender.store(true"),
         )
         assertTrue(
             "Apex source frames must omit the compositor cursor so the presenter can keep cursor motion real",

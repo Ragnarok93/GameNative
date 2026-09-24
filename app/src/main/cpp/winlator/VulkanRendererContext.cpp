@@ -1142,6 +1142,7 @@ bool VulkanRendererContext::enableApexTarget() {
 
     if (!createApexTargetResources(width, height)) return false;
 
+    apexProducerBacklogged.store(false, std::memory_order_release);
     apexTargetActive.store(true, std::memory_order_release);
     needsRender.store(true, std::memory_order_release);
     dirtyCV.notify_one();
@@ -1152,6 +1153,7 @@ bool VulkanRendererContext::disableApexTarget() {
     std::unique_lock<std::shared_mutex> frameLock(frameMutex);
     std::lock_guard<std::mutex> apexLock(apexTargetMutex);
     apexTargetActive.store(false, std::memory_order_release);
+    apexProducerBacklogged.store(false, std::memory_order_release);
 
     for (auto& slot : apexTargets) {
         if (slot.producerFence != VK_NULL_HANDLE) {
@@ -1238,8 +1240,16 @@ bool VulkanRendererContext::releaseApexFrame(int64_t token, int consumerReleaseF
         return false;
     }
     slot.consumerSequence = 0;
-    needsRender.store(true, std::memory_order_release);
-    dirtyCV.notify_one();
+
+    // Releasing a consumer-owned AHB is not a new source frame. Wake the
+    // producer only when renderApexFrame() previously observed a genuinely
+    // pending renderer update but could not acquire a free ring slot.
+    const bool retryBackloggedFrame =
+        apexProducerBacklogged.exchange(false, std::memory_order_acq_rel);
+    if (retryBackloggedFrame) {
+        needsRender.store(true, std::memory_order_release);
+        dirtyCV.notify_one();
+    }
     return true;
 }
 
@@ -1255,7 +1265,11 @@ void VulkanRendererContext::renderApexFrame() {
         std::lock_guard<std::mutex> apexLock(apexTargetMutex);
         apexSlot = apexTargetRing.acquireForProducer();
     }
-    if (apexTargetActive.load() && apexSlot < 0) return;
+    if (apexTargetActive.load() && apexSlot < 0) {
+        apexProducerBacklogged.store(true, std::memory_order_release);
+        return;
+    }
+    apexProducerBacklogged.store(false, std::memory_order_release);
 
     ApexTargetSlot& slot = apexTargets[apexSlot];
     if (slot.commandBuffer == VK_NULL_HANDLE ||

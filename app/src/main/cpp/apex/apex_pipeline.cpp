@@ -965,10 +965,9 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
     } else {
         // Off-VSYNC pulse from Choreographer
         if (mRealFramesCaptured.load() < 2 || mPlannedGen == 0) {
-            glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-            glViewport(viewX, viewY, viewWidth, viewHeight);
-            blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
-            mLastOutputKind.store(APEX_OUTPUT_REPEAT, std::memory_order_relaxed);
+            // The window surface retains its last successful swap. Do not burn
+            // a display callback/GPU pass repeating an unchanged source frame.
+            mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
             return;
         }
 
@@ -998,15 +997,12 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
         } else {
-            // Real frame delayed (game FPS dropped below target):
-            // Hold the latest real frame without jumping backwards in time (eliminates wobble/shimmer)!
-            glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-            glViewport(viewX, viewY, viewWidth, viewHeight);
-            blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
-            mActualRealFrameCount.fetch_add(1);
-            mTotalRealFramesPresented++;
-            mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
-            mLastOutputKind.store(APEX_OUTPUT_REPEAT, std::memory_order_relaxed);
+            // The planned generated slots and the buffered real frame for this
+            // source interval have already been delivered. Keep the most recent
+            // buffer latched instead of swapping repeats until a new source
+            // capture arrives.
+            mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
+            return;
         }
     }
 

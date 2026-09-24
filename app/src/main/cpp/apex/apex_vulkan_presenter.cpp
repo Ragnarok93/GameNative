@@ -563,6 +563,9 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
         presenter->height,
         false);
     const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
+    if (outputKind == apex::APEX_OUTPUT_NONE) {
+        return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
+    }
     const bool swapSucceeded =
         eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
     recordPresentation(*presenter, outputKind, swapSucceeded);

@@ -359,6 +359,11 @@ private:
     VkRenderPass apexRp = VK_NULL_HANDLE;
     VkExtent2D apexExt{0,0};
     std::atomic<bool> apexTargetActive{false};
+    // A consumer release only schedules another capture when a real renderer
+    // update previously lost the race for a free Apex target slot. Without
+    // this distinction every release feeds back into another identical source
+    // capture and turns the ring into a self-running 120 Hz loop.
+    std::atomic<bool> apexProducerBacklogged{false};
     bool externalSemaphoreFdSupported = false;
     std::mutex apexTargetMutex;
     bool createApexTargetResources(uint32_t w, uint32_t h);

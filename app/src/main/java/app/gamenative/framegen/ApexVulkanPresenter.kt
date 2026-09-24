@@ -42,6 +42,7 @@ class ApexVulkanPresenter(
 
             val frame = renderer.pollApexFrame()
             if (frame != null) {
+                ApexPresentationTelemetry.recordSourceArrival(frameTimeNanos)
                 val result = nativePresentSourceFrame(
                     handle,
                     frame.hardwareBufferPtr,
@@ -53,14 +54,18 @@ class ApexVulkanPresenter(
                 val outputKind = ((result ushr 32) and 0xffL).toInt()
                 val swapSucceeded = ((result ushr 40) and 0x1L) != 0L
                 renderer.releaseApexFrame(frame, releaseFenceFd)
-                ApexPresentationTelemetry.record(outputKind, swapSucceeded)
+                if (outputKind != ApexPresentationTelemetry.OUTPUT_NONE) {
+                    ApexPresentationTelemetry.record(outputKind, swapSucceeded)
+                }
                 hasSourceHistory = true
                 maybeLogPresentationTelemetry()
             } else if (hasSourceHistory) {
                 val result = nativePresentGeneratedFrame(handle)
                 val outputKind = result and 0xff
                 val swapSucceeded = (result and 0x100) != 0
-                ApexPresentationTelemetry.record(outputKind, swapSucceeded)
+                if (outputKind != ApexPresentationTelemetry.OUTPUT_NONE) {
+                    ApexPresentationTelemetry.record(outputKind, swapSucceeded)
+                }
                 maybeLogPresentationTelemetry()
             }
 
@@ -70,7 +75,7 @@ class ApexVulkanPresenter(
 
     fun start() {
         if (running) return
-        ApexPresentationTelemetry.reset()
+        ApexPresentationTelemetry.beginSession()
         callbacksSinceTelemetryLog = 0
         running = true
         thread.start()
@@ -91,6 +96,7 @@ class ApexVulkanPresenter(
 
     private fun failPresenter() {
         running = false
+        ApexPresentationTelemetry.endSession()
         renderer.onApexPresenterFailure()
     }
 
@@ -101,12 +107,14 @@ class ApexVulkanPresenter(
         val stats = ApexPresentationTelemetry.snapshot()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: source=%.1f generated=%.1f repeats=%.1f output=%.1f totals(source=%d generated=%d repeats=%d output=%d failures=%d)".format(
+            "display cadence: sourceIn=%.1f sourceOut=%.1f generated=%.1f repeats=%.1f output=%.1f totals(in=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
                 java.util.Locale.US,
+                stats.sourceInputFps,
                 stats.sourceFps,
                 stats.generatedFps,
                 stats.repeatedFps,
                 stats.outputFps,
+                stats.sourceArrivals,
                 stats.sourcePresented,
                 stats.generatedPresented,
                 stats.repeatedPresented,
@@ -140,6 +148,7 @@ class ApexVulkanPresenter(
         latch.await(2, TimeUnit.SECONDS)
         thread.quitSafely()
         handler = null
+        ApexPresentationTelemetry.endSession()
     }
 
     override fun close() = stop()

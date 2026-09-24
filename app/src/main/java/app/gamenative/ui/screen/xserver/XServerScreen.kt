@@ -1067,9 +1067,10 @@ fun XServerScreen(
             fpsProvider = {
                 val raw = frameRating?.currentFPS ?: 0f
                 when {
-                    apexRuntimeEnabled -> {
-                        val presentation = ApexPresentationTelemetry.snapshot()
-                        if (presentation.outputPresented > 0L) presentation.outputFps else raw
+                    ApexPresentationTelemetry.snapshot().let {
+                        it.active && it.outputPresented > 0L
+                    } -> {
+                        ApexPresentationTelemetry.snapshot().outputFps
                     }
                     isLsfgAvailable && lsfgMultiplier >= 2 -> {
                         // Only trust the layer's own measurement; multiplying raw
@@ -1083,25 +1084,21 @@ fun XServerScreen(
             initialConfig = performanceHudConfig,
             initialCompactMode = PrefManager.performanceHudCompactMode,
             fpsTextProvider = {
-                if (apexRuntimeEnabled) {
-                    val presentation = ApexPresentationTelemetry.snapshot()
-                    if (presentation.outputPresented > 0L) {
-                        val repeatSuffix = if (presentation.repeatedFps >= 0.5f) {
-                            String.format(Locale.US, " | REP %.1f", presentation.repeatedFps)
-                        } else {
-                            ""
-                        }
-                        String.format(
-                            Locale.US,
-                            "SRC %.1f | OUT %.1f | GEN %.1f%s",
-                            presentation.sourceFps,
-                            presentation.outputFps,
-                            presentation.generatedFps,
-                            repeatSuffix,
-                        )
+                val presentation = ApexPresentationTelemetry.snapshot()
+                if (presentation.active && presentation.outputPresented > 0L) {
+                    val repeatSuffix = if (presentation.repeatedFps >= 0.5f) {
+                        String.format(Locale.US, " | REP %.1f", presentation.repeatedFps)
                     } else {
-                        null
+                        ""
                     }
+                    String.format(
+                        Locale.US,
+                        "SRC %.1f | OUT %.1f | GEN %.1f%s",
+                        presentation.sourceInputFps,
+                        presentation.outputFps,
+                        presentation.generatedFps,
+                        repeatSuffix,
+                    )
                 } else {
                     null
                 }

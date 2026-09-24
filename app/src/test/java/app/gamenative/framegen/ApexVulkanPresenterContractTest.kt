@@ -86,6 +86,14 @@ class ApexVulkanPresenterContractTest {
             "presenter telemetry must classify the frame only after swap outcome is known",
             native.contains("recordPresentation(*presenter, outputKind, swapSucceeded)"),
         )
+        assertTrue(
+            "no-output pulses must not issue redundant EGL swaps",
+            native.contains("if (outputKind == apex::APEX_OUTPUT_NONE)"),
+        )
+        assertTrue(
+            "presenter must count source arrivals independently from displayed source frames",
+            presenter.contains("ApexPresentationTelemetry.recordSourceArrival"),
+        )
     }
     @Test
     fun sourceOrientationAndRuntimeSettingsAreStableContracts() {
@@ -99,6 +107,8 @@ class ApexVulkanPresenterContractTest {
         assertTrue(engine.contains("mQualityPreset.exchange"))
         assertTrue(engine.contains("mResourcesDirty.store(true"))
         assertTrue(screen.contains("ApexPresentationTelemetry.snapshot()"))
+        assertTrue(screen.contains("presentation.active"))
+        assertTrue(screen.contains("presentation.sourceInputFps"))
         assertTrue(screen.contains("SRC %.1f | OUT %.1f | GEN %.1f%s"))
     }
 

@@ -50,32 +50,42 @@ GpuProfileDecision selectGpuProfile(
     std::string_view vendor,
     std::string_view renderer,
     const GpuCapabilities& capabilities) {
+    // The DIS pipeline always needs RGBA8 output and R32F luma. These fields
+    // come from live GLES image-store probes rather than extension-name guesses.
     if (!hasGles31(capabilities) ||
         !capabilities.rgba8ImageStore ||
+        !capabilities.r32fImageStore ||
         !capabilities.textureFetchBarrier ||
         capabilities.maxComputeInvocations < 64) {
         return {};
     }
 
     if (isXclipse(vendor, renderer)) {
+        // Port lsfg-vk's precision-fallback model: shared AHB remains transport
+        // only while private compute storage moves to FP32 on Xclipse. The
+        // largest native DIS workgroup is 16x16.
+        if (!capabilities.rgba32fImageStore ||
+            capabilities.maxComputeInvocations < 256) {
+            return {};
+        }
         return {
             .profile = GpuProfile::XclipseCompatibility,
-            .motionStorage = MotionStorage::Rgba8,
-            .allowFullDisHierarchy = false,
-            .preferredWorkgroupInvocations = 64,
+            .motionStorage = MotionStorage::Rgba32f,
+            .allowFullDisHierarchy = true,
+            .preferredWorkgroupInvocations = 256,
         };
     }
 
     const int adrenoModel = parseAdrenoModel(renderer);
     if (adrenoModel >= 600 &&
         capabilities.rgba16fImageStore &&
-        capabilities.maxComputeInvocations >= 128 &&
+        capabilities.maxComputeInvocations >= 256 &&
         capabilities.maxComputeSharedMemoryBytes >= 16384) {
         return {
             .profile = GpuProfile::Adreno6xxPlus,
             .motionStorage = MotionStorage::Rgba16f,
             .allowFullDisHierarchy = true,
-            .preferredWorkgroupInvocations = 128,
+            .preferredWorkgroupInvocations = 256,
         };
     }
 

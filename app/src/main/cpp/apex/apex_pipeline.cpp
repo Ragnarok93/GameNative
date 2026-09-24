@@ -25,6 +25,40 @@ ApexEngine::~ApexEngine() {
     destroy();
 }
 
+void ApexEngine::setGpuProfile(
+    gamenative::apex::GpuProfile profile,
+    gamenative::apex::MotionStorage motionStorage) {
+    if (mGpuProfile == profile && mMotionStorage == motionStorage) return;
+    destroy();
+    mGpuProfile = profile;
+    mMotionStorage = motionStorage;
+    mHardwareAudited = false;
+}
+
+GLenum ApexEngine::motionStorageFormat() const {
+    return mMotionStorage == gamenative::apex::MotionStorage::Rgba32f
+        ? GL_RGBA32F
+        : motionStorageFormat();
+}
+
+GLenum ApexEngine::motionStorageFilter() const {
+    return mMotionStorage == gamenative::apex::MotionStorage::Rgba32f
+        ? GL_NEAREST
+        : GL_LINEAR;
+}
+
+std::string ApexEngine::precisionShaderSource(const char* source) const {
+    std::string result = source ? source : "";
+    if (mMotionStorage != gamenative::apex::MotionStorage::Rgba32f) return result;
+
+    std::string::size_type pos = 0;
+    while ((pos = result.find("rgba16f", pos)) != std::string::npos) {
+        result.replace(pos, 7, "rgba32f");
+        pos += 7;
+    }
+    return result;
+}
+
 static const char* getGlErrorString(GLenum err) {
     switch (err) {
         case GL_NO_ERROR: return "GL_NO_ERROR";
@@ -142,7 +176,8 @@ void ApexEngine::compileShaders() {
     auto compileOne = [this](const char* name, GLuint& prog, const char* src) {
         if (!prog) {
             std::string err;
-            prog = compileComputeProgram(name, src, err);
+            const std::string selectedSource = precisionShaderSource(src);
+            prog = compileComputeProgram(name, selectedSource.c_str(), err);
             if (!prog) {
                 if (!mShaderErrorDetails.empty()) mShaderErrorDetails += "; ";
                 mShaderErrorDetails += err;
@@ -360,32 +395,32 @@ void ApexEngine::ensureResources(int width, int height) {
         mLevels[i].sparseHeight = lh > 8 ? 1 + (lh - 8) / 3 : 1;
 
         for (uint32_t s = 0; s < DIS_SLOTS; s++) {
-            mLevels[i].lumaTex[s] = createStorageTexture(lw, lh, GL_R32F, GL_LINEAR, "LumaTex", err);
+            mLevels[i].lumaTex[s] = createStorageTexture(lw, lh, GL_R32F, motionStorageFilter(), "LumaTex", err);
             if (!mLevels[i].lumaTex[s]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
 
-            mLevels[i].gradientTex[s] = createStorageTexture(lw, lh, GL_RGBA16F, GL_NEAREST, "GradientTex", err);
+            mLevels[i].gradientTex[s] = createStorageTexture(lw, lh, motionStorageFormat(), GL_NEAREST, "GradientTex", err);
             if (!mLevels[i].gradientTex[s]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
         }
 
-        mLevels[i].sparseFlowTex[0] = createStorageTexture(mLevels[i].sparseWidth, mLevels[i].sparseHeight, GL_RGBA16F, GL_LINEAR, "SparseFlow0", err);
+        mLevels[i].sparseFlowTex[0] = createStorageTexture(mLevels[i].sparseWidth, mLevels[i].sparseHeight, motionStorageFormat(), motionStorageFilter(), "SparseFlow0", err);
         if (!mLevels[i].sparseFlowTex[0]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
 
-        mLevels[i].sparseFlowTex[1] = createStorageTexture(mLevels[i].sparseWidth, mLevels[i].sparseHeight, GL_RGBA16F, GL_LINEAR, "SparseFlow1", err);
+        mLevels[i].sparseFlowTex[1] = createStorageTexture(mLevels[i].sparseWidth, mLevels[i].sparseHeight, motionStorageFormat(), motionStorageFilter(), "SparseFlow1", err);
         if (!mLevels[i].sparseFlowTex[1]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
 
-        mLevels[i].denseFlowTex = createStorageTexture(lw, lh, GL_RGBA16F, GL_LINEAR, "DenseFlowTex", err);
+        mLevels[i].denseFlowTex = createStorageTexture(lw, lh, motionStorageFormat(), motionStorageFilter(), "DenseFlowTex", err);
         if (!mLevels[i].denseFlowTex) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
 
-        mLevels[i].vrATex = createStorageTexture(lw, lh, GL_RGBA16F, GL_NEAREST, "vrATex", err);
+        mLevels[i].vrATex = createStorageTexture(lw, lh, motionStorageFormat(), GL_NEAREST, "vrATex", err);
         if (!mLevels[i].vrATex) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
 
-        mLevels[i].vrBTex = createStorageTexture(lw, lh, GL_RGBA16F, GL_NEAREST, "vrBTex", err);
+        mLevels[i].vrBTex = createStorageTexture(lw, lh, motionStorageFormat(), GL_NEAREST, "vrBTex", err);
         if (!mLevels[i].vrBTex) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
 
-        mLevels[i].vrDWTex[0] = createStorageTexture(lw, lh, GL_RGBA16F, GL_LINEAR, "vrDWTex0", err);
+        mLevels[i].vrDWTex[0] = createStorageTexture(lw, lh, motionStorageFormat(), motionStorageFilter(), "vrDWTex0", err);
         if (!mLevels[i].vrDWTex[0]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
 
-        mLevels[i].vrDWTex[1] = createStorageTexture(lw, lh, GL_RGBA16F, GL_LINEAR, "vrDWTex1", err);
+        mLevels[i].vrDWTex[1] = createStorageTexture(lw, lh, motionStorageFormat(), motionStorageFilter(), "vrDWTex1", err);
         if (!mLevels[i].vrDWTex[1]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
     }
 
@@ -536,7 +571,7 @@ void ApexEngine::dispatchLumaGrad(int level, GLuint inTex, uint32_t slot) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, inTex);
     glBindImageTexture(1, mLevels[level].lumaTex[slot], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
-    glBindImageTexture(2, mLevels[level].gradientTex[slot], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    glBindImageTexture(2, mLevels[level].gradientTex[slot], 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
     if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
     glUniform1i(glGetUniformLocation(mProgLumaGrad, "u_isColor"), (level == 0 ? 1 : 0));
     glUniform1i(glGetUniformLocation(mProgLumaGrad, "u_collectTelemetry"), mLoggingEnabled.load(std::memory_order_relaxed) ? 1 : 0);
@@ -553,7 +588,7 @@ void ApexEngine::dispatchHierarchicalSearch(int level, GLuint lastLuma, GLuint n
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, nextLuma);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, lastGrad);
     glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, coarseFlow ? coarseFlow : lastLuma);
-    glBindImageTexture(4, outSparse, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    glBindImageTexture(4, outSparse, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
     if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
     glUniform1i(glGetUniformLocation(mProgInverseSearch, "u_level"), level);
     glUniform1i(glGetUniformLocation(mProgInverseSearch, "u_coarseLevel"), coarseLevel);
@@ -569,7 +604,7 @@ void ApexEngine::dispatchPropagate(int level, GLuint lastLuma, GLuint nextLuma, 
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, lastLuma);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, nextLuma);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, fi);
-    glBindImageTexture(3, fo, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    glBindImageTexture(3, fo, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
     if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
     glUniform1i(glGetUniformLocation(mProgPropagate, "u_dist"), dist);
     glUniform1i(glGetUniformLocation(mProgPropagate, "u_level"), level);
@@ -585,7 +620,7 @@ void ApexEngine::dispatchDensify(int level, GLuint sparseFlow, GLuint lastLuma, 
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, sparseFlow);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, lastLuma);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, nextLuma);
-    glBindImageTexture(3, denseFlow, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    glBindImageTexture(3, denseFlow, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
     if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
     glUniform1i(glGetUniformLocation(mProgDensify, "u_level"), level);
     glUniform1i(glGetUniformLocation(mProgDensify, "u_collectTelemetry"), mLoggingEnabled.load(std::memory_order_relaxed) ? 1 : 0);
@@ -600,9 +635,9 @@ void ApexEngine::dispatchVrSetup(GLuint denseFlow, GLuint prevColor, GLuint next
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, denseFlow);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, prevColor);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, nextColor);
-    glBindImageTexture(3, outA, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-    glBindImageTexture(4, outB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-    glBindImageTexture(5, outDW, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    glBindImageTexture(3, outA, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
+    glBindImageTexture(4, outB, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
+    glBindImageTexture(5, outDW, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
     glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     checkGlPassError("DisVrSetup");
@@ -610,10 +645,10 @@ void ApexEngine::dispatchVrSetup(GLuint denseFlow, GLuint prevColor, GLuint next
 
 void ApexEngine::dispatchVrSor(GLuint at, GLuint bt, GLuint dwi, GLuint dwo, float om, int p, int w, int h) {
     glUseProgram(mProgVrSor);
-    glBindImageTexture(0, at, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
-    glBindImageTexture(1, bt, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
-    glBindImageTexture(2, dwi, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
-    glBindImageTexture(3, dwo, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    glBindImageTexture(0, at, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
+    glBindImageTexture(1, bt, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
+    glBindImageTexture(2, dwi, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
+    glBindImageTexture(3, dwo, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
     glUniform1f(glGetUniformLocation(mProgVrSor, "u_omega"), om);
     glUniform1i(glGetUniformLocation(mProgVrSor, "u_parity"), p);
     glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
@@ -701,6 +736,10 @@ std::string ApexEngine::getDiagnostics() {
     diag += " -> Flow: " + std::to_string(mFlowWidth) + "x" + std::to_string(mFlowHeight);
     diag += " (" + std::string(presetName) + ")\n";
     diag += "• Optical Flow: 4-Level Pyramid (AMD FSR 3 Vector Median Filter, Guided Densification, Divergence-Shielded DIS)\n";
+    diag += "• GPU Profile: " + std::string(gamenative::apex::gpuProfileName(mGpuProfile));
+    diag += " | Motion Storage: ";
+    diag += mMotionStorage == gamenative::apex::MotionStorage::Rgba32f ? "RGBA32F" : "RGBA16F";
+    diag += "\n";
 
     float srcFps = (mTypicalDeltaNanos > 1000000.0f) ? (1000000000.0f / mTypicalDeltaNanos) : 0.0f;
     float deltaMs = mTypicalDeltaNanos / 1000000.0f;

@@ -30,6 +30,8 @@ object ApexNativeBridge {
         val maxComputeSharedMemoryBytes: Int,
         val rgba8ImageStore: Boolean,
         val rgba16fImageStore: Boolean,
+        val r32fImageStore: Boolean,
+        val rgba32fImageStore: Boolean,
         val textureFetchBarrier: Boolean,
     )
 
@@ -45,6 +47,8 @@ object ApexNativeBridge {
         maxComputeSharedMemoryBytes: Int,
         rgba8ImageStore: Boolean,
         rgba16fImageStore: Boolean,
+        r32fImageStore: Boolean,
+        rgba32fImageStore: Boolean,
         textureFetchBarrier: Boolean,
     ): Int
 
@@ -63,6 +67,8 @@ object ApexNativeBridge {
                 capabilities.maxComputeSharedMemoryBytes,
                 capabilities.rgba8ImageStore,
                 capabilities.rgba16fImageStore,
+                capabilities.r32fImageStore,
+                capabilities.rgba32fImageStore,
                 capabilities.textureFetchBarrier,
             ),
         )

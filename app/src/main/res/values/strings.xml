@@ -2150,6 +2150,11 @@
     <string name="review_mixed">Mixed</string>
     <string name="review_mostly_negative">Mostly Negative</string>
     <string name="review_overwhelmingly_negative">Overwhelmingly Negative</string>
+    <!-- Apex Frame Generation -->
+    <string name="apex_frame_generation_enable">Enable Apex Frame Generation</string>
+    <string name="apex_frame_generation_description">Generate intermediate frames with GameNative’s native Apex pipeline. Uses the Adreno-optimized path or the Xclipse compatibility path selected from live GPU capabilities.</string>
+    <string name="apex_frame_generation_requires_vulkan">Apex Frame Generation requires the Vulkan display renderer.</string>
+
     <!-- LSFG Frame Generation -->
     <string name="lsfg_tab_title">LSFG-VK</string>
     <string name="lsfg_description">Generate intermediate frames using Lossless Scaling\'s Vulkan layer. Only known to work on Adreno 6xx and above.</string>

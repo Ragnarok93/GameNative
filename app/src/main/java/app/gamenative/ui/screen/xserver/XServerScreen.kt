@@ -131,6 +131,7 @@ import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.downloader.CoreDriverDownloader
 import app.gamenative.utils.CustomGameScanner
 import app.gamenative.utils.ExecutableSelectionUtils
+import app.gamenative.framegen.ApexFrameGenerationManager
 import app.gamenative.utils.LsfgQuickMenuHelper
 import app.gamenative.utils.LsfgVkManager
 import app.gamenative.utils.ManifestComponentHelper
@@ -2139,6 +2140,13 @@ fun XServerScreen(
                         else -> 2
                     }
                     renderer.setVkPresentMode(vkMode)
+                    if (ApexFrameGenerationManager.isRequested(container)) {
+                        if (!renderer.setApexFrameTargetEnabled(true)) {
+                            Timber.w(
+                                "Apex frame generation requested but Vulkan presenter activation was rejected",
+                            )
+                        }
+                    }
                 }
                 if (renderer is ASurfaceRenderer) {
                     renderer.setSfCompatMode(container.sfCompatMode)

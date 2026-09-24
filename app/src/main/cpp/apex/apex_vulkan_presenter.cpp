@@ -76,6 +76,24 @@ bool makeCurrent(Presenter& presenter) {
             presenter.context) == EGL_TRUE;
 }
 
+bool probeImageStoreFormat(GLenum internalFormat) {
+    while (glGetError() != GL_NO_ERROR) {}
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    if (!texture) return false;
+
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexStorage2D(GL_TEXTURE_2D, 1, internalFormat, 4, 4);
+    GLenum error = glGetError();
+    if (error == GL_NO_ERROR) {
+        glBindImageTexture(0, texture, 0, GL_FALSE, 0, GL_READ_WRITE, internalFormat);
+        error = glGetError();
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDeleteTextures(1, &texture);
+    return error == GL_NO_ERROR;
+}
+
 void destroyImportedSource(Presenter& presenter, ImportedSource& source) {
     if (source.texture != 0) {
         glDeleteTextures(1, &source.texture);
@@ -309,14 +327,21 @@ bool initializePresenter(Presenter& presenter) {
     const bool halfFloat =
         containsExtension(glExtensions, "GL_EXT_color_buffer_half_float") ||
         containsExtension(glExtensions, "GL_EXT_color_buffer_float");
+    const bool rgba8ImageStore = probeImageStoreFormat(GL_RGBA8);
+    const bool rgba16fImageStore =
+        halfFloat && probeImageStoreFormat(GL_RGBA16F);
+    const bool r32fImageStore = probeImageStoreFormat(GL_R32F);
+    const bool rgba32fImageStore = probeImageStoreFormat(GL_RGBA32F);
 
     const gamenative::apex::GpuCapabilities capabilities{
         .glesMajor = glMajor,
         .glesMinor = glMinor,
         .maxComputeInvocations = maxInvocations,
         .maxComputeSharedMemoryBytes = maxShared,
-        .rgba8ImageStore = glMajor > 3 || (glMajor == 3 && glMinor >= 1),
-        .rgba16fImageStore = halfFloat,
+        .rgba8ImageStore = rgba8ImageStore,
+        .rgba16fImageStore = rgba16fImageStore,
+        .r32fImageStore = r32fImageStore,
+        .rgba32fImageStore = rgba32fImageStore,
         .textureFetchBarrier = glMajor > 3 || (glMajor == 3 && glMinor >= 1),
     };
     const auto decision = gamenative::apex::selectGpuProfile(
@@ -324,9 +349,8 @@ bool initializePresenter(Presenter& presenter) {
         renderer ? renderer : "",
         capabilities);
 
-    // The native DIS shader set still contains mandatory rgba16f images. Until
-    // the RGBA8 Xclipse compatibility shaders are wired, fail closed here.
-    if (decision.profile != gamenative::apex::GpuProfile::Adreno6xxPlus) {
+    if (decision.profile != gamenative::apex::GpuProfile::Adreno6xxPlus &&
+        decision.profile != gamenative::apex::GpuProfile::XclipseCompatibility) {
         PRES_LOGW(
             "Apex native DIS presenter rejected profile=%s renderer=%s",
             gamenative::apex::gpuProfileName(decision.profile),
@@ -334,14 +358,22 @@ bool initializePresenter(Presenter& presenter) {
         return false;
     }
 
+    apex::ApexEngine::getInstance().setGpuProfile(
+        decision.profile,
+        decision.motionStorage);
+
     eglSwapInterval(presenter.display, 0);
     apex::ApexEngine::getInstance().setActive(true);
     PRES_LOGI(
-        "Apex presenter ready: EGL %d.%d, renderer=%s, profile=%s",
+        "Apex presenter ready: EGL %d.%d, renderer=%s, profile=%s storage=%s r32f=%d rgba16f=%d rgba32f=%d",
         major,
         minor,
         renderer ? renderer : "unknown",
-        gamenative::apex::gpuProfileName(decision.profile));
+        gamenative::apex::gpuProfileName(decision.profile),
+        decision.motionStorage == gamenative::apex::MotionStorage::Rgba32f ? "rgba32f" : "rgba16f",
+        r32fImageStore ? 1 : 0,
+        rgba16fImageStore ? 1 : 0,
+        rgba32fImageStore ? 1 : 0);
     return true;
 }
 

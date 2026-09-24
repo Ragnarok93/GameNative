@@ -10,6 +10,7 @@
 #include <atomic>
 #include <array>
 #include <android/log.h>
+#include "apex_gpu_profile.h"
 
 #define APEX_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "ApexDIS", __VA_ARGS__)
 #define APEX_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "ApexDIS", __VA_ARGS__)
@@ -69,6 +70,9 @@ public:
     void init(int width, int height);
     void updateDimensions(int width, int height);
     void destroy();
+    void setGpuProfile(
+        gamenative::apex::GpuProfile profile,
+        gamenative::apex::MotionStorage motionStorage);
 
     void processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                       int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame);
@@ -130,6 +134,9 @@ private:
     ~ApexEngine();
     void ensureResources(int width, int height);
     void cleanupResources();
+    GLenum motionStorageFormat() const;
+    GLenum motionStorageFilter() const;
+    std::string precisionShaderSource(const char* source) const;
 
     bool mInitialized{false};
     bool mShaderCompileSuccess{false};
@@ -180,6 +187,12 @@ private:
     bool mExtColorBufferHalfFloat{false};
     GLint mMaxComputeInvocations{0};
     GLint mMaxComputeSharedMem{0};
+    gamenative::apex::GpuProfile mGpuProfile{
+        gamenative::apex::GpuProfile::Adreno6xxPlus
+    };
+    gamenative::apex::MotionStorage mMotionStorage{
+        gamenative::apex::MotionStorage::Rgba16f
+    };
 
     // Per-Pass Execution Counters (telemetry)
     std::atomic<uint64_t> mPassLumaGrad{0};

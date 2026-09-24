@@ -16,6 +16,7 @@ enum class GpuProfile : int32_t {
 enum class MotionStorage : int32_t {
     Rgba8 = 0,
     Rgba16f = 1,
+    Rgba32f = 2,
 };
 
 struct GpuCapabilities {
@@ -25,6 +26,8 @@ struct GpuCapabilities {
     int32_t maxComputeSharedMemoryBytes{0};
     bool rgba8ImageStore{false};
     bool rgba16fImageStore{false};
+    bool r32fImageStore{false};
+    bool rgba32fImageStore{false};
     bool textureFetchBarrier{false};
 };
 

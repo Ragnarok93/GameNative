@@ -277,6 +277,8 @@ Java_app_gamenative_framegen_ApexNativeBridge_nativeSelectGpuProfile(
     jint maxComputeSharedMemoryBytes,
     jboolean rgba8ImageStore,
     jboolean rgba16fImageStore,
+    jboolean r32fImageStore,
+    jboolean rgba32fImageStore,
     jboolean textureFetchBarrier) {
     (void)clazz;
     const char* vendorChars = vendor ? env->GetStringUTFChars(vendor, nullptr) : nullptr;
@@ -289,6 +291,8 @@ Java_app_gamenative_framegen_ApexNativeBridge_nativeSelectGpuProfile(
         .maxComputeSharedMemoryBytes = maxComputeSharedMemoryBytes,
         .rgba8ImageStore = rgba8ImageStore == JNI_TRUE,
         .rgba16fImageStore = rgba16fImageStore == JNI_TRUE,
+        .r32fImageStore = r32fImageStore == JNI_TRUE,
+        .rgba32fImageStore = rgba32fImageStore == JNI_TRUE,
         .textureFetchBarrier = textureFetchBarrier == JNI_TRUE,
     };
     const auto decision = gamenative::apex::selectGpuProfile(

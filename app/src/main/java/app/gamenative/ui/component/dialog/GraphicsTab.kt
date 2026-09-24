@@ -19,6 +19,7 @@ import app.gamenative.ui.component.settings.SettingsListDropdownSearchable
 import app.gamenative.ui.component.settings.SettingsMultiListDropdown
 import app.gamenative.ui.theme.settingsTileColors
 import app.gamenative.ui.theme.settingsTileColorsAlt
+import app.gamenative.framegen.ApexFrameGenerationManager
 import app.gamenative.utils.LsfgVkManager
 import com.alorma.compose.settings.ui.SettingsGroup
 import com.alorma.compose.settings.ui.SettingsSwitch
@@ -377,10 +378,11 @@ fun GraphicsTabContent(state: ContainerConfigState, default: Boolean = false) {
             }
         }
 
-        // Frame Generation (LSFG) — hooks the Vulkan swapchain for
-        // transparent frame generation. Only effective on Bionic containers
-        // with a Vortek/Adreno graphics driver.
-        if (!default) LsfgSection(state)
+        // Frame generation backends.
+        if (!default) {
+            ApexFrameGenerationSection(state)
+            LsfgSection(state)
+        }
 
         SettingsSwitch(
             colors = settingsTileColorsAlt(),
@@ -534,6 +536,39 @@ private fun DxWrapperSection(state: ContainerConfigState) {
 }
 
 @Composable
+private fun ApexFrameGenerationSection(state: ContainerConfigState) {
+    val config = state.config.value
+    val supported = ApexFrameGenerationManager.isSupported(config.displayRenderer)
+
+    SettingsGroup {
+        SettingsSwitch(
+            colors = settingsTileColorsAlt(),
+            title = { Text(text = stringResource(R.string.apex_frame_generation_enable)) },
+            subtitle = {
+                Text(
+                    text = stringResource(
+                        if (supported) {
+                            R.string.apex_frame_generation_description
+                        } else {
+                            R.string.apex_frame_generation_requires_vulkan
+                        },
+                    ),
+                )
+            },
+            state = config.apexFrameGenerationEnabled,
+            onCheckedChange = {
+                if (it && supported) {
+                    state.config.value =
+                        config.copy(apexFrameGenerationEnabled = it, lsfgEnabled = false)
+                } else {
+                    state.config.value = config.copy(apexFrameGenerationEnabled = false)
+                }
+            },
+        )
+    }
+}
+
+@Composable
 private fun LsfgSection(state: ContainerConfigState) {
     val config = state.config.value
     val lsfgSupported = config.containerVariant.equals(Container.BIONIC, ignoreCase = true)
@@ -544,7 +579,8 @@ private fun LsfgSection(state: ContainerConfigState) {
     fun requestLsfgEnable() {
         if (LsfgVkManager.isDllAvailable()) {
             dllAvailable = true
-            state.config.value = state.config.value.copy(lsfgEnabled = true)
+            state.config.value =
+                state.config.value.copy(lsfgEnabled = true, apexFrameGenerationEnabled = false)
             return
         }
 
@@ -560,7 +596,11 @@ private fun LsfgSection(state: ContainerConfigState) {
         ) {
             val downloaded = LsfgVkManager.isDllAvailable()
             dllAvailable = downloaded
-            state.config.value = state.config.value.copy(lsfgEnabled = downloaded)
+            state.config.value = if (downloaded) {
+                state.config.value.copy(lsfgEnabled = true, apexFrameGenerationEnabled = false)
+            } else {
+                state.config.value.copy(lsfgEnabled = false)
+            }
         }
     }
 

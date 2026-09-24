@@ -2,6 +2,7 @@ package app.gamenative.utils
 
 import android.content.Context
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
+import app.gamenative.framegen.ApexFrameGenerationManager
 import java.util.concurrent.Executors
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
@@ -125,15 +126,15 @@ object LsfgVkManager {
     /** Whether the container has LSFG enabled in settings and can expose LSFG controls. */
     @JvmStatic
     fun isAvailable(container: Container): Boolean =
-        isSupported(container) &&
-            layerRequested(container) &&
+        isFrameGenerationRequested(container) &&
             containerDllPath(container) != null
 
     /** Whether launch should prepare the resident native LSFG layer for this container. */
     @JvmStatic
     fun isFrameGenerationRequested(container: Container): Boolean =
         isSupported(container) &&
-            layerRequested(container)
+            layerRequested(container) &&
+            !ApexFrameGenerationManager.isSelected(container)
 
     /** Whether the LSFG layer should be resident in the launched process. */
     @JvmStatic

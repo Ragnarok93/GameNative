@@ -105,7 +105,8 @@ data class ContainerData(
     val sharpnessEffect: String = "None",
     val sharpnessLevel: Int = 100,
     val sharpnessDenoise: Int = 100,
-    // LSFG Vulkan frame generation
+    // Frame generation backends
+    val apexFrameGenerationEnabled: Boolean = false,
     /** Whether LSFG frame generation is enabled for this container */
     val lsfgEnabled: Boolean = false,
 ) {
@@ -179,6 +180,7 @@ data class ContainerData(
                     "sharpnessEffect" to state.sharpnessEffect,
                     "sharpnessLevel" to state.sharpnessLevel,
                     "sharpnessDenoise" to state.sharpnessDenoise,
+                    "apexFrameGenerationEnabled" to state.apexFrameGenerationEnabled,
                     "lsfgEnabled" to state.lsfgEnabled,
                 )
             },
@@ -250,6 +252,8 @@ data class ContainerData(
                     sharpnessEffect = (savedMap["sharpnessEffect"] as? String) ?: "None",
                     sharpnessLevel = (savedMap["sharpnessLevel"] as? Int) ?: 100,
                     sharpnessDenoise = (savedMap["sharpnessDenoise"] as? Int) ?: 100,
+                    apexFrameGenerationEnabled =
+                        (savedMap["apexFrameGenerationEnabled"] as? Boolean) ?: false,
                     lsfgEnabled = (savedMap["lsfgEnabled"] as? Boolean) ?: false,
                 )
             },

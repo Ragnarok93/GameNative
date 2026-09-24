@@ -1,25 +1,24 @@
 package app.gamenative.framegen
 
 import kotlin.math.ceil
-import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Presentation admission policy for Apex.
+ * Source-owned cadence planner for Apex.
  *
- * A source interval owns its final display opportunity. Synthetic frames are
- * admitted only into opportunities that fit before that reserved source slot.
- * Fixed multipliers are ceilings; Adaptive chooses the minimum synthetic count
- * needed for the requested output cadence, bounded by observed Choreographer
- * capacity and by recent source-delivery health.
+ * This mirrors the scheduling semantics used by lsfg-vk-android:
+ * - Fixed mode requests the configured multiplier directly.
+ * - Adaptive treats the requested output FPS as authoritative demand.
+ * - Fractional demand is distributed over source intervals with a phase
+ *   accumulator instead of rounding every interval up to an integer ratio.
+ * - Source slowdown increases target-relative interpolation demand; source FPS
+ *   is never used as a generation backoff signal.
+ * - Display callbacks are telemetry/opportunities, not a target governor.
  *
- * The protected source reference is deliberately independent from the current
- * interpolation ratio. Synthetic work may never turn a falling source cadence
- * into a request for even more synthetic work. When source cadence regresses
- * while generation is active, generation sheds immediately and recovers only
- * after the source timeline has remained healthy for several samples.
+ * The protected source deadline remains independent from generated work.
+ * Generated presentation never advances or re-phases the source timeline.
  */
 class ApexSourceProtectedScheduler {
     data class Diagnostics(
@@ -27,36 +26,58 @@ class ApexSourceProtectedScheduler {
         val sourceHealthRatio: Float,
         val sourceProtectionActive: Boolean,
         val recoveryStreak: Int,
+        val wantedGeneratedFrames: Float = 0f,
+        val fractionalPhase: Float = 0f,
+        val measuredOpportunityFps: Float = 0f,
     )
 
     private var lastOpportunityNanos = 0L
     private var displayPeriodNanos = 0.0
-    private var lastSourceArrivalNanos = 0L
-    private var sourcePeriodNanos = 0.0
-    private var pendingSourceDeadlineNanos = 0L
-    private var adaptiveExtraBudget = 0
-    private var adaptiveDeficitStreak = 0
-    private var adaptiveSatisfiedStreak = 0
 
-    private var protectedSourceFps = 0f
-    private var lastSourceHealthRatio = 1f
-    private var sourceProtectionActive = false
-    private var sourceRecoveryStreak = 0
+    private var lastSourceArrivalNanos = 0L
+    private var lastObservedSourceIntervalNanos = 0L
+    private var sourcePeriodNanos = 0.0
+    private var lastTrustedSourcePeriodNanos = 0.0
+    private var pendingSourceDeadlineNanos = 0L
+    private var plannedOutputPeriodNanos = 0.0
+
+    private val recentSourcePeriodsNanos = DoubleArray(SOURCE_CADENCE_WINDOW)
+    private val sourcePeriodScratch = DoubleArray(SOURCE_CADENCE_WINDOW)
+    private var recentSourcePeriodCount = 0
+    private var recentSourcePeriodCursor = 0
+
+    private var adaptiveTargetFps = 0
+    private var adaptiveMaxGeneratedFrames = 0
+    private var adaptiveFractionalPhase = 0.0
+    private var adaptiveObservedSeconds = 0.0
+    private var adaptiveCostLimit = 0
+    private var adaptiveUnmetDemandSinceSeconds = -1.0
+    private var adaptiveWantedGeneratedFrames = 0.0
+    private var runtimeCadenceEstablished = false
+
     private var lastAdmittedBudget = 0
 
     fun reset() {
         lastOpportunityNanos = 0L
         displayPeriodNanos = 0.0
+
         lastSourceArrivalNanos = 0L
+        lastObservedSourceIntervalNanos = 0L
         sourcePeriodNanos = 0.0
+        lastTrustedSourcePeriodNanos = 0.0
         pendingSourceDeadlineNanos = 0L
-        adaptiveExtraBudget = 0
-        adaptiveDeficitStreak = 0
-        adaptiveSatisfiedStreak = 0
-        protectedSourceFps = 0f
-        lastSourceHealthRatio = 1f
-        sourceProtectionActive = false
-        sourceRecoveryStreak = 0
+        plannedOutputPeriodNanos = 0.0
+        resetSourceCadenceWindow()
+
+        adaptiveTargetFps = 0
+        adaptiveMaxGeneratedFrames = 0
+        adaptiveFractionalPhase = 0.0
+        adaptiveObservedSeconds = 0.0
+        adaptiveCostLimit = 0
+        adaptiveUnmetDemandSinceSeconds = -1.0
+        adaptiveWantedGeneratedFrames = 0.0
+        runtimeCadenceEstablished = false
+
         lastAdmittedBudget = 0
     }
 
@@ -76,18 +97,76 @@ class ApexSourceProtectedScheduler {
     fun recordSourceArrival(nowNanos: Long) {
         val previous = lastSourceArrivalNanos
         lastSourceArrivalNanos = nowNanos
-        if (previous > 0L) {
-            val delta = nowNanos - previous
-            if (delta in MIN_SOURCE_PERIOD_NS..MAX_SOURCE_PERIOD_NS) {
-                sourcePeriodNanos = if (sourcePeriodNanos <= 0.0) {
-                    delta.toDouble()
-                } else {
-                    sourcePeriodNanos * 0.80 + delta.toDouble() * 0.20
-                }
+
+        if (previous <= 0L) {
+            if (sourcePeriodNanos > 0.0) {
+                pendingSourceDeadlineNanos = nowNanos + sourcePeriodNanos.toLong()
             }
+            return
         }
-        if (sourcePeriodNanos > 0.0) {
-            pendingSourceDeadlineNanos = nowNanos + sourcePeriodNanos.toLong()
+
+        val delta = nowNanos - previous
+        if (delta <= 0L) return
+
+        if (
+            lastTrustedSourcePeriodNanos > 0.0 &&
+            delta.toDouble() > lastTrustedSourcePeriodNanos * SOURCE_DISCONTINUITY_RATIO
+        ) {
+            // Suspend/menu/loading boundaries are not synthetic catch-up debt.
+            // Keep lifecycle knowledge so an explicit target change can still
+            // warm-start, but clear the current cadence and fractional epoch.
+            resetSourceCadenceWindow()
+            lastObservedSourceIntervalNanos = 0L
+            sourcePeriodNanos = 0.0
+            lastTrustedSourcePeriodNanos = 0.0
+            pendingSourceDeadlineNanos = 0L
+            plannedOutputPeriodNanos = 0.0
+            adaptiveFractionalPhase = 0.0
+            adaptiveObservedSeconds = 0.0
+            adaptiveUnmetDemandSinceSeconds = -1.0
+            adaptiveCostLimit =
+                if (adaptiveMaxGeneratedFrames > 0) 1 else 0
+            adaptiveWantedGeneratedFrames = 0.0
+            lastAdmittedBudget = 0
+            return
+        }
+
+        if (delta !in MIN_SOURCE_PERIOD_NS..MAX_SOURCE_PERIOD_NS) {
+            if (sourcePeriodNanos > 0.0) {
+                pendingSourceDeadlineNanos = nowNanos + sourcePeriodNanos.toLong()
+            }
+            return
+        }
+
+        lastObservedSourceIntervalNanos = delta
+        recentSourcePeriodsNanos[recentSourcePeriodCursor] = delta.toDouble()
+        recentSourcePeriodCursor =
+            (recentSourcePeriodCursor + 1) % SOURCE_CADENCE_WINDOW
+        recentSourcePeriodCount =
+            min(recentSourcePeriodCount + 1, SOURCE_CADENCE_WINDOW)
+
+        val robustPeriodNanos = robustSourcePeriodNanos()
+        if (robustPeriodNanos > 0.0) {
+            if (sourcePeriodNanos <= 0.0) {
+                sourcePeriodNanos = robustPeriodNanos
+            } else {
+                val previousPeriod = sourcePeriodNanos
+                val boundedTarget = robustPeriodNanos.coerceIn(
+                    previousPeriod * SOURCE_PERIOD_MIN_RATIO,
+                    previousPeriod * SOURCE_PERIOD_MAX_RATIO,
+                )
+                val alpha =
+                    if (boundedTarget > previousPeriod) {
+                        SOURCE_SLOWDOWN_ALPHA
+                    } else {
+                        SOURCE_SPEEDUP_ALPHA
+                    }
+                sourcePeriodNanos += alpha * (boundedTarget - sourcePeriodNanos)
+            }
+            lastTrustedSourcePeriodNanos = sourcePeriodNanos
+            runtimeCadenceEstablished = true
+            pendingSourceDeadlineNanos =
+                nowNanos + sourcePeriodNanos.toLong()
         }
     }
 
@@ -96,230 +175,291 @@ class ApexSourceProtectedScheduler {
     }
 
     fun measuredCapacityFps(): Float =
-        if (displayPeriodNanos > 0.0) (1_000_000_000.0 / displayPeriodNanos).toFloat() else 0f
+        if (displayPeriodNanos > 0.0) {
+            (1_000_000_000.0 / displayPeriodNanos).toFloat()
+        } else {
+            0f
+        }
 
-    fun diagnostics(): Diagnostics =
-        Diagnostics(
-            protectedSourceFps = protectedSourceFps,
-            sourceHealthRatio = lastSourceHealthRatio,
-            sourceProtectionActive = sourceProtectionActive,
-            recoveryStreak = sourceRecoveryStreak,
+    fun diagnostics(): Diagnostics {
+        val smoothedSourceFps =
+            if (sourcePeriodNanos > 0.0) {
+                (1_000_000_000.0 / sourcePeriodNanos).toFloat()
+            } else {
+                0f
+            }
+        val measuredSourceFps =
+            if (lastObservedSourceIntervalNanos > 0L) {
+                (1_000_000_000.0 / lastObservedSourceIntervalNanos.toDouble()).toFloat()
+            } else {
+                smoothedSourceFps
+            }
+        val cadenceRatio =
+            if (smoothedSourceFps > 1f) {
+                (measuredSourceFps / smoothedSourceFps).coerceIn(0f, 1.25f)
+            } else {
+                1f
+            }
+
+        return Diagnostics(
+            // Keep the original fields for binary/source compatibility with the
+            // presenter log while changing their semantics away from a backoff
+            // governor. No source-health value participates in admission.
+            protectedSourceFps = smoothedSourceFps,
+            sourceHealthRatio = cadenceRatio,
+            sourceProtectionActive = false,
+            recoveryStreak = adaptiveCostLimit,
+            wantedGeneratedFrames = adaptiveWantedGeneratedFrames.toFloat(),
+            fractionalPhase = adaptiveFractionalPhase.toFloat(),
+            measuredOpportunityFps = measuredCapacityFps(),
         )
+    }
 
     fun shouldPresentSourceNow(nowNanos: Long): Boolean {
-        if (pendingSourceDeadlineNanos <= 0L || displayPeriodNanos <= 0.0) return false
-        val reserve = max(MIN_RESERVE_NS.toDouble(), displayPeriodNanos * 0.15).toLong()
-        return nowNanos + displayPeriodNanos.toLong() + reserve >= pendingSourceDeadlineNanos
+        if (pendingSourceDeadlineNanos <= 0L) return false
+
+        val slotPeriodNanos = when {
+            plannedOutputPeriodNanos > 0.0 -> plannedOutputPeriodNanos
+            displayPeriodNanos > 0.0 -> displayPeriodNanos
+            else -> 0.0
+        }
+        if (slotPeriodNanos <= 0.0) return false
+
+        val reserve =
+            max(MIN_RESERVE_NS.toDouble(), slotPeriodNanos * SOURCE_RESERVE_RATIO)
+                .toLong()
+        return nowNanos + slotPeriodNanos.toLong() + reserve >=
+            pendingSourceDeadlineNanos
     }
 
-    private fun updateProtectedSourceReference(sourceFps: Float): Float {
-        if (sourceFps <= 1f) {
-            lastSourceHealthRatio = 0f
-            return 0f
-        }
-
-        if (protectedSourceFps <= 1f) {
-            protectedSourceFps = sourceFps
-        } else if (sourceFps >= protectedSourceFps) {
-            // Follow genuine source improvements reasonably quickly.
-            protectedSourceFps = max(
-                protectedSourceFps,
-                protectedSourceFps * 0.80f + sourceFps * 0.20f,
-            )
-        } else if (lastAdmittedBudget == 0) {
-            // Only re-anchor downward when synthetic work is fully out of the
-            // way. Decay by elapsed source time rather than by frame count so a
-            // 10 FPS source and a 60 FPS source converge on the same wall-clock
-            // timescale.
-            val sourceIntervalNanos =
-                sourcePeriodNanos.coerceIn(MIN_SOURCE_PERIOD_NS.toDouble(), MAX_SOURCE_PERIOD_NS.toDouble())
-            val decay = exp(-sourceIntervalNanos / SOURCE_REFERENCE_DECAY_TIME_NS).toFloat()
-            protectedSourceFps = max(
-                sourceFps,
-                protectedSourceFps * decay,
-            )
-        }
-
-        lastSourceHealthRatio =
-            (sourceFps / protectedSourceFps.coerceAtLeast(1f)).coerceIn(0f, 1.25f)
-        return lastSourceHealthRatio
-    }
-
+    @Suppress("UNUSED_PARAMETER")
     fun generationBudget(
         adaptive: Boolean,
         fixedGeneratedCeiling: Int,
         targetFps: Int,
         presentation: ApexPresentationTelemetry.Snapshot,
     ): Int {
-        val sourceFps = when {
-            presentation.sourceInputFps > 1f -> presentation.sourceInputFps
-            sourcePeriodNanos > 0.0 -> (1_000_000_000.0 / sourcePeriodNanos).toFloat()
-            else -> 0f
+        val fixedCeiling = fixedGeneratedCeiling.coerceIn(0, MAX_GENERATED_FRAMES)
+
+        if (!adaptive) {
+            adaptiveWantedGeneratedFrames = 0.0
+            adaptiveFractionalPhase = 0.0
+            lastAdmittedBudget = fixedCeiling
+            plannedOutputPeriodNanos =
+                if (sourcePeriodNanos > 0.0) {
+                    sourcePeriodNanos / (fixedCeiling + 1).coerceAtLeast(1)
+                } else {
+                    displayPeriodNanos
+                }
+            return lastAdmittedBudget
         }
-        val capacityFps = max(
-            presentation.opportunityFps,
-            measuredCapacityFps(),
+
+        configureAdaptive(
+            targetFps = targetFps.coerceAtLeast(0),
+            maxGeneratedFrames = MAX_GENERATED_FRAMES,
         )
 
         if (
-            sourceFps <= 1f ||
-            capacityFps <= 1f ||
-            displayPeriodNanos <= 0.0 ||
+            adaptiveTargetFps <= 0 ||
+            adaptiveMaxGeneratedFrames <= 0 ||
             sourcePeriodNanos <= 0.0
         ) {
+            lastAdmittedBudget = 0
+            plannedOutputPeriodNanos = 0.0
+            return 0
+        }
+
+        val sourceIntervalSeconds = when {
+            lastObservedSourceIntervalNanos > 0L ->
+                lastObservedSourceIntervalNanos / NANOS_PER_SECOND
+            else -> sourcePeriodNanos / NANOS_PER_SECOND
+        }
+        if (sourceIntervalSeconds <= 0.0 || !sourceIntervalSeconds.isFinite()) {
             lastAdmittedBudget = 0
             return 0
         }
 
-        val sourceHealthRatio = updateProtectedSourceReference(sourceFps)
-        val planningSourceFps = max(sourceFps, protectedSourceFps)
+        val smoothedSourceIntervalSeconds = sourcePeriodNanos / NANOS_PER_SECOND
+        adaptiveWantedGeneratedFrames = (
+            adaptiveTargetFps * smoothedSourceIntervalSeconds - 1.0
+        ).coerceIn(0.0, adaptiveMaxGeneratedFrames.toDouble())
 
-        val reserve = max(MIN_RESERVE_NS.toDouble(), displayPeriodNanos * 0.15)
-        val safeByDeadline = floor(
-            max(0.0, sourcePeriodNanos - reserve) / displayPeriodNanos,
-        ).toInt().coerceIn(0, 3)
-        val safeByCapacity =
-            (floor(capacityFps / planningSourceFps).toInt() - 1).coerceIn(0, 3)
+        adaptiveObservedSeconds += sourceIntervalSeconds
+        updateAdaptiveCostLimit(adaptiveWantedGeneratedFrames)
 
-        val baseRequested = if (adaptive) {
-            val boundedTarget = min(targetFps.coerceAtLeast(1).toFloat(), capacityFps * 0.98f)
-            (ceil(boundedTarget / planningSourceFps).toInt() - 1).coerceIn(0, 3)
-        } else {
-            fixedGeneratedCeiling.coerceIn(0, 3)
-        }
+        // Port the LSFG time-domain error diffuser: every source interval
+        // contributes elapsed target-output demand, consumes one source slot,
+        // and carries only the fractional remainder. Whole opportunities that
+        // cannot be used are consumed now rather than becoming catch-up debt.
+        val opportunityIntervalSeconds = min(
+            sourceIntervalSeconds,
+            smoothedSourceIntervalSeconds * OPPORTUNITY_INTERVAL_MAX_RATIO,
+        )
+        val intervalOutputDemand =
+            adaptiveTargetFps.toDouble() * opportunityIntervalSeconds
+        adaptiveFractionalPhase = max(
+            0.0,
+            adaptiveFractionalPhase + intervalOutputDemand - 1.0,
+        )
 
-        // One source may legitimately be buffered behind synthetics. Account for
-        // that single in-flight real frame when judging source-delivery health so
-        // normal interpolation latency is not misclassified as source loss.
-        val countDeliveryRatio = if (presentation.sourceArrivals > 0L) {
-            (
-                min(
-                    presentation.sourceArrivals,
-                    presentation.sourcePresented + 1L,
-                ).toFloat() / presentation.sourceArrivals.toFloat()
-            )
-        } else {
-            1f
-        }
-        val cadenceDeliveryRatio = if (presentation.sourceInputFps > 1f) {
-            presentation.sourceFps / presentation.sourceInputFps
-        } else {
-            1f
-        }
-        val deliveryRatio = max(countDeliveryRatio, cadenceDeliveryRatio)
+        val wholeOpportunities = floor(
+            adaptiveFractionalPhase + INTEGER_SNAP_EPSILON,
+        ).toInt().coerceAtLeast(0)
+        adaptiveFractionalPhase = (
+            adaptiveFractionalPhase - wholeOpportunities.toDouble()
+        ).coerceIn(0.0, 0.999999)
 
-        var requested = baseRequested
-        if (adaptive) {
-            if (presentation.outputPresented >= 4L) {
-                val boundedTarget =
-                    min(targetFps.coerceAtLeast(1).toFloat(), capacityFps * 0.98f)
-                val tolerance = max(0.75f, planningSourceFps * 0.08f)
-                val deficit = boundedTarget - presentation.outputFps
+        lastAdmittedBudget = min(
+            wholeOpportunities,
+            min(adaptiveCostLimit, adaptiveMaxGeneratedFrames),
+        ).coerceIn(0, MAX_GENERATED_FRAMES)
 
-                when {
-                    deliveryRatio < 0.95f ||
-                        sourceHealthRatio < SOURCE_RECOVERED_RATIO ||
-                        sourceProtectionActive -> {
-                        adaptiveExtraBudget = 0
-                        adaptiveDeficitStreak = 0
-                        adaptiveSatisfiedStreak = 0
-                    }
-
-                    deficit > tolerance &&
-                        baseRequested + adaptiveExtraBudget < 3 -> {
-                        adaptiveDeficitStreak++
-                        adaptiveSatisfiedStreak = 0
-                        if (adaptiveDeficitStreak >= 3) {
-                            adaptiveExtraBudget =
-                                (adaptiveExtraBudget + 1).coerceAtMost(3 - baseRequested)
-                            adaptiveDeficitStreak = 0
-                        }
-                    }
-
-                    deficit <= tolerance -> {
-                        adaptiveSatisfiedStreak++
-                        adaptiveDeficitStreak = 0
-                        if (adaptiveSatisfiedStreak >= 2 && adaptiveExtraBudget > 0) {
-                            adaptiveExtraBudget--
-                            adaptiveSatisfiedStreak = 0
-                        }
-                    }
-
-                    else -> {
-                        adaptiveDeficitStreak = 0
-                        adaptiveSatisfiedStreak = 0
-                    }
-                }
-            }
-            requested = (baseRequested + adaptiveExtraBudget).coerceIn(0, 3)
-        } else {
-            adaptiveExtraBudget = 0
-            adaptiveDeficitStreak = 0
-            adaptiveSatisfiedStreak = 0
-        }
-
-        var admitted = min(requested, min(safeByDeadline, safeByCapacity))
-
-        // Synthetic work is always subordinate to source delivery. Fixed mode
-        // and Adaptive share this invariant.
-        if (presentation.sourceArrivals >= 4L) {
-            if (deliveryRatio < 0.80f) {
-                admitted = 0
-                adaptiveExtraBudget = 0
-            } else if (deliveryRatio < 0.95f) {
-                admitted = (admitted - 1).coerceAtLeast(0)
-            }
-        }
-
-        // Protect source production itself, not merely Apex's ability to display
-        // frames it already received. The planning ratio uses the protected
-        // reference, so a falling source rate can never request more generated
-        // frames. Severe loss sheds all synthetic work immediately.
-        when {
-            sourceHealthRatio < SOURCE_DEGRADED_RATIO -> {
-                // A protected measurement must be synthetic-free; otherwise a
-                // permanently lower baseline could simply be Apex load that we
-                // accidentally normalize as healthy.
-                admitted = 0
-                sourceProtectionActive = true
-                sourceRecoveryStreak = 0
-                adaptiveExtraBudget = 0
-            }
-
-            sourceProtectionActive -> {
-                if (sourceHealthRatio >= SOURCE_RECOVERED_RATIO) {
-                    sourceRecoveryStreak++
-                    if (sourceRecoveryStreak < SOURCE_RECOVERY_SAMPLES) {
-                        admitted = min(admitted, 1)
-                    } else {
-                        sourceProtectionActive = false
-                        sourceRecoveryStreak = 0
-                    }
-                } else {
-                    // Keep the protected measurement synthetic-free until the
-                    // reference has genuinely converged on the lower source
-                    // cadence. Otherwise one admitted synthetic can pin an old
-                    // reference forever.
-                    sourceRecoveryStreak = 0
-                    admitted = 0
-                }
-            }
-        }
-
-        lastAdmittedBudget = admitted.coerceIn(0, 3)
+        plannedOutputPeriodNanos =
+            NANOS_PER_SECOND / adaptiveTargetFps.toDouble()
         return lastAdmittedBudget
     }
 
+    private fun configureAdaptive(
+        targetFps: Int,
+        maxGeneratedFrames: Int,
+    ) {
+        val boundedMax = maxGeneratedFrames.coerceIn(0, MAX_GENERATED_FRAMES)
+        if (
+            adaptiveTargetFps == targetFps &&
+            adaptiveMaxGeneratedFrames == boundedMax
+        ) {
+            return
+        }
+
+        val hadActiveConfig =
+            adaptiveTargetFps > 0 && adaptiveMaxGeneratedFrames > 0
+        val canWarmStart =
+            hadActiveConfig &&
+                runtimeCadenceEstablished &&
+                sourcePeriodNanos > 0.0
+
+        adaptiveTargetFps = targetFps
+        adaptiveMaxGeneratedFrames = boundedMax
+        adaptiveFractionalPhase = 0.0
+        adaptiveObservedSeconds = 0.0
+        adaptiveUnmetDemandSinceSeconds = -1.0
+
+        if (boundedMax <= 0 || targetFps <= 0) {
+            adaptiveCostLimit = 0
+            adaptiveWantedGeneratedFrames = 0.0
+            return
+        }
+
+        adaptiveWantedGeneratedFrames =
+            if (sourcePeriodNanos > 0.0) {
+                (
+                    targetFps * (sourcePeriodNanos / NANOS_PER_SECOND) - 1.0
+                ).coerceIn(0.0, boundedMax.toDouble())
+            } else {
+                0.0
+            }
+
+        adaptiveCostLimit =
+            if (canWarmStart) {
+                ceil(adaptiveWantedGeneratedFrames - INTEGER_SNAP_EPSILON)
+                    .toInt()
+                    .coerceIn(1, boundedMax)
+            } else {
+                1
+            }
+    }
+
+    private fun updateAdaptiveCostLimit(wantedGeneratedFrames: Double) {
+        if (adaptiveMaxGeneratedFrames <= 0) {
+            adaptiveCostLimit = 0
+            adaptiveUnmetDemandSinceSeconds = -1.0
+            return
+        }
+
+        if (adaptiveCostLimit <= 0) {
+            adaptiveCostLimit = 1
+        }
+        adaptiveCostLimit =
+            adaptiveCostLimit.coerceAtMost(adaptiveMaxGeneratedFrames)
+
+        if (
+            adaptiveCostLimit >= adaptiveMaxGeneratedFrames ||
+            wantedGeneratedFrames <= adaptiveCostLimit.toDouble() + 0.001
+        ) {
+            adaptiveUnmetDemandSinceSeconds = -1.0
+            return
+        }
+
+        if (adaptiveUnmetDemandSinceSeconds < 0.0) {
+            adaptiveUnmetDemandSinceSeconds = adaptiveObservedSeconds
+            return
+        }
+
+        if (
+            adaptiveObservedSeconds - adaptiveUnmetDemandSinceSeconds <
+            SUSTAINED_DEMAND_SECONDS
+        ) {
+            return
+        }
+
+        adaptiveCostLimit =
+            (adaptiveCostLimit + 1).coerceAtMost(adaptiveMaxGeneratedFrames)
+        adaptiveUnmetDemandSinceSeconds = -1.0
+    }
+
+    private fun robustSourcePeriodNanos(): Double {
+        if (recentSourcePeriodCount <= 0) return 0.0
+
+        for (index in 0 until recentSourcePeriodCount) {
+            sourcePeriodScratch[index] = recentSourcePeriodsNanos[index]
+        }
+        java.util.Arrays.sort(
+            sourcePeriodScratch,
+            0,
+            recentSourcePeriodCount,
+        )
+
+        var begin = 0
+        var end = recentSourcePeriodCount
+        if (recentSourcePeriodCount >= 7) {
+            begin = 1
+            end -= 1
+        }
+
+        var sum = 0.0
+        for (index in begin until end) {
+            sum += sourcePeriodScratch[index]
+        }
+        return sum / (end - begin).coerceAtLeast(1)
+    }
+
+    private fun resetSourceCadenceWindow() {
+        java.util.Arrays.fill(recentSourcePeriodsNanos, 0.0)
+        java.util.Arrays.fill(sourcePeriodScratch, 0.0)
+        recentSourcePeriodCount = 0
+        recentSourcePeriodCursor = 0
+    }
+
     companion object {
+        private const val MAX_GENERATED_FRAMES = 3
+
         private const val MIN_DISPLAY_PERIOD_NS = 2_000_000L
         private const val MAX_DISPLAY_PERIOD_NS = 50_000_000L
         private const val MIN_SOURCE_PERIOD_NS = 4_000_000L
         private const val MAX_SOURCE_PERIOD_NS = 250_000_000L
         private const val MIN_RESERVE_NS = 750_000L
+        private const val SOURCE_RESERVE_RATIO = 0.15
 
-        private const val SOURCE_DEGRADED_RATIO = 0.92f
-        private const val SOURCE_RECOVERED_RATIO = 0.97f
-        private const val SOURCE_REFERENCE_DECAY_TIME_NS = 3_000_000_000.0
-        private const val SOURCE_RECOVERY_SAMPLES = 3
+        private const val SOURCE_CADENCE_WINDOW = 9
+        private const val SOURCE_DISCONTINUITY_RATIO = 8.0
+        private const val SOURCE_PERIOD_MIN_RATIO = 0.75
+        private const val SOURCE_PERIOD_MAX_RATIO = 1.30
+        private const val SOURCE_SLOWDOWN_ALPHA = 0.45
+        private const val SOURCE_SPEEDUP_ALPHA = 0.30
+
+        private const val OPPORTUNITY_INTERVAL_MAX_RATIO = 1.50
+        private const val SUSTAINED_DEMAND_SECONDS = 0.600
+        private const val INTEGER_SNAP_EPSILON = 1e-6
+        private const val NANOS_PER_SECOND = 1_000_000_000.0
     }
 }

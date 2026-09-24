@@ -127,6 +127,11 @@ class ApexVulkanPresenterContractTest {
         assertTrue(engine.contains("mActiveGenerationBudget"))
         assertTrue(pipeline.contains("sourcePreemptsPending"))
         assertTrue(pipeline.contains("generationBudget"))
+        assertTrue(
+            "resource rebuilds must invalidate temporal history before new DIS work",
+            pipeline.contains("Any resource rebuild invalidates color/luma/flow history") &&
+                pipeline.contains("mRealFramesCaptured.store(0"),
+        )
         assertTrue(screen.contains("ApexPresentationTelemetry.snapshot()"))
         assertTrue(screen.contains("presentation.active"))
         assertTrue(screen.contains("presentation.sourceInputFps"))

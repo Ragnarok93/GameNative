@@ -354,6 +354,18 @@ void ApexEngine::ensureResources(int width, int height) {
     }
 
     cleanupResources();
+    // Any resource rebuild invalidates color/luma/flow history. Keeping the old
+    // captured-frame count here lets the next source pair read newly allocated,
+    // uninitialized "previous" textures after a quality/render-scale change.
+    mRealFramesCaptured.store(0, std::memory_order_release);
+    mFramesSinceReal.store(0, std::memory_order_release);
+    mPendingRealPresentation.store(false, std::memory_order_release);
+    mActiveGenerationBudget.store(0, std::memory_order_release);
+    mLastRealFrameTimeNanos.store(0, std::memory_order_release);
+    mTypicalDeltaNanos = 0.0f;
+    mHistoryIdx = 0;
+    mDeltaHistory.fill(0.0f);
+    mSortedHistory.fill(0.0f);
     mSurfaceWidth = width;
     mSurfaceHeight = height;
     mScaledWidth = sw;

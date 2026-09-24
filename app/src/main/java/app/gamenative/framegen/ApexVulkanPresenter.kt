@@ -191,18 +191,23 @@ class ApexVulkanPresenter(
         if (callbacksSinceTelemetryLog < 120) return
         callbacksSinceTelemetryLog = 0
         val stats = ApexPresentationTelemetry.snapshot()
+        val schedulerDiagnostics = scheduler.diagnostics()
         val adaptive = ApexNativeBridge.nativeIsAdaptiveFrameGeneration()
         val targetFps = ApexNativeBridge.nativeGetTargetFPS()
         val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: mode=%s target=%d fixed=%dx sourceIn=%.1f sourceOut=%.1f generated=%.1f repeats=%.1f output=%.1f opportunities=%.1f budget=%d totals(in=%d dropped=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
+            "display cadence: mode=%s target=%d fixed=%dx sourceIn=%.1f sourceOut=%.1f sourceRef=%.1f sourceHealth=%.2f protect=%s recovery=%d generated=%.1f repeats=%.1f output=%.1f opportunities=%.1f budget=%d totals(in=%d dropped=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
                 java.util.Locale.US,
                 if (adaptive) "adaptive" else "fixed",
                 targetFps,
                 fixedMultiplier,
                 stats.sourceInputFps,
                 stats.sourceFps,
+                schedulerDiagnostics.protectedSourceFps,
+                schedulerDiagnostics.sourceHealthRatio,
+                schedulerDiagnostics.sourceProtectionActive,
+                schedulerDiagnostics.recoveryStreak,
                 stats.generatedFps,
                 stats.repeatedFps,
                 stats.outputFps,
@@ -219,9 +224,29 @@ class ApexVulkanPresenter(
         )
     }
 
+    private fun scheduleThreadShutdown(localHandler: Handler?) {
+        if (!thread.isAlive) {
+            handler = null
+            return
+        }
+        if (localHandler == null) {
+            thread.quitSafely()
+            handler = null
+            return
+        }
+
+        localHandler.postDelayed(
+            {
+                if (thread.isAlive) thread.quitSafely()
+                handler = null
+            },
+            THREAD_DRAIN_DELAY_MS,
+        )
+    }
+
     fun stop() {
         if (!running && nativeHandle == 0L) {
-            if (thread.isAlive) thread.quitSafely()
+            scheduleThreadShutdown(handler)
             return
         }
         running = false
@@ -243,18 +268,25 @@ class ApexVulkanPresenter(
                 hasSourceHistory = false
                 nextSourceDeadlineNanos = 0L
                 scheduler.reset()
+                scheduleThreadShutdown(localHandler)
                 latch.countDown()
             }
         }
-        latch.await(2, TimeUnit.SECONDS)
-        thread.quitSafely()
-        handler = null
+        if (!latch.await(2, TimeUnit.SECONDS)) {
+            android.util.Log.w(
+                "ApexPresenter",
+                "Timed out draining presenter state; scheduling display-thread shutdown",
+            )
+            scheduleThreadShutdown(localHandler)
+        }
         ApexPresentationTelemetry.endSession()
     }
 
     override fun close() = stop()
 
     companion object {
+        private const val THREAD_DRAIN_DELAY_MS = 50L
+
         init {
             System.loadLibrary("gamenative_apex")
         }

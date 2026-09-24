@@ -23,6 +23,8 @@ object ApexPresentationTelemetry {
         val generatedFps: Float,
         val repeatedFps: Float,
         val outputFps: Float,
+        val opportunityFps: Float,
+        val admittedGenerationBudget: Int,
         val attempts: Long,
         val sourceArrivals: Long,
         val sourceDropped: Long,
@@ -141,6 +143,7 @@ object ApexPresentationTelemetry {
     private val generatedRing = TimestampRing()
     private val repeatedRing = TimestampRing()
     private val outputRing = TimestampRing()
+    private val opportunityRing = TimestampRing()
 
     private var epochStartNanos = 0L
     private var active = false
@@ -152,6 +155,7 @@ object ApexPresentationTelemetry {
     private var repeatedPresented = 0L
     private var outputPresented = 0L
     private var swapFailures = 0L
+    private var admittedGenerationBudget = 0
 
     private fun resetLocked(nowNanos: Long) {
         sourceInputRing.reset()
@@ -159,6 +163,7 @@ object ApexPresentationTelemetry {
         generatedRing.reset()
         repeatedRing.reset()
         outputRing.reset()
+        opportunityRing.reset()
         epochStartNanos = nowNanos
         attempts = 0L
         sourceArrivals = 0L
@@ -168,6 +173,7 @@ object ApexPresentationTelemetry {
         repeatedPresented = 0L
         outputPresented = 0L
         swapFailures = 0L
+        admittedGenerationBudget = 0
     }
 
     fun reset(nowNanos: Long = System.nanoTime()) = synchronized(lock) {
@@ -199,6 +205,17 @@ object ApexPresentationTelemetry {
     fun recordSourceDropped() = synchronized(lock) {
         if (!active) return@synchronized
         sourceDropped++
+    }
+
+    /** One actual Choreographer callback observed by the Apex presenter. */
+    fun recordDisplayOpportunity(nowNanos: Long = System.nanoTime()) = synchronized(lock) {
+        if (!active) return@synchronized
+        opportunityRing.record(nowNanos)
+    }
+
+    fun recordAdmission(generatedBudget: Int) = synchronized(lock) {
+        if (!active) return@synchronized
+        admittedGenerationBudget = generatedBudget.coerceIn(0, 3)
     }
 
     fun record(outputKind: Int, swapSucceeded: Boolean, nowNanos: Long = System.nanoTime()) =
@@ -256,6 +273,8 @@ object ApexPresentationTelemetry {
             generatedFps = (generatedRing.countSince(cutoff) * scale).toFloat(),
             repeatedFps = (repeatedRing.countSince(cutoff) * scale).toFloat(),
             outputFps = (outputRing.countSince(cutoff) * scale).toFloat(),
+            opportunityFps = (opportunityRing.countSince(cutoff) * scale).toFloat(),
+            admittedGenerationBudget = admittedGenerationBudget,
             attempts = attempts,
             sourceArrivals = sourceArrivals,
             sourceDropped = sourceDropped,

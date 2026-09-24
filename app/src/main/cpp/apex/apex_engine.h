@@ -149,6 +149,15 @@ public:
     bool isDebugOverlay() const { return mDebugOverlay.load(); }
     bool isRenderingGeneratedFrame() const { return mRenderingGeneratedFrame.load(); }
     int getLastOutputKind() const { return mLastOutputKind.load(std::memory_order_relaxed); }
+    bool hasPendingRealPresentation() const {
+        return mPendingRealPresentation.load(std::memory_order_acquire);
+    }
+    void presentPendingReal(
+        GLuint outputFboId,
+        int viewX,
+        int viewY,
+        int viewWidth,
+        int viewHeight);
 
 private:
     ApexEngine();

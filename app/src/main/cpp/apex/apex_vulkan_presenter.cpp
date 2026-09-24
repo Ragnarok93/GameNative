@@ -542,6 +542,48 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
     return packSourcePresentResult(releaseFenceFd, outputKind, swapSucceeded);
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_gamenative_framegen_ApexVulkanPresenter_nativeHasPendingSource(
+    JNIEnv*,
+    jclass,
+    jlong handle) {
+    auto* presenter = reinterpret_cast<Presenter*>(handle);
+    return presenter &&
+        apex::ApexEngine::getInstance().hasPendingRealPresentation()
+        ? JNI_TRUE
+        : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentPendingSourceFrame(
+    JNIEnv*,
+    jclass,
+    jlong handle) {
+    auto* presenter = reinterpret_cast<Presenter*>(handle);
+    if (!presenter ||
+        !presenter->hasSource ||
+        presenter->width <= 0 ||
+        presenter->height <= 0 ||
+        !makeCurrent(*presenter)) {
+        return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
+    }
+
+    apex::ApexEngine::getInstance().presentPendingReal(
+        0,
+        0,
+        0,
+        presenter->width,
+        presenter->height);
+    const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
+    if (outputKind == apex::APEX_OUTPUT_NONE) {
+        return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
+    }
+    const bool swapSucceeded =
+        eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
+    recordPresentation(*presenter, outputKind, swapSucceeded);
+    return packPulsePresentResult(outputKind, swapSucceeded);
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
     JNIEnv*,

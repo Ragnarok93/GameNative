@@ -103,9 +103,16 @@ class ApexVulkanPresenterContractTest {
                 presenter.contains("renderer.fpsLimit"),
         )
         assertTrue(
-            "generated work must be bounded by observed empty display opportunities",
-            presenter.contains("generationOpportunities") &&
-                presenter.contains("emptyCallbacksSinceSource"),
+            "generated work must be admitted by the source-protected future-slot scheduler",
+            presenter.contains("ApexSourceProtectedScheduler") &&
+                presenter.contains("scheduler.generationBudget") &&
+                presenter.contains("scheduler.shouldPresentSourceNow"),
+        )
+        assertTrue(
+            "a newer source must be held until the previously buffered real frame is presented",
+            presenter.contains("pendingSourceFrame") &&
+                presenter.contains("nativeHasPendingSource") &&
+                presenter.contains("nativePresentPendingSourceFrame"),
         )
     }
     @Test
@@ -125,8 +132,10 @@ class ApexVulkanPresenterContractTest {
         assertTrue(engine.contains("mResourcesDirty.store(true"))
         assertTrue(engine.contains("mPendingRealPresentation"))
         assertTrue(engine.contains("mActiveGenerationBudget"))
-        assertTrue(pipeline.contains("sourcePreemptsPending"))
-        assertTrue(pipeline.contains("generationBudget"))
+        assertTrue(engine.contains("presentPendingReal"))
+        assertFalse(pipeline.contains("sourcePreemptsPending"))
+        assertTrue(pipeline.contains("generatedOpportunityBudget < 0"))
+        assertTrue(pipeline.contains("presentPendingReal"))
         assertTrue(
             "resource rebuilds must invalidate temporal history before new DIS work",
             pipeline.contains("Any resource rebuild invalidates color/luma/flow history") &&

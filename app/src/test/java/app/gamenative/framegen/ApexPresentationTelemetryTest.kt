@@ -11,6 +11,10 @@ class ApexPresentationTelemetryTest {
         val start = 1_000_000_000L
         ApexPresentationTelemetry.beginSession(start)
 
+        ApexPresentationTelemetry.recordDisplayOpportunity(start + 5_000_000L)
+        ApexPresentationTelemetry.recordDisplayOpportunity(start + 15_000_000L)
+        ApexPresentationTelemetry.recordDisplayOpportunity(start + 25_000_000L)
+        ApexPresentationTelemetry.recordAdmission(2)
         ApexPresentationTelemetry.recordSourceArrival(start + 10_000_000L)
         ApexPresentationTelemetry.recordSourceArrival(start + 20_000_000L)
         ApexPresentationTelemetry.recordSourceArrival(start + 30_000_000L)
@@ -33,6 +37,8 @@ class ApexPresentationTelemetryTest {
         assertEquals(1L, snapshot.sourcePresented)
         assertEquals(1L, snapshot.generatedPresented)
         assertEquals(2L, snapshot.outputPresented)
+        assertEquals(2, snapshot.admittedGenerationBudget)
+        assertTrue(snapshot.opportunityFps > 0f)
         assertTrue(snapshot.sourceInputFps > snapshot.sourceFps)
 
         val sourceStats = ApexPresentationTelemetry.sourceFrameStats(

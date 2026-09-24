@@ -800,6 +800,36 @@ std::string ApexEngine::getDiagnostics() {
     return diag;
 }
 
+
+void ApexEngine::presentPendingReal(
+    GLuint outputFboId,
+    int viewX,
+    int viewY,
+    int viewWidth,
+    int viewHeight) {
+    if (!mActive.load(std::memory_order_relaxed) ||
+        !mPendingRealPresentation.exchange(false, std::memory_order_acq_rel) ||
+        mCurrentSlot < 0 ||
+        mColorRingTex[mCurrentSlot] == 0) {
+        mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
+        return;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
+    glViewport(viewX, viewY, viewWidth, viewHeight);
+    blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
+    mActualRealFrameCount.fetch_add(1, std::memory_order_relaxed);
+    mTotalRealFramesPresented++;
+    mLastPresentedNanos.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count(),
+        std::memory_order_relaxed);
+    mFramesSinceReal.store(0, std::memory_order_release);
+    mActiveGenerationBudget.store(0, std::memory_order_release);
+    mRenderingGeneratedFrame.store(false, std::memory_order_release);
+    mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
+}
+
 void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                               int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
                               bool sourceVerticalFlip, int generatedOpportunityBudget) {
@@ -876,8 +906,14 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mSortedHistory.fill(0.0f);
         }
 
-        const bool sourcePreemptsPending =
-            mPendingRealPresentation.exchange(false, std::memory_order_acq_rel);
+        // The presenter must never replace an unpresented real frame with a
+        // newer source. Keep this guard fail-safe for any future caller that
+        // violates the source-reserved contract.
+        if (mPendingRealPresentation.load(std::memory_order_acquire)) {
+            mFallbackCount++;
+            mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
+            return;
+        }
         onFrameCaptured(nowNanos, true);
         mRealFramesCaptured.fetch_add(1);
         mRealFramesCapturedCount.fetch_add(1);
@@ -920,13 +956,12 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             return;
         }
 
-        const int opportunityLimit = generatedOpportunityBudget < 0
-            ? 3
+        // A non-negative presenter budget is authoritative. It already folds
+        // requested mode/target, measured Choreographer capacity, source
+        // delivery health, and the reserved real-frame deadline together.
+        const int generationBudget = generatedOpportunityBudget < 0
+            ? std::clamp(mPlannedGen.load(std::memory_order_acquire), 0, 3)
             : std::clamp(generatedOpportunityBudget, 0, 3);
-        const int generationBudget =
-            sourcePreemptsPending
-                ? 0
-                : std::min(mPlannedGen.load(std::memory_order_acquire), opportunityLimit);
 
         // Pacing & Target FPS Governor:
         int targetFPS = mTargetFPS.load(std::memory_order_relaxed);

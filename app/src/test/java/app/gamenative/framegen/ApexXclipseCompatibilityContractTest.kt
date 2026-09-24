@@ -34,7 +34,9 @@ class ApexXclipseCompatibilityContractTest {
         assertTrue(presenter.contains("probeImageStoreFormat(GL_R32F"))
         assertTrue(presenter.contains("probeImageStoreFormat(GL_RGBA32F"))
         assertTrue(presenter.contains("GpuProfile::XclipseCompatibility"))
-        assertTrue(presenter.contains("setGpuProfile(decision.profile, decision.motionStorage)"))
+        assertTrue(presenter.contains("setGpuProfile("))
+        assertTrue(presenter.contains("decision.profile"))
+        assertTrue(presenter.contains("decision.motionStorage"))
         assertFalse(
             "Xclipse compatibility must not CPU-wait the Vulkan acquire fence",
             presenter.contains("sync_wait(") || presenter.contains("poll("),

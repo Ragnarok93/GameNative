@@ -1084,22 +1084,28 @@ fun XServerScreen(
             initialConfig = performanceHudConfig,
             initialCompactMode = PrefManager.performanceHudCompactMode,
             fpsTextProvider = {
-                if (!apexRuntimeEnabled) return@PerformanceHudView null
-                val presentation = ApexPresentationTelemetry.snapshot()
-                if (presentation.outputPresented <= 0L) return@PerformanceHudView null
-                val repeatSuffix = if (presentation.repeatedFps >= 0.5f) {
-                    String.format(Locale.US, " | REP %.1f", presentation.repeatedFps)
+                if (apexRuntimeEnabled) {
+                    val presentation = ApexPresentationTelemetry.snapshot()
+                    if (presentation.outputPresented > 0L) {
+                        val repeatSuffix = if (presentation.repeatedFps >= 0.5f) {
+                            String.format(Locale.US, " | REP %.1f", presentation.repeatedFps)
+                        } else {
+                            ""
+                        }
+                        String.format(
+                            Locale.US,
+                            "SRC %.1f | OUT %.1f | GEN %.1f%s",
+                            presentation.sourceFps,
+                            presentation.outputFps,
+                            presentation.generatedFps,
+                            repeatSuffix,
+                        )
+                    } else {
+                        null
+                    }
                 } else {
-                    ""
+                    null
                 }
-                String.format(
-                    Locale.US,
-                    "SRC %.1f | OUT %.1f | GEN %.1f%s",
-                    presentation.sourceFps,
-                    presentation.outputFps,
-                    presentation.generatedFps,
-                    repeatSuffix,
-                )
             },
         )
         val layoutParams = FrameLayout.LayoutParams(

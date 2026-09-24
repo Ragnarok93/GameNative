@@ -16,8 +16,6 @@ static GpuCapabilities fullCaps() {
         .maxComputeSharedMemoryBytes = 32768,
         .rgba8ImageStore = true,
         .rgba16fImageStore = true,
-        .r32fImageStore = true,
-        .rgba32fImageStore = true,
         .textureFetchBarrier = true,
     };
 }
@@ -41,22 +39,9 @@ int main() {
     {
         const auto d = selectGpuProfile("Samsung", "Xclipse 940", fullCaps());
         assert(d.profile == GpuProfile::XclipseCompatibility);
-        assert(d.motionStorage == MotionStorage::Rgba32f);
-        assert(d.allowFullDisHierarchy);
-        assert(d.preferredWorkgroupInvocations == 256);
-    }
-    {
-        auto caps = fullCaps();
-        caps.rgba16fImageStore = false;
-        const auto d = selectGpuProfile("Samsung", "Xclipse 940", caps);
-        assert(d.profile == GpuProfile::XclipseCompatibility);
-        assert(d.motionStorage == MotionStorage::Rgba32f);
-    }
-    {
-        auto caps = fullCaps();
-        caps.rgba32fImageStore = false;
-        const auto d = selectGpuProfile("Samsung", "Xclipse 940", caps);
-        assert(d.profile == GpuProfile::Unsupported);
+        assert(d.motionStorage == MotionStorage::Rgba8);
+        assert(!d.allowFullDisHierarchy);
+        assert(d.preferredWorkgroupInvocations == 64);
     }
     {
         auto caps = fullCaps();

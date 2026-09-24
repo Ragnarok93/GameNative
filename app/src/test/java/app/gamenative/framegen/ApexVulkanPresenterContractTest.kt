@@ -115,6 +115,31 @@ class ApexVulkanPresenterContractTest {
                 presenter.contains("nativePresentPendingSourceFrame"),
         )
     }
+
+    @Test
+    fun presenterDrainsPendingDisplayCallbacksBeforeQuittingItsLooper() {
+        val presenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
+
+        val stopStart = presenter.indexOf("fun stop()")
+        val companionStart = presenter.indexOf("companion object", stopStart)
+        assertTrue(stopStart >= 0 && companionStart > stopStart)
+        val stopMethod = presenter.substring(stopStart, companionStart)
+
+        assertTrue(
+            "presenter teardown must keep the display looper alive briefly after removing callbacks",
+            stopMethod.contains("scheduleThreadShutdown") &&
+                presenter.contains("THREAD_DRAIN_DELAY_MS") &&
+                presenter.contains("postDelayed"),
+        )
+        assertFalse(
+            "stop() must not synchronously quit the Choreographer looper after removing its callback",
+            stopMethod.contains("latch.await(2, TimeUnit.SECONDS)\n        thread.quitSafely()"),
+        )
+    }
+
+
     @Test
     fun sourceOrientationAndRuntimeSettingsAreStableContracts() {
         val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()

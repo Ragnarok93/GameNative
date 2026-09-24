@@ -251,11 +251,7 @@ class LsfgVkManagerTest {
             put("MESA_VK_WSI_PRESENT_MODE", "mailbox")
         }
         assertTrue(
-            LsfgVkManager.applyLaunchEnv(
-                container,
-                existing,
-                protectedAdrenoPresentation = true,
-            ),
+            LsfgVkManager.applyLaunchEnv(container, existing),
         )
         assertEquals(
             "mailbox",
@@ -264,11 +260,7 @@ class LsfgVkManagerTest {
 
         val absent = EnvVars()
         assertTrue(
-            LsfgVkManager.applyLaunchEnv(
-                container,
-                absent,
-                protectedAdrenoPresentation = true,
-            ),
+            LsfgVkManager.applyLaunchEnv(container, absent),
         )
         assertFalse(
             absent.has("MESA_VK_WSI_PRESENT_MODE"),

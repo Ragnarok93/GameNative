@@ -55,6 +55,7 @@ class PerformanceHudView(
     private val fpsProvider: () -> Float,
     initialConfig: PerformanceHudConfig = PerformanceHudConfig(),
     initialCompactMode: Boolean = false,
+    private val fpsTextProvider: (() -> String?)? = null,
 ) : FrameLayout(context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var updateJob: Job? = null
@@ -314,7 +315,8 @@ class PerformanceHudView(
             fpsValue = currentFps,
             cpuValue = cpuPercent?.toFloat(),
             gpuValue = gpuPercent?.toFloat(),
-            fps = String.format(Locale.US, "FPS %.1f", currentFps),
+            fps = fpsTextProvider?.invoke()?.takeIf { it.isNotBlank() }
+                ?: String.format(Locale.US, "FPS %.1f", currentFps),
             cpu = cpuPercent?.let { "CPU $it%" },
             gpu = gpuPercent?.let { "GPU $it%" },
             ram = "RAM ${readUsedRamText()}",

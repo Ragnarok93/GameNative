@@ -18,6 +18,13 @@
 
 namespace apex {
 
+enum ApexOutputKind : int {
+    APEX_OUTPUT_NONE = 0,
+    APEX_OUTPUT_SOURCE = 1,
+    APEX_OUTPUT_GENERATED = 2,
+    APEX_OUTPUT_REPEAT = 3,
+};
+
 static constexpr uint32_t DIS_SLOTS = 3;
 static constexpr uint32_t MAX_PYR_LEVELS = 4;
 
@@ -75,7 +82,8 @@ public:
         gamenative::apex::MotionStorage motionStorage);
 
     void processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
-                      int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame);
+                      int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
+                      bool sourceHalfTurn = false);
 
     // Legacy support for JNI bridge
     void processFrameWithData(GLuint i, GLuint d, GLuint h, GLuint o, int w, int height);
@@ -108,7 +116,11 @@ public:
     // Atomic Settings
     void setActive(bool e) { mActive.store(e); }
     bool isActive() const { return mActive.load(); }
-    void setQualityPreset(int q) { mQualityPreset.store(q); mInitialized = false; }
+    void setQualityPreset(int q) {
+        const int sanitized = q < 0 ? 0 : (q > 2 ? 2 : q);
+        const int previous = mQualityPreset.exchange(sanitized, std::memory_order_acq_rel);
+        if (previous != sanitized) mResourcesDirty.store(true, std::memory_order_release);
+    }
     int getQualityPreset() const { return mQualityPreset.load(); }
     void setLoggingEnabled(bool e) { mLoggingEnabled.store(e); }
     bool isLoggingEnabled() const { return mLoggingEnabled.load(); }
@@ -126,12 +138,17 @@ public:
     float getLiquidFeel() const { return mLiquidFeel.load(); }
     void setEdgeGuard(float g) { mEdgeGuard.store(g); }
     float getEdgeGuard() const { return mEdgeGuard.load(); }
-    void setRenderScale(float s) { mRenderScale.store(s); mInitialized = false; }
+    void setRenderScale(float s) {
+        const float sanitized = s < 0.25f ? 0.25f : (s > 1.0f ? 1.0f : s);
+        const float previous = mRenderScale.exchange(sanitized, std::memory_order_acq_rel);
+        if (previous != sanitized) mResourcesDirty.store(true, std::memory_order_release);
+    }
     float getRenderScale() const { return mRenderScale.load(); }
     void setPendingRealFrame(bool p) { mPendingRealFrame.store(p); }
     void setDebugOverlay(bool e) { mDebugOverlay.store(e); }
     bool isDebugOverlay() const { return mDebugOverlay.load(); }
     bool isRenderingGeneratedFrame() const { return mRenderingGeneratedFrame.load(); }
+    int getLastOutputKind() const { return mLastOutputKind.load(std::memory_order_relaxed); }
 
 private:
     ApexEngine();
@@ -209,6 +226,8 @@ private:
 
     // Atomics
     std::atomic<bool> mActive{false}, mLoggingEnabled{false}, mDebugOverlay{false}, mPendingRealFrame{false}, mRenderingGeneratedFrame{false};
+    std::atomic<bool> mResourcesDirty{false};
+    std::atomic<int> mLastOutputKind{APEX_OUTPUT_NONE};
     std::atomic<bool> mAdaptiveFrameGeneration{true};
     std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
     std::atomic<float> mShutterGain{0.0f}, mFlowScale{1.0f}, mLiquidFeel{0.5f}, mEdgeGuard{0.5f}, mRenderScale{1.0f}, mAutoMultiplierVal{2.0f};

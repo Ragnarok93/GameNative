@@ -29,6 +29,7 @@ class ApexVulkanPresenter(
     private var handler: Handler? = null
     private var choreographer: Choreographer? = null
     private var hasSourceHistory = false
+    private var callbacksSinceTelemetryLog = 0
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -41,17 +42,26 @@ class ApexVulkanPresenter(
 
             val frame = renderer.pollApexFrame()
             if (frame != null) {
-                val releaseFenceFd = nativePresentSourceFrame(
+                val result = nativePresentSourceFrame(
                     handle,
                     frame.hardwareBufferPtr,
                     frame.acquireFenceFd,
                     frame.width,
                     frame.height,
                 )
+                val releaseFenceFd = result.toInt()
+                val outputKind = ((result ushr 32) and 0xffL).toInt()
+                val swapSucceeded = ((result ushr 40) and 0x1L) != 0L
                 renderer.releaseApexFrame(frame, releaseFenceFd)
+                ApexPresentationTelemetry.record(outputKind, swapSucceeded)
                 hasSourceHistory = true
+                maybeLogPresentationTelemetry()
             } else if (hasSourceHistory) {
-                nativePresentGeneratedFrame(handle)
+                val result = nativePresentGeneratedFrame(handle)
+                val outputKind = result and 0xff
+                val swapSucceeded = (result and 0x100) != 0
+                ApexPresentationTelemetry.record(outputKind, swapSucceeded)
+                maybeLogPresentationTelemetry()
             }
 
             if (running) choreographer?.postFrameCallback(this)
@@ -60,6 +70,8 @@ class ApexVulkanPresenter(
 
     fun start() {
         if (running) return
+        ApexPresentationTelemetry.reset()
+        callbacksSinceTelemetryLog = 0
         running = true
         thread.start()
         val localHandler = Handler(thread.looper)
@@ -80,6 +92,28 @@ class ApexVulkanPresenter(
     private fun failPresenter() {
         running = false
         renderer.onApexPresenterFailure()
+    }
+
+    private fun maybeLogPresentationTelemetry() {
+        callbacksSinceTelemetryLog++
+        if (callbacksSinceTelemetryLog < 120) return
+        callbacksSinceTelemetryLog = 0
+        val stats = ApexPresentationTelemetry.snapshot()
+        android.util.Log.i(
+            "ApexPresenter",
+            "display cadence: source=%.1f generated=%.1f repeats=%.1f output=%.1f totals(source=%d generated=%d repeats=%d output=%d failures=%d)".format(
+                java.util.Locale.US,
+                stats.sourceFps,
+                stats.generatedFps,
+                stats.repeatedFps,
+                stats.outputFps,
+                stats.sourcePresented,
+                stats.generatedPresented,
+                stats.repeatedPresented,
+                stats.outputPresented,
+                stats.swapFailures,
+            ),
+        )
     }
 
     fun stop() {
@@ -125,9 +159,9 @@ class ApexVulkanPresenter(
             acquireFenceFd: Int,
             width: Int,
             height: Int,
-        ): Int
+        ): Long
 
         @JvmStatic
-        private external fun nativePresentGeneratedFrame(handle: Long): Boolean
+        private external fun nativePresentGeneratedFrame(handle: Long): Int
     }
 }

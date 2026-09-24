@@ -54,6 +54,12 @@ struct Presenter {
     int width = 0;
     int height = 0;
     bool hasSource = false;
+    uint64_t presentAttempts = 0;
+    uint64_t outputPresented = 0;
+    uint64_t sourcePresented = 0;
+    uint64_t generatedPresented = 0;
+    uint64_t repeatedPresented = 0;
+    uint64_t swapFailures = 0;
 
     PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC eglGetNativeClientBufferANDROID = nullptr;
     PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR = nullptr;
@@ -64,6 +70,42 @@ struct Presenter {
     PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID = nullptr;
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES = nullptr;
 };
+
+jlong packSourcePresentResult(int releaseFenceFd, int outputKind, bool swapSucceeded) {
+    uint64_t packed = static_cast<uint32_t>(releaseFenceFd);
+    packed |= (static_cast<uint64_t>(outputKind & 0xff) << 32);
+    if (swapSucceeded) packed |= (1ULL << 40);
+    return static_cast<jlong>(packed);
+}
+
+jint packPulsePresentResult(int outputKind, bool swapSucceeded) {
+    return static_cast<jint>((outputKind & 0xff) | (swapSucceeded ? 0x100 : 0));
+}
+
+void recordPresentation(Presenter& presenter, int outputKind, bool swapSucceeded) {
+    presenter.presentAttempts++;
+    if (!swapSucceeded) {
+        presenter.swapFailures++;
+    } else {
+        presenter.outputPresented++;
+        switch (outputKind) {
+            case apex::APEX_OUTPUT_SOURCE: presenter.sourcePresented++; break;
+            case apex::APEX_OUTPUT_GENERATED: presenter.generatedPresented++; break;
+            case apex::APEX_OUTPUT_REPEAT: presenter.repeatedPresented++; break;
+            default: break;
+        }
+    }
+    if ((presenter.presentAttempts % 120ULL) == 0ULL) {
+        PRES_LOGI(
+            "Apex presentation telemetry: attempts=%llu output=%llu source=%llu generated=%llu repeats=%llu swapFailures=%llu",
+            (unsigned long long)presenter.presentAttempts,
+            (unsigned long long)presenter.outputPresented,
+            (unsigned long long)presenter.sourcePresented,
+            (unsigned long long)presenter.generatedPresented,
+            (unsigned long long)presenter.repeatedPresented,
+            (unsigned long long)presenter.swapFailures);
+    }
+}
 
 bool makeCurrent(Presenter& presenter) {
     return presenter.display != EGL_NO_DISPLAY &&
@@ -436,7 +478,7 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativeDestroyPresenter(
     delete presenter;
 }
 
-extern "C" JNIEXPORT jint JNICALL
+extern "C" JNIEXPORT jlong JNICALL
 Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
     JNIEnv*,
     jclass,
@@ -449,14 +491,14 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
     auto* buffer = reinterpret_cast<AHardwareBuffer*>(hardwareBufferPtr);
     if (!presenter || !buffer || width <= 0 || height <= 0 || !makeCurrent(*presenter)) {
         if (acquireFenceFd >= 0) close(acquireFenceFd);
-        return -1;
+        return packSourcePresentResult(-1, apex::APEX_OUTPUT_NONE, false);
     }
 
     int fenceFd = acquireFenceFd;
     if (!waitAcquireFence(*presenter, fenceFd)) {
         // EGL did not take ownership if sync creation itself failed. Returning
         // that fd as the consumer-release fence keeps Vulkan reuse ordered.
-        return fenceFd;
+        return packSourcePresentResult(fenceFd, apex::APEX_OUTPUT_NONE, false);
     }
 
     if (presenter->width != width || presenter->height != height) {
@@ -473,7 +515,7 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
     ImportedSource source;
     if (!importSource(*presenter, buffer, source)) {
         destroyImportedSource(*presenter, source);
-        return -1;
+        return packSourcePresentResult(-1, apex::APEX_OUTPUT_NONE, false);
     }
 
     apex::ApexEngine::getInstance().processFrame(
@@ -485,16 +527,20 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
         0,
         width,
         height,
+        true,
         true);
 
+    const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
     const int releaseFenceFd = exportReleaseFence(*presenter);
-    eglSwapBuffers(presenter->display, presenter->surface);
+    const bool swapSucceeded =
+        eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
+    recordPresentation(*presenter, outputKind, swapSucceeded);
     destroyImportedSource(*presenter, source);
     presenter->hasSource = true;
-    return releaseFenceFd;
+    return packSourcePresentResult(releaseFenceFd, outputKind, swapSucceeded);
 }
 
-extern "C" JNIEXPORT jboolean JNICALL
+extern "C" JNIEXPORT jint JNICALL
 Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
     JNIEnv*,
     jclass,
@@ -505,7 +551,7 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
         presenter->width <= 0 ||
         presenter->height <= 0 ||
         !makeCurrent(*presenter)) {
-        return JNI_FALSE;
+        return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
     }
 
     apex::ApexEngine::getInstance().processFrame(0, 0,
@@ -516,7 +562,9 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
         presenter->width,
         presenter->height,
         false);
-    return eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE
-        ? JNI_TRUE
-        : JNI_FALSE;
+    const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
+    const bool swapSucceeded =
+        eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
+    recordPresentation(*presenter, outputKind, swapSucceeded);
+    return packPulsePresentResult(outputKind, swapSucceeded);
 }

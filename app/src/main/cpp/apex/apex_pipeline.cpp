@@ -38,7 +38,7 @@ void ApexEngine::setGpuProfile(
 GLenum ApexEngine::motionStorageFormat() const {
     return mMotionStorage == gamenative::apex::MotionStorage::Rgba32f
         ? GL_RGBA32F
-        : motionStorageFormat();
+        : GL_RGBA16F;
 }
 
 GLenum ApexEngine::motionStorageFilter() const {
@@ -347,12 +347,14 @@ void ApexEngine::ensureResources(int width, int height) {
     int fw = std::max(64, (int)(width * k + 0.5f));
     int fh = std::max(64, (int)(height * k + 0.5f));
 
-    if (mInitialized && width == mSurfaceWidth && height == mSurfaceHeight &&
+    const bool resourcesDirty = mResourcesDirty.load(std::memory_order_acquire);
+    if (mInitialized && !resourcesDirty && width == mSurfaceWidth && height == mSurfaceHeight &&
         sw == mScaledWidth && sh == mScaledHeight && fw == mFlowWidth && fh == mFlowHeight) {
         return;
     }
 
     cleanupResources();
+    mResourcesDirty.store(false, std::memory_order_release);
     mSurfaceWidth = width;
     mSurfaceHeight = height;
     mScaledWidth = sw;
@@ -471,7 +473,6 @@ void ApexEngine::ensureResources(int width, int height) {
 }
 
 void ApexEngine::cleanupResources() {
-    if (!mInitialized) return;
     for (uint32_t i = 0; i < DIS_SLOTS; i++) {
         if (mColorRingTex[i]) { glDeleteTextures(1, &mColorRingTex[i]); mColorRingTex[i] = 0; }
         if (mFlowColorTex[i]) { glDeleteTextures(1, &mFlowColorTex[i]); mFlowColorTex[i] = 0; }
@@ -789,7 +790,10 @@ std::string ApexEngine::getDiagnostics() {
 }
 
 void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
-                              int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame) {
+                              int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
+                              bool sourceHalfTurn) {
+    mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
+    mRenderingGeneratedFrame.store(false, std::memory_order_relaxed);
     if (!mActive.load(std::memory_order_relaxed)) return;
 
     mTotalFramesProcessed++;
@@ -806,6 +810,17 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         return;
     }
 
+    const float sourceUScale = static_cast<float>(viewWidth) / static_cast<float>(width);
+    const float sourceVScale = static_cast<float>(viewHeight) / static_cast<float>(height);
+    const float sourceUMin = sourceHalfTurn
+        ? static_cast<float>(viewX + viewWidth) / static_cast<float>(width)
+        : static_cast<float>(viewX) / static_cast<float>(width);
+    const float sourceVMin = sourceHalfTurn
+        ? static_cast<float>(viewY + viewHeight) / static_cast<float>(height)
+        : static_cast<float>(viewY) / static_cast<float>(height);
+    const float sourceUSpan = sourceHalfTurn ? -sourceUScale : sourceUScale;
+    const float sourceVSpan = sourceHalfTurn ? -sourceVScale : sourceVScale;
+
     ensureResources(viewWidth, viewHeight);
 
     if (!isHealthy()) {
@@ -813,11 +828,14 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
         glViewport(viewX, viewY, viewWidth, viewHeight);
         if (mQuadProg) {
-            blitQuad(inputTextureId, (float)viewX / width, (float)viewY / height, (float)viewWidth / width, (float)viewHeight / height);
+            blitQuad(inputTextureId, sourceUMin, sourceVMin, sourceUSpan, sourceVSpan);
         }
         if (isNewRealFrame) {
             mActualRealFrameCount.fetch_add(1);
             mTotalRealFramesPresented++;
+            mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
+        } else if (inputTextureId != 0) {
+            mLastOutputKind.store(APEX_OUTPUT_REPEAT, std::memory_order_relaxed);
         }
         return;
     }
@@ -836,12 +854,14 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         // 1. Capture full native resolution real frame
         glBindFramebuffer(GL_FRAMEBUFFER, mCaptureFbo[mCurrentSlot]);
         glViewport(0, 0, mScaledWidth, mScaledHeight);
-        blitQuad(inputTextureId, (float)viewX / width, (float)viewY / height, (float)viewWidth / width, (float)viewHeight / height);
+        blitQuad(inputTextureId, sourceUMin, sourceVMin, sourceUSpan, sourceVSpan);
 
-        // 2. Downscale directly from input texture into decoupled flow texture (180p / 252p / 360p)
+        // 2. Downscale from the same orientation-corrected source into the flow texture.
+        // The Vulkan AHB bridge is corrected exactly once here so history, optical flow,
+        // generated frames, and final real-frame presentation all share one coordinate space.
         glBindFramebuffer(GL_FRAMEBUFFER, mFlowFbo[mCurrentSlot]);
         glViewport(0, 0, mFlowWidth, mFlowHeight);
-        blitQuad(inputTextureId, (float)viewX / width, (float)viewY / height, (float)viewWidth / width, (float)viewHeight / height);
+        blitQuad(inputTextureId, sourceUMin, sourceVMin, sourceUSpan, sourceVSpan);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -852,6 +872,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mActualRealFrameCount.fetch_add(1);
             mTotalRealFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
+            mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
             return;
         }
 
@@ -869,6 +890,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mActualRealFrameCount.fetch_add(1);
             mTotalRealFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
+            mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
             return;
         }
 
@@ -939,12 +961,15 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         mGeneratedFrameCount.fetch_add(1);
         mTotalGenFramesPresented++;
         mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
+        mLastOutputKind.store(APEX_OUTPUT_GENERATED, std::memory_order_relaxed);
+        mRenderingGeneratedFrame.store(true, std::memory_order_relaxed);
     } else {
         // Off-VSYNC pulse from Choreographer
         if (mRealFramesCaptured.load() < 2 || mPlannedGen == 0) {
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
             glViewport(viewX, viewY, viewWidth, viewHeight);
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
+            mLastOutputKind.store(APEX_OUTPUT_REPEAT, std::memory_order_relaxed);
             return;
         }
 
@@ -962,6 +987,8 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mGeneratedFrameCount.fetch_add(1);
             mTotalGenFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
+            mLastOutputKind.store(APEX_OUTPUT_GENERATED, std::memory_order_relaxed);
+            mRenderingGeneratedFrame.store(true, std::memory_order_relaxed);
         } else if (fs == mPlannedGen) {
             // PRESENT BUFFERED REAL FRAME SECOND
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
@@ -970,6 +997,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mActualRealFrameCount.fetch_add(1);
             mTotalRealFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
+            mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
         } else {
             // Real frame delayed (game FPS dropped below target):
             // Hold the latest real frame without jumping backwards in time (eliminates wobble/shimmer)!
@@ -979,6 +1007,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mActualRealFrameCount.fetch_add(1);
             mTotalRealFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
+            mLastOutputKind.store(APEX_OUTPUT_REPEAT, std::memory_order_relaxed);
         }
     }
 

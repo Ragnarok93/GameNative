@@ -103,6 +103,7 @@ import app.gamenative.events.AndroidEvent
 import app.gamenative.events.SteamEvent
 import app.gamenative.ui.enums.Orientation
 import java.util.EnumSet
+import java.util.Locale
 import app.gamenative.externaldisplay.ExternalDisplayInputController
 import app.gamenative.externaldisplay.ExternalDisplaySwapController
 import app.gamenative.externaldisplay.SwapInputOverlayView
@@ -132,6 +133,7 @@ import app.gamenative.utils.downloader.CoreDriverDownloader
 import app.gamenative.utils.CustomGameScanner
 import app.gamenative.utils.ExecutableSelectionUtils
 import app.gamenative.framegen.ApexFrameGenerationManager
+import app.gamenative.framegen.ApexPresentationTelemetry
 import app.gamenative.utils.LsfgQuickMenuHelper
 import app.gamenative.utils.LsfgVkManager
 import app.gamenative.utils.ManifestComponentHelper
@@ -1065,17 +1067,40 @@ fun XServerScreen(
             context = context,
             fpsProvider = {
                 val raw = frameRating?.currentFPS ?: 0f
-                if (isLsfgAvailable && lsfgMultiplier >= 2) {
-                    // Only trust the layer's own measurement; multiplying raw
-                    // fabricates fps for games the layer never attaches to
-                    // (SHM-presenting games have no Vulkan swapchain).
-                    LsfgVkManager.readMeasuredFps(container) ?: raw
-                } else {
-                    raw
+                when {
+                    apexRuntimeEnabled -> {
+                        val presentation = ApexPresentationTelemetry.snapshot()
+                        if (presentation.outputPresented > 0L) presentation.outputFps else raw
+                    }
+                    isLsfgAvailable && lsfgMultiplier >= 2 -> {
+                        // Only trust the layer's own measurement; multiplying raw
+                        // fabricates fps for games the layer never attaches to
+                        // (SHM-presenting games have no Vulkan swapchain).
+                        LsfgVkManager.readMeasuredFps(container) ?: raw
+                    }
+                    else -> raw
                 }
             },
             initialConfig = performanceHudConfig,
             initialCompactMode = PrefManager.performanceHudCompactMode,
+            fpsTextProvider = {
+                if (!apexRuntimeEnabled) return@PerformanceHudView null
+                val presentation = ApexPresentationTelemetry.snapshot()
+                if (presentation.outputPresented <= 0L) return@PerformanceHudView null
+                val repeatSuffix = if (presentation.repeatedFps >= 0.5f) {
+                    String.format(Locale.US, " | REP %.1f", presentation.repeatedFps)
+                } else {
+                    ""
+                }
+                String.format(
+                    Locale.US,
+                    "SRC %.1f | OUT %.1f | GEN %.1f%s",
+                    presentation.sourceFps,
+                    presentation.outputFps,
+                    presentation.generatedFps,
+                    repeatSuffix,
+                )
+            },
         )
         val layoutParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,

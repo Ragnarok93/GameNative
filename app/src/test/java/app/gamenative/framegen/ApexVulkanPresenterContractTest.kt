@@ -78,7 +78,30 @@ class ApexVulkanPresenterContractTest {
             "source imports must be released after a release fence is exported",
             native.contains("destroyImportedSource"),
         )
+        assertTrue(
+            "Vulkan AHB source ingestion must request the one-time half-turn correction",
+            native.contains("true,\n        true);"),
+        )
+        assertTrue(
+            "presenter telemetry must classify the frame only after swap outcome is known",
+            native.contains("recordPresentation(*presenter, outputKind, swapSucceeded)"),
+        )
     }
+    @Test
+    fun sourceOrientationAndRuntimeSettingsAreStableContracts() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val screen = repoFile("app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt").readText()
+
+        assertTrue(pipeline.contains("sourceHalfTurn"))
+        assertTrue(pipeline.contains("sourceUSpan = sourceHalfTurn ? -sourceUScale : sourceUScale"))
+        assertTrue(pipeline.contains("sourceVSpan = sourceHalfTurn ? -sourceVScale : sourceVScale"))
+        assertTrue(engine.contains("mQualityPreset.exchange"))
+        assertTrue(engine.contains("mResourcesDirty.store(true"))
+        assertTrue(screen.contains("ApexPresentationTelemetry.snapshot()"))
+        assertTrue(screen.contains("SRC %.1f | OUT %.1f | GEN %.1f%s"))
+    }
+
     @Test
     fun presenterStopsBeforeNativeTargetTeardown() {
         val renderer = repoFile(

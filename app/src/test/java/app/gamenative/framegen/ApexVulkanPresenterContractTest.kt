@@ -63,6 +63,9 @@ class ApexVulkanPresenterContractTest {
 
     @Test
     fun generatedPulseDoesNotDependOnReleasedSourceAhb() {
+        val presenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
         val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
         val native = repoFile("app/src/main/cpp/apex/apex_vulkan_presenter.cpp").readText()
 

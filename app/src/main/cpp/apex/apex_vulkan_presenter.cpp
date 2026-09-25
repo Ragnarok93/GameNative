@@ -15,6 +15,8 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
 
 #ifndef EGL_OPENGL_ES3_BIT_KHR
 #define EGL_OPENGL_ES3_BIT_KHR 0x0040
@@ -51,9 +53,12 @@ struct Presenter {
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLContext context = EGL_NO_CONTEXT;
     EGLSurface surface = EGL_NO_SURFACE;
-    int width = 0;
-    int height = 0;
+    int sourceWidth = 0;
+    int sourceHeight = 0;
+    int outputWidth = 0;
+    int outputHeight = 0;
     bool hasSource = false;
+    std::unordered_map<AHardwareBuffer*, ImportedSource> importedSources;
     uint64_t presentAttempts = 0;
     uint64_t outputPresented = 0;
     uint64_t sourcePresented = 0;
@@ -149,6 +154,36 @@ void destroyImportedSource(Presenter& presenter, ImportedSource& source) {
         AHardwareBuffer_release(source.ahb);
         source.ahb = nullptr;
     }
+}
+
+void destroyImportedSources(Presenter& presenter) {
+    for (auto& [buffer, source] : presenter.importedSources) {
+        (void)buffer;
+        destroyImportedSource(presenter, source);
+    }
+    presenter.importedSources.clear();
+}
+
+bool refreshOutputExtent(Presenter& presenter) {
+    EGLint width = 0;
+    EGLint height = 0;
+    if (presenter.display != EGL_NO_DISPLAY &&
+        presenter.surface != EGL_NO_SURFACE &&
+        eglQuerySurface(presenter.display, presenter.surface, EGL_WIDTH, &width) == EGL_TRUE &&
+        eglQuerySurface(presenter.display, presenter.surface, EGL_HEIGHT, &height) == EGL_TRUE &&
+        width > 0 &&
+        height > 0) {
+        presenter.outputWidth = width;
+        presenter.outputHeight = height;
+        return true;
+    }
+
+    const int nativeWidth = presenter.window ? ANativeWindow_getWidth(presenter.window) : 0;
+    const int nativeHeight = presenter.window ? ANativeWindow_getHeight(presenter.window) : 0;
+    if (nativeWidth <= 0 || nativeHeight <= 0) return false;
+    presenter.outputWidth = nativeWidth;
+    presenter.outputHeight = nativeHeight;
+    return true;
 }
 
 bool waitAcquireFence(Presenter& presenter, int& acquireFenceFd) {
@@ -260,6 +295,29 @@ bool importSource(
     return glGetError() == GL_NO_ERROR;
 }
 
+ImportedSource* getOrImportSource(
+    Presenter& presenter,
+    AHardwareBuffer* buffer) {
+    auto found = presenter.importedSources.find(buffer);
+    if (found != presenter.importedSources.end())
+        return &found->second;
+
+    ImportedSource source;
+    if (!importSource(presenter, buffer, source))
+        return nullptr;
+
+    auto [inserted, insertedNew] =
+        presenter.importedSources.emplace(buffer, std::move(source));
+    if (!insertedNew)
+        return &inserted->second;
+
+    PRES_LOGI(
+        "Apex source import cached: ahb=%p cacheSize=%zu",
+        static_cast<void*>(buffer),
+        presenter.importedSources.size());
+    return &inserted->second;
+}
+
 bool initializePresenter(Presenter& presenter) {
     presenter.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (presenter.display == EGL_NO_DISPLAY) return false;
@@ -308,6 +366,7 @@ bool initializePresenter(Presenter& presenter) {
         nullptr);
     if (presenter.surface == EGL_NO_SURFACE) return false;
     if (!makeCurrent(presenter)) return false;
+    if (!refreshOutputExtent(presenter)) return false;
 
     const char* eglExtensions = eglQueryString(presenter.display, EGL_EXTENSIONS);
     if (!containsExtension(eglExtensions, "EGL_ANDROID_image_native_buffer") ||
@@ -424,6 +483,7 @@ void destroyPresenter(Presenter& presenter) {
         presenter.surface != EGL_NO_SURFACE &&
         presenter.context != EGL_NO_CONTEXT) {
         makeCurrent(presenter);
+        destroyImportedSources(presenter);
         apex::ApexEngine::getInstance().setActive(false);
         apex::ApexEngine::getInstance().destroy();
         eglMakeCurrent(
@@ -503,32 +563,35 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
         return packSourcePresentResult(fenceFd, apex::APEX_OUTPUT_NONE, false);
     }
 
-    if (presenter->width != width || presenter->height != height) {
-        ANativeWindow_setBuffersGeometry(
-            presenter->window,
-            width,
-            height,
-            WINDOW_FORMAT_RGBA_8888);
-        presenter->width = width;
-        presenter->height = height;
+    if (!refreshOutputExtent(*presenter)) {
+        return packSourcePresentResult(-1, apex::APEX_OUTPUT_NONE, false);
+    }
+    if (presenter->sourceWidth != width || presenter->sourceHeight != height) {
+        presenter->sourceWidth = width;
+        presenter->sourceHeight = height;
         apex::ApexEngine::getInstance().updateDimensions(width, height);
+        PRES_LOGI(
+            "Apex extent split: processing=%dx%d presentation=%dx%d",
+            presenter->sourceWidth,
+            presenter->sourceHeight,
+            presenter->outputWidth,
+            presenter->outputHeight);
     }
 
-    ImportedSource source;
-    if (!importSource(*presenter, buffer, source)) {
-        destroyImportedSource(*presenter, source);
+    ImportedSource* source = getOrImportSource(*presenter, buffer);
+    if (!source) {
         return packSourcePresentResult(-1, apex::APEX_OUTPUT_NONE, false);
     }
 
     apex::ApexEngine::getInstance().processFrame(
-        source.texture,
+        source->texture,
         0,
         width,
         height,
         0,
         0,
-        width,
-        height,
+        presenter->outputWidth,
+        presenter->outputHeight,
         true,
         true,
         std::clamp(static_cast<int>(generationOpportunities), 0, 3),
@@ -539,7 +602,6 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
     const bool swapSucceeded =
         eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
     recordPresentation(*presenter, outputKind, swapSucceeded);
-    destroyImportedSource(*presenter, source);
     presenter->hasSource = true;
     return packSourcePresentResult(releaseFenceFd, outputKind, swapSucceeded);
 }
@@ -564,8 +626,8 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentPendingSourceFrame
     auto* presenter = reinterpret_cast<Presenter*>(handle);
     if (!presenter ||
         !presenter->hasSource ||
-        presenter->width <= 0 ||
-        presenter->height <= 0 ||
+        presenter->sourceWidth <= 0 ||
+        presenter->sourceHeight <= 0 ||
         !makeCurrent(*presenter)) {
         return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
     }
@@ -574,8 +636,8 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentPendingSourceFrame
         0,
         0,
         0,
-        presenter->width,
-        presenter->height);
+        presenter->outputWidth,
+        presenter->outputHeight);
     const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
     if (outputKind == apex::APEX_OUTPUT_NONE) {
         return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
@@ -594,19 +656,19 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
     auto* presenter = reinterpret_cast<Presenter*>(handle);
     if (!presenter ||
         !presenter->hasSource ||
-        presenter->width <= 0 ||
-        presenter->height <= 0 ||
+        presenter->sourceWidth <= 0 ||
+        presenter->sourceHeight <= 0 ||
         !makeCurrent(*presenter)) {
         return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
     }
 
     apex::ApexEngine::getInstance().processFrame(0, 0,
-        presenter->width,
-        presenter->height,
+        presenter->sourceWidth,
+        presenter->sourceHeight,
         0,
         0,
-        presenter->width,
-        presenter->height,
+        presenter->outputWidth,
+        presenter->outputHeight,
         false);
     const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
     if (outputKind == apex::APEX_OUTPUT_NONE) {

@@ -281,9 +281,24 @@ class ApexVulkanPresenterContractTest {
                 native.contains("outputHeight") &&
                 native.contains("eglQuerySurface"),
         )
+        val sourcePresentStart = native.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame",
+        )
+        val pendingPresentStart = native.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativeHasPendingSource",
+            sourcePresentStart,
+        )
+        assertTrue(sourcePresentStart >= 0 && pendingPresentStart > sourcePresentStart)
+        val sourcePresent = native.substring(sourcePresentStart, pendingPresentStart)
         assertFalse(
             "source AHB dimensions must not resize the Android presentation surface",
-            native.contains("ANativeWindow_setBuffersGeometry"),
+            sourcePresent.contains("ANativeWindow_setBuffersGeometry"),
+        )
+        assertTrue(
+            "presenter creation must size the EGL child surface from the real presentation extent",
+            native.contains("jint outputWidth") &&
+                native.contains("jint outputHeight") &&
+                native.contains("ANativeWindow_setBuffersGeometry"),
         )
         assertTrue(
             "persistent Vulkan AHB ring entries must keep one persistent EGL/GL import per AHB",

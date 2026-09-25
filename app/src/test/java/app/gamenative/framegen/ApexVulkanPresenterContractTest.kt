@@ -324,4 +324,33 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+    @Test
+    fun processingExtentDoesNotExpandSourceUvSpanWhenPresentationIsLarger() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val presenter = repoFile(
+            "app/src/main/cpp/apex/apex_vulkan_presenter.cpp",
+        ).readText()
+
+        assertTrue(
+            "Apex processFrame must expose presentation dimensions separately from source crop dimensions",
+            engine.contains("int outputViewWidth = 0") &&
+                engine.contains("int outputViewHeight = 0"),
+        )
+        assertTrue(
+            "source UV span must continue to derive from the source crop, not the presentation extent",
+            pipeline.contains(
+                "const float sourceUScale = static_cast<float>(viewWidth) / static_cast<float>(width)",
+            ) &&
+                pipeline.contains(
+                    "const int presentationWidth = outputViewWidth > 0 ? outputViewWidth : viewWidth",
+                ),
+        )
+        assertTrue(
+            "the Vulkan presenter must pass source-sized crop coordinates and native presentation dimensions separately",
+            presenter.contains("width,\n        height,\n        true,") &&
+                presenter.contains("presenter->outputWidth,\n        presenter->outputHeight"),
+        )
+    }
+
 }

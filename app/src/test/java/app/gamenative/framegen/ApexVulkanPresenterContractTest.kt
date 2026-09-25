@@ -353,4 +353,82 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+    @Test
+    fun presenterUsesProcessingSizedBuffersAndSamplesCriticalPathWithoutHotLoopEglRebinds() {
+        val javaPresenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
+        val renderer = repoFile(
+            "app/src/main/java/com/winlator/renderer/VulkanRenderer.java",
+        ).readText()
+        val native = repoFile(
+            "app/src/main/cpp/apex/apex_vulkan_presenter.cpp",
+        ).readText()
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        assertTrue(
+            "SurfaceFlinger must scale the processing-sized Apex layer to the display extent",
+            renderer.contains(".setScale(") &&
+                renderer.contains("getApexTargetWidth") &&
+                renderer.contains("getApexTargetHeight"),
+        )
+        assertTrue(
+            "the EGL window must be created at the processing extent, not the physical display extent",
+            javaPresenter.contains("renderer.getApexTargetWidth()") &&
+                javaPresenter.contains("renderer.getApexTargetHeight()"),
+        )
+
+        val sourceStart = native.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame",
+        )
+        val sourceEnd = native.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativeHasPendingSource",
+            sourceStart,
+        )
+        val generatedStart = native.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame",
+        )
+        assertTrue(sourceStart >= 0 && sourceEnd > sourceStart && generatedStart > sourceEnd)
+        val sourceHotPath = native.substring(sourceStart, sourceEnd)
+        val generatedHotPath = native.substring(generatedStart)
+
+        assertFalse(
+            "dedicated presenter thread must not call eglMakeCurrent for every source frame",
+            sourceHotPath.contains("makeCurrent(*presenter)"),
+        )
+        assertFalse(
+            "dedicated presenter thread must not query EGL surface extent for every source frame",
+            sourceHotPath.contains("refreshOutputExtent(*presenter)"),
+        )
+        assertFalse(
+            "generated pulses must not call eglMakeCurrent on every display callback",
+            generatedHotPath.contains("makeCurrent(*presenter)"),
+        )
+
+        listOf(
+            "Apex presenter cost:",
+            "acquire_ms=",
+            "process_ms=",
+            "release_ms=",
+            "swap_ms=",
+            "total_ms=",
+        ).forEach { token ->
+            assertTrue("presenter critical-path telemetry is missing $token", native.contains(token))
+        }
+
+        assertTrue(
+            "Adreno 650 must use the demonstrated 180p flow ceiling",
+            native.contains("Adreno (TM) 650") &&
+                native.contains("setFlowShortSideCap(180)"),
+        )
+        assertTrue(
+            "flow scale must affect resource sizing and invalidate resources when changed",
+            engine.contains("setFlowShortSideCap") &&
+                engine.contains("mResourcesDirty.store(true") &&
+                pipeline.contains("mFlowScale.load") &&
+                pipeline.contains("mFlowShortSideCap.load"),
+        )
+    }
+
 }

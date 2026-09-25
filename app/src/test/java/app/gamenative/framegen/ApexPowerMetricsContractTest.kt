@@ -62,4 +62,37 @@ class ApexPowerMetricsContractTest {
         )
     }
 
+    @Test
+    fun apexGpuTimingUsesExtEntryPointsConsistently() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        listOf(
+            "glGenQueriesEXT",
+            "glDeleteQueriesEXT",
+            "glBeginQueryEXT",
+            "glEndQueryEXT",
+            "glGetQueryObjectuivEXT",
+            "glGetQueryObjectui64vEXT",
+        ).forEach { token ->
+            assertTrue("EXT timer-query plumbing is missing $token",
+                pipeline.contains(token) || engine.contains(token))
+        }
+        assertTrue(
+            "timer extension support must require every EXT entry point used by the sampler",
+            pipeline.contains("mGenQueriesEXT") &&
+                pipeline.contains("mDeleteQueriesEXT") &&
+                pipeline.contains("mBeginQueryEXT") &&
+                pipeline.contains("mEndQueryEXT") &&
+                pipeline.contains("mGetQueryObjectuivEXT"),
+        )
+        assertTrue(
+            "timer implementation must not mix core query entry points with EXT query targets",
+            !pipeline.contains("glGenQueries(") &&
+                !pipeline.contains("glDeleteQueries(") &&
+                !pipeline.contains("glBeginQuery(") &&
+                !pipeline.contains("glEndQuery("),
+        )
+    }
+
 }

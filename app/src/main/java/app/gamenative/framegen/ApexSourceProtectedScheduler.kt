@@ -445,20 +445,13 @@ class ApexSourceProtectedScheduler {
 
         val currentInterval =
             currentSourceIntervalNanos.takeIf { it > 0L }?.toDouble() ?: baseline
-        val desiredWhole = if (adaptive) {
-            adaptiveWantedGeneratedFrames =
+        adaptiveWantedGeneratedFrames =
+            if (adaptive) {
                 (targetFps.coerceAtLeast(0) * (currentInterval / NANOS_PER_SECOND) - 1.0)
                     .coerceIn(0.0, MAX_GENERATED_FRAMES.toDouble())
-            advanceAdaptivePhase(
-                targetFps = targetFps.coerceAtLeast(0),
-                currentIntervalNanos = currentInterval,
-                baselineIntervalNanos = baseline,
-            )
-        } else {
-            adaptiveWantedGeneratedFrames = 0.0
-            adaptiveFractionalPhase = 0.0
-            fixedCeiling
-        }
+            } else {
+                0.0
+            }
         requestedSyntheticCount =
             if (adaptive) {
                 kotlin.math.ceil(adaptiveWantedGeneratedFrames - INTEGER_SNAP_EPSILON)
@@ -487,8 +480,37 @@ class ApexSourceProtectedScheduler {
             return 0
         }
 
+        // Choreographer capacity is a rate, not an integer number of callbacks
+        // guaranteed inside every individual source interval. Preserve that
+        // fractional spare capacity and combine it with source demand before
+        // quantizing generation. This prevents a 24.1 FPS source on a measured
+        // ~25.6 Hz callback stream from being permanently clamped to zero while
+        // also avoiding the unsafe ceil-to-one-every-frame alternative.
+        val presentationCapacityPerSource =
+            computePresentationCapacityPerSource(presentation, baseline)
         presentationOpportunityBudget =
-            computePresentationBudget(presentation, baseline)
+            kotlin.math.ceil(
+                presentationCapacityPerSource - INTEGER_SNAP_EPSILON,
+            ).toInt().coerceIn(0, MAX_GENERATED_FRAMES)
+
+        val opportunityInterval = min(
+            currentInterval,
+            baseline * OPPORTUNITY_INTERVAL_MAX_RATIO,
+        )
+        val sourceDemandPerInterval =
+            if (adaptive) {
+                (
+                    targetFps.coerceAtLeast(0).toDouble() *
+                        (opportunityInterval / NANOS_PER_SECOND) -
+                        1.0
+                    ).coerceIn(0.0, MAX_GENERATED_FRAMES.toDouble())
+            } else {
+                fixedCeiling.toDouble()
+            }
+        val schedulableDemandPerInterval =
+            min(sourceDemandPerInterval, presentationCapacityPerSource)
+        val desiredWhole =
+            advanceGenerationPhase(schedulableDemandPerInterval)
 
         val costBudget = computeCostBudget(baseline)
         var limit = min(admissionLimit.coerceAtLeast(1), presentationOpportunityBudget)
@@ -497,8 +519,10 @@ class ApexSourceProtectedScheduler {
             limit = min(limit, 1)
         }
 
-        val desiredBudget =
-            if (adaptive) desiredWhole else fixedCeiling
+        // desiredWhole already consumed this interval's target/display-capacity
+        // opportunity. Anything rejected below is dropped rather than retained
+        // as catch-up debt.
+        val desiredBudget = desiredWhole
         val admitted = min(desiredBudget, limit)
             .coerceIn(0, MAX_GENERATED_FRAMES)
 
@@ -517,23 +541,14 @@ class ApexSourceProtectedScheduler {
         return admitted
     }
 
-    private fun advanceAdaptivePhase(
-        targetFps: Int,
-        currentIntervalNanos: Double,
-        baselineIntervalNanos: Double,
-    ): Int {
-        if (targetFps <= 0) {
-            adaptiveFractionalPhase = 0.0
+    private fun advanceGenerationPhase(wantedPerSource: Double): Int {
+        if (!(wantedPerSource > 0.0)) {
             return 0
         }
-        val opportunityInterval = min(
-            currentIntervalNanos,
-            baselineIntervalNanos * OPPORTUNITY_INTERVAL_MAX_RATIO,
-        )
         adaptiveFractionalPhase = max(
             0.0,
             adaptiveFractionalPhase +
-                targetFps.toDouble() * (opportunityInterval / NANOS_PER_SECOND) - 1.0,
+                wantedPerSource.coerceIn(0.0, MAX_GENERATED_FRAMES.toDouble()),
         )
         val whole = floor(adaptiveFractionalPhase + INTEGER_SNAP_EPSILON)
             .toInt()
@@ -543,19 +558,18 @@ class ApexSourceProtectedScheduler {
         return whole.coerceAtMost(MAX_GENERATED_FRAMES)
     }
 
-    private fun computePresentationBudget(
+    private fun computePresentationCapacityPerSource(
         presentation: ApexPresentationTelemetry.Snapshot,
         baselineIntervalNanos: Double,
-    ): Int {
-        val baselineFps = NANOS_PER_SECOND / baselineIntervalNanos
+    ): Double {
         val measured =
             presentation.opportunityFps.takeIf { it > 1f }?.toDouble()
                 ?: measuredCapacityFps().toDouble().takeIf { it > 1.0 }
-                ?: return MAX_GENERATED_FRAMES
+                ?: return MAX_GENERATED_FRAMES.toDouble()
         val opportunitiesPerSource =
             measured * baselineIntervalNanos / NANOS_PER_SECOND
-        return (floor(opportunitiesPerSource + INTEGER_SNAP_EPSILON).toInt() - 1)
-            .coerceIn(0, MAX_GENERATED_FRAMES)
+        return (opportunitiesPerSource - 1.0)
+            .coerceIn(0.0, MAX_GENERATED_FRAMES.toDouble())
     }
 
     /**

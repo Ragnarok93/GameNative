@@ -42,7 +42,22 @@ class LsfgBuildWorkflowContractTest {
     fun debugWorkflowBuildsLsfgRuntimeInDebugMode() {
         val workflow = repoFile(".github/workflows/pluvia-pr-check.yml").readText()
         val action = repoFile(".github/actions/prepare-lsfg-native/action.yml").readText()
-        val dollar = ' {
+        val dollar = '$'
+
+        assertTrue(
+            "LegacyDebug workflow must request a Debug LSFG native build",
+            workflow.contains("build-type: Debug"),
+        )
+        assertFalse(
+            "LegacyDebug workflow must never request a Release LSFG native build",
+            workflow.contains("build-type: Release"),
+        )
+        assertTrue(action.contains("LSFG_BUILD_TYPE: ${dollar}{{ inputs.build-type }}"))
+        assertTrue(action.contains("scripts/build/android.sh \"${dollar}LSFG_BUILD_TYPE\""))
+    }
+
+    @Test
+    fun apkWorkflowsPublishSingleUnsplitArtifacts() {
         listOf(
             ".github/workflows/pluvia-pr-check.yml",
             ".github/workflows/legacy-release-build.yml",
@@ -72,7 +87,6 @@ class LsfgBuildWorkflowContractTest {
             release.contains("pull_request:"),
         )
     }
-
     @Test
     fun apkWorkflowsVerifyThePackagedNativeMarkerMatchesTheGitlink() {
         listOf(

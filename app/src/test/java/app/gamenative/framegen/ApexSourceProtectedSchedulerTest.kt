@@ -247,6 +247,94 @@ class ApexSourceProtectedSchedulerTest {
     }
 
     @Test
+    fun adaptiveThirtyFromTwentyFourPointOneCanUseFractionalDisplayHeadroom() {
+        val s = ApexSourceProtectedScheduler()
+        val sourcePeriod = 41_530_000L
+        seedDisplay(s, 11_000_000_000L, 39_062_500L)
+        var t = learnBaseline(s, 11_000_000_000L, sourcePeriod, samples = 10)
+
+        var generatedIntervals = 0
+        var zeroIntervals = 0
+        repeat(48) {
+            t += sourcePeriod
+            s.recordSourceArrival(t)
+            val budget = s.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 30,
+                presentation = telemetry(
+                    sourceInFps = 24.1f,
+                    sourceOutFps = 24.1f,
+                    generatedFps = 0f,
+                    outputFps = 24.1f,
+                    opportunityFps = 25.6f,
+                ),
+            )
+            if (budget > 0) generatedIntervals++ else zeroIntervals++
+        }
+
+        assertTrue(
+            "fractional headroom above the source rate must allow some synthetic intervals",
+            generatedIntervals > 0,
+        )
+        assertTrue(
+            "30 FPS from a ~24 FPS source is fractional; it must not generate every interval",
+            zeroIntervals > 0,
+        )
+        assertTrue(
+            "presentation capacity is a ceiling, not a per-source whole-slot requirement",
+            s.diagnostics().presentationOpportunityBudget >= 1,
+        )
+    }
+
+    @Test
+    fun oneMildGeneratedIntervalDoesNotCreateALongProtectionLockout() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 12_000_000_000L, 16_666_667L)
+        var t = learnBaseline(s, 12_000_000_000L, 41_530_000L, samples = 10)
+
+        // Establish a generation probe, then reproduce the observed single
+        // ~49.8 ms interval against a ~41.5 ms clean baseline.
+        repeat(8) {
+            t += 41_530_000L
+            s.recordSourceArrival(t)
+            s.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 30,
+                presentation = telemetry(opportunityFps = 60f),
+            )
+        }
+        t += 49_830_000L
+        s.recordSourceArrival(t)
+        s.generationBudget(
+            adaptive = true,
+            fixedGeneratedCeiling = 3,
+            targetFps = 30,
+            presentation = telemetry(sourceInFps = 20f, opportunityFps = 60f),
+        )
+
+        var firstRecoveredBudget = 0
+        repeat(3) {
+            t += 41_530_000L
+            s.recordSourceArrival(t)
+            val budget = s.generationBudget(
+                adaptive = true,
+                fixedGeneratedCeiling = 3,
+                targetFps = 30,
+                presentation = telemetry(opportunityFps = 60f),
+            )
+            if (firstRecoveredBudget == 0) firstRecoveredBudget = budget
+        }
+
+        assertTrue(
+            "a single mild jitter interval must source-protect briefly, not suppress generation for a long hold",
+            firstRecoveredBudget > 0,
+        )
+    }
+
+
+    @Test
     fun resetClearsProtectionAndFractionalState() {
         val s = ApexSourceProtectedScheduler()
         seedDisplay(s, 10_000_000_000L)

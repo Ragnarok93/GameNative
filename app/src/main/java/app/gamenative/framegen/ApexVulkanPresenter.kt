@@ -157,10 +157,14 @@ class ApexVulkanPresenter(
         handler = localHandler
         localHandler.post {
             if (!running) return@post
+            val processingWidth =
+                renderer.getApexTargetWidth().takeIf { it > 0 } ?: renderer.surfaceWidth
+            val processingHeight =
+                renderer.getApexTargetHeight().takeIf { it > 0 } ?: renderer.surfaceHeight
             val handle = nativeCreatePresenter(
                 surface,
-                renderer.surfaceWidth,
-                renderer.surfaceHeight,
+                processingWidth,
+                processingHeight,
             )
             if (handle == 0L) {
                 failPresenter()

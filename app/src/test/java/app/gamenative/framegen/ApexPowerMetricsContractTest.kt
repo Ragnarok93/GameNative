@@ -41,7 +41,7 @@ class ApexPowerMetricsContractTest {
         }
 
         val availabilityPoll = pipeline.indexOf(
-            "glGetQueryObjectuiv(lastQuery, GL_QUERY_RESULT_AVAILABLE",
+            "mGetQueryObjectuivEXT(",
         )
         val resultRead = pipeline.indexOf(
             "mGetQueryObjectui64vEXT(query, GL_QUERY_RESULT",

@@ -12,6 +12,7 @@
 #include <GLES2/gl2ext.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -65,6 +66,13 @@ struct Presenter {
     uint64_t generatedPresented = 0;
     uint64_t repeatedPresented = 0;
     uint64_t swapFailures = 0;
+    uint64_t costSamples = 0;
+    uint64_t acquireCostNanos = 0;
+    uint64_t processCostNanos = 0;
+    uint64_t releaseCostNanos = 0;
+    uint64_t swapCostNanos = 0;
+    uint64_t totalCostNanos = 0;
+    uint64_t maxTotalCostNanos = 0;
 
     PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC eglGetNativeClientBufferANDROID = nullptr;
     PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR = nullptr;
@@ -85,6 +93,39 @@ jlong packSourcePresentResult(int releaseFenceFd, int outputKind, bool swapSucce
 
 jint packPulsePresentResult(int outputKind, bool swapSucceeded) {
     return static_cast<jint>((outputKind & 0xff) | (swapSucceeded ? 0x100 : 0));
+}
+
+using PresenterClock = std::chrono::steady_clock;
+
+uint64_t elapsedNanos(PresenterClock::time_point start, PresenterClock::time_point end) {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+}
+
+void recordPresenterCost(
+    Presenter& presenter,
+    uint64_t acquireNanos,
+    uint64_t processNanos,
+    uint64_t releaseNanos,
+    uint64_t swapNanos,
+    uint64_t totalNanos) {
+    presenter.costSamples++;
+    presenter.acquireCostNanos += acquireNanos;
+    presenter.processCostNanos += processNanos;
+    presenter.releaseCostNanos += releaseNanos;
+    presenter.swapCostNanos += swapNanos;
+    presenter.totalCostNanos += totalNanos;
+    presenter.maxTotalCostNanos = std::max(presenter.maxTotalCostNanos, totalNanos);
+}
+
+void resetPresenterCost(Presenter& presenter) {
+    presenter.costSamples = 0;
+    presenter.acquireCostNanos = 0;
+    presenter.processCostNanos = 0;
+    presenter.releaseCostNanos = 0;
+    presenter.swapCostNanos = 0;
+    presenter.totalCostNanos = 0;
+    presenter.maxTotalCostNanos = 0;
 }
 
 void recordPresentation(Presenter& presenter, int outputKind, bool swapSucceeded) {
@@ -109,6 +150,19 @@ void recordPresentation(Presenter& presenter, int outputKind, bool swapSucceeded
             (unsigned long long)presenter.generatedPresented,
             (unsigned long long)presenter.repeatedPresented,
             (unsigned long long)presenter.swapFailures);
+        if (presenter.costSamples > 0) {
+            const double d = static_cast<double>(presenter.costSamples) * 1000000.0;
+            PRES_LOGI(
+                "Apex presenter cost: samples=%llu acquire_ms=%.3f process_ms=%.3f release_ms=%.3f swap_ms=%.3f total_ms=%.3f max_total_ms=%.3f",
+                (unsigned long long)presenter.costSamples,
+                presenter.acquireCostNanos / d,
+                presenter.processCostNanos / d,
+                presenter.releaseCostNanos / d,
+                presenter.swapCostNanos / d,
+                presenter.totalCostNanos / d,
+                presenter.maxTotalCostNanos / 1000000.0);
+            resetPresenterCost(presenter);
+        }
     }
 }
 
@@ -459,12 +513,22 @@ bool initializePresenter(Presenter& presenter) {
         return false;
     }
 
-    apex::ApexEngine::getInstance().setGpuProfile(
-        decision.profile,
-        decision.motionStorage);
+    auto& apexEngine = apex::ApexEngine::getInstance();
+    apexEngine.setGpuProfile(decision.profile, decision.motionStorage);
+
+    const bool adreno650 =
+        renderer != nullptr &&
+        (std::strstr(renderer, "Adreno (TM) 650") != nullptr ||
+         std::strstr(renderer, "Adreno 650") != nullptr);
+    if (adreno650) {
+        apexEngine.setFlowShortSideCap(180);
+        PRES_LOGI("Apex Adreno 650 flow ceiling: 180p");
+    } else {
+        apexEngine.setFlowShortSideCap(0);
+    }
 
     eglSwapInterval(presenter.display, 0);
-    apex::ApexEngine::getInstance().setActive(true);
+    apexEngine.setActive(true);
     PRES_LOGI(
         "Apex presenter ready: EGL %d.%d, renderer=%s, profile=%s storage=%s r32f=%d rgba16f=%d rgba32f=%d orientation=v-flip",
         major,
@@ -560,21 +624,24 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
     jint generationOpportunities) {
     auto* presenter = reinterpret_cast<Presenter*>(handle);
     auto* buffer = reinterpret_cast<AHardwareBuffer*>(hardwareBufferPtr);
-    if (!presenter || !buffer || width <= 0 || height <= 0 || !makeCurrent(*presenter)) {
+    if (!presenter || !buffer || width <= 0 || height <= 0 ||
+        presenter->display == EGL_NO_DISPLAY ||
+        presenter->surface == EGL_NO_SURFACE ||
+        presenter->context == EGL_NO_CONTEXT) {
         if (acquireFenceFd >= 0) close(acquireFenceFd);
         return packSourcePresentResult(-1, apex::APEX_OUTPUT_NONE, false);
     }
 
+    const auto totalStart = PresenterClock::now();
     int fenceFd = acquireFenceFd;
+    const auto acquireStart = PresenterClock::now();
     if (!waitAcquireFence(*presenter, fenceFd)) {
         // EGL did not take ownership if sync creation itself failed. Returning
         // that fd as the consumer-release fence keeps Vulkan reuse ordered.
         return packSourcePresentResult(fenceFd, apex::APEX_OUTPUT_NONE, false);
     }
+    const uint64_t acquireNanos = elapsedNanos(acquireStart, PresenterClock::now());
 
-    if (!refreshOutputExtent(*presenter)) {
-        return packSourcePresentResult(-1, apex::APEX_OUTPUT_NONE, false);
-    }
     if (presenter->sourceWidth != width || presenter->sourceHeight != height) {
         presenter->sourceWidth = width;
         presenter->sourceHeight = height;
@@ -592,6 +659,7 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
         return packSourcePresentResult(-1, apex::APEX_OUTPUT_NONE, false);
     }
 
+    const auto processStart = PresenterClock::now();
     apex::ApexEngine::getInstance().processFrame(
         source->texture,
         0,
@@ -607,11 +675,23 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
         static_cast<int64_t>(sourceTimestampNanos),
         presenter->outputWidth,
         presenter->outputHeight);
+    const uint64_t processNanos = elapsedNanos(processStart, PresenterClock::now());
 
     const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
+    const auto releaseStart = PresenterClock::now();
     const int releaseFenceFd = exportReleaseFence(*presenter);
+    const uint64_t releaseNanos = elapsedNanos(releaseStart, PresenterClock::now());
+    const auto swapStart = PresenterClock::now();
     const bool swapSucceeded =
         eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
+    const uint64_t swapNanos = elapsedNanos(swapStart, PresenterClock::now());
+    recordPresenterCost(
+        *presenter,
+        acquireNanos,
+        processNanos,
+        releaseNanos,
+        swapNanos,
+        elapsedNanos(totalStart, PresenterClock::now()));
     recordPresentation(*presenter, outputKind, swapSucceeded);
     presenter->hasSource = true;
     return packSourcePresentResult(releaseFenceFd, outputKind, swapSucceeded);
@@ -638,11 +718,12 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentPendingSourceFrame
     if (!presenter ||
         !presenter->hasSource ||
         presenter->sourceWidth <= 0 ||
-        presenter->sourceHeight <= 0 ||
-        !makeCurrent(*presenter)) {
+        presenter->sourceHeight <= 0) {
         return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
     }
 
+    const auto totalStart = PresenterClock::now();
+    const auto processStart = totalStart;
     apex::ApexEngine::getInstance().presentPendingReal(
         0,
         0,
@@ -653,8 +734,13 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentPendingSourceFrame
     if (outputKind == apex::APEX_OUTPUT_NONE) {
         return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
     }
+    const uint64_t processNanos = elapsedNanos(processStart, PresenterClock::now());
+    const auto swapStart = PresenterClock::now();
     const bool swapSucceeded =
         eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
+    const uint64_t swapNanos = elapsedNanos(swapStart, PresenterClock::now());
+    recordPresenterCost(*presenter, 0, processNanos, 0, swapNanos,
+        elapsedNanos(totalStart, PresenterClock::now()));
     recordPresentation(*presenter, outputKind, swapSucceeded);
     return packPulsePresentResult(outputKind, swapSucceeded);
 }
@@ -668,11 +754,12 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
     if (!presenter ||
         !presenter->hasSource ||
         presenter->sourceWidth <= 0 ||
-        presenter->sourceHeight <= 0 ||
-        !makeCurrent(*presenter)) {
+        presenter->sourceHeight <= 0) {
         return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
     }
 
+    const auto totalStart = PresenterClock::now();
+    const auto processStart = totalStart;
     apex::ApexEngine::getInstance().processFrame(0, 0,
         presenter->sourceWidth,
         presenter->sourceHeight,
@@ -690,8 +777,13 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
     if (outputKind == apex::APEX_OUTPUT_NONE) {
         return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
     }
+    const uint64_t processNanos = elapsedNanos(processStart, PresenterClock::now());
+    const auto swapStart = PresenterClock::now();
     const bool swapSucceeded =
         eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
+    const uint64_t swapNanos = elapsedNanos(swapStart, PresenterClock::now());
+    recordPresenterCost(*presenter, 0, processNanos, 0, swapNanos,
+        elapsedNanos(totalStart, PresenterClock::now()));
     recordPresentation(*presenter, outputKind, swapSucceeded);
     return packPulsePresentResult(outputKind, swapSucceeded);
 }

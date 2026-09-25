@@ -319,10 +319,27 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     .build();
                 apexGameSurface = new android.view.Surface(apexGameSurfaceControl);
             }
-            new android.view.SurfaceControl.Transaction()
-                .setLayer(apexGameSurfaceControl, 3)
-                .setVisibility(apexGameSurfaceControl, true)
-                .apply();
+            final int apexTargetWidth = getApexTargetWidth();
+            final int apexTargetHeight = getApexTargetHeight();
+            android.view.SurfaceControl.Transaction apexTransaction =
+                new android.view.SurfaceControl.Transaction()
+                    .setLayer(apexGameSurfaceControl, 3)
+                    .setVisibility(apexGameSurfaceControl, true);
+            if (apexTargetWidth > 0 && apexTargetHeight > 0 &&
+                surfaceWidth > 0 && surfaceHeight > 0) {
+                apexTransaction.setScale(
+                    apexGameSurfaceControl,
+                    (float) surfaceWidth / (float) apexTargetWidth,
+                    (float) surfaceHeight / (float) apexTargetHeight
+                );
+                android.util.Log.i(
+                    "VulkanRenderer",
+                    "Apex presenter layer: buffer=" + apexTargetWidth + "x" +
+                        apexTargetHeight + " display=" + surfaceWidth + "x" +
+                        surfaceHeight
+                );
+            }
+            apexTransaction.apply();
             app.gamenative.framegen.ApexVulkanPresenter presenter =
                 new app.gamenative.framegen.ApexVulkanPresenter(this, apexGameSurface);
             apexPresenter = presenter;
@@ -466,6 +483,22 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             android.util.Log.w("VulkanRenderer", "Apex presenter rejected runtime; restoring source presentation");
             setApexFrameTargetEnabled(false);
         });
+    }
+
+    public int getApexTargetWidth() {
+        synchronized (lock) {
+            if (nativeHandle == 0) return 0;
+            long extent = nativeGetApexTargetExtent(nativeHandle);
+            return (int) (extent >>> 32);
+        }
+    }
+
+    public int getApexTargetHeight() {
+        synchronized (lock) {
+            if (nativeHandle == 0) return 0;
+            long extent = nativeGetApexTargetExtent(nativeHandle);
+            return (int) (extent & 0xFFFFFFFFL);
+        }
     }
 
     public ApexFrame pollApexFrame() {

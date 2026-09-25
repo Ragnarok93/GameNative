@@ -272,11 +272,23 @@ void ApexEngine::auditHardwareAndExtensions() {
         if (strcmp(ext, "GL_EXT_disjoint_timer_query") == 0) disjointTimerQuery = true;
     }
 
-    mGetQueryObjectui64vEXT =
-        reinterpret_cast<PFNGLGETQUERYOBJECTUI64VEXTPROC>(
-            eglGetProcAddress("glGetQueryObjectui64vEXT"));
+    mGenQueriesEXT = reinterpret_cast<PFNGLGENQUERIESEXTPROC>(
+        eglGetProcAddress("glGenQueriesEXT"));
+    mDeleteQueriesEXT = reinterpret_cast<PFNGLDELETEQUERIESEXTPROC>(
+        eglGetProcAddress("glDeleteQueriesEXT"));
+    mBeginQueryEXT = reinterpret_cast<PFNGLBEGINQUERYEXTPROC>(
+        eglGetProcAddress("glBeginQueryEXT"));
+    mEndQueryEXT = reinterpret_cast<PFNGLENDQUERYEXTPROC>(
+        eglGetProcAddress("glEndQueryEXT"));
+    mGetQueryObjectuivEXT = reinterpret_cast<PFNGLGETQUERYOBJECTUIVEXTPROC>(
+        eglGetProcAddress("glGetQueryObjectuivEXT"));
+    mGetQueryObjectui64vEXT = reinterpret_cast<PFNGLGETQUERYOBJECTUI64VEXTPROC>(
+        eglGetProcAddress("glGetQueryObjectui64vEXT"));
     mGpuTimerSupported =
-        disjointTimerQuery && mGetQueryObjectui64vEXT != nullptr;
+        disjointTimerQuery &&
+        mGenQueriesEXT && mDeleteQueriesEXT &&
+        mBeginQueryEXT && mEndQueryEXT &&
+        mGetQueryObjectuivEXT && mGetQueryObjectui64vEXT;
 
     glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, &mMaxComputeInvocations);
     glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, &mMaxComputeSharedMem);
@@ -307,13 +319,13 @@ void ApexEngine::checkGlPassError(const char* passName) {
 
 void ApexEngine::discardGpuTimerQueries() {
     if (mGpuTimerQueryOpen) {
-        glEndQuery(GL_TIME_ELAPSED_EXT);
+        mEndQueryEXT(GL_TIME_ELAPSED_EXT);
         mGpuTimerQueryOpen = false;
     }
     for (const auto& sample : mGpuTimerQueries) {
         if (sample.query != 0) {
             GLuint query = sample.query;
-            glDeleteQueries(1, &query);
+            mDeleteQueriesEXT(1, &query);
         }
     }
     mGpuTimerQueries.clear();
@@ -325,12 +337,12 @@ void ApexEngine::beginGpuTimer(ApexGpuTimerStage stage) {
         return;
 
     GLuint query = 0;
-    glGenQueries(1, &query);
+    mGenQueriesEXT(1, &query);
     if (query == 0) return;
 
-    glBeginQuery(GL_TIME_ELAPSED_EXT, query);
+    mBeginQueryEXT(GL_TIME_ELAPSED_EXT, query);
     if (glGetError() != GL_NO_ERROR) {
-        glDeleteQueries(1, &query);
+        mDeleteQueriesEXT(1, &query);
         return;
     }
 
@@ -340,7 +352,7 @@ void ApexEngine::beginGpuTimer(ApexGpuTimerStage stage) {
 
 void ApexEngine::endGpuTimer() {
     if (!mGpuTimerQueryOpen) return;
-    glEndQuery(GL_TIME_ELAPSED_EXT);
+    mEndQueryEXT(GL_TIME_ELAPSED_EXT);
     mGpuTimerQueryOpen = false;
 }
 
@@ -354,7 +366,10 @@ void ApexEngine::pollGpuTimerQueries() {
 
     const GLuint lastQuery = mGpuTimerQueries.back().query;
     GLuint available = GL_FALSE;
-    glGetQueryObjectuiv(lastQuery, GL_QUERY_RESULT_AVAILABLE, &available);
+    mGetQueryObjectuivEXT(
+        lastQuery,
+        GL_QUERY_RESULT_AVAILABLE_EXT,
+        &available);
     if (available != GL_TRUE) return;
 
     GLint disjoint = GL_FALSE;
@@ -370,10 +385,10 @@ void ApexEngine::pollGpuTimerQueries() {
     for (const auto& sample : mGpuTimerQueries) {
         GLuint64 elapsedNanos = 0;
         const GLuint query = sample.query;
-        mGetQueryObjectui64vEXT(query, GL_QUERY_RESULT, &elapsedNanos);
+        mGetQueryObjectui64vEXT(query, GL_QUERY_RESULT_EXT, &elapsedNanos);
         totals[static_cast<size_t>(sample.stage)] += elapsedNanos;
         totalNanos += elapsedNanos;
-        glDeleteQueries(1, &query);
+        mDeleteQueriesEXT(1, &query);
     }
     mGpuTimerQueries.clear();
 
@@ -435,10 +450,21 @@ void ApexEngine::ensureResources(int width, int height) {
     sw = (sw + 1) & ~1;
     sh = (sh + 1) & ~1;
 
-    uint32_t minSide = 180;
+    uint32_t requestedMinSide = 180;
     int preset = mQualityPreset.load();
-    if (preset == 1) minSide = 252;
-    else if (preset == 2) minSide = 360;
+    if (preset == 1) requestedMinSide = 252;
+    else if (preset == 2) requestedMinSide = 360;
+
+    const float flowScale =
+        std::clamp(mFlowScale.load(std::memory_order_acquire), 0.25f, 1.0f);
+    uint32_t minSide = std::max(
+        64u,
+        static_cast<uint32_t>(requestedMinSide * flowScale + 0.5f));
+    const int flowShortSideCap =
+        mFlowShortSideCap.load(std::memory_order_acquire);
+    if (flowShortSideCap > 0) {
+        minSide = std::min(minSide, static_cast<uint32_t>(flowShortSideCap));
+    }
 
     uint32_t minor = width < height ? width : height;
     float k = (float)minSide / (float)(minor > 0 ? minor : 1);

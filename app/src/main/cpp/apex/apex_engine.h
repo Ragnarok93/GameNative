@@ -167,8 +167,17 @@ public:
     int getFixedMultiplier() const { return mFixedMultiplier.load(); }
     void setShutterGain(float g) { mShutterGain.store(g); }
     float getShutterGain() const { return mShutterGain.load(); }
-    void setFlowScale(float s) { mFlowScale.store(s); }
+    void setFlowScale(float s) {
+        const float sanitized = s < 0.25f ? 0.25f : (s > 1.0f ? 1.0f : s);
+        const float previous = mFlowScale.exchange(sanitized, std::memory_order_acq_rel);
+        if (previous != sanitized) mResourcesDirty.store(true, std::memory_order_release);
+    }
     float getFlowScale() const { return mFlowScale.load(); }
+    void setFlowShortSideCap(int pixels) {
+        const int sanitized = pixels < 0 ? 0 : pixels;
+        const int previous = mFlowShortSideCap.exchange(sanitized, std::memory_order_acq_rel);
+        if (previous != sanitized) mResourcesDirty.store(true, std::memory_order_release);
+    }
     void setLiquidFeel(float f) { mLiquidFeel.store(f); }
     float getLiquidFeel() const { return mLiquidFeel.load(); }
     void setEdgeGuard(float g) { mEdgeGuard.store(g); }
@@ -278,6 +287,11 @@ private:
     bool mGpuTimerSampleActive{false};
     bool mGpuTimerQueryOpen{false};
     uint64_t mGpuTimerSourceFrames{0};
+    PFNGLGENQUERIESEXTPROC mGenQueriesEXT{nullptr};
+    PFNGLDELETEQUERIESEXTPROC mDeleteQueriesEXT{nullptr};
+    PFNGLBEGINQUERYEXTPROC mBeginQueryEXT{nullptr};
+    PFNGLENDQUERYEXTPROC mEndQueryEXT{nullptr};
+    PFNGLGETQUERYOBJECTUIVEXTPROC mGetQueryObjectuivEXT{nullptr};
     PFNGLGETQUERYOBJECTUI64VEXTPROC mGetQueryObjectui64vEXT{nullptr};
     std::vector<ApexGpuTimerQuery> mGpuTimerQueries;
 
@@ -294,6 +308,7 @@ private:
     std::atomic<int> mAbandonedSyntheticSlots{0};
     std::atomic<uint64_t> mNoGenerationSourceFrames{0};
     std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
+    std::atomic<int> mFlowShortSideCap{0};
     std::atomic<float> mShutterGain{0.0f}, mFlowScale{1.0f}, mLiquidFeel{0.5f}, mEdgeGuard{0.5f}, mRenderScale{1.0f}, mAutoMultiplierVal{2.0f};
 
     // Pacing History

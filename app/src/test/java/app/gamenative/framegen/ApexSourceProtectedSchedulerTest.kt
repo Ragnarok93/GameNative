@@ -334,6 +334,38 @@ class ApexSourceProtectedSchedulerTest {
     }
 
 
+
+    @Test
+    fun fixedModeDoesNotDisableGenerationWhenProducerCadenceSlows() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 13_000_000_000L)
+        var t = learnBaseline(s, 13_000_000_000L, 33_333_333L)
+        t = rampFixed(s, t, 33_333_333L, ceiling = 1).first
+
+        t += 50_000_000L
+        s.recordSourceArrival(t)
+        val budget = s.generationBudget(
+            adaptive = false,
+            fixedGeneratedCeiling = 1,
+            targetFps = 60,
+            presentation = telemetry(
+                sourceInFps = 20f,
+                sourceOutFps = 20f,
+                opportunityFps = 120f,
+            ),
+        )
+
+        assertEquals(
+            "fixed 2x must keep requesting its one synthetic slot; source slowdown is not a backoff signal",
+            1,
+            budget,
+        )
+        assertFalse(
+            "source cadence must not activate a source-only protection mode",
+            s.diagnostics().sourceProtectionActive,
+        )
+    }
+
     @Test
     fun resetClearsProtectionAndFractionalState() {
         val s = ApexSourceProtectedScheduler()

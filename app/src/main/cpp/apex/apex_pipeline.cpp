@@ -766,7 +766,7 @@ std::string ApexEngine::getDiagnostics() {
     snprintf(
         pbuf,
         sizeof(pbuf),
-        "• Admission: Kotlin source-protected | PrepSubmit=%.3f ms | SyntheticSubmit=%.3f ms | LastBudget=%d\\n",
+        "• Admission: producer-clock cadence | PrepSubmit=%.3f ms | SyntheticSubmit=%.3f ms | LastBudget=%d\\n",
         static_cast<double>(mLastPreparationCostNanos.load(std::memory_order_relaxed)) / 1000000.0,
         static_cast<double>(mLastSyntheticCostNanos.load(std::memory_order_relaxed)) / 1000000.0,
         mLastSyntheticCostBudget.load(std::memory_order_relaxed));

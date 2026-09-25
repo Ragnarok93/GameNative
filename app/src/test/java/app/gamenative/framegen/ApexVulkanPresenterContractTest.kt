@@ -170,6 +170,10 @@ class ApexVulkanPresenterContractTest {
                 pipeline.contains("mFlowHistoryReady") ||
                 pipeline.contains("mGenerationReprimeCount"),
         )
+        assertFalse(
+            "native diagnostics must not claim the deleted source-protection architecture is active",
+            pipeline.contains("source-protected"),
+        )
         assertTrue(engine.contains("presentPendingReal"))
         assertFalse(pipeline.contains("sourcePreemptsPending"))
         assertTrue(pipeline.contains("generatedOpportunityBudget < 0"))

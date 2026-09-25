@@ -1,0 +1,202 @@
+name: Upgradeable Debug APK
+
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "fix/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gamenative-upgradeable-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  legacy-debug:
+    name: Legacy upgradeable debug
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout GameNative
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Prepare pinned LSFG native runtime
+        uses: ./.github/actions/prepare-lsfg-native
+
+      - name: Prepare Apex native runtime
+        uses: ./.github/actions/prepare-apex-native
+
+      - name: Prepare Vulkan renderer
+        uses: ./.github/actions/prepare-vulkan-renderer
+
+      - name: Configure persistent upgrade signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE }}
+          KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 KEY_ALIAS KEY_PASSWORD STORE_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Required persistent signing secret $name is unavailable."
+              echo "::error::Refusing to create a non-upgradeable APK with an ephemeral runner key."
+              exit 1
+            fi
+          done
+
+          mkdir -p app/keystores
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > app/keystores/upgrade-debug.keystore
+          chmod 600 app/keystores/upgrade-debug.keystore
+
+          cat > app/keystores/keystore.properties <<EOF
+          storeFile=keystores/upgrade-debug.keystore
+          keyAlias=$KEY_ALIAS
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: Generate version-independent debug metadata
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A minute counter from 2020 is independent of the repository's
+          # release version and monotonically increases across workflow runs.
+          # Equal codes are valid Android updates, so builds within one minute
+          # remain installable over one another.
+          epoch_2020=1577836800
+          now="$(date -u +%s)"
+          version_code=$((1000000 + (now - epoch_2020) / 60))
+          version_name="debug-${GITHUB_SHA::12}"
+
+          echo "code=$version_code" >> "$GITHUB_OUTPUT"
+          echo "name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "VERSION_CODE=$version_code" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$version_name" >> "$GITHUB_ENV"
+
+      - name: Inject non-production service credentials
+        shell: bash
+        run: |
+          cat > local.properties <<'EOF'
+          POSTHOG_API_KEY=dummy
+          POSTHOG_HOST=https://us.i.posthog.com
+          STEAMGRIDDB_API_KEY=dummy
+          CLOUD_PROJECT_NUMBER=dummy
+          EOF
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build upgradeable LegacyDebug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew             -PupgradeSafeDebugSigning=true             -PciVersionCode="$VERSION_CODE"             -PciVersionName="$VERSION_NAME"             :app:assembleLegacyDebug             --no-daemon
+
+      - name: Verify update identity and native provenance
+        shell: bash
+        env:
+          KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t apks < <(
+            find app/build/outputs/apk/legacy/debug               -maxdepth 1 -type f -name '*.apk' -print
+          )
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one LegacyDebug APK, found ${#apks[@]}."
+            printf '%s\n' "${apks[@]}"
+            exit 1
+          fi
+
+          apk="${apks[0]}"
+          stage="$RUNNER_TEMP/gamenative-upgradeable-debug"
+          mkdir -p "$stage"
+          staged_apk="$stage/GameNative-upgradeable-debug.apk"
+          cp "$apk" "$staged_apk"
+
+          expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
+          unzip -p "$staged_apk" 'lib/arm64-v8a/liblsfg-vk-layer.so' |
+            grep -aFq "$expected_native_commit"
+
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+          aapt="$(
+            find "$sdk_root" -path '*/build-tools/*/aapt'               -type f -print | sort -V | tail -n 1
+          )"
+          apksigner="$(
+            find "$sdk_root" -path '*/build-tools/*/apksigner'               -type f -print | sort -V | tail -n 1
+          )"
+          test -x "$aapt"
+          test -x "$apksigner"
+
+          badging="$("$aapt" dump badging "$staged_apk" | head -n 1)"
+          [[ "$badging" == *"name='app.gamenative'"* ]]
+          [[ "$badging" == *"versionCode='$VERSION_CODE'"* ]]
+          [[ "$badging" == *"versionName='$VERSION_NAME'"* ]]
+
+          expected_cert="$(
+            keytool -list -v               -keystore app/keystores/upgrade-debug.keystore               -storepass "$STORE_PASSWORD"               -alias "$KEY_ALIAS" |
+              sed -n 's/^[[:space:]]*SHA256: //p' |
+              head -n 1 |
+              tr -d ':' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          signer_report="$stage/signing-report.txt"
+          "$apksigner" verify --verbose --print-certs "$staged_apk" |
+            tee "$signer_report"
+          actual_cert="$(
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$signer_report" |
+              head -n 1 |
+              tr -d ':' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+
+          test -n "$expected_cert"
+          test -n "$actual_cert"
+          [[ "$actual_cert" == "$expected_cert" ]]
+
+          {
+            echo "game_commit=$GITHUB_SHA"
+            echo "lsfg_native_commit=$expected_native_commit"
+            echo "application_id=app.gamenative"
+            echo "version_code=$VERSION_CODE"
+            echo "version_name=$VERSION_NAME"
+            echo "signing_cert_sha256=$actual_cert"
+          } > "$stage/build-metadata.txt"
+
+          sha256sum "$staged_apk" > "$stage/GameNative-upgradeable-debug.apk.sha256"
+
+      - name: Upload upgradeable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameNative-upgradeable-debug
+          path: |
+            ${{ runner.temp }}/gamenative-upgradeable-debug/GameNative-upgradeable-debug.apk
+            ${{ runner.temp }}/gamenative-upgradeable-debug/GameNative-upgradeable-debug.apk.sha256
+            ${{ runner.temp }}/gamenative-upgradeable-debug/build-metadata.txt
+            ${{ runner.temp }}/gamenative-upgradeable-debug/signing-report.txt
+          if-no-files-found: error
+          retention-days: 14

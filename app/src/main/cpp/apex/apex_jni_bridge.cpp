@@ -286,6 +286,42 @@ Java_app_gamenative_framegen_ApexNativeBridge_nativeGetAutoMultiplier(JNIEnv* en
     return apex::ApexEngine::getInstance().getAutoMultiplier();
 }
 
+JNIEXPORT jlong JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeGetLastPreparationCostNanos(JNIEnv*, jclass) {
+    return static_cast<jlong>(
+        apex::ApexEngine::getInstance().getLastPreparationCostNanos());
+}
+
+JNIEXPORT jlong JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeGetLastSyntheticCostNanos(JNIEnv*, jclass) {
+    return static_cast<jlong>(
+        apex::ApexEngine::getInstance().getLastSyntheticCostNanos());
+}
+
+JNIEXPORT jint JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeGetLastSyntheticCostBudget(JNIEnv*, jclass) {
+    return static_cast<jint>(
+        apex::ApexEngine::getInstance().getLastSyntheticCostBudget());
+}
+
+JNIEXPORT jint JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeConsumeAbandonedSyntheticSlots(JNIEnv*, jclass) {
+    return static_cast<jint>(
+        apex::ApexEngine::getInstance().consumeAbandonedSyntheticSlots());
+}
+
+JNIEXPORT jlong JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeGetSourceOnlyFrameCount(JNIEnv*, jclass) {
+    return static_cast<jlong>(
+        apex::ApexEngine::getInstance().getSourceOnlyFrameCount());
+}
+
+JNIEXPORT jlong JNICALL
+Java_app_gamenative_framegen_ApexNativeBridge_nativeGetGenerationReprimeCount(JNIEnv*, jclass) {
+    return static_cast<jlong>(
+        apex::ApexEngine::getInstance().getGenerationReprimeCount());
+}
+
 JNIEXPORT jstring JNICALL
 Java_app_gamenative_framegen_ApexNativeBridge_nativeLibraryVersion(
     JNIEnv* env, jclass clazz) {

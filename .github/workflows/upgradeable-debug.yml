@@ -146,7 +146,7 @@ jobs:
           "$apksigner" verify --verbose --print-certs "$staged_apk" |
             tee "$signer_report"
           actual_cert="$(
-            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$signer_report" |
+            sed -n 's/^.*Signer: certificate SHA-256 digest: //p' "$signer_report" |
               head -n 1 |
               tr -d ':' |
               tr '[:upper:]' '[:lower:]'

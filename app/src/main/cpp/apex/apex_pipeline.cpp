@@ -949,7 +949,8 @@ void ApexEngine::presentPendingReal(
 void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                               int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
                               bool sourceVerticalFlip, int generatedOpportunityBudget,
-                              int64_t sourceTimestampNanos) {
+                              int64_t sourceTimestampNanos,
+                              int outputViewWidth, int outputViewHeight) {
     mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
     mRenderingGeneratedFrame.store(false, std::memory_order_relaxed);
     if (!mActive.load(std::memory_order_relaxed)) return;
@@ -965,6 +966,16 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         mFallbackCount++;
         return;
     }
+
+    const int presentationWidth =
+        outputViewWidth > 0 ? outputViewWidth : viewWidth;
+    const int presentationHeight =
+        outputViewHeight > 0 ? outputViewHeight : viewHeight;
+    if (presentationWidth <= 0 || presentationHeight <= 0) {
+        mFallbackCount++;
+        return;
+    }
+
     if (isNewRealFrame && inputTextureId == 0) {
         mFallbackCount++;
         return;
@@ -989,7 +1000,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
     if (!isHealthy()) {
         mFallbackCount++;
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-        glViewport(viewX, viewY, viewWidth, viewHeight);
+        glViewport(viewX, viewY, presentationWidth, presentationHeight);
         if (mQuadProg) {
             blitQuad(inputTextureId, sourceUMin, sourceVMin, sourceUSpan, sourceVSpan);
         }
@@ -1099,7 +1110,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 
             beginGpuTimer(ApexGpuTimerStage::Output);
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-            glViewport(viewX, viewY, viewWidth, viewHeight);
+            glViewport(viewX, viewY, presentationWidth, presentationHeight);
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
             endGpuTimer();
             mGpuTimerSampleActive = false;
@@ -1188,7 +1199,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         // PRESENT GENERATED FRAME FIRST
         beginGpuTimer(ApexGpuTimerStage::Output);
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-        glViewport(viewX, viewY, viewWidth, viewHeight);
+        glViewport(viewX, viewY, presentationWidth, presentationHeight);
         blitQuad(mInterpOutTex, 0, 0, 1, 1);
         endGpuTimer();
         mGpuTimerSampleActive = false;
@@ -1219,7 +1230,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             dispatchInterpolate(mColorRingTex[mPreviousSlot], mColorRingTex[mCurrentSlot],
                                 mLevels[0].denseFlowTex, mLevels[0].denseFlowTex, mInterpOutTex, t, mScaledWidth, mScaledHeight);
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-            glViewport(viewX, viewY, viewWidth, viewHeight);
+            glViewport(viewX, viewY, presentationWidth, presentationHeight);
             blitQuad(mInterpOutTex, 0, 0, 1, 1);
             mGeneratedFrameCount.fetch_add(1);
             mTotalGenFramesPresented++;
@@ -1230,7 +1241,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             // Deliver the buffered real frame exactly once after its finite
             // synthetic budget has been consumed.
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-            glViewport(viewX, viewY, viewWidth, viewHeight);
+            glViewport(viewX, viewY, presentationWidth, presentationHeight);
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
             mActualRealFrameCount.fetch_add(1);
             mTotalRealFramesPresented++;

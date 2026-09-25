@@ -599,12 +599,14 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
         height,
         0,
         0,
-        presenter->outputWidth,
-        presenter->outputHeight,
+        width,
+        height,
         true,
         true,
         std::clamp(static_cast<int>(generationOpportunities), 0, 3),
-        static_cast<int64_t>(sourceTimestampNanos));
+        static_cast<int64_t>(sourceTimestampNanos),
+        presenter->outputWidth,
+        presenter->outputHeight);
 
     const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
     const int releaseFenceFd = exportReleaseFence(*presenter);
@@ -676,9 +678,14 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
         presenter->sourceHeight,
         0,
         0,
+        presenter->sourceWidth,
+        presenter->sourceHeight,
+        false,
+        false,
+        -1,
+        0,
         presenter->outputWidth,
-        presenter->outputHeight,
-        false);
+        presenter->outputHeight);
     const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
     if (outputKind == apex::APEX_OUTPUT_NONE) {
         return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);

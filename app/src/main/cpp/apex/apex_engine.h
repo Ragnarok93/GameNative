@@ -102,7 +102,8 @@ public:
     void processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                       int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
                       bool sourceVerticalFlip = false, int generatedOpportunityBudget = -1,
-                      int64_t sourceTimestampNanos = 0);
+                      int64_t sourceTimestampNanos = 0,
+                      int outputViewWidth = 0, int outputViewHeight = 0);
 
     // Legacy support for JNI bridge
     void processFrameWithData(GLuint i, GLuint d, GLuint h, GLuint o, int w, int height);

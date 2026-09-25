@@ -103,8 +103,8 @@ class ApexVulkanPresenterContractTest {
                 presenter.contains("renderer.fpsLimit"),
         )
         assertTrue(
-            "generated work must be admitted by the source-protected future-slot scheduler",
-            presenter.contains("ApexSourceProtectedScheduler") &&
+            "generated work must be admitted by the target-authoritative future-slot scheduler",
+            presenter.contains("ApexCadenceScheduler") &&
                 presenter.contains("scheduler.generationBudget") &&
                 presenter.contains("scheduler.shouldPresentSourceNow"),
         )
@@ -113,6 +113,12 @@ class ApexVulkanPresenterContractTest {
             presenter.contains("pendingSourceFrame") &&
                 presenter.contains("nativeHasPendingSource") &&
                 presenter.contains("nativePresentPendingSourceFrame"),
+        )
+        assertTrue(
+            "source cadence and source-cap admission must use the producer timestamp",
+            presenter.contains("frame.sourceTimestampNanos") &&
+                presenter.contains("scheduler.recordSourceFrame(sourceTimestampNanos)") &&
+                presenter.contains("shouldAcceptSource(frame.sourceTimestampNanos)"),
         )
     }
 
@@ -157,6 +163,13 @@ class ApexVulkanPresenterContractTest {
         assertTrue(engine.contains("mResourcesDirty.store(true"))
         assertTrue(engine.contains("mPendingRealPresentation"))
         assertTrue(engine.contains("mActiveGenerationBudget"))
+        assertFalse(
+            "zero-generation intervals must not invalidate flow history",
+            engine.contains("mFlowHistoryReady") ||
+                engine.contains("mGenerationReprimeCount") ||
+                pipeline.contains("mFlowHistoryReady") ||
+                pipeline.contains("mGenerationReprimeCount"),
+        )
         assertTrue(engine.contains("presentPendingReal"))
         assertFalse(pipeline.contains("sourcePreemptsPending"))
         assertTrue(pipeline.contains("generatedOpportunityBudget < 0"))

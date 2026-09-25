@@ -32,8 +32,8 @@ class ApexVulkanPresenter(
     private var callbacksSinceTelemetryLog = 0
     private var nextSourceDeadlineNanos = 0L
     private var pendingSourceFrame: VulkanRenderer.ApexFrame? = null
-    private var pendingSourceArrivalNanos = 0L
-    private val scheduler = ApexSourceProtectedScheduler()
+    private var pendingSourceTimestampNanos = 0L
+    private val scheduler = ApexCadenceScheduler()
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -50,10 +50,12 @@ class ApexVulkanPresenter(
             if (pendingSourceFrame == null) {
                 val frame = renderer.pollApexFrame()
                 if (frame != null) {
-                    if (shouldAcceptSource(frameTimeNanos)) {
+                    if (shouldAcceptSource(frame.sourceTimestampNanos)) {
                         pendingSourceFrame = frame
-                        pendingSourceArrivalNanos = frameTimeNanos
-                        ApexPresentationTelemetry.recordSourceArrival(frameTimeNanos)
+                        pendingSourceTimestampNanos = frame.sourceTimestampNanos
+                        ApexPresentationTelemetry.recordSourceArrival(
+                            frame.sourceTimestampNanos,
+                        )
                     } else {
                         // The source cap owns this decision. Return the producer
                         // fence unchanged because GLES never imported the AHB.
@@ -72,7 +74,7 @@ class ApexVulkanPresenter(
                     pendingSourceFrame != null &&
                         scheduler.shouldPreemptForQueuedSource(
                             nowNanos = frameTimeNanos,
-                            queuedSourceArrivalNanos = pendingSourceArrivalNanos,
+                            queuedSourceTimestampNanos = pendingSourceTimestampNanos,
                         )
                 if (
                     queuedSourceNeedsPriority ||
@@ -88,15 +90,14 @@ class ApexVulkanPresenter(
             } else {
                 val frame = pendingSourceFrame
                 if (frame != null) {
-                    val sourceArrivalNanos =
-                        pendingSourceArrivalNanos.takeIf { it > 0L } ?: frameTimeNanos
+                    val sourceTimestampNanos =
+                        pendingSourceTimestampNanos.takeIf { it > 0L }
+                            ?: frame.sourceTimestampNanos
                     pendingSourceFrame = null
-                    pendingSourceArrivalNanos = 0L
-                    // Source cadence is observed when this queued frame becomes
-                    // the active Apex interval. This prevents a newer queued
-                    // frame from re-phasing the deadline of the interval that
-                    // is still being presented.
-                    scheduler.recordSourceArrival(sourceArrivalNanos)
+                    pendingSourceTimestampNanos = 0L
+                    // Source cadence is captured at the producer boundary.
+                    // Choreographer remains only the display-opportunity clock.
+                    scheduler.recordSourceFrame(sourceTimestampNanos)
                     val presentation = ApexPresentationTelemetry.snapshot(frameTimeNanos)
                     val adaptive = ApexNativeBridge.nativeIsAdaptiveFrameGeneration()
                     val requestedCeiling = if (adaptive) {
@@ -125,6 +126,7 @@ class ApexVulkanPresenter(
                         frame.acquireFenceFd,
                         frame.width,
                         frame.height,
+                        sourceTimestampNanos,
                         generationBudget,
                     )
                     val releaseFenceFd = result.toInt()
@@ -147,7 +149,7 @@ class ApexVulkanPresenter(
         callbacksSinceTelemetryLog = 0
         nextSourceDeadlineNanos = 0L
         pendingSourceFrame = null
-        pendingSourceArrivalNanos = 0L
+        pendingSourceTimestampNanos = 0L
         scheduler.reset()
         running = true
         thread.start()
@@ -172,7 +174,7 @@ class ApexVulkanPresenter(
         renderer.onApexPresenterFailure()
     }
 
-    private fun shouldAcceptSource(frameTimeNanos: Long): Boolean {
+    private fun shouldAcceptSource(sourceTimestampNanos: Long): Boolean {
         val sourceCap = renderer.fpsLimit
         if (sourceCap <= 0) {
             nextSourceDeadlineNanos = 0L
@@ -180,15 +182,15 @@ class ApexVulkanPresenter(
         }
         val periodNanos = 1_000_000_000L / sourceCap.coerceAtLeast(1)
         if (nextSourceDeadlineNanos == 0L) {
-            nextSourceDeadlineNanos = frameTimeNanos + periodNanos
+            nextSourceDeadlineNanos = sourceTimestampNanos + periodNanos
             return true
         }
         // Half-millisecond tolerance avoids alternating accept/drop decisions
         // from normal Choreographer timestamp jitter.
-        if (frameTimeNanos + 500_000L < nextSourceDeadlineNanos) return false
+        if (sourceTimestampNanos + 500_000L < nextSourceDeadlineNanos) return false
         do {
             nextSourceDeadlineNanos += periodNanos
-        } while (nextSourceDeadlineNanos <= frameTimeNanos)
+        } while (nextSourceDeadlineNanos <= sourceTimestampNanos)
         return true
     }
 
@@ -228,33 +230,26 @@ class ApexVulkanPresenter(
         val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: mode=%s target=%d fixed=%dx baseline_ms=%.2f baseline_fps=%.1f source_ms=%.2f baseline_ratio=%.3f requested=%d admitted=%d protection=%s sourceProtectionActive=%d backoff=%s recovery=%d probe=%d prep_submit_ms=%.3f pipeline_submit_ms=%.3f opportunity_budget=%d measuredOpportunities=%.1f sourceIn=%.1f generated=%.1f output=%.1f abandoned=%d source_only=%d native_source_only=%d native_reprimes=%d".format(
+            "display cadence: mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f sourceIn=%.1f generated=%.1f output=%.1f abandoned=%d no_generation=%d native_no_generation=%d".format(
                 java.util.Locale.US,
                 if (adaptive) "adaptive" else "fixed",
                 targetFps,
                 fixedMultiplier,
-                schedulerDiagnostics.cleanSourceBaselineIntervalMs,
-                schedulerDiagnostics.cleanSourceBaselineFps,
+                schedulerDiagnostics.sourceFps,
                 schedulerDiagnostics.currentSourceIntervalMs,
-                schedulerDiagnostics.baselineRatio,
                 schedulerDiagnostics.requestedSyntheticCount,
                 schedulerDiagnostics.admittedSyntheticCount,
-                schedulerDiagnostics.sourceProtectionState,
-                if (schedulerDiagnostics.sourceProtectionActive) 1 else 0,
-                schedulerDiagnostics.backoffReason,
-                schedulerDiagnostics.recoveryStreak,
-                schedulerDiagnostics.generationProbeLevel,
-                schedulerDiagnostics.preparationCostEstimateMs,
-                schedulerDiagnostics.pipelineCostEstimateMs,
                 schedulerDiagnostics.presentationOpportunityBudget,
+                schedulerDiagnostics.pipelineCostBudget,
+                schedulerDiagnostics.wantedGeneratedFrames,
+                schedulerDiagnostics.fractionalPhase,
                 schedulerDiagnostics.measuredOpportunityFps,
                 stats.sourceInputFps,
                 stats.generatedFps,
                 stats.outputFps,
                 stats.syntheticSlotsAbandoned,
                 stats.sourceOnlyFrames,
-                ApexNativeBridge.nativeGetSourceOnlyFrameCount(),
-                ApexNativeBridge.nativeGetGenerationReprimeCount(),
+                ApexNativeBridge.nativeGetNoGenerationSourceFrameCount(),
             ),
         )
     }
@@ -299,7 +294,7 @@ class ApexVulkanPresenter(
                     renderer.releaseApexFrame(pending, pending.acquireFenceFd)
                 }
                 pendingSourceFrame = null
-                pendingSourceArrivalNanos = 0L
+                pendingSourceTimestampNanos = 0L
                 if (handle != 0L) nativeDestroyPresenter(handle)
                 hasSourceHistory = false
                 nextSourceDeadlineNanos = 0L
@@ -337,6 +332,7 @@ class ApexVulkanPresenter(
             acquireFenceFd: Int,
             width: Int,
             height: Int,
+            sourceTimestampNanos: Long,
             generationOpportunities: Int,
         ): Long
 

@@ -56,18 +56,24 @@ class ApexVulkanTargetContractTest {
             source.contains("curVis && !scanoutActive.load() && !toApex"),
         )
         assertTrue(
-            "each AHB capture must carry the guest-content generation snapshot",
-            header.contains("sourceGeneration") &&
-                source.contains("slot.sourceGeneration = apexSourceGeneration.load"),
+            "each AHB capture must carry the guest producer timestamp",
+            header.contains("sourceTimestampNanos") &&
+                source.contains("slot.sourceTimestampNanos = apexSourceTimestampNanos.load"),
         )
         assertTrue(
             "duplicate compositor redraws must be collapsed before GLES history",
-            source.contains("sourceGeneration <= apexLastDequeuedSourceGeneration"),
+            source.contains("sourceTimestampNanos <= apexLastDequeuedSourceTimestampNanos"),
         )
         assertTrue(
             "Java must tag direct PresentExtension content separately from auxiliary redraws",
             java.contains("markApexSourceFrame(true)") &&
                 java.contains("APEX_DIRECT_SOURCE_GRACE_NS"),
+        )
+        assertTrue(
+            "the AHB consumer must recover the producer timestamp",
+            java.contains("nativeGetApexFrameSourceTimestampNanos") &&
+                java.contains("sourceTimestampNanos") &&
+                header.contains("apexFrameSourceTimestampNanos"),
         )
 
         val enableStart = source.indexOf("bool VulkanRendererContext::enableApexTarget()")

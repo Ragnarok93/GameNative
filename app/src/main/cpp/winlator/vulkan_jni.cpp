@@ -89,23 +89,23 @@ Java_com_winlator_renderer_VulkanRenderer_nativeDestroy(JNIEnv*, jobject, jlong 
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContent(
     JNIEnv* env, jobject, jlong handle, jlong id, jobject buf, jshort w, jshort h, jshort stride, jint x, jint y,
-    jlong sourceSequence)
+    jlong sourceTimestampNanos)
 {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
     if (!r||!buf) return;
     void* px=env->GetDirectBufferAddress(buf);
     if (px && env->GetDirectBufferCapacity(buf)>=(jlong)w*h*4)
-        r->updateWindowContent(id,px,w,h,stride,x,y,static_cast<uint64_t>(sourceSequence));
+        r->updateWindowContent(id,px,w,h,stride,x,y,static_cast<uint64_t>(sourceTimestampNanos));
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContentAHB(
     JNIEnv*, jobject, jlong handle, jlong id, jlong ahbPtr, jshort w, jshort h, jint x, jint y,
-    jlong sourceSequence)
+    jlong sourceTimestampNanos)
 {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
     if (r&&ahbPtr) r->updateWindowContentAHB(
         id,reinterpret_cast<AHardwareBuffer*>(ahbPtr),w,h,x,y,
-        static_cast<uint64_t>(sourceSequence));
+        static_cast<uint64_t>(sourceTimestampNanos));
 }
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeEnableXrTarget(JNIEnv*, jobject, jlong handle) {
@@ -143,6 +143,14 @@ Java_com_winlator_renderer_VulkanRenderer_nativeGetApexFrameBuffer(
     JNIEnv*, jobject, jlong handle, jlong token) {
     auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
     return r ? static_cast<jlong>(r->apexFrameBufferPtr(token)) : 0;
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetApexFrameSourceTimestampNanos(
+    JNIEnv*, jobject, jlong handle, jlong token) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r
+        ? static_cast<jlong>(r->apexFrameSourceTimestampNanos(token))
+        : 0;
 }
 extern "C" JNIEXPORT jint JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeTakeApexFrameFenceFd(

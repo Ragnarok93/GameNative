@@ -487,6 +487,7 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
     jint acquireFenceFd,
     jint width,
     jint height,
+    jlong sourceTimestampNanos,
     jint generationOpportunities) {
     auto* presenter = reinterpret_cast<Presenter*>(handle);
     auto* buffer = reinterpret_cast<AHardwareBuffer*>(hardwareBufferPtr);
@@ -530,7 +531,8 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
         height,
         true,
         true,
-        std::clamp(static_cast<int>(generationOpportunities), 0, 3));
+        std::clamp(static_cast<int>(generationOpportunities), 0, 3),
+        static_cast<int64_t>(sourceTimestampNanos));
 
     const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
     const int releaseFenceFd = exportReleaseFence(*presenter);

@@ -83,7 +83,8 @@ public:
 
     void processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                       int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
-                      bool sourceVerticalFlip = false, int generatedOpportunityBudget = -1);
+                      bool sourceVerticalFlip = false, int generatedOpportunityBudget = -1,
+                      int64_t sourceTimestampNanos = 0);
 
     // Legacy support for JNI bridge
     void processFrameWithData(GLuint i, GLuint d, GLuint h, GLuint o, int w, int height);
@@ -124,11 +125,8 @@ public:
     int consumeAbandonedSyntheticSlots() {
         return mAbandonedSyntheticSlots.exchange(0, std::memory_order_acq_rel);
     }
-    uint64_t getSourceOnlyFrameCount() const {
-        return mSourceOnlyFrames.load(std::memory_order_relaxed);
-    }
-    uint64_t getGenerationReprimeCount() const {
-        return mGenerationReprimeCount.load(std::memory_order_relaxed);
+    uint64_t getNoGenerationSourceFrameCount() const {
+        return mNoGenerationSourceFrames.load(std::memory_order_relaxed);
     }
 
     // Atomic Settings
@@ -258,13 +256,11 @@ private:
     std::atomic<bool> mAdaptiveFrameGeneration{true};
     std::atomic<bool> mPendingRealPresentation{false};
     std::atomic<int> mActiveGenerationBudget{0};
-    bool mFlowHistoryReady{false};
     std::atomic<int64_t> mLastPreparationCostNanos{0};
     std::atomic<int64_t> mLastSyntheticCostNanos{0};
     std::atomic<int> mLastSyntheticCostBudget{0};
     std::atomic<int> mAbandonedSyntheticSlots{0};
-    std::atomic<uint64_t> mSourceOnlyFrames{0};
-    std::atomic<uint64_t> mGenerationReprimeCount{0};
+    std::atomic<uint64_t> mNoGenerationSourceFrames{0};
     std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
     std::atomic<float> mShutterGain{0.0f}, mFlowScale{1.0f}, mLiquidFeel{0.5f}, mEdgeGuard{0.5f}, mRenderScale{1.0f}, mAutoMultiplierVal{2.0f};
 

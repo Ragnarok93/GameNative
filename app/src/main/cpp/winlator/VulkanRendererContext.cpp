@@ -1097,7 +1097,7 @@ void VulkanRendererContext::destroyApexTargetResources() {
             slot.ahb = nullptr;
         }
         slot.consumerSequence = 0;
-        slot.sourceGeneration = 0;
+        slot.sourceTimestampNanos = 0;
         slot.producerPending = false;
         slot.producerSemaphoreUsable = true;
     }
@@ -1144,8 +1144,8 @@ bool VulkanRendererContext::enableApexTarget() {
     if (!createApexTargetResources(width, height)) return false;
 
     apexProducerBacklogged.store(false, std::memory_order_release);
-    apexSourceGeneration.store(0, std::memory_order_release);
-    apexLastDequeuedSourceGeneration = 0;
+    apexSourceTimestampNanos.store(0, std::memory_order_release);
+    apexLastDequeuedSourceTimestampNanos = 0;
     apexTargetActive.store(true, std::memory_order_release);
     needsRender.store(true, std::memory_order_release);
     dirtyCV.notify_one();
@@ -1157,8 +1157,8 @@ bool VulkanRendererContext::disableApexTarget() {
     std::lock_guard<std::mutex> apexLock(apexTargetMutex);
     apexTargetActive.store(false, std::memory_order_release);
     apexProducerBacklogged.store(false, std::memory_order_release);
-    apexSourceGeneration.store(0, std::memory_order_release);
-    apexLastDequeuedSourceGeneration = 0;
+    apexSourceTimestampNanos.store(0, std::memory_order_release);
+    apexLastDequeuedSourceTimestampNanos = 0;
 
     for (auto& slot : apexTargets) {
         if (slot.producerFence != VK_NULL_HANDLE) {
@@ -1197,9 +1197,9 @@ int64_t VulkanRendererContext::dequeueApexFrame() {
         const auto token = apexTargetRing.dequeueForConsumer();
         if (!token.valid()) return 0;
         ApexTargetSlot& slot = apexTargets[token.slot];
-        const uint64_t sourceGeneration = slot.sourceGeneration;
-        if (sourceGeneration == 0 ||
-            sourceGeneration <= apexLastDequeuedSourceGeneration) {
+        const uint64_t sourceTimestampNanos = slot.sourceTimestampNanos;
+        if (sourceTimestampNanos == 0 ||
+            sourceTimestampNanos <= apexLastDequeuedSourceTimestampNanos) {
             if (slot.producerFenceFd >= 0) {
                 close(slot.producerFenceFd);
                 slot.producerFenceFd = -1;
@@ -1214,7 +1214,7 @@ int64_t VulkanRendererContext::dequeueApexFrame() {
             }
             continue;
         }
-        apexLastDequeuedSourceGeneration = sourceGeneration;
+        apexLastDequeuedSourceTimestampNanos = sourceTimestampNanos;
         slot.consumerSequence = token.sequence;
         return makeApexToken(token.slot, token.sequence);
     }
@@ -1230,6 +1230,18 @@ int64_t VulkanRendererContext::apexFrameBufferPtr(int64_t token) {
         return 0;
     }
     return reinterpret_cast<int64_t>(apexTargets[slotIndex].ahb);
+}
+
+int64_t VulkanRendererContext::apexFrameSourceTimestampNanos(int64_t token) {
+    std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+    const int slotIndex = apexTokenSlot(token);
+    const uint64_t sequence = apexTokenSequence(token);
+    if (slotIndex < 0 || slotIndex >= APEX_TARGET_COUNT ||
+        apexTargets[slotIndex].consumerSequence != sequence) {
+        return 0;
+    }
+    return static_cast<int64_t>(
+        apexTargets[slotIndex].sourceTimestampNanos);
 }
 
 int VulkanRendererContext::takeApexFrameFenceFd(int64_t token) {
@@ -1374,7 +1386,7 @@ void VulkanRendererContext::renderApexFrame() {
         // Snapshot the source generation under the same scene lock as the
         // texture/render-list snapshot, so the AHB token describes exactly the
         // guest content generation that was composited into it.
-        slot.sourceGeneration = apexSourceGeneration.load(std::memory_order_acquire);
+        slot.sourceTimestampNanos = apexSourceTimestampNanos.load(std::memory_order_acquire);
 
         frameDraws.clear();
         for (auto& re : renderList) {
@@ -1874,7 +1886,7 @@ void VulkanRendererContext::updateCursorImage(void* px, short w, short h, short 
 }
 
 void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, short h, short stride, int, int,
-                                                uint64_t sourceSequence) {
+                                                uint64_t sourceTimestampNanos) {
     if (!px||w<=0||h<=0) return;
 
     void* mapped=nullptr;
@@ -1901,14 +1913,14 @@ void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, s
         auto it=texMap.find(id);
         if (it!=texMap.end()) it->second.dirty=true;
     }
-    if (sourceSequence > 0) {
-        apexSourceGeneration.store(sourceSequence, std::memory_order_release);
+    if (sourceTimestampNanos > 0) {
+        apexSourceTimestampNanos.store(sourceTimestampNanos, std::memory_order_release);
     }
     needsRender.store(true); dirtyCV.notify_one();
 }
 
 void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* ahb, short, short, int, int,
-                                                   uint64_t sourceSequence) {
+                                                   uint64_t sourceTimestampNanos) {
     if (!ahb) return;
     std::lock_guard<std::mutex> lk(renderMutex);
 
@@ -1947,8 +1959,8 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
         wt.needsTransition  = true;
         src.needsTransition = false;
     }
-    if (sourceSequence > 0) {
-        apexSourceGeneration.store(sourceSequence, std::memory_order_release);
+    if (sourceTimestampNanos > 0) {
+        apexSourceTimestampNanos.store(sourceTimestampNanos, std::memory_order_release);
     }
     needsRender.store(true); dirtyCV.notify_one();
 }

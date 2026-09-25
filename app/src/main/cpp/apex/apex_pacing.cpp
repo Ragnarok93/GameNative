@@ -28,9 +28,9 @@ void ApexEngine::onFrameCaptured(int64_t nowNanos, bool isActualNewFrame) {
     }
     mLastRealFrameTimeNanos.store(nowNanos, std::memory_order_release);
 
-    // ApexSourceProtectedScheduler is the single admission owner. Native pacing
-    // keeps source timing only for interpolation diagnostics and legacy callers;
-    // it never raises or lowers synthetic cost from target deficit or slowdown.
+    // ApexCadenceScheduler is the single admission owner. This receives the
+    // producer timestamp carried through the AHB ring, not presenter dequeue
+    // time. Native pacing retains it for diagnostics and legacy callers only.
     const bool adaptive = mAdaptiveFrameGeneration.load(std::memory_order_acquire);
     int requested = 1;
     if (!adaptive) {

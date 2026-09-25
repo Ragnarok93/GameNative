@@ -361,7 +361,6 @@ void ApexEngine::ensureResources(int width, int height) {
     mFramesSinceReal.store(0, std::memory_order_release);
     mPendingRealPresentation.store(false, std::memory_order_release);
     mActiveGenerationBudget.store(0, std::memory_order_release);
-    mFlowHistoryReady = false;
     mLastPreparationCostNanos.store(0, std::memory_order_release);
     mLastSyntheticCostNanos.store(0, std::memory_order_release);
     mLastSyntheticCostBudget.store(0, std::memory_order_release);
@@ -516,7 +515,6 @@ void ApexEngine::cleanupResources() {
         glDeleteBuffers(1, &mTelemetrySsbo);
         mTelemetrySsbo = 0;
     }
-    mFlowHistoryReady = false;
     mInitialized = false;
 }
 
@@ -851,7 +849,8 @@ void ApexEngine::presentPendingReal(
 
 void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                               int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
-                              bool sourceVerticalFlip, int generatedOpportunityBudget) {
+                              bool sourceVerticalFlip, int generatedOpportunityBudget,
+                              int64_t sourceTimestampNanos) {
     mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
     mRenderingGeneratedFrame.store(false, std::memory_order_relaxed);
     if (!mActive.load(std::memory_order_relaxed)) return;
@@ -907,10 +906,13 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
     if (isNewRealFrame) {
+        const int64_t sourceClockNanos =
+            sourceTimestampNanos > 0 ? sourceTimestampNanos : nowNanos;
         const int64_t previousRealNanos =
             mLastRealFrameTimeNanos.load(std::memory_order_acquire);
         const bool discontinuity =
-            previousRealNanos > 0 && nowNanos - previousRealNanos > 250000000LL;
+            previousRealNanos > 0 &&
+            sourceClockNanos - previousRealNanos > 250000000LL;
         if (discontinuity) {
             // Suspend/loading boundaries must not interpolate across stale
             // history. The next pair starts clean.
@@ -918,7 +920,6 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mFramesSinceReal.store(0, std::memory_order_release);
             mPendingRealPresentation.store(false, std::memory_order_release);
             mActiveGenerationBudget.store(0, std::memory_order_release);
-            mFlowHistoryReady = false;
             mLastPreparationCostNanos.store(0, std::memory_order_release);
             mLastSyntheticCostNanos.store(0, std::memory_order_release);
             mLastSyntheticCostBudget.store(0, std::memory_order_release);
@@ -937,7 +938,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
             return;
         }
-        onFrameCaptured(nowNanos, true);
+        onFrameCaptured(sourceClockNanos, true);
         mRealFramesCaptured.fetch_add(1);
         mRealFramesCapturedCount.fetch_add(1);
         mFramesSinceReal.store(0);
@@ -958,22 +959,32 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // A non-negative presenter budget is authoritative. Evaluate it before
-        // any optical-flow pyramid work. Source-only protection keeps only the
-        // full-resolution color history plus this low-resolution flow source.
+        // A non-negative presenter budget is authoritative. Source history is
+        // still prepared on every accepted source frame so fractional/adaptive
+        // zero-generation intervals do not force an expensive re-prime later.
         const int generationBudget = generatedOpportunityBudget < 0
             ? std::clamp(mPlannedGen.load(std::memory_order_acquire), 0, 3)
             : std::clamp(generatedOpportunityBudget, 0, 3);
 
+        const auto preparationStart = std::chrono::steady_clock::now();
+        dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot], mCurrentSlot);
+        for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
+            dispatchLumaGrad(
+                i,
+                mLevels[i - 1].lumaTex[mCurrentSlot],
+                mCurrentSlot);
+        }
+        mLastPreparationCostNanos.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - preparationStart).count(),
+            std::memory_order_release);
+
         if (mRealFramesCaptured.load() < 2 || generationBudget <= 0) {
-            // Budget zero is a genuine synthetic-work-free interval: no
-            // luma/gradient pyramid, search, propagation, densification, or
-            // interpolation is queued.
-            mFlowHistoryReady = false;
-            mLastPreparationCostNanos.store(0, std::memory_order_release);
+            // Search, propagation, densification and interpolation stay fully
+            // skipped; only the low-cost temporal source pyramid remains warm.
             mLastSyntheticCostNanos.store(0, std::memory_order_release);
             mLastSyntheticCostBudget.store(0, std::memory_order_release);
-            mSourceOnlyFrames.fetch_add(1, std::memory_order_relaxed);
+            mNoGenerationSourceFrames.fetch_add(1, std::memory_order_relaxed);
 
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
             glViewport(viewX, viewY, viewWidth, viewHeight);
@@ -987,29 +998,6 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             return;
         }
 
-        const auto preparationStart = std::chrono::steady_clock::now();
-        if (!mFlowHistoryReady) {
-            // Source-only operation skipped previous pyramids. Rebuild only the
-            // immediately previous source once at controlled generation re-entry.
-            dispatchLumaGrad(0, mFlowColorTex[mPreviousSlot], mPreviousSlot);
-            for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
-                dispatchLumaGrad(
-                    i,
-                    mLevels[i - 1].lumaTex[mPreviousSlot],
-                    mPreviousSlot);
-            }
-            mGenerationReprimeCount.fetch_add(1, std::memory_order_relaxed);
-        }
-
-        dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot], mCurrentSlot);
-        for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
-            dispatchLumaGrad(i, mLevels[i - 1].lumaTex[mCurrentSlot], mCurrentSlot);
-        }
-        mFlowHistoryReady = true;
-        mLastPreparationCostNanos.store(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - preparationStart).count(),
-            std::memory_order_release);
         mLastSyntheticCostBudget.store(generationBudget, std::memory_order_release);
 
         // Zero-initialize telemetry buffer if logging is enabled
@@ -1021,7 +1009,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         }
 
         // Passes 5-12: Coarse-to-fine. Source pyramids were prepared above for
-        // every accepted source, including source-only intervals.
+        // every accepted source, including intervals with no generated output.
 
         const auto syntheticStart = std::chrono::steady_clock::now();
         GLuint coarseFlow = 0;

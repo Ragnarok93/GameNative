@@ -311,15 +311,9 @@ Java_app_gamenative_framegen_ApexNativeBridge_nativeConsumeAbandonedSyntheticSlo
 }
 
 JNIEXPORT jlong JNICALL
-Java_app_gamenative_framegen_ApexNativeBridge_nativeGetSourceOnlyFrameCount(JNIEnv*, jclass) {
+Java_app_gamenative_framegen_ApexNativeBridge_nativeGetNoGenerationSourceFrameCount(JNIEnv*, jclass) {
     return static_cast<jlong>(
-        apex::ApexEngine::getInstance().getSourceOnlyFrameCount());
-}
-
-JNIEXPORT jlong JNICALL
-Java_app_gamenative_framegen_ApexNativeBridge_nativeGetGenerationReprimeCount(JNIEnv*, jclass) {
-    return static_cast<jlong>(
-        apex::ApexEngine::getInstance().getGenerationReprimeCount());
+        apex::ApexEngine::getInstance().getNoGenerationSourceFrameCount());
 }
 
 JNIEXPORT jstring JNICALL

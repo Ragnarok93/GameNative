@@ -79,7 +79,7 @@ jobs:
           --tests app.gamenative.framegen.ApexPresentationHandoffContractTest
           --tests app.gamenative.framegen.ApexHudTelemetryContractTest
           --tests app.gamenative.framegen.ApexPresentationTelemetryTest
-          --tests app.gamenative.framegen.ApexSourceProtectedSchedulerTest
+          --tests app.gamenative.framegen.ApexCadenceSchedulerTest
           --tests app.gamenative.framegen.ApexPowerMetricsContractTest
           --tests app.gamenative.framegen.ApexXclipseCompatibilityContractTest
           --tests app.gamenative.framegen.ApexContainerSettingsContractTest

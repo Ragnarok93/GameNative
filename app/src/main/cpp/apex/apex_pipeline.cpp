@@ -967,10 +967,8 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         return;
     }
 
-    const int presentationWidth =
-        outputViewWidth > 0 ? outputViewWidth : viewWidth;
-    const int presentationHeight =
-        outputViewHeight > 0 ? outputViewHeight : viewHeight;
+    const int presentationWidth = outputViewWidth > 0 ? outputViewWidth : viewWidth;
+    const int presentationHeight = outputViewHeight > 0 ? outputViewHeight : viewHeight;
     if (presentationWidth <= 0 || presentationHeight <= 0) {
         mFallbackCount++;
         return;

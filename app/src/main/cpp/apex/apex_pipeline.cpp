@@ -361,6 +361,10 @@ void ApexEngine::ensureResources(int width, int height) {
     mFramesSinceReal.store(0, std::memory_order_release);
     mPendingRealPresentation.store(false, std::memory_order_release);
     mActiveGenerationBudget.store(0, std::memory_order_release);
+    mFlowHistoryReady = false;
+    mLastPreparationCostNanos.store(0, std::memory_order_release);
+    mLastSyntheticCostNanos.store(0, std::memory_order_release);
+    mLastSyntheticCostBudget.store(0, std::memory_order_release);
     mLastRealFrameTimeNanos.store(0, std::memory_order_release);
     mTypicalDeltaNanos = 0.0f;
     mHistoryIdx = 0;
@@ -512,6 +516,7 @@ void ApexEngine::cleanupResources() {
         glDeleteBuffers(1, &mTelemetrySsbo);
         mTelemetrySsbo = 0;
     }
+    mFlowHistoryReady = false;
     mInitialized = false;
 }
 
@@ -760,8 +765,13 @@ std::string ApexEngine::getDiagnostics() {
              srcFps, deltaMs, mTargetFPS.load(), mAutoMultiplierVal.load(), mPlannedGen + 1);
     diag += pbuf;
 
-    snprintf(pbuf, sizeof(pbuf), "• Backpressure: CostLimit=%d, DropPersistence=%s, Streaks=(+%d, -%d)\n",
-             mCostLimit, (mDropSinceNanos > 0 ? "ACTIVE" : "NONE"), mGenHighStreak, mGenLowStreak);
+    snprintf(
+        pbuf,
+        sizeof(pbuf),
+        "• Admission: Kotlin source-protected | PrepSubmit=%.3f ms | SyntheticSubmit=%.3f ms | LastBudget=%d\\n",
+        static_cast<double>(mLastPreparationCostNanos.load(std::memory_order_relaxed)) / 1000000.0,
+        static_cast<double>(mLastSyntheticCostNanos.load(std::memory_order_relaxed)) / 1000000.0,
+        mLastSyntheticCostBudget.load(std::memory_order_relaxed));
     diag += pbuf;
 
     snprintf(pbuf, sizeof(pbuf), "• Frames: Total=%llu, RealPresented=%llu, GenPresented=%llu, Fallbacks=%llu\n",
@@ -824,6 +834,15 @@ void ApexEngine::presentPendingReal(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count(),
         std::memory_order_relaxed);
+    const int activeBudget =
+        mActiveGenerationBudget.load(std::memory_order_acquire);
+    const int generatedAfterFirst =
+        mFramesSinceReal.load(std::memory_order_acquire);
+    const int abandoned =
+        std::max(0, activeBudget - 1 - generatedAfterFirst);
+    if (abandoned > 0) {
+        mAbandonedSyntheticSlots.fetch_add(abandoned, std::memory_order_relaxed);
+    }
     mFramesSinceReal.store(0, std::memory_order_release);
     mActiveGenerationBudget.store(0, std::memory_order_release);
     mRenderingGeneratedFrame.store(false, std::memory_order_release);
@@ -899,6 +918,10 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mFramesSinceReal.store(0, std::memory_order_release);
             mPendingRealPresentation.store(false, std::memory_order_release);
             mActiveGenerationBudget.store(0, std::memory_order_release);
+            mFlowHistoryReady = false;
+            mLastPreparationCostNanos.store(0, std::memory_order_release);
+            mLastSyntheticCostNanos.store(0, std::memory_order_release);
+            mLastSyntheticCostBudget.store(0, std::memory_order_release);
             mLastRealFrameTimeNanos.store(0, std::memory_order_release);
             mTypicalDeltaNanos = 0.0f;
             mHistoryIdx = 0;
@@ -935,44 +958,23 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // Every accepted real source becomes the template for the next pair.
-        // The old path returned before building the first pyramid, so the first
-        // generated pair sampled uninitialized previous-frame luma/gradients.
-        dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot], mCurrentSlot);
-        for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
-            dispatchLumaGrad(i, mLevels[i - 1].lumaTex[mCurrentSlot], mCurrentSlot);
-        }
-
-        if (mRealFramesCaptured.load() < 2) {
-            glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-            glViewport(viewX, viewY, viewWidth, viewHeight);
-            blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
-            mActualRealFrameCount.fetch_add(1);
-            mTotalRealFramesPresented++;
-            mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
-            mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
-            mActiveGenerationBudget.store(0, std::memory_order_release);
-            mPendingRealPresentation.store(false, std::memory_order_release);
-            return;
-        }
-
-        // A non-negative presenter budget is authoritative. It already folds
-        // requested mode/target, measured Choreographer capacity, source
-        // delivery health, and the reserved real-frame deadline together.
+        // A non-negative presenter budget is authoritative. Evaluate it before
+        // any optical-flow pyramid work. Source-only protection keeps only the
+        // full-resolution color history plus this low-resolution flow source.
         const int generationBudget = generatedOpportunityBudget < 0
             ? std::clamp(mPlannedGen.load(std::memory_order_acquire), 0, 3)
             : std::clamp(generatedOpportunityBudget, 0, 3);
 
-        // Pacing & Target FPS Governor:
-        int targetFPS = mTargetFPS.load(std::memory_order_relaxed);
-        int64_t lastPres = mLastPresentedNanos.load(std::memory_order_relaxed);
+        if (mRealFramesCaptured.load() < 2 || generationBudget <= 0) {
+            // Budget zero is a genuine synthetic-work-free interval: no
+            // luma/gradient pyramid, search, propagation, densification, or
+            // interpolation is queued.
+            mFlowHistoryReady = false;
+            mLastPreparationCostNanos.store(0, std::memory_order_release);
+            mLastSyntheticCostNanos.store(0, std::memory_order_release);
+            mLastSyntheticCostBudget.store(0, std::memory_order_release);
+            mSourceOnlyFrames.fetch_add(1, std::memory_order_relaxed);
 
-        // Relaxed Governor: In Continuous Mode, Java handles the main throttle.
-        // We only bypass here if we are rendering faster than 250 FPS to avoid GPU flooding.
-        if (generationBudget <= 0 ||
-            (targetFPS > 0 && lastPres > 0 && (nowNanos - lastPres < 4000000LL))) {
-            // No proven display slot is available for synthesis, or a newer
-            // source preempted a buffered interval. Deliver source immediately.
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
             glViewport(viewX, viewY, viewWidth, viewHeight);
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
@@ -984,6 +986,31 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mPendingRealPresentation.store(false, std::memory_order_release);
             return;
         }
+
+        const auto preparationStart = std::chrono::steady_clock::now();
+        if (!mFlowHistoryReady) {
+            // Source-only operation skipped previous pyramids. Rebuild only the
+            // immediately previous source once at controlled generation re-entry.
+            dispatchLumaGrad(0, mFlowColorTex[mPreviousSlot], mPreviousSlot);
+            for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
+                dispatchLumaGrad(
+                    i,
+                    mLevels[i - 1].lumaTex[mPreviousSlot],
+                    mPreviousSlot);
+            }
+            mGenerationReprimeCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot], mCurrentSlot);
+        for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
+            dispatchLumaGrad(i, mLevels[i - 1].lumaTex[mCurrentSlot], mCurrentSlot);
+        }
+        mFlowHistoryReady = true;
+        mLastPreparationCostNanos.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - preparationStart).count(),
+            std::memory_order_release);
+        mLastSyntheticCostBudget.store(generationBudget, std::memory_order_release);
 
         // Zero-initialize telemetry buffer if logging is enabled
         if (mTelemetrySsbo && mLoggingEnabled.load(std::memory_order_relaxed)) {
@@ -996,6 +1023,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         // Passes 5-12: Coarse-to-fine. Source pyramids were prepared above for
         // every accepted source, including source-only intervals.
 
+        const auto syntheticStart = std::chrono::steady_clock::now();
         GLuint coarseFlow = 0;
         int coarseLevel = MAX_PYR_LEVELS - 1;
         for (int i = coarseLevel; i >= 0; i--) {
@@ -1041,6 +1069,10 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         const float t = 1.0f / static_cast<float>(mult);
         dispatchInterpolate(mColorRingTex[mPreviousSlot], mColorRingTex[mCurrentSlot],
                             l0.denseFlowTex, l0.denseFlowTex, mInterpOutTex, t, mScaledWidth, mScaledHeight);
+        mLastSyntheticCostNanos.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - syntheticStart).count(),
+            std::memory_order_release);
 
         // PRESENT GENERATED FRAME FIRST
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);

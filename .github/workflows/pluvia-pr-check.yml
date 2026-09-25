@@ -40,6 +40,8 @@ jobs:
 
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
+        with:
+          build-type: Debug
 
       - name: Inject credentials
         if: github.event.pull_request.head.repo.full_name == github.repository

@@ -21,4 +21,39 @@ class ApexPowerMetricsContractTest {
         assertTrue(collector.contains("source=\$%s").not()) // guard accidental interpolation typo
         assertTrue(collector.contains("\"apex-source\""))
     }
+    @Test
+    fun apexGpuTimingUsesSampledNonBlockingDisjointTimerQueries() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        listOf(
+            "GL_EXT_disjoint_timer_query",
+            "GL_TIME_ELAPSED_EXT",
+            "GL_QUERY_RESULT_AVAILABLE",
+            "GL_GPU_DISJOINT_EXT",
+            "glGetQueryObjectui64vEXT",
+            "GPU_TIMER_SAMPLE_INTERVAL",
+            "pollGpuTimerQueries",
+            "Apex GPU timing:",
+        ).forEach { token ->
+            assertTrue("Apex GPU timing instrumentation is missing $token",
+                pipeline.contains(token) || engine.contains(token))
+        }
+
+        assertTrue(
+            "timer result collection must poll availability before reading a result",
+            pipeline.indexOf("GL_QUERY_RESULT_AVAILABLE") <
+                pipeline.indexOf("GL_QUERY_RESULT"),
+        )
+        assertTrue(
+            "timer queries must use 64-bit nanosecond results",
+            pipeline.contains("GLuint64") &&
+                pipeline.contains("glGetQueryObjectui64vEXT"),
+        )
+        assertTrue(
+            "GPU timing instrumentation must never synchronize the pipeline with glFinish",
+            !pipeline.contains("glFinish()"),
+        )
+    }
+
 }

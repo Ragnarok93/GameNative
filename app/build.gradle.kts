@@ -27,13 +27,6 @@ val ciVersionCodeOverride =
 val ciVersionNameOverride =
     (project.findProperty("ciVersionName") as String?)?.takeIf { it.isNotBlank() }
 
-if (upgradeSafeDebugSigning && keystoreProperties == null) {
-    error(
-        "upgradeSafeDebugSigning requires app/keystores/keystore.properties " +
-            "so CI never falls back to an ephemeral debug certificate",
-    )
-}
-
 // Add PostHog API key and host as build-time variables
 val posthogApiKey: String = project.findProperty("POSTHOG_API_KEY") as String? ?: System.getenv("POSTHOG_API_KEY") ?: ""
 val posthogHost: String = project.findProperty("POSTHOG_HOST") as String? ?: System.getenv("POSTHOG_HOST") ?: "https://us.i.posthog.com"
@@ -76,6 +69,18 @@ android {
                 keyAlias = keystoreProperties["keyAlias"].toString()
                 keyPassword = keystoreProperties["keyPassword"].toString()
             }
+        }
+
+        // Dedicated CI/debug identity. This key is intentionally non-production
+        // and committed so every revision can be installed as an update over
+        // the previous workflow artifact without depending on runner-local keys.
+        create("upgradeDebug") {
+            storeFile = rootProject.file(
+                ".github/debug-signing/gamenative-upgrade-debug.jks",
+            )
+            storePassword = "android"
+            keyAlias = "gamenative-upgrade-debug"
+            keyPassword = "android"
         }
     }
 
@@ -195,11 +200,11 @@ android {
             isDebuggable = true
             isMinifyEnabled = false
             isShrinkResources = false
-            // Local builds keep the ordinary SDK debug key. CI can opt into the
-            // repository's persistent signing identity so successive debug APKs
-            // are accepted by Android as in-place updates.
+            // Local builds keep the ordinary SDK debug key. CI opts into the
+            // repository-pinned non-production key so successive revision APKs
+            // retain one Android update identity.
             signingConfig = signingConfigs.getByName(
-                if (upgradeSafeDebugSigning) "pluvia" else "debug",
+                if (upgradeSafeDebugSigning) "upgradeDebug" else "debug",
             )
         }
         release {

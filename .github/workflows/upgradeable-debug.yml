@@ -46,33 +46,14 @@ jobs:
       - name: Prepare Vulkan renderer
         uses: ./.github/actions/prepare-vulkan-renderer
 
-      - name: Configure persistent upgrade signing
+      - name: Verify persistent debug signing identity
         shell: bash
-        env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE }}
-          KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
-          STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
         run: |
           set -euo pipefail
-          for name in KEYSTORE_B64 KEY_ALIAS KEY_PASSWORD STORE_PASSWORD; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "::error::Required persistent signing secret $name is unavailable."
-              echo "::error::Refusing to create a non-upgradeable APK with an ephemeral runner key."
-              exit 1
-            fi
-          done
-
-          mkdir -p app/keystores
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > app/keystores/upgrade-debug.keystore
-          chmod 600 app/keystores/upgrade-debug.keystore
-
-          cat > app/keystores/keystore.properties <<EOF
-          storeFile=keystores/upgrade-debug.keystore
-          keyAlias=$KEY_ALIAS
-          storePassword=$STORE_PASSWORD
-          keyPassword=$KEY_PASSWORD
-          EOF
+          keystore=".github/debug-signing/gamenative-upgrade-debug.jks"
+          test -s "$keystore"
+          keytool -list -v             -keystore "$keystore"             -storepass android             -alias gamenative-upgrade-debug |
+            sed -n 's/^[[:space:]]*SHA256: /Upgradeable debug signer SHA256: /p'
 
       - name: Generate version-independent debug metadata
         id: version
@@ -117,9 +98,6 @@ jobs:
 
       - name: Verify update identity and native provenance
         shell: bash
-        env:
-          KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
-          STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -158,7 +136,7 @@ jobs:
           [[ "$badging" == *"versionName='$VERSION_NAME'"* ]]
 
           expected_cert="$(
-            keytool -list -v               -keystore app/keystores/upgrade-debug.keystore               -storepass "$STORE_PASSWORD"               -alias "$KEY_ALIAS" |
+            keytool -list -v               -keystore .github/debug-signing/gamenative-upgrade-debug.jks               -storepass android               -alias gamenative-upgrade-debug |
               sed -n 's/^[[:space:]]*SHA256: //p' |
               head -n 1 |
               tr -d ':' |

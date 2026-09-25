@@ -258,4 +258,39 @@ class ApexVulkanPresenterContractTest {
         assertTrue(pipeline.contains("mGenerationReprimeCount.fetch_add"))
     }
 
+    @Test
+    fun presenterSeparatesProcessingAndPresentationExtentsAndCachesPersistentAhbImports() {
+        val native = repoFile(
+            "app/src/main/cpp/apex/apex_vulkan_presenter.cpp",
+        ).readText()
+        val renderer = repoFile(
+            "app/src/main/cpp/winlator/VulkanRendererContext.cpp",
+        ).readText()
+
+        assertTrue(
+            "Apex Vulkan target must derive a processing extent that is independent of the presentation extent",
+            renderer.contains("computeApexProcessingExtent") &&
+                renderer.contains("APEX_MIN_PROCESSING_SHORT_SIDE") &&
+                renderer.contains("APEX_PROCESSING_SCALE"),
+        )
+        assertTrue(
+            "presenter must track source and output dimensions independently",
+            native.contains("sourceWidth") &&
+                native.contains("sourceHeight") &&
+                native.contains("outputWidth") &&
+                native.contains("outputHeight") &&
+                native.contains("eglQuerySurface"),
+        )
+        assertFalse(
+            "source AHB dimensions must not resize the Android presentation surface",
+            native.contains("ANativeWindow_setBuffersGeometry"),
+        )
+        assertTrue(
+            "persistent Vulkan AHB ring entries must keep one persistent EGL/GL import per AHB",
+            native.contains("std::unordered_map<AHardwareBuffer*, ImportedSource>") &&
+                native.contains("getOrImportSource") &&
+                native.contains("destroyImportedSources"),
+        )
+    }
+
 }

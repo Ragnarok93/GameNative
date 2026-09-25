@@ -1,16 +1,17 @@
 package app.gamenative.framegen
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ApexSourceProtectedSchedulerTest {
-    private fun populatedTelemetry(
-        sourceInFps: Float,
-        sourceOutFps: Float,
-        generatedFps: Float,
-        outputFps: Float,
-        opportunityFps: Float,
+    private fun telemetry(
+        sourceInFps: Float = 30f,
+        sourceOutFps: Float = sourceInFps,
+        generatedFps: Float = 0f,
+        outputFps: Float = sourceOutFps + generatedFps,
+        opportunityFps: Float = 120f,
     ): ApexPresentationTelemetry.Snapshot =
         ApexPresentationTelemetry.Snapshot(
             active = true,
@@ -25,235 +26,240 @@ class ApexSourceProtectedSchedulerTest {
             sourceArrivals = 10,
             sourceDropped = 0,
             sourcePresented = 10,
-            generatedPresented = 10,
+            generatedPresented = generatedFps.toLong(),
             repeatedPresented = 0,
             outputPresented = 20,
             swapFailures = 0,
         )
 
-    private fun seedDisplayCadence(
-        scheduler: ApexSourceProtectedScheduler,
-        startNanos: Long,
-        periodNanos: Long,
-        samples: Int = 16,
-    ) {
-        var time = startNanos
+    private fun seedDisplay(s: ApexSourceProtectedScheduler, start: Long, period: Long = 8_333_333L) {
+        var t = start
+        repeat(24) {
+            s.recordDisplayOpportunity(t)
+            t += period
+        }
+    }
+
+    private fun learnBaseline(
+        s: ApexSourceProtectedScheduler,
+        start: Long,
+        sourcePeriod: Long,
+        samples: Int = 8,
+    ): Long {
+        var t = start
+        s.recordSourceArrival(t)
         repeat(samples) {
-            scheduler.recordDisplayOpportunity(time)
-            time += periodNanos
+            t += sourcePeriod
+            s.recordSourceArrival(t)
+            s.generationBudget(false, 0, 0, telemetry())
         }
+        return t
     }
 
-    @Test
-    fun fixedFourXIsAuthoritativeInsteadOfBeingClampedByCallbackCapacity() {
-        val scheduler = ApexSourceProtectedScheduler()
-        seedDisplayCadence(
-            scheduler = scheduler,
-            startNanos = 1_000_000_000L,
-            periodNanos = 11_111_111L,
-        )
-        scheduler.recordSourceArrival(1_000_000_000L)
-        scheduler.recordSourceArrival(1_033_333_333L)
-
-        val budget = scheduler.generationBudget(
-            adaptive = false,
-            fixedGeneratedCeiling = 3,
-            targetFps = 120,
-            presentation = populatedTelemetry(
-                sourceInFps = 30f,
-                sourceOutFps = 30f,
-                generatedFps = 60f,
-                outputFps = 90f,
-                opportunityFps = 90f,
-            ),
-        )
-
-        assertEquals(
-            "fixed 4x must continue requesting three synthetic frames; source deadlines decide whether a slot is still usable",
-            3,
-            budget,
-        )
-    }
-
-    @Test
-    fun adaptiveFortyFiveDistributesFractionalSyntheticOpportunities() {
-        val scheduler = ApexSourceProtectedScheduler()
-        seedDisplayCadence(
-            scheduler = scheduler,
-            startNanos = 2_000_000_000L,
-            periodNanos = 8_333_333L,
-        )
-
-        var sourceTime = 2_000_000_000L
-        scheduler.recordSourceArrival(sourceTime)
-        var generated = 0
-        var maxBudget = 0
-        repeat(20) {
-            sourceTime += 33_333_333L
-            scheduler.recordSourceArrival(sourceTime)
-            val budget = scheduler.generationBudget(
-                adaptive = true,
-                fixedGeneratedCeiling = 3,
-                targetFps = 45,
-                presentation = populatedTelemetry(
-                    sourceInFps = 30f,
-                    sourceOutFps = 30f,
-                    generatedFps = 15f,
-                    outputFps = 45f,
-                    opportunityFps = 120f,
-                ),
-            )
-            generated += budget
-            maxBudget = maxOf(maxBudget, budget)
-        }
-
-        assertTrue(
-            "30 -> 45 Adaptive should create about one synthetic opportunity every two source intervals",
-            generated in 9..11,
-        )
-        assertEquals(
-            "fractional 1.5x cadence must be distributed over time rather than rounded to fixed 2x",
-            1,
-            maxBudget,
-        )
-    }
-
-    @Test
-    fun adaptiveOneTwentyPursuesTargetEvenWhenCallbackTelemetryReportsNinety() {
-        val scheduler = ApexSourceProtectedScheduler()
-        seedDisplayCadence(
-            scheduler = scheduler,
-            startNanos = 3_000_000_000L,
-            periodNanos = 11_111_111L,
-        )
-
-        var sourceTime = 3_000_000_000L
-        scheduler.recordSourceArrival(sourceTime)
+    private fun rampFixed(
+        s: ApexSourceProtectedScheduler,
+        start: Long,
+        sourcePeriod: Long,
+        ceiling: Int,
+        samples: Int = 32,
+        opportunityFps: Float = 120f,
+    ): Pair<Long, Int> {
+        var t = start
         var budget = 0
-        repeat(48) {
-            sourceTime += 33_333_333L
-            scheduler.recordSourceArrival(sourceTime)
-            budget = scheduler.generationBudget(
-                adaptive = true,
-                fixedGeneratedCeiling = 3,
+        repeat(samples) {
+            t += sourcePeriod
+            s.recordSourceArrival(t)
+            budget = s.generationBudget(
+                adaptive = false,
+                fixedGeneratedCeiling = ceiling,
                 targetFps = 120,
-                presentation = populatedTelemetry(
-                    sourceInFps = 30f,
-                    sourceOutFps = 30f,
-                    generatedFps = 60f,
-                    outputFps = 90f,
-                    opportunityFps = 90f,
-                ),
+                presentation = telemetry(opportunityFps = opportunityFps),
             )
         }
-
-        assertEquals(
-            "measured presenter callbacks are capacity evidence, not permission to rewrite a 120 FPS target to ~90 FPS",
-            3,
-            budget,
-        )
+        return t to budget
     }
 
     @Test
-    fun adaptiveSourceSlowdownCreatesMoreDemandInsteadOfSuppressingGeneration() {
-        val scheduler = ApexSourceProtectedScheduler()
-        seedDisplayCadence(
-            scheduler = scheduler,
-            startNanos = 4_000_000_000L,
-            periodNanos = 8_333_333L,
+    fun stableBaselineWithSustainableSyntheticLoadAllowsRequestedGeneration() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 1_000_000_000L)
+        var t = learnBaseline(s, 1_000_000_000L, 33_333_333L)
+        val result = rampFixed(s, t, 33_333_333L, ceiling = 3)
+        t = result.first
+        assertEquals(3, result.second)
+        assertFalse(s.diagnostics().sourceProtectionActive)
+        assertTrue(t > 0L)
+    }
+
+    @Test
+    fun generatedLoadThatDegradesSourceActivatesProtectionBeforeCadenceIsSacrificed() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 2_000_000_000L)
+        var t = learnBaseline(s, 2_000_000_000L, 33_333_333L)
+        val ramp = rampFixed(s, t, 33_333_333L, ceiling = 3)
+        t = ramp.first
+        assertTrue(ramp.second > 0)
+
+        t += 50_000_000L
+        s.recordSourceArrival(t)
+        val budget = s.generationBudget(false, 3, 120, telemetry(sourceInFps = 20f))
+        assertEquals(0, budget)
+        assertTrue(s.diagnostics().sourceProtectionActive)
+        assertEquals("source-degradation", s.diagnostics().backoffReason)
+    }
+
+    @Test
+    fun fixedFourXIsACeilingAndPresentationCapacityMayClampIt() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 3_000_000_000L, 11_111_111L)
+        val t = learnBaseline(s, 3_000_000_000L, 33_333_333L)
+        val result = rampFixed(
+            s,
+            t,
+            33_333_333L,
+            ceiling = 3,
+            samples = 40,
+            opportunityFps = 90f,
         )
+        assertTrue(result.second in 0..2)
+        assertEquals(3, s.diagnostics().requestedSyntheticCount)
+    }
 
-        var sourceTime = 4_000_000_000L
-        scheduler.recordSourceArrival(sourceTime)
-        repeat(48) {
-            sourceTime += 33_333_333L
-            scheduler.recordSourceArrival(sourceTime)
-            scheduler.generationBudget(
-                adaptive = true,
-                fixedGeneratedCeiling = 3,
-                targetFps = 120,
-                presentation = populatedTelemetry(30f, 30f, 60f, 90f, 120f),
-            )
+    @Test
+    fun adaptiveDemandCanRiseDuringSlowdownWhileAdmissionBacksOff() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 4_000_000_000L)
+        var t = learnBaseline(s, 4_000_000_000L, 33_333_333L)
+        repeat(28) {
+            t += 33_333_333L
+            s.recordSourceArrival(t)
+            s.generationBudget(true, 3, 120, telemetry(generatedFps = 60f, outputFps = 90f))
         }
+        val before = s.diagnostics().requestedSyntheticCount
 
-        sourceTime += 50_000_000L
-        scheduler.recordSourceArrival(sourceTime)
-        val slowedBudget = scheduler.generationBudget(
-            adaptive = true,
-            fixedGeneratedCeiling = 3,
-            targetFps = 120,
-            presentation = populatedTelemetry(
-                sourceInFps = 20f,
-                sourceOutFps = 20f,
-                generatedFps = 60f,
-                outputFps = 80f,
-                opportunityFps = 120f,
+        t += 50_000_000L
+        s.recordSourceArrival(t)
+        val admitted = s.generationBudget(
+            true,
+            3,
+            120,
+            telemetry(sourceInFps = 20f, sourceOutFps = 20f, generatedFps = 60f, outputFps = 80f),
+        )
+        val after = s.diagnostics()
+        assertTrue(after.requestedSyntheticCount >= before)
+        assertEquals(0, admitted)
+        assertTrue(after.sourceProtectionActive)
+    }
+
+    @Test
+    fun naturallySlowStableSourceRemainsEligibleForGeneration() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 5_000_000_000L, 8_333_333L)
+        val t = learnBaseline(s, 5_000_000_000L, 50_000_000L, samples = 10)
+        val result = rampFixed(s, t, 50_000_000L, ceiling = 1, samples = 20)
+        assertEquals(1, result.second)
+        assertFalse(s.diagnostics().sourceProtectionActive)
+    }
+
+    @Test
+    fun protectedSourceOnlyIntervalsDoNotImmediatelyLearnDegradedGeneratedCadence() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 6_000_000_000L)
+        var t = learnBaseline(s, 6_000_000_000L, 33_333_333L)
+        val ramp = rampFixed(s, t, 33_333_333L, ceiling = 2)
+        t = ramp.first
+        val baselineBefore = s.diagnostics().cleanSourceBaselineIntervalMs
+
+        t += 50_000_000L
+        s.recordSourceArrival(t)
+        s.generationBudget(false, 2, 120, telemetry(sourceInFps = 20f))
+        repeat(3) {
+            t += 50_000_000L
+            s.recordSourceArrival(t)
+            s.generationBudget(false, 2, 120, telemetry(sourceInFps = 20f))
+        }
+        val after = s.diagnostics()
+        assertTrue(after.sourceProtectionActive)
+        assertTrue(after.cleanSourceBaselineIntervalMs < 40f)
+        assertEquals(baselineBefore, after.cleanSourceBaselineIntervalMs, 2.0f)
+    }
+
+    @Test
+    fun recoveryUsesHysteresisAndProbesOneSyntheticLevelAtATime() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 7_000_000_000L)
+        var t = learnBaseline(s, 7_000_000_000L, 33_333_333L)
+        t = rampFixed(s, t, 33_333_333L, ceiling = 3).first
+        t += 50_000_000L
+        s.recordSourceArrival(t)
+        assertEquals(0, s.generationBudget(false, 3, 120, telemetry(sourceInFps = 20f)))
+
+        var firstNonZero = -1
+        repeat(16) {
+            t += 33_333_333L
+            s.recordSourceArrival(t)
+            val budget = s.generationBudget(false, 3, 120, telemetry())
+            if (firstNonZero < 0 && budget > 0) firstNonZero = budget
+        }
+        assertEquals(1, firstNonZero)
+        assertTrue(s.diagnostics().generationProbeLevel in 0..1)
+    }
+
+    @Test
+    fun newlyArrivedRealSourceMayPreemptSyntheticPrefixWhenDeadlineWouldBeEndangered() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 8_000_000_000L)
+        var t = learnBaseline(s, 8_000_000_000L, 33_333_333L)
+        t = rampFixed(s, t, 33_333_333L, ceiling = 3).first
+        s.recordSourceArrival(t + 33_333_333L)
+        s.generationBudget(false, 3, 120, telemetry())
+
+        val queuedArrival = t + 39_000_000L
+        assertTrue(
+            s.shouldPreemptForQueuedSource(
+                nowNanos = t + 47_000_000L,
+                queuedSourceArrivalNanos = queuedArrival,
             ),
         )
-
-        assertEquals(
-            "a slower source raises target-relative interpolation demand; it must not activate a source-FPS backoff governor",
-            3,
-            slowedBudget,
-        )
     }
 
     @Test
-    fun sourceDeadlineStillReservesTheRealFrame() {
-        val scheduler = ApexSourceProtectedScheduler()
-        seedDisplayCadence(
-            scheduler = scheduler,
-            startNanos = 5_000_000_000L,
-            periodNanos = 8_333_333L,
+    fun nativeCostCanReduceAdmissionWithoutCreatingCatchUpDebt() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 9_000_000_000L)
+        var t = learnBaseline(s, 9_000_000_000L, 33_333_333L)
+        s.recordNativeCost(
+            preparationCostNanos = 5_000_000L,
+            pipelineCostNanos = 24_000_000L,
+            generatedFrames = 1,
         )
-        scheduler.recordSourceArrival(5_000_000_000L)
-        scheduler.recordSourceArrival(5_033_333_333L)
+        t += 33_333_333L
+        s.recordSourceArrival(t)
+        val budget = s.generationBudget(false, 3, 120, telemetry())
+        assertTrue(budget <= 1)
 
-        scheduler.generationBudget(
-            adaptive = false,
-            fixedGeneratedCeiling = 3,
-            targetFps = 120,
-            presentation = populatedTelemetry(30f, 30f, 90f, 120f, 120f),
-        )
-
-        assertTrue(
-            "generated work must still yield before the next protected source deadline",
-            scheduler.shouldPresentSourceNow(5_058_000_000L),
-        )
+        repeat(4) {
+            t += 50_000_000L
+            s.recordSourceArrival(t)
+            assertEquals(0, s.generationBudget(false, 3, 120, telemetry(sourceInFps = 20f)))
+        }
+        assertEquals(0f, s.diagnostics().fractionalPhase, 0.0001f)
     }
 
     @Test
-    fun resetClearsFractionalAdaptivePhase() {
-        val scheduler = ApexSourceProtectedScheduler()
-        seedDisplayCadence(
-            scheduler = scheduler,
-            startNanos = 6_000_000_000L,
-            periodNanos = 8_333_333L,
-        )
-
-        scheduler.recordSourceArrival(6_000_000_000L)
-        scheduler.recordSourceArrival(6_033_333_333L)
-        val first = scheduler.generationBudget(
-            adaptive = true,
-            fixedGeneratedCeiling = 3,
-            targetFps = 45,
-            presentation = populatedTelemetry(30f, 30f, 0f, 30f, 120f),
-        )
-        scheduler.reset()
-        seedDisplayCadence(
-            scheduler = scheduler,
-            startNanos = 7_000_000_000L,
-            periodNanos = 8_333_333L,
-        )
-        scheduler.recordSourceArrival(7_000_000_000L)
-        scheduler.recordSourceArrival(7_033_333_333L)
-        val afterReset = scheduler.generationBudget(
-            adaptive = true,
-            fixedGeneratedCeiling = 3,
-            targetFps = 45,
-            presentation = populatedTelemetry(30f, 30f, 0f, 30f, 120f),
-        )
-
-        assertEquals(first, afterReset)
+    fun resetClearsProtectionAndFractionalState() {
+        val s = ApexSourceProtectedScheduler()
+        seedDisplay(s, 10_000_000_000L)
+        var t = learnBaseline(s, 10_000_000_000L, 33_333_333L)
+        repeat(10) {
+            t += 33_333_333L
+            s.recordSourceArrival(t)
+            s.generationBudget(true, 3, 45, telemetry())
+        }
+        s.reset()
+        val d = s.diagnostics()
+        assertFalse(d.sourceProtectionActive)
+        assertEquals(0f, d.fractionalPhase, 0f)
+        assertEquals(0f, d.cleanSourceBaselineIntervalMs, 0f)
     }
 }

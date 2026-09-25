@@ -112,6 +112,24 @@ public:
     int getCompiledShaderCount() const;
     bool isHealthy() const;
     std::string getDiagnostics();
+    int64_t getLastPreparationCostNanos() const {
+        return mLastPreparationCostNanos.load(std::memory_order_relaxed);
+    }
+    int64_t getLastSyntheticCostNanos() const {
+        return mLastSyntheticCostNanos.load(std::memory_order_relaxed);
+    }
+    int getLastSyntheticCostBudget() const {
+        return mLastSyntheticCostBudget.load(std::memory_order_relaxed);
+    }
+    int consumeAbandonedSyntheticSlots() {
+        return mAbandonedSyntheticSlots.exchange(0, std::memory_order_acq_rel);
+    }
+    uint64_t getSourceOnlyFrameCount() const {
+        return mSourceOnlyFrames.load(std::memory_order_relaxed);
+    }
+    uint64_t getGenerationReprimeCount() const {
+        return mGenerationReprimeCount.load(std::memory_order_relaxed);
+    }
 
     // Atomic Settings
     void setActive(bool e) { mActive.store(e); }
@@ -240,6 +258,13 @@ private:
     std::atomic<bool> mAdaptiveFrameGeneration{true};
     std::atomic<bool> mPendingRealPresentation{false};
     std::atomic<int> mActiveGenerationBudget{0};
+    bool mFlowHistoryReady{false};
+    std::atomic<int64_t> mLastPreparationCostNanos{0};
+    std::atomic<int64_t> mLastSyntheticCostNanos{0};
+    std::atomic<int> mLastSyntheticCostBudget{0};
+    std::atomic<int> mAbandonedSyntheticSlots{0};
+    std::atomic<uint64_t> mSourceOnlyFrames{0};
+    std::atomic<uint64_t> mGenerationReprimeCount{0};
     std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
     std::atomic<float> mShutterGain{0.0f}, mFlowScale{1.0f}, mLiquidFeel{0.5f}, mEdgeGuard{0.5f}, mRenderScale{1.0f}, mAutoMultiplierVal{2.0f};
 
@@ -253,11 +278,9 @@ private:
     int mHistoryIdx{0};
     float mSmoothedDesired{0.0f};
 
-    // GPU Backpressure
-    int mGenHighStreak{0}, mGenLowStreak{0}, mCostLimit{3};
-    int64_t mHoldUntilNanos{0}, mDropSinceNanos{0};
-    float mDeltaAtRaise{0.0f};
-    int64_t mLastCostChangeNanos{0};
+    // Synthetic admission is owned by ApexSourceProtectedScheduler. Native
+    // keeps only measured execution cost and the minimal temporal history
+    // required to execute an admitted batch.
 
     std::atomic<int> mActualRealFrameCount{0}, mGeneratedFrameCount{0}, mRealFramesCaptured{0}, mRealFramesCapturedCount{0};
 };

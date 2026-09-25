@@ -4,6 +4,7 @@
 
 #include "apex_engine.h"
 #include "apex_shaders.h"
+#include <EGL/egl.h>
 #include <vector>
 #include <string>
 #include <chrono>
@@ -261,13 +262,21 @@ void ApexEngine::auditHardwareAndExtensions() {
     mGpuVersion = version ? version : "Unknown";
 
     GLint numExtensions = 0;
+    bool disjointTimerQuery = false;
     glGetIntegerv(GL_NUM_EXTENSIONS, &numExtensions);
     for (GLint i = 0; i < numExtensions; i++) {
         const char* ext = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
         if (!ext) continue;
         if (strcmp(ext, "GL_OES_texture_half_float_linear") == 0) mExtHalfFloatLinear = true;
         if (strcmp(ext, "GL_EXT_color_buffer_half_float") == 0) mExtColorBufferHalfFloat = true;
+        if (strcmp(ext, "GL_EXT_disjoint_timer_query") == 0) disjointTimerQuery = true;
     }
+
+    mGetQueryObjectui64vEXT =
+        reinterpret_cast<PFNGLGETQUERYOBJECTUI64VEXTPROC>(
+            eglGetProcAddress("glGetQueryObjectui64vEXT"));
+    mGpuTimerSupported =
+        disjointTimerQuery && mGetQueryObjectui64vEXT != nullptr;
 
     glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, &mMaxComputeInvocations);
     glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, &mMaxComputeSharedMem);
@@ -276,9 +285,10 @@ void ApexEngine::auditHardwareAndExtensions() {
     APEX_LOGI("• GPU Vendor    : %s", mGpuVendor.c_str());
     APEX_LOGI("• GPU Renderer  : %s", mGpuRenderer.c_str());
     APEX_LOGI("• GLES Version  : %s", mGpuVersion.c_str());
-    APEX_LOGI("• Extensions    : HalfFloatLinear=%s, ColorBufferHalfFloat=%s",
+    APEX_LOGI("• Extensions    : HalfFloatLinear=%s, ColorBufferHalfFloat=%s, DisjointTimerQuery=%s",
               mExtHalfFloatLinear ? "SUPPORTED [OK]" : "UNSUPPORTED",
-              mExtColorBufferHalfFloat ? "SUPPORTED [OK]" : "UNSUPPORTED");
+              mExtColorBufferHalfFloat ? "SUPPORTED [OK]" : "UNSUPPORTED",
+              mGpuTimerSupported ? "SUPPORTED [OK]" : "UNSUPPORTED");
     APEX_LOGI("• Compute Limits: MaxInvocations=%d, SharedMem=%d bytes",
               mMaxComputeInvocations, mMaxComputeSharedMem);
     APEX_LOGI("======================================================================");
@@ -293,6 +303,94 @@ void ApexEngine::checkGlPassError(const char* passName) {
         APEX_LOGE("[APEX GPU PASS ERROR] Pass '%s' failed with GL error: %s (0x%x)",
                   mLastGLErrorPass.c_str(), getGlErrorString(err), err);
     }
+}
+
+void ApexEngine::discardGpuTimerQueries() {
+    if (mGpuTimerQueryOpen) {
+        glEndQuery(GL_TIME_ELAPSED_EXT);
+        mGpuTimerQueryOpen = false;
+    }
+    for (const auto& sample : mGpuTimerQueries) {
+        if (sample.query != 0) {
+            GLuint query = sample.query;
+            glDeleteQueries(1, &query);
+        }
+    }
+    mGpuTimerQueries.clear();
+    mGpuTimerSampleActive = false;
+}
+
+void ApexEngine::beginGpuTimer(ApexGpuTimerStage stage) {
+    if (!mGpuTimerSupported || !mGpuTimerSampleActive || mGpuTimerQueryOpen)
+        return;
+
+    GLuint query = 0;
+    glGenQueries(1, &query);
+    if (query == 0) return;
+
+    glBeginQuery(GL_TIME_ELAPSED_EXT, query);
+    if (glGetError() != GL_NO_ERROR) {
+        glDeleteQueries(1, &query);
+        return;
+    }
+
+    mGpuTimerQueries.push_back(ApexGpuTimerQuery{query, stage});
+    mGpuTimerQueryOpen = true;
+}
+
+void ApexEngine::endGpuTimer() {
+    if (!mGpuTimerQueryOpen) return;
+    glEndQuery(GL_TIME_ELAPSED_EXT);
+    mGpuTimerQueryOpen = false;
+}
+
+void ApexEngine::pollGpuTimerQueries() {
+    if (!mGpuTimerSupported ||
+        !mGetQueryObjectui64vEXT ||
+        mGpuTimerQueries.empty() ||
+        mGpuTimerQueryOpen) {
+        return;
+    }
+
+    const GLuint lastQuery = mGpuTimerQueries.back().query;
+    GLuint available = GL_FALSE;
+    glGetQueryObjectuiv(lastQuery, GL_QUERY_RESULT_AVAILABLE, &available);
+    if (available != GL_TRUE) return;
+
+    GLint disjoint = GL_FALSE;
+    glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+    if (disjoint == GL_TRUE) {
+        discardGpuTimerQueries();
+        APEX_LOGW("Apex GPU timing: discarded disjoint timer sample");
+        return;
+    }
+
+    std::array<GLuint64, static_cast<size_t>(ApexGpuTimerStage::Count)> totals{};
+    GLuint64 totalNanos = 0;
+    for (const auto& sample : mGpuTimerQueries) {
+        GLuint64 elapsedNanos = 0;
+        const GLuint query = sample.query;
+        mGetQueryObjectui64vEXT(query, GL_QUERY_RESULT, &elapsedNanos);
+        totals[static_cast<size_t>(sample.stage)] += elapsedNanos;
+        totalNanos += elapsedNanos;
+        glDeleteQueries(1, &query);
+    }
+    mGpuTimerQueries.clear();
+
+    const auto ms = [](GLuint64 nanos) {
+        return static_cast<double>(nanos) / 1000000.0;
+    };
+    APEX_LOGI(
+        "Apex GPU timing: capture=%.3fms pyramid=%.3fms search=%.3fms "
+        "propagate=%.3fms densify=%.3fms interpolate=%.3fms output=%.3fms total=%.3fms",
+        ms(totals[static_cast<size_t>(ApexGpuTimerStage::Capture)]),
+        ms(totals[static_cast<size_t>(ApexGpuTimerStage::Pyramid)]),
+        ms(totals[static_cast<size_t>(ApexGpuTimerStage::Search)]),
+        ms(totals[static_cast<size_t>(ApexGpuTimerStage::Propagate)]),
+        ms(totals[static_cast<size_t>(ApexGpuTimerStage::Densify)]),
+        ms(totals[static_cast<size_t>(ApexGpuTimerStage::Interpolate)]),
+        ms(totals[static_cast<size_t>(ApexGpuTimerStage::Output)]),
+        ms(totalNanos));
 }
 
 static GLuint createStorageTexture(int w, int h, GLint internalFormat, GLenum filter, const char* name, std::string& errOut) {
@@ -487,6 +585,7 @@ void ApexEngine::ensureResources(int width, int height) {
 }
 
 void ApexEngine::cleanupResources() {
+    discardGpuTimerQueries();
     for (uint32_t i = 0; i < DIS_SLOTS; i++) {
         if (mColorRingTex[i]) { glDeleteTextures(1, &mColorRingTex[i]); mColorRingTex[i] = 0; }
         if (mFlowColorTex[i]) { glDeleteTextures(1, &mFlowColorTex[i]); mFlowColorTex[i] = 0; }
@@ -856,6 +955,8 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
     if (!mActive.load(std::memory_order_relaxed)) return;
 
     mTotalFramesProcessed++;
+    pollGpuTimerQueries();
+    mGpuTimerSampleActive = false;
 
     if (viewWidth <= 0 || viewHeight <= 0) {
         viewX = 0; viewY = 0; viewWidth = width; viewHeight = height;
@@ -905,6 +1006,12 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
     int64_t nowNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
+    if (isNewRealFrame && mGpuTimerSupported && mGpuTimerQueries.empty()) {
+        ++mGpuTimerSourceFrames;
+        mGpuTimerSampleActive =
+            (mGpuTimerSourceFrames % GPU_TIMER_SAMPLE_INTERVAL) == 0;
+    }
+
     if (isNewRealFrame) {
         const int64_t sourceClockNanos =
             sourceTimestampNanos > 0 ? sourceTimestampNanos : nowNanos;
@@ -946,6 +1053,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         mCurrentSlot = (mCurrentSlot + 1) % DIS_SLOTS;
 
         // 1. Capture full native resolution real frame
+        beginGpuTimer(ApexGpuTimerStage::Capture);
         glBindFramebuffer(GL_FRAMEBUFFER, mCaptureFbo[mCurrentSlot]);
         glViewport(0, 0, mScaledWidth, mScaledHeight);
         blitQuad(inputTextureId, sourceUMin, sourceVMin, sourceUSpan, sourceVSpan);
@@ -958,6 +1066,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         blitQuad(inputTextureId, sourceUMin, sourceVMin, sourceUSpan, sourceVSpan);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        endGpuTimer();
 
         // A non-negative presenter budget is authoritative. Source history is
         // still prepared on every accepted source frame so fractional/adaptive
@@ -967,6 +1076,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             : std::clamp(generatedOpportunityBudget, 0, 3);
 
         const auto preparationStart = std::chrono::steady_clock::now();
+        beginGpuTimer(ApexGpuTimerStage::Pyramid);
         dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot], mCurrentSlot);
         for (uint32_t i = 1; i < MAX_PYR_LEVELS; i++) {
             dispatchLumaGrad(
@@ -974,6 +1084,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
                 mLevels[i - 1].lumaTex[mCurrentSlot],
                 mCurrentSlot);
         }
+        endGpuTimer();
         mLastPreparationCostNanos.store(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - preparationStart).count(),
@@ -986,9 +1097,12 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mLastSyntheticCostBudget.store(0, std::memory_order_release);
             mNoGenerationSourceFrames.fetch_add(1, std::memory_order_relaxed);
 
+            beginGpuTimer(ApexGpuTimerStage::Output);
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
             glViewport(viewX, viewY, viewWidth, viewHeight);
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
+            endGpuTimer();
+            mGpuTimerSampleActive = false;
             mActualRealFrameCount.fetch_add(1);
             mTotalRealFramesPresented++;
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
@@ -1017,11 +1131,14 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         for (int i = coarseLevel; i >= 0; i--) {
             DisLevel& lvl = mLevels[i];
             // Inverse Search with temporal gradient from mPreviousSlot
+            beginGpuTimer(ApexGpuTimerStage::Search);
             dispatchHierarchicalSearch(i, lvl.lumaTex[mPreviousSlot], lvl.lumaTex[mCurrentSlot],
                                        lvl.gradientTex[mPreviousSlot], coarseFlow, lvl.sparseFlowTex[0],
                                        lvl.sparseWidth, lvl.sparseHeight, coarseLevel);
+            endGpuTimer();
 
             // 4-Way Candidate Propagation:
+            beginGpuTimer(ApexGpuTimerStage::Propagate);
             // Multi-scale profile matching WinNative: coarse levels get dist 1, 2, 4
             dispatchPropagate(i, lvl.lumaTex[mPreviousSlot], lvl.lumaTex[mCurrentSlot],
                               lvl.sparseFlowTex[0], lvl.sparseFlowTex[1],
@@ -1041,9 +1158,13 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
                                   lvl.sparseWidth, lvl.sparseHeight, 1);
             }
 
+            endGpuTimer();
+
             // 9-Tap Bilateral Guided Densification (sparse0 -> denseFlowTex for this level)
+            beginGpuTimer(ApexGpuTimerStage::Densify);
             dispatchDensify(i, lvl.sparseFlowTex[0], lvl.lumaTex[mPreviousSlot], lvl.lumaTex[mCurrentSlot],
                             lvl.denseFlowTex, lvl.width, lvl.height);
+            endGpuTimer();
 
             coarseFlow = lvl.denseFlowTex;
         }
@@ -1055,17 +1176,22 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         // interval, rather than the requested multiplier in isolation.
         const int mult = generationBudget + 1;
         const float t = 1.0f / static_cast<float>(mult);
+        beginGpuTimer(ApexGpuTimerStage::Interpolate);
         dispatchInterpolate(mColorRingTex[mPreviousSlot], mColorRingTex[mCurrentSlot],
                             l0.denseFlowTex, l0.denseFlowTex, mInterpOutTex, t, mScaledWidth, mScaledHeight);
+        endGpuTimer();
         mLastSyntheticCostNanos.store(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - syntheticStart).count(),
             std::memory_order_release);
 
         // PRESENT GENERATED FRAME FIRST
+        beginGpuTimer(ApexGpuTimerStage::Output);
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
         glViewport(viewX, viewY, viewWidth, viewHeight);
         blitQuad(mInterpOutTex, 0, 0, 1, 1);
+        endGpuTimer();
+        mGpuTimerSampleActive = false;
         mGeneratedFrameCount.fetch_add(1);
         mTotalGenFramesPresented++;
         mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
@@ -1121,6 +1247,8 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             return;
         }
     }
+
+    mGpuTimerSampleActive = false;
 
     if (mLoggingEnabled.load(std::memory_order_relaxed)) {
         GLenum glErr = glGetError();

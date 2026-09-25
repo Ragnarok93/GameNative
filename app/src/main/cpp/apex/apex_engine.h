@@ -5,6 +5,7 @@
 #pragma once
 
 #include <GLES3/gl32.h>
+#include <GLES2/gl2ext.h>
 #include <vector>
 #include <string>
 #include <atomic>
@@ -27,6 +28,23 @@ enum ApexOutputKind : int {
 
 static constexpr uint32_t DIS_SLOTS = 3;
 static constexpr uint32_t MAX_PYR_LEVELS = 4;
+static constexpr uint64_t GPU_TIMER_SAMPLE_INTERVAL = 30;
+
+enum class ApexGpuTimerStage : uint8_t {
+    Capture = 0,
+    Pyramid,
+    Search,
+    Propagate,
+    Densify,
+    Interpolate,
+    Output,
+    Count,
+};
+
+struct ApexGpuTimerQuery {
+    GLuint query{0};
+    ApexGpuTimerStage stage{ApexGpuTimerStage::Capture};
+};
 
 struct ApexPipelineTelemetry {
     // Pass 1-4: Luma & Gradient Pyramid (Level 0)
@@ -180,6 +198,10 @@ private:
     ~ApexEngine();
     void ensureResources(int width, int height);
     void cleanupResources();
+    void pollGpuTimerQueries();
+    void discardGpuTimerQueries();
+    void beginGpuTimer(ApexGpuTimerStage stage);
+    void endGpuTimer();
     GLenum motionStorageFormat() const;
     GLenum motionStorageFilter() const;
     std::string precisionShaderSource(const char* source) const;
@@ -248,6 +270,15 @@ private:
     std::atomic<uint64_t> mPassInterpolate{0};
     std::atomic<uint64_t> mPassBlit{0};
     std::string mLastGLErrorPass;
+
+    // Sampled non-blocking GPU timing. A sample owns one or more TIME_ELAPSED
+    // queries and is collected only after the final query reports availability.
+    bool mGpuTimerSupported{false};
+    bool mGpuTimerSampleActive{false};
+    bool mGpuTimerQueryOpen{false};
+    uint64_t mGpuTimerSourceFrames{0};
+    PFNGLGETQUERYOBJECTUI64VEXTPROC mGetQueryObjectui64vEXT{nullptr};
+    std::vector<ApexGpuTimerQuery> mGpuTimerQueries;
 
     // Atomics
     std::atomic<bool> mActive{false}, mLoggingEnabled{false}, mDebugOverlay{false}, mPendingRealFrame{false}, mRenderingGeneratedFrame{false};

@@ -200,39 +200,45 @@ class ApexVulkanPresenterContractTest {
 
 
     @Test
-    fun queuedSourceDoesNotPreemptTheActiveSyntheticInterval() {
+    fun queuedSourceCanPreemptSyntheticPrefixToProtectRealSource() {
         val presenter = repoFile(
             "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
         ).readText()
 
-        assertTrue(
-            "queued source arrival time must be retained until that source becomes the active interval",
-            presenter.contains("pendingSourceArrivalNanos"),
-        )
-        assertFalse(
-            "a newly queued source must not immediately abort the current interval's remaining synthetic slots",
-            presenter.contains(
-                "pendingSourceFrame != null || scheduler.shouldPresentSourceNow(frameTimeNanos)",
-            ),
-        )
-
+        assertTrue(presenter.contains("pendingSourceArrivalNanos"))
         val pendingStart = presenter.indexOf("if (nativeHasPendingSource(handle))")
         val pendingEnd = presenter.indexOf("} else {", pendingStart)
         assertTrue(pendingStart >= 0 && pendingEnd > pendingStart)
         val pendingBranch = presenter.substring(pendingStart, pendingEnd)
         assertTrue(
-            "the protected source deadline must remain the reason an active interval yields early",
-            pendingBranch.contains("scheduler.shouldPresentSourceNow(frameTimeNanos)"),
+            "queued real input must participate in the preemption decision",
+            pendingBranch.contains("pendingSourceFrame != null") &&
+                pendingBranch.contains("scheduler.shouldPreemptForQueuedSource"),
         )
-        assertFalse(
-            "queued input alone is not a source-deadline signal",
-            pendingBranch.contains("pendingSourceFrame != null"),
-        )
-
         assertTrue(
-            "source cadence must be observed when the queued frame becomes the active Apex interval",
+            "preemption must abandon unused synthetic slots instead of carrying debt",
+            pendingBranch.contains("nativeConsumeAbandonedSyntheticSlots") &&
+                pendingBranch.contains("recordSyntheticSlotsAbandoned"),
+        )
+        assertTrue(
+            "source cadence must still be observed only when the queued frame becomes active",
             presenter.contains("scheduler.recordSourceArrival(sourceArrivalNanos)"),
         )
+    }
+
+    @Test
+    fun zeroBudgetIsCheckedBeforeOpticalFlowPreparation() {
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val budget = pipeline.indexOf("const int generationBudget")
+        val zero = pipeline.indexOf("generationBudget <= 0", budget)
+        val currentPyramid = pipeline.indexOf(
+            "dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot]",
+            zero,
+        )
+
+        assertTrue(budget >= 0 && zero > budget && currentPyramid > zero)
+        assertTrue(pipeline.contains("mFlowHistoryReady = false"))
+        assertTrue(pipeline.contains("mGenerationReprimeCount.fetch_add"))
     }
 
 }

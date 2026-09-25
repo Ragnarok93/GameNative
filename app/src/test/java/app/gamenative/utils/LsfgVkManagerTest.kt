@@ -233,7 +233,7 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun applyLaunchEnv_activeAdrenoUsesFifoSoSyntheticPresentsCannotBeMailboxReplaced() {
+    fun applyLaunchEnv_activeAdrenoPreservesProcessWsiModeAcrossRuntimeOffToggle() {
         val container = container(armed = true)
         val envVars = EnvVars().apply {
             put("MESA_VK_WSI_PRESENT_MODE", "mailbox")
@@ -247,7 +247,11 @@ class LsfgVkManagerTest {
             ),
         )
 
-        assertEquals("fifo", envVars["MESA_VK_WSI_PRESENT_MODE"])
+        // The process-level WSI policy cannot be changed by a Quick Menu
+        // multiplier hot-toggle. Forcing FIFO at launch therefore contaminates
+        // the later LSFG-Off source-only path and reintroduces the hitching that
+        // the ordinary GameNative mailbox baseline had already eliminated.
+        assertEquals("mailbox", envVars["MESA_VK_WSI_PRESENT_MODE"])
     }
 
     @Test

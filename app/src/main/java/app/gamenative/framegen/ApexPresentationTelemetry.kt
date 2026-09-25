@@ -33,6 +33,8 @@ object ApexPresentationTelemetry {
         val repeatedPresented: Long,
         val outputPresented: Long,
         val swapFailures: Long,
+        val syntheticSlotsAbandoned: Long = 0,
+        val sourceOnlyFrames: Long = 0,
     )
 
     data class SourceFrameStats(
@@ -155,6 +157,8 @@ object ApexPresentationTelemetry {
     private var repeatedPresented = 0L
     private var outputPresented = 0L
     private var swapFailures = 0L
+    private var syntheticSlotsAbandoned = 0L
+    private var sourceOnlyFrames = 0L
     private var admittedGenerationBudget = 0
 
     private fun resetLocked(nowNanos: Long) {
@@ -173,6 +177,8 @@ object ApexPresentationTelemetry {
         repeatedPresented = 0L
         outputPresented = 0L
         swapFailures = 0L
+        syntheticSlotsAbandoned = 0L
+        sourceOnlyFrames = 0L
         admittedGenerationBudget = 0
     }
 
@@ -216,6 +222,12 @@ object ApexPresentationTelemetry {
     fun recordAdmission(generatedBudget: Int) = synchronized(lock) {
         if (!active) return@synchronized
         admittedGenerationBudget = generatedBudget.coerceIn(0, 3)
+        if (admittedGenerationBudget == 0) sourceOnlyFrames++
+    }
+
+    fun recordSyntheticSlotsAbandoned(count: Int) = synchronized(lock) {
+        if (!active || count <= 0) return@synchronized
+        syntheticSlotsAbandoned += count.toLong()
     }
 
     fun record(outputKind: Int, swapSucceeded: Boolean, nowNanos: Long = System.nanoTime()) =
@@ -283,6 +295,8 @@ object ApexPresentationTelemetry {
             repeatedPresented = repeatedPresented,
             outputPresented = outputPresented,
             swapFailures = swapFailures,
+            syntheticSlotsAbandoned = syntheticSlotsAbandoned,
+            sourceOnlyFrames = sourceOnlyFrames,
         )
     }
 }

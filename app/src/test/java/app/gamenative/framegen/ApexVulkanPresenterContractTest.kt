@@ -98,8 +98,8 @@ class ApexVulkanPresenterContractTest {
             presenter.contains("ApexPresentationTelemetry.recordSourceArrival"),
         )
         assertTrue(
-            "source admission must honor the source cap before DIS history advances",
-            presenter.contains("shouldAcceptSource(frameTimeNanos)") &&
+            "source admission must honor the source cap at the producer timestamp before DIS history advances",
+            presenter.contains("shouldAcceptSource(frame.sourceTimestampNanos)") &&
                 presenter.contains("renderer.fpsLimit"),
         )
         assertTrue(
@@ -222,7 +222,7 @@ class ApexVulkanPresenterContractTest {
             "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
         ).readText()
 
-        assertTrue(presenter.contains("pendingSourceArrivalNanos"))
+        assertTrue(presenter.contains("pendingSourceTimestampNanos"))
         val pendingStart = presenter.indexOf("if (nativeHasPendingSource(handle))")
         val pendingEnd = presenter.indexOf("} else {", pendingStart)
         assertTrue(pendingStart >= 0 && pendingEnd > pendingStart)
@@ -230,7 +230,8 @@ class ApexVulkanPresenterContractTest {
         assertTrue(
             "queued real input must participate in the preemption decision",
             pendingBranch.contains("pendingSourceFrame != null") &&
-                pendingBranch.contains("scheduler.shouldPreemptForQueuedSource"),
+                pendingBranch.contains("scheduler.shouldPreemptForQueuedSource") &&
+                pendingBranch.contains("queuedSourceTimestampNanos = pendingSourceTimestampNanos"),
         )
         assertTrue(
             "preemption must abandon unused synthetic slots instead of carrying debt",
@@ -238,24 +239,39 @@ class ApexVulkanPresenterContractTest {
                 pendingBranch.contains("recordSyntheticSlotsAbandoned"),
         )
         assertTrue(
-            "source cadence must still be observed only when the queued frame becomes active",
-            presenter.contains("scheduler.recordSourceArrival(sourceArrivalNanos)"),
+            "source cadence must be recorded from producer time only when the queued frame becomes active",
+            presenter.contains("scheduler.recordSourceFrame(sourceTimestampNanos)"),
         )
     }
 
     @Test
-    fun zeroBudgetIsCheckedBeforeOpticalFlowPreparation() {
+    fun zeroBudgetKeepsTemporalPyramidWarmButSkipsSyntheticFlowWork() {
         val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
         val budget = pipeline.indexOf("const int generationBudget")
-        val zero = pipeline.indexOf("generationBudget <= 0", budget)
         val currentPyramid = pipeline.indexOf(
             "dispatchLumaGrad(0, mFlowColorTex[mCurrentSlot]",
-            zero,
+            budget,
         )
+        val zero = pipeline.indexOf("generationBudget <= 0", currentPyramid)
+        val search = pipeline.indexOf("dispatchHierarchicalSearch(", zero)
 
-        assertTrue(budget >= 0 && zero > budget && currentPyramid > zero)
-        assertTrue(pipeline.contains("mFlowHistoryReady = false"))
-        assertTrue(pipeline.contains("mGenerationReprimeCount.fetch_add"))
+        assertTrue(
+            "source pyramid must stay warm before the zero-generation early return",
+            budget >= 0 && currentPyramid > budget && zero > currentPyramid,
+        )
+        assertTrue(
+            "expensive optical-flow search must remain behind the zero-generation gate",
+            search > zero,
+        )
+        assertTrue(
+            "zero-generation intervals must record that synthetic work was skipped",
+            pipeline.contains("mNoGenerationSourceFrames.fetch_add"),
+        )
+        assertFalse(
+            "zero-generation intervals must not reintroduce history invalidation/reprime state",
+            pipeline.contains("mFlowHistoryReady") ||
+                pipeline.contains("mGenerationReprimeCount"),
+        )
     }
 
     @Test

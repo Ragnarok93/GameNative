@@ -552,7 +552,9 @@ class ApexSourceProtectedScheduler {
             presentation.opportunityFps.takeIf { it > 1f }?.toDouble()
                 ?: measuredCapacityFps().toDouble().takeIf { it > 1.0 }
                 ?: return MAX_GENERATED_FRAMES
-        return (floor(measured / baselineFps).toInt() - 1)
+        val opportunitiesPerSource =
+            measured * baselineIntervalNanos / NANOS_PER_SECOND
+        return (floor(opportunitiesPerSource + INTEGER_SNAP_EPSILON).toInt() - 1)
             .coerceIn(0, MAX_GENERATED_FRAMES)
     }
 

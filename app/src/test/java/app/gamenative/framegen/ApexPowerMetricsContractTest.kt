@@ -40,10 +40,16 @@ class ApexPowerMetricsContractTest {
                 pipeline.contains(token) || engine.contains(token))
         }
 
+        val availabilityPoll = pipeline.indexOf(
+            "glGetQueryObjectuiv(lastQuery, GL_QUERY_RESULT_AVAILABLE",
+        )
+        val resultRead = pipeline.indexOf(
+            "mGetQueryObjectui64vEXT(query, GL_QUERY_RESULT",
+            availabilityPoll,
+        )
         assertTrue(
             "timer result collection must poll availability before reading a result",
-            pipeline.indexOf("GL_QUERY_RESULT_AVAILABLE") <
-                pipeline.indexOf("GL_QUERY_RESULT"),
+            availabilityPoll >= 0 && resultRead > availabilityPoll,
         )
         assertTrue(
             "timer queries must use 64-bit nanosecond results",

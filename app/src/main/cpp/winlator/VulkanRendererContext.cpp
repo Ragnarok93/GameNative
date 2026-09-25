@@ -11,6 +11,35 @@
 #include "window_vert.h"
 #include "window_frag.h"
 
+namespace {
+constexpr float APEX_PROCESSING_SCALE = 0.5f;
+constexpr uint32_t APEX_MIN_PROCESSING_SHORT_SIDE = 540;
+
+VkExtent2D computeApexProcessingExtent(VkExtent2D presentationExtent) {
+    if (presentationExtent.width == 0 || presentationExtent.height == 0)
+        return {0, 0};
+
+    const uint32_t shortSide = std::min(
+        presentationExtent.width,
+        presentationExtent.height);
+    const float floorScale = std::min(
+        1.0f,
+        static_cast<float>(APEX_MIN_PROCESSING_SHORT_SIDE) /
+            static_cast<float>(std::max(1u, shortSide)));
+    const float scale = std::max(APEX_PROCESSING_SCALE, floorScale);
+    const auto scaledEven = [scale](uint32_t value) {
+        uint32_t scaled = static_cast<uint32_t>(
+            static_cast<float>(value) * scale + 0.5f);
+        scaled = std::max(2u, std::min(value, scaled));
+        return std::min(value, (scaled + 1u) & ~1u);
+    };
+    return {
+        scaledEven(presentationExtent.width),
+        scaledEven(presentationExtent.height),
+    };
+}
+} // namespace
+
 VulkanRendererContext::VulkanRendererContext(ANativeWindow* win, int cW, int cH, void* aHandle)
     : window(win), surfaceWidth(cW), surfaceHeight(cH), containerWidth(cW), containerHeight(cH),
       adrenotoolsHandle(aHandle)
@@ -1114,17 +1143,31 @@ bool VulkanRendererContext::enableApexTarget() {
     std::lock_guard<std::mutex> apexLock(apexTargetMutex);
     if (device == VK_NULL_HANDLE || xrTargetActive.load()) return false;
 
-    // nativeInit receives the container's logical size before Android reports
-    // the real Surface extent. The swapchain is authoritative once created;
-    // using the stale logical size here produced a 1280x720 Apex child surface
-    // on a 2340x1080 display.
-    const uint32_t width =
-        swapchainExt.width > 0 ? swapchainExt.width
-                              : static_cast<uint32_t>(std::max(surfaceWidth, 0));
-    const uint32_t height =
-        swapchainExt.height > 0 ? swapchainExt.height
-                               : static_cast<uint32_t>(std::max(surfaceHeight, 0));
+    // Keep the Android presentation surface at its native extent, but render the
+    // Apex producer ring at a bounded processing extent with the same aspect ratio.
+    // The GLES presenter scales this processing image to the real EGL surface.
+    const VkExtent2D presentationExtent{
+        swapchainExt.width > 0
+            ? swapchainExt.width
+            : static_cast<uint32_t>(std::max(surfaceWidth, 0)),
+        swapchainExt.height > 0
+            ? swapchainExt.height
+            : static_cast<uint32_t>(std::max(surfaceHeight, 0)),
+    };
+    const VkExtent2D processingExtent =
+        computeApexProcessingExtent(presentationExtent);
+    const uint32_t width = processingExtent.width;
+    const uint32_t height = processingExtent.height;
     if (width == 0 || height == 0) return false;
+    RLOG(
+        "apexTarget: processing=%ux%u presentation=%ux%u scale=%.3f",
+        width,
+        height,
+        presentationExtent.width,
+        presentationExtent.height,
+        presentationExtent.width > 0
+            ? static_cast<double>(width) / static_cast<double>(presentationExtent.width)
+            : 1.0);
     if (apexTargetActive.load() &&
         apexRp != VK_NULL_HANDLE &&
         apexExt.width == width &&

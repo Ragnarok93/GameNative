@@ -515,11 +515,20 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_app_gamenative_framegen_ApexVulkanPresenter_nativeCreatePresenter(
     JNIEnv* env,
     jclass,
-    jobject surface) {
+    jobject surface,
+    jint outputWidth,
+    jint outputHeight) {
     if (!surface) return 0;
 
     std::unique_ptr<Presenter> presenter(new Presenter());
     presenter->window = ANativeWindow_fromSurface(env, surface);
+    if (presenter->window && outputWidth > 0 && outputHeight > 0) {
+        ANativeWindow_setBuffersGeometry(
+            presenter->window,
+            outputWidth,
+            outputHeight,
+            WINDOW_FORMAT_RGBA_8888);
+    }
     if (!presenter->window || !initializePresenter(*presenter)) {
         if (presenter->window) destroyPresenter(*presenter);
         return 0;

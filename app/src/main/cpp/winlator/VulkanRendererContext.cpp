@@ -1912,9 +1912,13 @@ void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, s
         std::lock_guard<std::mutex> lk(renderMutex);
         auto it=texMap.find(id);
         if (it!=texMap.end()) it->second.dirty=true;
-    }
-    if (sourceTimestampNanos > 0) {
-        apexSourceTimestampNanos.store(sourceTimestampNanos, std::memory_order_release);
+        // Publish source identity under the same scene lock as the dirty
+        // content state. renderApexFrame snapshots both under this lock.
+        if (sourceTimestampNanos > 0) {
+            apexSourceTimestampNanos.store(
+                sourceTimestampNanos,
+                std::memory_order_release);
+        }
     }
     needsRender.store(true); dirtyCV.notify_one();
 }

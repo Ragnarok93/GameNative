@@ -75,6 +75,11 @@ class ApexVulkanTargetContractTest {
                 java.contains("sourceTimestampNanos") &&
                 header.contains("apexFrameSourceTimestampNanos"),
         )
+        assertTrue(
+            "CPU source pixels and their producer timestamp must be published under the same scene lock",
+            source.contains("if (it!=texMap.end()) it->second.dirty=true;\n        // Publish source identity under the same scene lock") &&
+                source.contains("apexSourceTimestampNanos.store"),
+        )
 
         val enableStart = source.indexOf("bool VulkanRendererContext::enableApexTarget()")
         val disableStart = source.indexOf("bool VulkanRendererContext::disableApexTarget()")

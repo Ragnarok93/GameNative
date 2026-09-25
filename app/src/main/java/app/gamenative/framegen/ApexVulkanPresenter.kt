@@ -64,12 +64,24 @@ class ApexVulkanPresenter(
             }
 
             if (nativeHasPendingSource(handle)) {
-                // A real source frame already owns this interval. A newer
-                // source may queue behind it, but only the protected deadline
-                // may terminate the interval before its planned synthetic slots
-                // have been consumed.
-                if (scheduler.shouldPresentSourceNow(frameTimeNanos)) {
+                // Synthetic slots are opportunistic. A newly queued source may
+                // terminate the remaining prefix when another generated slot
+                // would endanger real-source latency; unused slots are dropped,
+                // never carried as catch-up debt.
+                val queuedSourceNeedsPriority =
+                    pendingSourceFrame != null &&
+                        scheduler.shouldPreemptForQueuedSource(
+                            nowNanos = frameTimeNanos,
+                            queuedSourceArrivalNanos = pendingSourceArrivalNanos,
+                        )
+                if (
+                    queuedSourceNeedsPriority ||
+                    scheduler.shouldPresentSourceNow(frameTimeNanos)
+                ) {
                     presentPendingSource(handle)
+                    val abandoned =
+                        ApexNativeBridge.nativeConsumeAbandonedSyntheticSlots()
+                    ApexPresentationTelemetry.recordSyntheticSlotsAbandoned(abandoned)
                 } else {
                     presentGeneratedOpportunity(handle)
                 }
@@ -92,6 +104,14 @@ class ApexVulkanPresenter(
                     } else {
                         (ApexNativeBridge.nativeGetFixedMultiplier() - 1).coerceIn(0, 3)
                     }
+                    scheduler.recordNativeCost(
+                        preparationCostNanos =
+                            ApexNativeBridge.nativeGetLastPreparationCostNanos(),
+                        pipelineCostNanos =
+                            ApexNativeBridge.nativeGetLastSyntheticCostNanos(),
+                        generatedFrames =
+                            ApexNativeBridge.nativeGetLastSyntheticCostBudget(),
+                    )
                     val generationBudget = scheduler.generationBudget(
                         adaptive = adaptive,
                         fixedGeneratedCeiling = requestedCeiling,
@@ -208,30 +228,33 @@ class ApexVulkanPresenter(
         val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: mode=%s target=%d fixed=%dx sourceIn=%.1f sourceOut=%.1f sourcePlan=%.1f demand=%.2f phase=%.3f cost=%d measuredOpportunities=%.1f generated=%.1f repeats=%.1f output=%.1f opportunities=%.1f budget=%d totals(in=%d dropped=%d source=%d generated=%d repeats=%d output=%d failures=%d)".format(
+            "display cadence: mode=%s target=%d fixed=%dx baseline_ms=%.2f baseline_fps=%.1f source_ms=%.2f baseline_ratio=%.3f requested=%d admitted=%d protection=%s sourceProtectionActive=%d backoff=%s recovery=%d probe=%d prep_submit_ms=%.3f pipeline_submit_ms=%.3f opportunity_budget=%d measuredOpportunities=%.1f sourceIn=%.1f generated=%.1f output=%.1f abandoned=%d source_only=%d native_source_only=%d native_reprimes=%d".format(
                 java.util.Locale.US,
                 if (adaptive) "adaptive" else "fixed",
                 targetFps,
                 fixedMultiplier,
-                stats.sourceInputFps,
-                stats.sourceFps,
-                schedulerDiagnostics.protectedSourceFps,
-                schedulerDiagnostics.wantedGeneratedFrames,
-                schedulerDiagnostics.fractionalPhase,
+                schedulerDiagnostics.cleanSourceBaselineIntervalMs,
+                schedulerDiagnostics.cleanSourceBaselineFps,
+                schedulerDiagnostics.currentSourceIntervalMs,
+                schedulerDiagnostics.baselineRatio,
+                schedulerDiagnostics.requestedSyntheticCount,
+                schedulerDiagnostics.admittedSyntheticCount,
+                schedulerDiagnostics.sourceProtectionState,
+                if (schedulerDiagnostics.sourceProtectionActive) 1 else 0,
+                schedulerDiagnostics.backoffReason,
                 schedulerDiagnostics.recoveryStreak,
+                schedulerDiagnostics.generationProbeLevel,
+                schedulerDiagnostics.preparationCostEstimateMs,
+                schedulerDiagnostics.pipelineCostEstimateMs,
+                schedulerDiagnostics.presentationOpportunityBudget,
                 schedulerDiagnostics.measuredOpportunityFps,
+                stats.sourceInputFps,
                 stats.generatedFps,
-                stats.repeatedFps,
                 stats.outputFps,
-                stats.opportunityFps,
-                stats.admittedGenerationBudget,
-                stats.sourceArrivals,
-                stats.sourceDropped,
-                stats.sourcePresented,
-                stats.generatedPresented,
-                stats.repeatedPresented,
-                stats.outputPresented,
-                stats.swapFailures,
+                stats.syntheticSlotsAbandoned,
+                stats.sourceOnlyFrames,
+                ApexNativeBridge.nativeGetSourceOnlyFrameCount(),
+                ApexNativeBridge.nativeGetGenerationReprimeCount(),
             ),
         )
     }

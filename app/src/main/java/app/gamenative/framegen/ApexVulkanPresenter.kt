@@ -157,7 +157,11 @@ class ApexVulkanPresenter(
         handler = localHandler
         localHandler.post {
             if (!running) return@post
-            val handle = nativeCreatePresenter(surface)
+            val handle = nativeCreatePresenter(
+                surface,
+                renderer.surfaceWidth,
+                renderer.surfaceHeight,
+            )
             if (handle == 0L) {
                 failPresenter()
                 return@post
@@ -322,7 +326,12 @@ class ApexVulkanPresenter(
             System.loadLibrary("gamenative_apex")
         }
 
-        @JvmStatic private external fun nativeCreatePresenter(surface: Surface): Long
+        @JvmStatic
+        private external fun nativeCreatePresenter(
+            surface: Surface,
+            outputWidth: Int,
+            outputHeight: Int,
+        ): Long
         @JvmStatic private external fun nativeDestroyPresenter(handle: Long)
 
         @JvmStatic

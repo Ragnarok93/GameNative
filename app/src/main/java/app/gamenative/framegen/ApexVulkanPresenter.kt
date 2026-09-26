@@ -33,6 +33,10 @@ class ApexVulkanPresenter(
     private var nextSourceDeadlineNanos = 0L
     private var pendingSourceFrame: VulkanRenderer.ApexFrame? = null
     private var pendingSourceTimestampNanos = 0L
+    private var queuedSourcePreemptCount = 0L
+    private var sourceDeadlinePreemptCount = 0L
+    private var queuedSourceAbandonedSlots = 0L
+    private var sourceDeadlineAbandonedSlots = 0L
     private val scheduler = ApexCadenceScheduler()
 
     private val frameCallback = object : Choreographer.FrameCallback {
@@ -70,20 +74,27 @@ class ApexVulkanPresenter(
                 // terminate the remaining prefix when another generated slot
                 // would endanger real-source latency; unused slots are dropped,
                 // never carried as catch-up debt.
-                val queuedSourceNeedsPriority =
+                val queuedSourcePreempt =
                     pendingSourceFrame != null &&
                         scheduler.shouldPreemptForQueuedSource(
                             nowNanos = frameTimeNanos,
                             queuedSourceTimestampNanos = pendingSourceTimestampNanos,
                         )
-                if (
-                    queuedSourceNeedsPriority ||
-                    scheduler.shouldPresentSourceNow(frameTimeNanos)
-                ) {
+                val sourceDeadlinePreempt =
+                    !queuedSourcePreempt &&
+                        scheduler.shouldPresentSourceNow(frameTimeNanos)
+                if (queuedSourcePreempt || sourceDeadlinePreempt) {
                     presentPendingSource(handle)
                     val abandoned =
                         ApexNativeBridge.nativeConsumeAbandonedSyntheticSlots()
                     ApexPresentationTelemetry.recordSyntheticSlotsAbandoned(abandoned)
+                    if (queuedSourcePreempt) {
+                        queuedSourcePreemptCount++
+                        queuedSourceAbandonedSlots += abandoned.toLong()
+                    } else {
+                        sourceDeadlinePreemptCount++
+                        sourceDeadlineAbandonedSlots += abandoned.toLong()
+                    }
                 } else {
                     presentGeneratedOpportunity(handle)
                 }
@@ -150,6 +161,10 @@ class ApexVulkanPresenter(
         nextSourceDeadlineNanos = 0L
         pendingSourceFrame = null
         pendingSourceTimestampNanos = 0L
+        queuedSourcePreemptCount = 0L
+        sourceDeadlinePreemptCount = 0L
+        queuedSourceAbandonedSlots = 0L
+        sourceDeadlineAbandonedSlots = 0L
         scheduler.reset()
         running = true
         thread.start()
@@ -205,8 +220,13 @@ class ApexVulkanPresenter(
     private fun recordPresentedOutput(outputKind: Int, swapSucceeded: Boolean) {
         if (outputKind != ApexPresentationTelemetry.OUTPUT_NONE) {
             ApexPresentationTelemetry.record(outputKind, swapSucceeded)
-            if (swapSucceeded && outputKind == ApexPresentationTelemetry.OUTPUT_SOURCE) {
-                scheduler.onSourcePresented()
+            if (swapSucceeded) {
+                when (outputKind) {
+                    ApexPresentationTelemetry.OUTPUT_SOURCE ->
+                        scheduler.onSourcePresented()
+                    ApexPresentationTelemetry.OUTPUT_GENERATED ->
+                        scheduler.onGeneratedPresented()
+                }
             }
         }
     }
@@ -238,7 +258,7 @@ class ApexVulkanPresenter(
         val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f sourceIn=%.1f generated=%.1f output=%.1f abandoned=%d no_generation=%d native_no_generation=%d".format(
+            "display cadence: mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f sourceIn=%.1f generated=%.1f output=%.1f abandoned=%d no_generation=%d native_no_generation=%d remaining=%d queuedSourcePreempt=%d sourceDeadlinePreempt=%d abandonedQueued=%d abandonedDeadline=%d".format(
                 java.util.Locale.US,
                 if (adaptive) "adaptive" else "fixed",
                 targetFps,
@@ -258,6 +278,11 @@ class ApexVulkanPresenter(
                 stats.syntheticSlotsAbandoned,
                 stats.sourceOnlyFrames,
                 ApexNativeBridge.nativeGetNoGenerationSourceFrameCount(),
+                schedulerDiagnostics.remainingSyntheticSlots,
+                queuedSourcePreemptCount,
+                sourceDeadlinePreemptCount,
+                queuedSourceAbandonedSlots,
+                sourceDeadlineAbandonedSlots,
             ),
         )
     }

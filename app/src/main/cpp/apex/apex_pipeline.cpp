@@ -230,16 +230,14 @@ void ApexEngine::compileShaders() {
             APEX_LOGE("[APEX SHADER FAILED] QuadBlit: %s", qErr.c_str());
         } else {
             APEX_LOGI("[APEX SHADER VERIFIED] QuadBlit: COMPILED & LINKED [OK] (Program ID=%u)", mQuadProg);
-            glUseProgram(mQuadProg);
-            GLint uTexLoc = glGetUniformLocation(mQuadProg, "uTex");
-            if (uTexLoc >= 0) glUniform1i(uTexLoc, 0);
-            glUseProgram(0);
         }
     }
 
     if (!mQuadVao && mQuadProg) {
         glGenVertexArrays(1, &mQuadVao);
     }
+
+    cacheUniformLocations();
 
     mShaderCompileSuccess = (mCompiledShaderCount == 8 && mQuadProg != 0);
     if (!mShaderCompileSuccess) {
@@ -248,6 +246,86 @@ void ApexEngine::compileShaders() {
     } else {
         APEX_LOGI("ApexDIS Shader verification: SUCCESS (8/8 compute shaders + blit quad OK)");
     }
+}
+
+void ApexEngine::useProgram(GLuint program) {
+    if (mBoundProgram == program) return;
+    glUseProgram(program);
+    mBoundProgram = program;
+}
+
+void ApexEngine::cacheUniformLocations() {
+    auto uniform = [](GLuint program, const char* name) -> GLint {
+        return program ? glGetUniformLocation(program, name) : -1;
+    };
+
+    mUniforms.quadTex = uniform(mQuadProg, "uTex");
+    mUniforms.quadBounds = uniform(mQuadProg, "uTexBounds");
+    mUniforms.lumaIsColor = uniform(mProgLumaGrad, "u_isColor");
+    mUniforms.lumaCollectTelemetry = uniform(mProgLumaGrad, "u_collectTelemetry");
+    mUniforms.searchLevel = uniform(mProgInverseSearch, "u_level");
+    mUniforms.searchCoarseLevel = uniform(mProgInverseSearch, "u_coarseLevel");
+    mUniforms.searchCollectTelemetry = uniform(mProgInverseSearch, "u_collectTelemetry");
+    mUniforms.propagateDist = uniform(mProgPropagate, "u_dist");
+    mUniforms.propagateLevel = uniform(mProgPropagate, "u_level");
+    mUniforms.propagateCollectTelemetry = uniform(mProgPropagate, "u_collectTelemetry");
+    mUniforms.densifyLevel = uniform(mProgDensify, "u_level");
+    mUniforms.densifyCollectTelemetry = uniform(mProgDensify, "u_collectTelemetry");
+    mUniforms.vrSorOmega = uniform(mProgVrSor, "u_omega");
+    mUniforms.vrSorParity = uniform(mProgVrSor, "u_parity");
+    mUniforms.interpolateT = uniform(mProgInterpolate, "u_t");
+    mUniforms.interpolateFlowScale = uniform(mProgInterpolate, "u_flowScale");
+    mUniforms.interpolateLiquidFeel = uniform(mProgInterpolate, "u_liquidFeel");
+    mUniforms.interpolateShutterGain = uniform(mProgInterpolate, "u_shutterGain");
+    mUniforms.interpolateEdgeGuard = uniform(mProgInterpolate, "u_edgeGuard");
+    mUniforms.interpolateCollectTelemetry = uniform(mProgInterpolate, "u_collectTelemetry");
+    mUniforms.rcasSharpness = uniform(mProgRcas, "u_sharpness");
+
+    if (mQuadProg && mUniforms.quadTex >= 0) {
+        useProgram(mQuadProg);
+        glUniform1i(mUniforms.quadTex, 0);
+        useProgram(0);
+    }
+}
+
+void ApexEngine::setDedicatedPresentationContext(bool enabled) {
+    mDedicatedPresentationContext = enabled;
+    if (!enabled) return;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_STENCIL_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+}
+
+ApexEngine::BlitStateSnapshot ApexEngine::beginBlitState() {
+    BlitStateSnapshot state{};
+    if (mDedicatedPresentationContext) return state;
+
+    state.restore = true;
+    state.depthTest = glIsEnabled(GL_DEPTH_TEST);
+    state.cullFace = glIsEnabled(GL_CULL_FACE);
+    state.scissor = glIsEnabled(GL_SCISSOR_TEST);
+    state.blend = glIsEnabled(GL_BLEND);
+    state.stencil = glIsEnabled(GL_STENCIL_TEST);
+    if (state.depthTest) glDisable(GL_DEPTH_TEST);
+    if (state.cullFace) glDisable(GL_CULL_FACE);
+    if (state.scissor) glDisable(GL_SCISSOR_TEST);
+    if (state.blend) glDisable(GL_BLEND);
+    if (state.stencil) glDisable(GL_STENCIL_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    return state;
+}
+
+void ApexEngine::endBlitState(const BlitStateSnapshot& state) {
+    if (!state.restore) return;
+    if (state.depthTest) glEnable(GL_DEPTH_TEST);
+    if (state.cullFace) glEnable(GL_CULL_FACE);
+    if (state.scissor) glEnable(GL_SCISSOR_TEST);
+    if (state.blend) glEnable(GL_BLEND);
+    if (state.stencil) glEnable(GL_STENCIL_TEST);
 }
 
 void ApexEngine::auditHardwareAndExtensions() {
@@ -570,6 +648,9 @@ void ApexEngine::ensureResources(int width, int height) {
         glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(ApexPipelineTelemetry), nullptr, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
+    if (mTelemetrySsbo) {
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
+    }
 
     bool fboOk = true;
     for (uint32_t i = 0; i < DIS_SLOTS; i++) {
@@ -660,118 +741,100 @@ void ApexEngine::destroy() {
     mShaderCompileSuccess = false;
     mResourceAllocSuccess = false;
     mFboComplete = false;
+    mUniforms = UniformLocations{};
+    mBoundProgram = 0;
 }
 
 void ApexEngine::blitQuad(GLuint tex, float uMin, float vMin, float uScale, float vScale) {
     if (!mQuadProg || tex == 0) return;
 
-    GLboolean depthTest = glIsEnabled(GL_DEPTH_TEST);
-    GLboolean cullFace  = glIsEnabled(GL_CULL_FACE);
-    GLboolean scissor   = glIsEnabled(GL_SCISSOR_TEST);
-    GLboolean blend     = glIsEnabled(GL_BLEND);
-    GLboolean stencil   = glIsEnabled(GL_STENCIL_TEST);
-
-    if (depthTest) glDisable(GL_DEPTH_TEST);
-    if (cullFace)  glDisable(GL_CULL_FACE);
-    if (scissor)   glDisable(GL_SCISSOR_TEST);
-    if (blend)     glDisable(GL_BLEND);
-    if (stencil)   glDisable(GL_STENCIL_TEST);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
-    glUseProgram(mQuadProg);
+    const BlitStateSnapshot state = beginBlitState();
+    useProgram(mQuadProg);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    GLint uTexLoc = glGetUniformLocation(mQuadProg, "uTex");
-    if (uTexLoc >= 0) glUniform1i(uTexLoc, 0);
-
-    GLint uBoundsLoc = glGetUniformLocation(mQuadProg, "uTexBounds");
-    if (uBoundsLoc >= 0) glUniform4f(uBoundsLoc, uMin, vMin, uScale, vScale);
+    if (mUniforms.quadBounds >= 0) {
+        glUniform4f(mUniforms.quadBounds, uMin, vMin, uScale, vScale);
+    }
 
     if (mQuadVao) glBindVertexArray(mQuadVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (mQuadVao) glBindVertexArray(0);
 
-    if (depthTest) glEnable(GL_DEPTH_TEST);
-    if (cullFace)  glEnable(GL_CULL_FACE);
-    if (scissor)   glEnable(GL_SCISSOR_TEST);
-    if (blend)     glEnable(GL_BLEND);
-    if (stencil)   glEnable(GL_STENCIL_TEST);
-
+    endBlitState(state);
     mPassBlit.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("BlitQuad");
 }
 
 void ApexEngine::dispatchLumaGrad(int level, GLuint inTex, uint32_t slot) {
-    glUseProgram(mProgLumaGrad);
+    useProgram(mProgLumaGrad);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, inTex);
     glBindImageTexture(1, mLevels[level].lumaTex[slot], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
     glBindImageTexture(2, mLevels[level].gradientTex[slot], 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
-    glUniform1i(glGetUniformLocation(mProgLumaGrad, "u_isColor"), (level == 0 ? 1 : 0));
-    glUniform1i(glGetUniformLocation(mProgLumaGrad, "u_collectTelemetry"), mLoggingEnabled.load(std::memory_order_relaxed) ? 1 : 0);
+    const bool collectTelemetry = mLoggingEnabled.load(std::memory_order_relaxed);
+    const GLbitfield telemetryBarrier = collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
+    if (mUniforms.lumaIsColor >= 0) glUniform1i(mUniforms.lumaIsColor, level == 0 ? 1 : 0);
+    if (mUniforms.lumaCollectTelemetry >= 0) glUniform1i(mUniforms.lumaCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((mLevels[level].width + 15) / 16, (mLevels[level].height + 15) / 16, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
     mPassLumaGrad.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisLumaGrad");
 }
 
 void ApexEngine::dispatchHierarchicalSearch(int level, GLuint lastLuma, GLuint nextLuma, GLuint lastGrad,
                                             GLuint coarseFlow, GLuint outSparse, int sw, int sh, int coarseLevel) {
-    glUseProgram(mProgInverseSearch);
+    useProgram(mProgInverseSearch);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, lastLuma);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, nextLuma);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, lastGrad);
     glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, coarseFlow ? coarseFlow : lastLuma);
     glBindImageTexture(4, outSparse, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
-    glUniform1i(glGetUniformLocation(mProgInverseSearch, "u_level"), level);
-    glUniform1i(glGetUniformLocation(mProgInverseSearch, "u_coarseLevel"), coarseLevel);
-    glUniform1i(glGetUniformLocation(mProgInverseSearch, "u_collectTelemetry"), mLoggingEnabled.load(std::memory_order_relaxed) ? 1 : 0);
+    const bool collectTelemetry = mLoggingEnabled.load(std::memory_order_relaxed);
+    const GLbitfield telemetryBarrier = collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
+    if (mUniforms.searchLevel >= 0) glUniform1i(mUniforms.searchLevel, level);
+    if (mUniforms.searchCoarseLevel >= 0) glUniform1i(mUniforms.searchCoarseLevel, coarseLevel);
+    if (mUniforms.searchCollectTelemetry >= 0) glUniform1i(mUniforms.searchCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((sw + 7) / 8, (sh + 7) / 8, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
     mPassInvSearch.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisInverseSearch");
 }
 
 void ApexEngine::dispatchPropagate(int level, GLuint lastLuma, GLuint nextLuma, GLuint fi, GLuint fo, int sw, int sh, int dist) {
-    glUseProgram(mProgPropagate);
+    useProgram(mProgPropagate);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, lastLuma);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, nextLuma);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, fi);
     glBindImageTexture(3, fo, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
-    glUniform1i(glGetUniformLocation(mProgPropagate, "u_dist"), dist);
-    glUniform1i(glGetUniformLocation(mProgPropagate, "u_level"), level);
-    glUniform1i(glGetUniformLocation(mProgPropagate, "u_collectTelemetry"), mLoggingEnabled.load(std::memory_order_relaxed) ? 1 : 0);
+    const bool collectTelemetry = mLoggingEnabled.load(std::memory_order_relaxed);
+    const GLbitfield telemetryBarrier = collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
+    if (mUniforms.propagateDist >= 0) glUniform1i(mUniforms.propagateDist, dist);
+    if (mUniforms.propagateLevel >= 0) glUniform1i(mUniforms.propagateLevel, level);
+    if (mUniforms.propagateCollectTelemetry >= 0) glUniform1i(mUniforms.propagateCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((sw + 7) / 8, (sh + 7) / 8, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
     mPassPropagate.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisPropagate");
 }
 
 void ApexEngine::dispatchDensify(int level, GLuint sparseFlow, GLuint lastLuma, GLuint nextLuma, GLuint denseFlow, int w, int h) {
-    glUseProgram(mProgDensify);
+    useProgram(mProgDensify);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, sparseFlow);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, lastLuma);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, nextLuma);
     glBindImageTexture(3, denseFlow, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
-    glUniform1i(glGetUniformLocation(mProgDensify, "u_level"), level);
-    glUniform1i(glGetUniformLocation(mProgDensify, "u_collectTelemetry"), mLoggingEnabled.load(std::memory_order_relaxed) ? 1 : 0);
+    const bool collectTelemetry = mLoggingEnabled.load(std::memory_order_relaxed);
+    const GLbitfield telemetryBarrier = collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
+    if (mUniforms.densifyLevel >= 0) glUniform1i(mUniforms.densifyLevel, level);
+    if (mUniforms.densifyCollectTelemetry >= 0) glUniform1i(mUniforms.densifyCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
     mPassDensify.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisDensify");
 }
 
 void ApexEngine::dispatchVrSetup(GLuint denseFlow, GLuint prevColor, GLuint nextColor, GLuint outA, GLuint outB, GLuint outDW, int w, int h) {
-    glUseProgram(mProgVrSetup);
+    useProgram(mProgVrSetup);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, denseFlow);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, prevColor);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, nextColor);
@@ -784,34 +847,35 @@ void ApexEngine::dispatchVrSetup(GLuint denseFlow, GLuint prevColor, GLuint next
 }
 
 void ApexEngine::dispatchVrSor(GLuint at, GLuint bt, GLuint dwi, GLuint dwo, float om, int p, int w, int h) {
-    glUseProgram(mProgVrSor);
+    useProgram(mProgVrSor);
     glBindImageTexture(0, at, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
     glBindImageTexture(1, bt, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
     glBindImageTexture(2, dwi, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
     glBindImageTexture(3, dwo, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    glUniform1f(glGetUniformLocation(mProgVrSor, "u_omega"), om);
-    glUniform1i(glGetUniformLocation(mProgVrSor, "u_parity"), p);
+    if (mUniforms.vrSorOmega >= 0) glUniform1f(mUniforms.vrSorOmega, om);
+    if (mUniforms.vrSorParity >= 0) glUniform1i(mUniforms.vrSorParity, p);
     glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     checkGlPassError("DisVrSor");
 }
 
 void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h) {
-    glUseProgram(mProgInterpolate);
+    useProgram(mProgInterpolate);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, pc);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, nc);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, df);
     glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, dw);
     glBindImageTexture(4, oi, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    if (mTelemetrySsbo) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo);
-    glUniform1f(glGetUniformLocation(mProgInterpolate, "u_t"), t);
-    glUniform1f(glGetUniformLocation(mProgInterpolate, "u_flowScale"), mFlowScale.load());
-    glUniform1f(glGetUniformLocation(mProgInterpolate, "u_liquidFeel"), mLiquidFeel.load());
-    glUniform1f(glGetUniformLocation(mProgInterpolate, "u_shutterGain"), mShutterGain.load());
-    glUniform1f(glGetUniformLocation(mProgInterpolate, "u_edgeGuard"), mEdgeGuard.load());
-    glUniform1i(glGetUniformLocation(mProgInterpolate, "u_collectTelemetry"), mLoggingEnabled.load(std::memory_order_relaxed) ? 1 : 0);
+    const bool collectTelemetry = mLoggingEnabled.load(std::memory_order_relaxed);
+    const GLbitfield telemetryBarrier = collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
+    if (mUniforms.interpolateT >= 0) glUniform1f(mUniforms.interpolateT, t);
+    if (mUniforms.interpolateFlowScale >= 0) glUniform1f(mUniforms.interpolateFlowScale, mFlowScale.load());
+    if (mUniforms.interpolateLiquidFeel >= 0) glUniform1f(mUniforms.interpolateLiquidFeel, mLiquidFeel.load());
+    if (mUniforms.interpolateShutterGain >= 0) glUniform1f(mUniforms.interpolateShutterGain, mShutterGain.load());
+    if (mUniforms.interpolateEdgeGuard >= 0) glUniform1f(mUniforms.interpolateEdgeGuard, mEdgeGuard.load());
+    if (mUniforms.interpolateCollectTelemetry >= 0) glUniform1i(mUniforms.interpolateCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((w + 15) / 16, (h + 7) / 8, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
     glBindImageTexture(4, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
     glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
@@ -822,10 +886,10 @@ void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw,
 }
 
 void ApexEngine::dispatchRcas(GLuint inTex, GLuint outImage, int w, int h, float sharpness) {
-    glUseProgram(mProgRcas);
+    useProgram(mProgRcas);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, inTex);
     glBindImageTexture(1, outImage, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    glUniform1f(glGetUniformLocation(mProgRcas, "u_sharpness"), sharpness);
+    if (mUniforms.rcasSharpness >= 0) glUniform1f(mUniforms.rcasSharpness, sharpness);
     glDispatchCompute((w + 15) / 16, (h + 15) / 16, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);

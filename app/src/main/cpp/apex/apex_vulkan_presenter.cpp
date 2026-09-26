@@ -515,6 +515,7 @@ bool initializePresenter(Presenter& presenter) {
 
     auto& apexEngine = apex::ApexEngine::getInstance();
     apexEngine.setGpuProfile(decision.profile, decision.motionStorage);
+    apexEngine.setDedicatedPresentationContext(true);
 
     const bool adreno650 =
         renderer != nullptr &&
@@ -550,6 +551,7 @@ void destroyPresenter(Presenter& presenter) {
         destroyImportedSources(presenter);
         apex::ApexEngine::getInstance().setActive(false);
         apex::ApexEngine::getInstance().destroy();
+        apex::ApexEngine::getInstance().setDedicatedPresentationContext(false);
         eglMakeCurrent(
             presenter.display,
             EGL_NO_SURFACE,

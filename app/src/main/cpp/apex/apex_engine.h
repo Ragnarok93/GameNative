@@ -151,6 +151,7 @@ public:
     // Atomic Settings
     void setActive(bool e) { mActive.store(e); }
     bool isActive() const { return mActive.load(); }
+    void setDedicatedPresentationContext(bool enabled);
     void setQualityPreset(int q) {
         const int sanitized = q < 0 ? 0 : (q > 2 ? 2 : q);
         const int previous = mQualityPreset.exchange(sanitized, std::memory_order_acq_rel);
@@ -215,6 +216,19 @@ private:
     GLenum motionStorageFormat() const;
     GLenum motionStorageFilter() const;
     std::string precisionShaderSource(const char* source) const;
+    void cacheUniformLocations();
+    void useProgram(GLuint program);
+
+    struct BlitStateSnapshot {
+        bool restore{false};
+        GLboolean depthTest{GL_FALSE};
+        GLboolean cullFace{GL_FALSE};
+        GLboolean scissor{GL_FALSE};
+        GLboolean blend{GL_FALSE};
+        GLboolean stencil{GL_FALSE};
+    };
+    BlitStateSnapshot beginBlitState();
+    void endBlitState(const BlitStateSnapshot& state);
 
     bool mInitialized{false};
     bool mShaderCompileSuccess{false};
@@ -256,6 +270,34 @@ private:
     GLuint mProgInterpolate{0};
     GLuint mProgRcas{0};
     GLuint mQuadProg{0}, mQuadVao{0}, mQuadVbo{0};
+
+    struct UniformLocations {
+        GLint quadTex{-1};
+        GLint quadBounds{-1};
+        GLint lumaIsColor{-1};
+        GLint lumaCollectTelemetry{-1};
+        GLint searchLevel{-1};
+        GLint searchCoarseLevel{-1};
+        GLint searchCollectTelemetry{-1};
+        GLint propagateDist{-1};
+        GLint propagateLevel{-1};
+        GLint propagateCollectTelemetry{-1};
+        GLint densifyLevel{-1};
+        GLint densifyCollectTelemetry{-1};
+        GLint vrSorOmega{-1};
+        GLint vrSorParity{-1};
+        GLint interpolateT{-1};
+        GLint interpolateFlowScale{-1};
+        GLint interpolateLiquidFeel{-1};
+        GLint interpolateShutterGain{-1};
+        GLint interpolateEdgeGuard{-1};
+        GLint interpolateCollectTelemetry{-1};
+        GLint rcasSharpness{-1};
+    };
+    UniformLocations mUniforms{};
+    GLuint mBoundProgram{0};
+    bool mDedicatedPresentationContext{false};
+
     // Hardware & Extension Audit
     void auditHardwareAndExtensions();
     void checkGlPassError(const char* passName);

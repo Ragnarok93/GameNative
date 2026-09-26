@@ -408,6 +408,7 @@ private:
         uint64_t sourceAcquireCostNanos = 0;
         uint64_t sourceQueuePresentCostNanos = 0;
         uint64_t generatedPresentCostNanos = 0;
+        uint64_t generatedPresentSamples = 0;
         uint64_t maxSourceCostNanos = 0;
         uint64_t maxGeneratedCostNanos = 0;
         uint64_t telemetryOutputs = 0;

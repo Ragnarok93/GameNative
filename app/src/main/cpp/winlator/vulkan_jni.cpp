@@ -169,6 +169,60 @@ Java_com_winlator_renderer_VulkanRenderer_nativeGetApexTargetExtent(JNIEnv*, job
     auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
     return r ? static_cast<jlong>(r->apexTargetExtentPacked()) : 0;
 }
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeAttachApexVulkanPresenter(
+    JNIEnv* env,
+    jobject,
+    jlong handle,
+    jobject surface) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    if (!r || !surface) return JNI_FALSE;
+    ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
+    if (!window) return JNI_FALSE;
+    const bool attached = r->attachApexVulkanPresenter(window);
+    ANativeWindow_release(window);
+    return attached ? JNI_TRUE : JNI_FALSE;
+}
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeDetachApexVulkanPresenter(
+    JNIEnv*,
+    jobject,
+    jlong handle) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    if (r) r->detachApexVulkanPresenter();
+}
+extern "C" JNIEXPORT jint JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativePresentApexVulkanSource(
+    JNIEnv*,
+    jobject,
+    jlong handle,
+    jlong token,
+    jint generationBudget) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r
+        ? static_cast<jint>(
+            r->presentApexVulkanSource(
+                static_cast<int64_t>(token),
+                static_cast<int>(generationBudget)))
+        : -1;
+}
+extern "C" JNIEXPORT jint JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativePresentApexVulkanGenerated(
+    JNIEnv*,
+    jobject,
+    jlong handle) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r ? static_cast<jint>(r->presentApexVulkanGenerated()) : -1;
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeHasApexVulkanPendingSource(
+    JNIEnv*,
+    jobject,
+    jlong handle) {
+    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
+    return r && r->hasApexVulkanPendingSource() ? JNI_TRUE : JNI_FALSE;
+}
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetTransform(
     JNIEnv*, jobject, jlong handle, jfloat ox, jfloat oy, jfloat sx, jfloat sy)

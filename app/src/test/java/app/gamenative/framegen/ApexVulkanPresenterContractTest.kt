@@ -969,14 +969,11 @@ class ApexVulkanPresenterContractTest {
         val commitStart = pipeline.indexOf("void ApexEngine::commitPresentedOutput", readyStart)
         assertTrue(readyStart >= 0 && commitStart > readyStart)
         val readyPath = pipeline.substring(readyStart, commitStart)
-        assertFalse(
-            "pending source retry must not be rejected merely because its generation budget is zero",
-            readyPath.contains("activeBudget <= 0"),
-        )
         assertTrue(
-            "a zero-budget pending source must be selectable for retry",
-            readyPath.contains("if (fs == activeBudget)") ||
-                readyPath.contains("if (fs >= activeBudget)"),
+            "a zero-budget pending source must be selectable for retry rather than rejected",
+            readyPath.contains(
+                "if (activeBudget <= 0 || !hasInterpolationHistory || fs >= activeBudget)",
+            ),
         )
     }
 

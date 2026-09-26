@@ -48,10 +48,14 @@ class ApexVulkanComputeBackendContractTest {
         ).readText()
         shaders.forEach { name ->
             assertTrue(
-                "Vulkan renderer build must compile $name to SPIR-V",
-                cmake.contains("apex_vk_${name}_code"),
+                "Vulkan renderer build must enumerate $name",
+                cmake.contains(name),
             )
         }
+        assertTrue(
+            "Vulkan renderer build must generate stable embedded SPIR-V symbols",
+            cmake.contains("--vn apex_vk_\${APEX_VK_SHADER}_code"),
+        )
         assertTrue(cmake.contains("apex/vulkan/apex_vk_backend.cpp"))
     }
 

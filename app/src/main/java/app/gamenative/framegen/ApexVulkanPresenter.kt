@@ -30,6 +30,8 @@ class ApexVulkanPresenter(
     private var choreographer: Choreographer? = null
     private var hasSourceHistory = false
     private var callbacksSinceTelemetryLog = 0
+    private var callbacksSinceRefreshCheck = 0
+    private var lastPresentationCeilingFps = 0f
     private var nextSourceAdmissionNanos = 0L
     private var pendingSourceFrame: VulkanRenderer.ApexFrame? = null
     private var pendingSourceTimestampNanos = 0L
@@ -46,6 +48,11 @@ class ApexVulkanPresenter(
 
             ApexPresentationTelemetry.recordDisplayOpportunity(frameTimeNanos)
             scheduler.recordDisplayOpportunity(frameTimeNanos)
+            callbacksSinceRefreshCheck++
+            if (callbacksSinceRefreshCheck >= REFRESH_RATE_RECHECK_CALLBACKS) {
+                callbacksSinceRefreshCheck = 0
+                refreshPresentationCeiling()
+            }
 
             if (pendingSourceFrame == null) {
                 val frame = renderer.pollApexFrame()
@@ -128,6 +135,8 @@ class ApexVulkanPresenter(
         if (running) return
         ApexPresentationTelemetry.beginSession()
         callbacksSinceTelemetryLog = 0
+        callbacksSinceRefreshCheck = 0
+        lastPresentationCeilingFps = 0f
         nextSourceAdmissionNanos = 0L
         pendingSourceFrame = null
         pendingSourceTimestampNanos = 0L
@@ -152,11 +161,33 @@ class ApexVulkanPresenter(
                 return@post
             }
             nativeHandle = handle
-            scheduler.setPresentationCeilingFps(
-                renderer.xServerView.display?.refreshRate ?: 0f,
-            )
+            refreshPresentationCeiling(forceLog = true)
             choreographer = Choreographer.getInstance()
             choreographer?.postFrameCallback(frameCallback)
+        }
+    }
+
+    private fun refreshPresentationCeiling(forceLog: Boolean = false) {
+        val current =
+            renderer.xServerView.display?.refreshRate
+                ?.takeIf { it.isFinite() && it > 1f }
+                ?: 0f
+        val requested =
+            renderer.getApexPresentationRefreshRate()
+                .takeIf { it.isFinite() && it > 1f }
+                ?: 0f
+        val ceiling = maxOf(current, requested)
+        scheduler.setPresentationCeilingFps(ceiling)
+        if (
+            forceLog ||
+            kotlin.math.abs(ceiling - lastPresentationCeilingFps) >= 0.5f
+        ) {
+            android.util.Log.i(
+                "ApexPresenter",
+                "presentation ceiling: current=%.1f requested=%.1f effective=%.1f"
+                    .format(java.util.Locale.US, current, requested, ceiling),
+            )
+            lastPresentationCeilingFps = ceiling
         }
     }
 
@@ -222,7 +253,7 @@ class ApexVulkanPresenter(
         val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f ceiling=%.1f sourceIn=%.1f generated=%.1f output=%.1f no_generation=%d native_no_generation=%d remaining=%d".format(
+            "display cadence: mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f ceiling=%.1f effective=%.1f pressure=%.3f prep_submit_ms=%.3f interp_submit_ms=%.3f sourceIn=%.1f generated=%.1f output=%.1f no_generation=%d native_no_generation=%d remaining=%d".format(
                 java.util.Locale.US,
                 if (adaptive) "adaptive" else "fixed",
                 targetFps,
@@ -237,6 +268,10 @@ class ApexVulkanPresenter(
                 schedulerDiagnostics.fractionalPhase,
                 schedulerDiagnostics.measuredOpportunityFps,
                 schedulerDiagnostics.presentationCeilingFps,
+                schedulerDiagnostics.effectivePresentationFps,
+                schedulerDiagnostics.presentationPressureRatio,
+                schedulerDiagnostics.preparationSubmitMs,
+                schedulerDiagnostics.syntheticSubmitMs,
                 stats.sourceInputFps,
                 stats.generatedFps,
                 stats.outputFps,
@@ -310,6 +345,7 @@ class ApexVulkanPresenter(
 
     companion object {
         private const val THREAD_DRAIN_DELAY_MS = 50L
+        private const val REFRESH_RATE_RECHECK_CALLBACKS = 30
 
         init {
             System.loadLibrary("gamenative_apex")

@@ -310,7 +310,8 @@ class ApexVulkanComputeBackendContractTest {
         )
         assertFalse(
             "validation telemetry must not log on every Vulkan output",
-            rendererSource.contains("APEX_VK_TELEMETRY_INTERVAL = 1"),
+            Regex("""APEX_VK_TELEMETRY_INTERVAL\\s*=\\s*1\\s*;""")
+                .containsMatchIn(rendererSource),
         )
     }
 

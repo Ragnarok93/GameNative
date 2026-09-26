@@ -937,4 +937,69 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+
+    @Test
+    fun sourceOnlyPresentationRetriesAfterSwapFailureInsteadOfDroppingTheSource() {
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        val zeroGenerationStart = pipeline.indexOf(
+            "if (mRealFramesCaptured.load() < 2 || generationBudget <= 0)",
+        )
+        val syntheticCostStart = pipeline.indexOf(
+            "// Synthetic cost is measured from work actually prepared",
+            zeroGenerationStart,
+        )
+        assertTrue(zeroGenerationStart >= 0 && syntheticCostStart > zeroGenerationStart)
+        val zeroGenerationPath = pipeline.substring(zeroGenerationStart, syntheticCostStart)
+
+        assertTrue(
+            "source-only output must remain pending until eglSwapBuffers succeeds",
+            zeroGenerationPath.contains(
+                "mPendingRealPresentation.store(true, std::memory_order_release)",
+            ),
+        )
+        assertFalse(
+            "source-only output must not clear pending state before the swap result is known",
+            zeroGenerationPath.contains(
+                "mPendingRealPresentation.store(false, std::memory_order_release)",
+            ),
+        )
+
+        val readyStart = pipeline.indexOf("void ApexEngine::presentGeneratedReady")
+        val commitStart = pipeline.indexOf("void ApexEngine::commitPresentedOutput", readyStart)
+        assertTrue(readyStart >= 0 && commitStart > readyStart)
+        val readyPath = pipeline.substring(readyStart, commitStart)
+        assertFalse(
+            "pending source retry must not be rejected merely because its generation budget is zero",
+            readyPath.contains("activeBudget <= 0"),
+        )
+        assertTrue(
+            "a zero-budget pending source must be selectable for retry",
+            readyPath.contains("if (fs == activeBudget)") ||
+                readyPath.contains("if (fs >= activeBudget)"),
+        )
+    }
+
+    @Test
+    fun apexDiagnosticsMatchTheActiveFiveShaderPipelineAndSplitSwapFailures() {
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val presenter = repoFile("app/src/main/cpp/apex/apex_vulkan_presenter.cpp").readText()
+
+        assertFalse(
+            "runtime validation must not report the removed 8-shader pipeline",
+            pipeline.contains("Shaders: %d/8"),
+        )
+        assertTrue(
+            "runtime validation must report the active 5-shader pipeline",
+            pipeline.contains("Shaders: %d/5"),
+        )
+        assertTrue(
+            "presenter telemetry must distinguish source swap failures from generated swap failures",
+            presenter.contains("sourceSwapFailures") &&
+                presenter.contains("generatedSwapFailures") &&
+                presenter.contains("sourceSwapFailures=%llu") &&
+                presenter.contains("generatedSwapFailures=%llu"),
+        )
+    }
+
 }

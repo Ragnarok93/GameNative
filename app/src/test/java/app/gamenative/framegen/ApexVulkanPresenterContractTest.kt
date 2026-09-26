@@ -458,6 +458,7 @@ class ApexVulkanPresenterContractTest {
             "process_ms=",
             "release_ms=",
             "swap_ms=",
+            "post_swap_ms=",
             "total_ms=",
         ).forEach { token ->
             assertTrue("presenter critical-path telemetry is missing $token", native.contains(token))
@@ -974,6 +975,46 @@ class ApexVulkanPresenterContractTest {
             readyPath.contains(
                 "if (activeBudget <= 0 || !hasInterpolationHistory || fs >= activeBudget)",
             ),
+        )
+    }
+
+    @Test
+    fun presenterCriticalPathIncludesPostSwapCommitAndReadyAheadRefill() {
+        val presenter = repoFile(
+            "app/src/main/cpp/apex/apex_vulkan_presenter.cpp",
+        ).readText()
+
+        val sourceStart = presenter.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame",
+        )
+        val generatedStart = presenter.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame",
+            sourceStart,
+        )
+        assertTrue(sourceStart >= 0 && generatedStart > sourceStart)
+
+        val sourcePath = presenter.substring(sourceStart, generatedStart)
+        val generatedPath = presenter.substring(generatedStart)
+
+        listOf(sourcePath, generatedPath).forEach { hotPath ->
+            val commit = hotPath.indexOf("commitPresentedOutput(outputKind)")
+            val refill = hotPath.indexOf("prepareNextGeneratedReady()", commit)
+            val cost = hotPath.indexOf("recordPresenterCost(", commit)
+            assertTrue(
+                "presenter cost must be recorded after successful commit/refill work",
+                commit >= 0 && cost > commit,
+            )
+            if (refill >= 0) {
+                assertTrue(
+                    "ready-ahead refill must be included before final cost accounting",
+                    cost > refill,
+                )
+            }
+        }
+
+        assertTrue(
+            "presenter telemetry must expose post-swap commit/refill cost",
+            presenter.contains("post_swap_ms="),
         )
     }
 

@@ -139,9 +139,6 @@ public:
     int getLastSyntheticCostBudget() const {
         return mLastSyntheticCostBudget.load(std::memory_order_relaxed);
     }
-    int consumeAbandonedSyntheticSlots() {
-        return mAbandonedSyntheticSlots.exchange(0, std::memory_order_acq_rel);
-    }
     uint64_t getNoGenerationSourceFrameCount() const {
         return mNoGenerationSourceFrames.load(std::memory_order_relaxed);
     }
@@ -195,12 +192,6 @@ public:
     bool hasPendingRealPresentation() const {
         return mPendingRealPresentation.load(std::memory_order_acquire);
     }
-    void presentPendingReal(
-        GLuint outputFboId,
-        int viewX,
-        int viewY,
-        int viewWidth,
-        int viewHeight);
     void presentGeneratedReady(
         GLuint outputFboId,
         int viewX,
@@ -354,7 +345,6 @@ private:
     std::atomic<int64_t> mLastPreparationCostNanos{0};
     std::atomic<int64_t> mLastSyntheticCostNanos{0};
     std::atomic<int> mLastSyntheticCostBudget{0};
-    std::atomic<int> mAbandonedSyntheticSlots{0};
     std::atomic<uint64_t> mNoGenerationSourceFrames{0};
     std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
     std::atomic<int> mFlowShortSideCap{0};

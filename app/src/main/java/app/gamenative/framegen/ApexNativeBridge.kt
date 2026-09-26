@@ -110,7 +110,6 @@ object ApexNativeBridge {
     @JvmStatic external fun nativeGetLastPreparationCostNanos(): Long
     @JvmStatic external fun nativeGetLastSyntheticCostNanos(): Long
     @JvmStatic external fun nativeGetLastSyntheticCostBudget(): Int
-    @JvmStatic external fun nativeConsumeAbandonedSyntheticSlots(): Int
     @JvmStatic external fun nativeGetNoGenerationSourceFrameCount(): Long
     @JvmStatic external fun nativeGetDiagnostics(): String
     @JvmStatic external fun nativeGetCompiledShaderCount(): Int

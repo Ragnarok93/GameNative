@@ -304,12 +304,6 @@ Java_app_gamenative_framegen_ApexNativeBridge_nativeGetLastSyntheticCostBudget(J
         apex::ApexEngine::getInstance().getLastSyntheticCostBudget());
 }
 
-JNIEXPORT jint JNICALL
-Java_app_gamenative_framegen_ApexNativeBridge_nativeConsumeAbandonedSyntheticSlots(JNIEnv*, jclass) {
-    return static_cast<jint>(
-        apex::ApexEngine::getInstance().consumeAbandonedSyntheticSlots());
-}
-
 JNIEXPORT jlong JNICALL
 Java_app_gamenative_framegen_ApexNativeBridge_nativeGetNoGenerationSourceFrameCount(JNIEnv*, jclass) {
     return static_cast<jlong>(

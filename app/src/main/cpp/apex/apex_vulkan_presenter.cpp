@@ -715,42 +715,6 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativeHasPendingSource(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentPendingSourceFrame(
-    JNIEnv*,
-    jclass,
-    jlong handle) {
-    auto* presenter = reinterpret_cast<Presenter*>(handle);
-    if (!presenter ||
-        !presenter->hasSource ||
-        presenter->sourceWidth <= 0 ||
-        presenter->sourceHeight <= 0) {
-        return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
-    }
-
-    const auto totalStart = PresenterClock::now();
-    const auto processStart = totalStart;
-    apex::ApexEngine::getInstance().presentPendingReal(
-        0,
-        0,
-        0,
-        presenter->outputWidth,
-        presenter->outputHeight);
-    const int outputKind = apex::ApexEngine::getInstance().getLastOutputKind();
-    if (outputKind == apex::APEX_OUTPUT_NONE) {
-        return packPulsePresentResult(apex::APEX_OUTPUT_NONE, false);
-    }
-    const uint64_t processNanos = elapsedNanos(processStart, PresenterClock::now());
-    const auto swapStart = PresenterClock::now();
-    const bool swapSucceeded =
-        eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
-    const uint64_t swapNanos = elapsedNanos(swapStart, PresenterClock::now());
-    recordPresenterCost(*presenter, 0, processNanos, 0, swapNanos,
-        elapsedNanos(totalStart, PresenterClock::now()));
-    recordPresentation(*presenter, outputKind, swapSucceeded);
-    return packPulsePresentResult(outputKind, swapSucceeded);
-}
-
-extern "C" JNIEXPORT jint JNICALL
 Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
     JNIEnv*,
     jclass,

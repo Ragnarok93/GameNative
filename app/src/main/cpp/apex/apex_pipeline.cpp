@@ -1004,45 +1004,6 @@ std::string ApexEngine::getDiagnostics() {
 }
 
 
-void ApexEngine::presentPendingReal(
-    GLuint outputFboId,
-    int viewX,
-    int viewY,
-    int viewWidth,
-    int viewHeight) {
-    if (!mActive.load(std::memory_order_relaxed) ||
-        !mPendingRealPresentation.exchange(false, std::memory_order_acq_rel) ||
-        mCurrentSlot < 0 ||
-        mColorRingTex[mCurrentSlot] == 0) {
-        mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
-        return;
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
-    glViewport(viewX, viewY, viewWidth, viewHeight);
-    blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
-    mActualRealFrameCount.fetch_add(1, std::memory_order_relaxed);
-    mTotalRealFramesPresented++;
-    mLastPresentedNanos.store(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count(),
-        std::memory_order_relaxed);
-    const int activeBudget =
-        mActiveGenerationBudget.load(std::memory_order_acquire);
-    const int generatedAfterFirst =
-        mFramesSinceReal.load(std::memory_order_acquire);
-    const int abandoned =
-        std::max(0, activeBudget - 1 - generatedAfterFirst);
-    if (abandoned > 0) {
-        mAbandonedSyntheticSlots.fetch_add(abandoned, std::memory_order_relaxed);
-    }
-    mFramesSinceReal.store(0, std::memory_order_release);
-    mActiveGenerationBudget.store(0, std::memory_order_release);
-    mPreparedGenerationSlots.store(0, std::memory_order_release);
-    mRenderingGeneratedFrame.store(false, std::memory_order_release);
-    mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
-}
-
 void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int width, int height,
                               int viewX, int viewY, int viewWidth, int viewHeight, bool isNewRealFrame,
                               bool sourceVerticalFlip, int generatedOpportunityBudget,

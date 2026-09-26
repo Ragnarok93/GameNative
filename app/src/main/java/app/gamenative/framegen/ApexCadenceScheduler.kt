@@ -12,7 +12,7 @@ import kotlin.math.min
  * presentation opportunities. Neither fixed nor adaptive generation is disabled
  * because the source cadence slows. Generated slots may still be dropped when
  * the display has no opportunity, measured pipeline cost exceeds the interval,
- * or a ready real frame reaches its presentation deadline.
+ * or measured pipeline cost exceeds the source interval.
  */
 class ApexCadenceScheduler {
     data class Diagnostics(
@@ -37,10 +37,6 @@ class ApexCadenceScheduler {
     private var lastObservedSourceIntervalNanos = 0L
     private var sourcePeriodNanos = 0.0
     private var lastTrustedSourcePeriodNanos = 0.0
-    private var pendingSourceDeadlineNanos = 0L
-    private var presentationWindowDeadlineNanos = 0L
-    private var plannedOutputPeriodNanos = 0.0
-
     private val recentSourcePeriodsNanos = DoubleArray(SOURCE_CADENCE_WINDOW)
     private val sourcePeriodScratch = DoubleArray(SOURCE_CADENCE_WINDOW)
     private var recentSourcePeriodCount = 0
@@ -69,9 +65,6 @@ class ApexCadenceScheduler {
         lastObservedSourceIntervalNanos = 0L
         sourcePeriodNanos = 0.0
         lastTrustedSourcePeriodNanos = 0.0
-        pendingSourceDeadlineNanos = 0L
-        presentationWindowDeadlineNanos = 0L
-        plannedOutputPeriodNanos = 0.0
         resetSourceCadenceWindow()
 
         lastAdaptiveMode = null
@@ -129,8 +122,6 @@ class ApexCadenceScheduler {
             lastObservedSourceIntervalNanos = 0L
             sourcePeriodNanos = 0.0
             lastTrustedSourcePeriodNanos = 0.0
-            pendingSourceDeadlineNanos = 0L
-            plannedOutputPeriodNanos = 0.0
             generationPhase = 0.0
             wantedGeneratedFrames = 0.0
             requestedSyntheticCount = 0
@@ -139,10 +130,6 @@ class ApexCadenceScheduler {
         }
 
         if (delta !in MIN_SOURCE_PERIOD_NS..MAX_SOURCE_PERIOD_NS) {
-            if (sourcePeriodNanos > 0.0) {
-                pendingSourceDeadlineNanos =
-                    sourceTimestampNanos + sourcePeriodNanos.toLong()
-            }
             return
         }
 
@@ -172,44 +159,14 @@ class ApexCadenceScheduler {
                 sourcePeriodNanos += alpha * (boundedTarget - sourcePeriodNanos)
             }
             lastTrustedSourcePeriodNanos = sourcePeriodNanos
-            pendingSourceDeadlineNanos =
-                sourceTimestampNanos + sourcePeriodNanos.toLong()
         }
     }
 
     fun onSourcePresented() {
-        pendingSourceDeadlineNanos = 0L
-        presentationWindowDeadlineNanos = 0L
         remainingSyntheticSlots = 0
     }
 
     fun onGeneratedPresented() {
-        markGeneratedPresented(0L)
-    }
-
-    fun onGeneratedPresented(nowNanos: Long) {
-        markGeneratedPresented(nowNanos)
-    }
-
-    private fun markGeneratedPresented(nowNanos: Long) {
-        if (
-            nowNanos > 0L &&
-            presentationWindowDeadlineNanos <= 0L &&
-            remainingSyntheticSlots > 0
-        ) {
-            val cadence =
-                sourcePeriodNanos.takeIf { it > 0.0 }
-                    ?: lastObservedSourceIntervalNanos.toDouble().takeIf { it > 0.0 }
-            if (cadence != null) {
-                val producerDeadline =
-                    pendingSourceDeadlineNanos.toDouble().coerceAtLeast(0.0)
-                presentationWindowDeadlineNanos =
-                    max(
-                        producerDeadline,
-                        nowNanos.toDouble() + cadence,
-                    ).toLong()
-            }
-        }
         if (remainingSyntheticSlots > 0) {
             remainingSyntheticSlots--
         }
@@ -275,55 +232,6 @@ class ApexCadenceScheduler {
         )
     }
 
-    fun shouldPresentSourceNow(nowNanos: Long): Boolean {
-        if (
-            pendingSourceDeadlineNanos <= 0L ||
-            remainingSyntheticSlots <= 0
-        ) {
-            return false
-        }
-        val slot = effectiveSlotPeriodNanos()
-        if (slot <= 0.0) return false
-
-        // Preempt only when finishing the synthetic prefix would actually push
-        // the buffered real frame beyond its producer-cadence deadline.
-        val deadlineNanos =
-            presentationWindowDeadlineNanos.takeIf { it > 0L }
-                ?: pendingSourceDeadlineNanos
-        val completionNanos =
-            nowNanos.toDouble() + slot * remainingSyntheticSlots.toDouble()
-        return completionNanos > deadlineNanos.toDouble()
-    }
-
-    fun shouldPreemptForQueuedSource(
-        nowNanos: Long,
-        queuedSourceTimestampNanos: Long,
-    ): Boolean {
-        if (
-            queuedSourceTimestampNanos <= 0L ||
-            nowNanos < queuedSourceTimestampNanos ||
-            remainingSyntheticSlots <= 0
-        ) {
-            return false
-        }
-        val slot = effectiveSlotPeriodNanos()
-        if (slot <= 0.0) return false
-
-        val cadence =
-            sourcePeriodNanos.takeIf { it > 0.0 }
-                ?: lastObservedSourceIntervalNanos.toDouble().takeIf { it > 0.0 }
-                ?: return false
-        val queueAllowance = max(
-            slot * QUEUED_SOURCE_SLOT_ALLOWANCE,
-            cadence * QUEUED_SOURCE_CADENCE_ALLOWANCE,
-        )
-        val queuedDeadline =
-            queuedSourceTimestampNanos.toDouble() + queueAllowance
-        val completionNanos =
-            nowNanos.toDouble() + slot * remainingSyntheticSlots.toDouble()
-        return completionNanos > queuedDeadline
-    }
-
     fun generationBudget(
         adaptive: Boolean,
         fixedGeneratedCeiling: Int,
@@ -352,8 +260,6 @@ class ApexCadenceScheduler {
             requestedSyntheticCount = 0
             lastAdmittedBudget = 0
             remainingSyntheticSlots = 0
-            presentationWindowDeadlineNanos = 0L
-            plannedOutputPeriodNanos = 0.0
             return 0
         }
 
@@ -411,14 +317,6 @@ class ApexCadenceScheduler {
         lastAdmittedBudget =
             admitted.coerceIn(0, MAX_GENERATED_FRAMES)
         remainingSyntheticSlots = lastAdmittedBudget
-        presentationWindowDeadlineNanos = 0L
-
-        plannedOutputPeriodNanos =
-            if (adaptive) {
-                NANOS_PER_SECOND / boundedTargetFps.toDouble()
-            } else {
-                sourcePeriodNanos / (fixedCeiling + 1).coerceAtLeast(1)
-            }
         return lastAdmittedBudget
     }
 
@@ -467,17 +365,6 @@ class ApexCadenceScheduler {
         return floor(usable / syntheticCostPerFrameNanos)
             .toInt()
             .coerceIn(0, MAX_GENERATED_FRAMES)
-    }
-
-    private fun effectiveSlotPeriodNanos(): Double = when {
-        // Ready synthetics cost a physical presentation slot. Short-lived
-        // callback stalls are pressure evidence, not a new display ceiling.
-        presentationCeilingFps > 1.0 ->
-            NANOS_PER_SECOND / presentationCeilingFps
-        displayPeriodNanos > 0.0 -> displayPeriodNanos
-        plannedOutputPeriodNanos > 0.0 -> plannedOutputPeriodNanos
-        sourcePeriodNanos > 0.0 -> sourcePeriodNanos
-        else -> 0.0
     }
 
     private fun robustSourcePeriodNanos(): Double {
@@ -530,8 +417,6 @@ class ApexCadenceScheduler {
         private const val SOURCE_PERIOD_MAX_RATIO = 1.30
         private const val SOURCE_SLOWDOWN_ALPHA = 0.45
         private const val SOURCE_SPEEDUP_ALPHA = 0.30
-        private const val QUEUED_SOURCE_SLOT_ALLOWANCE = 1.5
-        private const val QUEUED_SOURCE_CADENCE_ALLOWANCE = 0.75
         private const val OPPORTUNITY_INTERVAL_MAX_RATIO = 1.50
         private const val SYNTHETIC_BUDGET_RATIO = 0.80
         private const val COST_EWMA_ALPHA = 0.25

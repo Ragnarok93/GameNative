@@ -155,4 +155,89 @@ class ApexVulkanComputeBackendContractTest {
         }
     }
 
+
+    @Test
+    fun rendererOwnedVulkanPresenterCanReplaceEglWithoutReplacingCadencePolicy() {
+        val presenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
+        val rendererJava = repoFile(
+            "app/src/main/java/com/winlator/renderer/VulkanRenderer.java",
+        ).readText()
+        val rendererHeader = repoFile(
+            "app/src/main/cpp/winlator/VulkanRendererContext.h",
+        ).readText()
+        val rendererSource = repoFile(
+            "app/src/main/cpp/winlator/VulkanRendererContext.cpp",
+        ).readText()
+
+        listOf(
+            "useRendererVulkanPresenter",
+            "renderer.attachApexVulkanPresenter(surface)",
+            "renderer.presentApexVulkanSource(frame, generationBudget)",
+            "renderer.presentApexVulkanGenerated()",
+            "renderer.hasApexVulkanPendingSource()",
+            "renderer.detachApexVulkanPresenter()",
+        ).forEach { token ->
+            assertTrue("cadence presenter is missing Vulkan route $token", presenter.contains(token))
+        }
+
+        assertTrue(
+            "existing GLES JNI route must remain as runtime fallback",
+            presenter.contains("nativeCreatePresenter(") &&
+                presenter.contains("nativePresentSourceFrame(") &&
+                presenter.contains("nativePresentGeneratedFrame("),
+        )
+        assertTrue(
+            "the same cadence scheduler must remain authoritative",
+            presenter.contains("ApexCadenceScheduler") &&
+                presenter.contains("scheduler.generationBudget(") &&
+                presenter.contains("pendingSourceFrame"),
+        )
+
+        listOf(
+            "nativeAttachApexVulkanPresenter",
+            "nativeDetachApexVulkanPresenter",
+            "nativePresentApexVulkanSource",
+            "nativePresentApexVulkanGenerated",
+            "nativeHasApexVulkanPendingSource",
+        ).forEach { token ->
+            assertTrue("VulkanRenderer JNI bridge is missing $token", rendererJava.contains(token))
+        }
+
+        listOf(
+            "struct ApexPresentSurface",
+            "attachApexVulkanPresenter",
+            "detachApexVulkanPresenter",
+            "presentApexVulkanSource",
+            "presentApexVulkanGenerated",
+            "hasApexVulkanPendingSource",
+            "std::mutex queueMutex",
+        ).forEach { token ->
+            assertTrue("renderer presentation state is missing $token", rendererHeader.contains(token))
+        }
+
+        listOf(
+            "debug.gamenative.apex_vk_present",
+            "CreateAndroidSurfaceKHR",
+            "CreateSwapchainKHR",
+            "VK_IMAGE_USAGE_TRANSFER_DST_BIT",
+            "CmdBlitImage",
+            "AcquireNextImageKHR",
+            "QueuePresentKHR",
+            "recordSourceGraph(",
+        ).forEach { token ->
+            assertTrue("Vulkan presentation implementation is missing $token", rendererSource.contains(token))
+        }
+
+        val attachStart = rendererSource.indexOf("bool VulkanRendererContext::attachApexVulkanPresenter")
+        val detachStart = rendererSource.indexOf("void VulkanRendererContext::detachApexVulkanPresenter")
+        assertTrue(attachStart >= 0 && detachStart > attachStart)
+        val attachPath = rendererSource.substring(attachStart, detachStart)
+        assertFalse(
+            "Apex presenter must reuse the renderer Vulkan instance/device",
+            attachPath.contains("CreateInstance") || attachPath.contains("CreateDevice"),
+        )
+    }
+
 }

@@ -274,7 +274,8 @@ bool Backend::chooseFormats() {
     if (!context_.dispatch.GetPhysicalDeviceFormatProperties) return false;
     const VkFormatFeatureFlags required =
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
 
     auto supports = [&](VkFormat format) {
         VkFormatProperties props{};
@@ -1133,6 +1134,13 @@ bool Backend::recordSourceGraph(
         sourceView == VK_NULL_HANDLE ||
         sourceTimestampNanos == 0) {
         return false;
+    }
+
+    if (lastSourceTimestampNanos_ != 0 &&
+        sourceTimestampNanos <= lastSourceTimestampNanos_) {
+        // Compositor/cursor redraws can reuse the producer timestamp. They are
+        // not new game frames and must not advance Vulkan history.
+        return true;
     }
 
     if (context_.dispatch.ResetDescriptorPool(

@@ -8,12 +8,24 @@
 #include <inttypes.h>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <sys/system_properties.h>
 #include "window_vert.h"
 #include "window_frag.h"
 
 namespace {
 constexpr float APEX_PROCESSING_SCALE = 0.5f;
 constexpr uint32_t APEX_MIN_PROCESSING_SHORT_SIDE = 540;
+
+bool apexVkShadowRequested() {
+    char value[PROP_VALUE_MAX] = {};
+    const int length = __system_property_get(
+        "debug.gamenative.apex_vk_shadow",
+        value);
+    if (length <= 0) return false;
+    return std::strcmp(value, "1") == 0 ||
+        std::strcmp(value, "true") == 0 ||
+        std::strcmp(value, "on") == 0;
+}
 
 VkExtent2D computeApexProcessingExtent(VkExtent2D presentationExtent) {
     if (presentationExtent.width == 0 || presentationExtent.height == 0)
@@ -99,6 +111,7 @@ void VulkanRendererContext::loadInstanceDispatch() {
     LOAD_I2(EnumeratePhysicalDevices);
     LOAD_I2(GetPhysicalDeviceProperties);
     LOAD_I2(GetPhysicalDeviceMemoryProperties);
+    LOAD_I2(GetPhysicalDeviceFormatProperties);
     LOAD_I2(GetPhysicalDeviceSurfaceCapabilitiesKHR);
     LOAD_I2(GetPhysicalDeviceSurfaceFormatsKHR);
     LOAD_I2(GetPhysicalDeviceSurfacePresentModesKHR);
@@ -146,6 +159,7 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(DestroyDescriptorSetLayout);
     LOAD_D2(CreateDescriptorPool);
     LOAD_D2(DestroyDescriptorPool);
+    LOAD_D2(ResetDescriptorPool);
     LOAD_D2(AllocateDescriptorSets);
     LOAD_D2(FreeDescriptorSets);
     LOAD_D2(UpdateDescriptorSets);
@@ -861,6 +875,24 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
     }
     vk_.CmdEndRenderPass(cb);
 
+    if (toApex &&
+        apexVkShadowActive.load(std::memory_order_acquire) &&
+        apexVkBackend &&
+        apexTargets[apexSlot].sourceTimestampNanos > 0) {
+        ApexTargetSlot& slot = apexTargets[apexSlot];
+        if (!apexVkBackend->recordSourceGraph(
+                static_cast<uint32_t>(apexSlot),
+                cb,
+                slot.image,
+                slot.view,
+                slot.sourceTimestampNanos)) {
+            RLOG_E(
+                "apexVk: shadow graph disabled after record failure: %s",
+                apexVkBackend->diagnostics().c_str());
+            apexVkShadowActive.store(false, std::memory_order_release);
+        }
+    }
+
     VkResult endStatus = vk_.EndCommandBuffer(cb);
     if (endStatus!=VK_SUCCESS) {
         RLOG_E("recordCmdBuf: EndCommandBuffer failed with status=%d (swapRB=%d draws=%zu imgIdx=%u)",
@@ -980,7 +1012,8 @@ bool VulkanRendererContext::createApexTargetResources(uint32_t w, uint32_t h) {
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.usage =
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-            VK_IMAGE_USAGE_SAMPLED_BIT;
+            VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (vk_.CreateImage(device, &imageInfo, nullptr, &slot.image) != VK_SUCCESS) {
@@ -1139,6 +1172,10 @@ void VulkanRendererContext::destroyApexTargetResources() {
     }
     apexExt = {0, 0};
     apexTargetRing.reset();
+    apexVkShadowActive.store(false, std::memory_order_release);
+    if (apexVkBackend) {
+        apexVkBackend->destroyResources();
+    }
 }
 
 
@@ -1152,6 +1189,7 @@ bool VulkanRendererContext::ensureApexVkBackend() {
     context.queue = graphicsQueue;
     context.queueFamilyIndex = graphicsQueueFamilyIndex;
     context.memoryProperties = memProperties;
+    context.dispatch.GetPhysicalDeviceFormatProperties = vk_.GetPhysicalDeviceFormatProperties;
     context.dispatch.CreateDescriptorSetLayout = vk_.CreateDescriptorSetLayout;
     context.dispatch.DestroyDescriptorSetLayout = vk_.DestroyDescriptorSetLayout;
     context.dispatch.CreatePipelineLayout = vk_.CreatePipelineLayout;
@@ -1160,10 +1198,31 @@ bool VulkanRendererContext::ensureApexVkBackend() {
     context.dispatch.DestroyShaderModule = vk_.DestroyShaderModule;
     context.dispatch.CreateComputePipelines = vk_.CreateComputePipelines;
     context.dispatch.DestroyPipeline = vk_.DestroyPipeline;
+    context.dispatch.CreateImage = vk_.CreateImage;
+    context.dispatch.DestroyImage = vk_.DestroyImage;
+    context.dispatch.AllocateMemory = vk_.AllocateMemory;
+    context.dispatch.FreeMemory = vk_.FreeMemory;
+    context.dispatch.BindImageMemory = vk_.BindImageMemory;
+    context.dispatch.GetImageMemoryRequirements = vk_.GetImageMemoryRequirements;
+    context.dispatch.CreateImageView = vk_.CreateImageView;
+    context.dispatch.DestroyImageView = vk_.DestroyImageView;
+    context.dispatch.CreateBuffer = vk_.CreateBuffer;
+    context.dispatch.DestroyBuffer = vk_.DestroyBuffer;
+    context.dispatch.BindBufferMemory = vk_.BindBufferMemory;
+    context.dispatch.GetBufferMemoryRequirements = vk_.GetBufferMemoryRequirements;
+    context.dispatch.CreateDescriptorPool = vk_.CreateDescriptorPool;
+    context.dispatch.DestroyDescriptorPool = vk_.DestroyDescriptorPool;
+    context.dispatch.ResetDescriptorPool = vk_.ResetDescriptorPool;
+    context.dispatch.AllocateDescriptorSets = vk_.AllocateDescriptorSets;
+    context.dispatch.UpdateDescriptorSets = vk_.UpdateDescriptorSets;
+    context.dispatch.CreateSampler = vk_.CreateSampler;
+    context.dispatch.DestroySampler = vk_.DestroySampler;
     context.dispatch.CmdBindPipeline = vk_.CmdBindPipeline;
     context.dispatch.CmdBindDescriptorSets = vk_.CmdBindDescriptorSets;
     context.dispatch.CmdPushConstants = vk_.CmdPushConstants;
     context.dispatch.CmdDispatch = vk_.CmdDispatch;
+    context.dispatch.CmdPipelineBarrier = vk_.CmdPipelineBarrier;
+    context.dispatch.CmdCopyImage = vk_.CmdCopyImage;
 
     if (!backend->initialize(context)) {
         RLOG(
@@ -1237,6 +1296,20 @@ bool VulkanRendererContext::enableApexTarget() {
     destroyApexTargetResources();
 
     if (!createApexTargetResources(width, height)) return false;
+
+    apexVkShadowActive.store(false, std::memory_order_release);
+    if (apexVkReady && apexVkShadowRequested()) {
+        const bool resourcesReady =
+            apexVkBackend->ensureResources(width, height, 180);
+        apexVkShadowActive.store(resourcesReady, std::memory_order_release);
+        RLOG(
+            "apexVk: shadow graph requested=1 resources=%s %s",
+            resourcesReady ? "ready" : "failed",
+            apexVkBackend->diagnostics().c_str());
+    } else {
+        RLOG(
+            "apexVk: shadow graph requested=0; compatibility presenter remains authoritative");
+    }
 
     apexProducerBacklogged.store(false, std::memory_order_release);
     apexSourceTimestampNanos.store(0, std::memory_order_release);

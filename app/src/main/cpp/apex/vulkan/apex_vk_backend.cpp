@@ -1126,7 +1126,8 @@ bool Backend::recordSourceGraph(
     VkCommandBuffer commandBuffer,
     VkImage sourceImage,
     VkImageView sourceView,
-    uint64_t sourceTimestampNanos) {
+    uint64_t sourceTimestampNanos,
+    uint32_t generatedBudget) {
     if (!resourcesReady_ ||
         frameSlot >= kFramePools ||
         commandBuffer == VK_NULL_HANDLE ||
@@ -1160,6 +1161,7 @@ bool Backend::recordSourceGraph(
     }
     lastSourceTimestampNanos_ = sourceTimestampNanos;
     generatedCount_ = 0;
+    generatedBudget = std::min<uint32_t>(generatedBudget, kGeneratedFrames);
 
     previousHistorySlot_ = currentHistorySlot_;
     currentHistorySlot_ = (currentHistorySlot_ + 1u) % kHistorySlots;
@@ -1301,11 +1303,11 @@ bool Backend::recordSourceGraph(
     }
 
     for (uint32_t generatedIndex = 0;
-         generatedIndex < kGeneratedFrames;
+         generatedIndex < generatedBudget;
          ++generatedIndex) {
         const float t =
             static_cast<float>(generatedIndex + 1u) /
-            static_cast<float>(kGeneratedFrames + 1u);
+            static_cast<float>(generatedBudget + 1u);
         if (!recordInterpolation(
                 frameSlot,
                 commandBuffer,
@@ -1331,10 +1333,11 @@ bool Backend::recordSourceGraph(
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-    generatedCount_ = kGeneratedFrames;
+    generatedCount_ = generatedBudget;
     generatedSourceTimestampNanos_ = sourceTimestampNanos;
     diagnostics_ = std::string(kBackendVersion) +
-        " recorded: 4 pyramid + 4 search + 12 propagation + 4 densify + 3 interpolation dispatches";
+        " recorded: 4 pyramid + 4 search + 12 propagation + 4 densify + " +
+        std::to_string(generatedBudget) + " interpolation dispatches";
     return true;
 }
 
@@ -1347,6 +1350,18 @@ VkImage Backend::generatedImage(uint32_t index) const {
 VkImageView Backend::generatedImageView(uint32_t index) const {
     return index < generated_.size()
         ? generated_[index].view
+        : VK_NULL_HANDLE;
+}
+
+VkImage Backend::currentSourceImage() const {
+    return resourcesReady_
+        ? colorHistory_[currentHistorySlot_].image
+        : VK_NULL_HANDLE;
+}
+
+VkImageView Backend::currentSourceImageView() const {
+    return resourcesReady_
+        ? colorHistory_[currentHistorySlot_].view
         : VK_NULL_HANDLE;
 }
 

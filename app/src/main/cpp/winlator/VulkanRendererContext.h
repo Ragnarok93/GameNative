@@ -386,6 +386,8 @@ private:
         VkFormat format = VK_FORMAT_UNDEFINED;
         VkExtent2D extent{0, 0};
         std::vector<VkImage> images;
+        std::vector<VkImageLayout> imageLayouts;
+        VkCommandPool commandPool = VK_NULL_HANDLE;
         std::array<VkCommandBuffer, APEX_PRESENT_FRAMES> commandBuffers{};
         std::array<VkSemaphore, APEX_PRESENT_FRAMES> imageAvailable{};
         std::array<VkSemaphore, APEX_PRESENT_FRAMES> renderFinished{};
@@ -397,6 +399,7 @@ private:
         bool active = false;
     };
     ApexPresentSurface apexPresent{};
+    std::atomic<bool> apexVkPresentActive{false};
     VkRenderPass apexRp = VK_NULL_HANDLE;
     VkExtent2D apexExt{0,0};
     std::atomic<bool> apexTargetActive{false};

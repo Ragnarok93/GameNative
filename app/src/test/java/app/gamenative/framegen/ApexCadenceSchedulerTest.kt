@@ -304,4 +304,45 @@ class ApexCadenceSchedulerTest {
         assertEquals(0, scheduler.diagnostics().remainingSyntheticSlots)
     }
 
+
+    @Test
+    fun adaptiveAdmissionUsesObservedPresentationPressureWhileFixedKeepsPhysicalCeiling() {
+        fun seededScheduler(): ApexCadenceScheduler {
+            val scheduler = ApexCadenceScheduler()
+            scheduler.setPresentationCeilingFps(120f)
+            seedDisplay(scheduler, 14_000_000_000L, period = 8_333_333L)
+            seedSource(scheduler, 14_000_000_000L, 33_333_333L)
+            repeat(20) {
+                scheduler.recordDisplayOpportunity(15_000_000_000L + it * 20_000_000L)
+            }
+            return scheduler
+        }
+
+        val fixed = seededScheduler()
+        assertEquals(
+            "fixed mode keeps the requested 4x cadence against the physical 120-Hz ceiling",
+            3,
+            fixed.generationBudget(
+                adaptive = false,
+                fixedGeneratedCeiling = 3,
+                targetFps = 120,
+            ),
+        )
+
+        val adaptive = seededScheduler()
+        val adaptiveBudget = adaptive.generationBudget(
+            adaptive = true,
+            fixedGeneratedCeiling = 3,
+            targetFps = 120,
+        )
+        assertTrue(
+            "adaptive mode must react to sustained callback/presentation pressure instead of assuming the physical ceiling is continuously available",
+            adaptiveBudget < 3,
+        )
+        assertTrue(
+            "diagnostics must report the effective capacity used for adaptive admission",
+            adaptive.diagnostics().effectivePresentationFps < 120f,
+        )
+    }
+
 }

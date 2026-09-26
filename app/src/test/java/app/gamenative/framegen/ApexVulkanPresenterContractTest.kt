@@ -802,4 +802,135 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+
+    @Test
+    fun presenterRefreshesPhysicalPresentationCeilingDuringRuntime() {
+        val presenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
+        val renderer = repoFile(
+            "app/src/main/java/com/winlator/renderer/VulkanRenderer.java",
+        ).readText()
+
+        assertTrue(
+            "VulkanRenderer must expose the Apex layer's requested physical presentation rate",
+            renderer.contains("getApexPresentationRefreshRate"),
+        )
+        assertTrue(
+            "presenter must periodically refresh scheduler ceiling after Android display-mode changes",
+            presenter.contains("refreshPresentationCeiling") &&
+                presenter.contains("REFRESH_RATE_RECHECK_CALLBACKS") &&
+                presenter.contains("renderer.getApexPresentationRefreshRate()"),
+        )
+    }
+
+    @Test
+    fun flowAndQualityChangesRebuildOnlyWhenEffectiveResourceDimensionsChange() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        for (setter in listOf("setQualityPreset", "setFlowScale", "setFlowShortSideCap", "setRenderScale")) {
+            val start = engine.indexOf("void $setter")
+            assertTrue("$setter missing", start >= 0)
+            val end = engine.indexOf("\n    }", start)
+            assertTrue(end > start)
+            val body = engine.substring(start, end)
+            assertFalse(
+                "$setter must not force a full temporal-history rebuild when the resulting dimensions are unchanged",
+                body.contains("mResourcesDirty.store(true"),
+            )
+        }
+        assertTrue(
+            "ensureResources must retain dimension equality as the authoritative rebuild check",
+            pipeline.contains("sw == mScaledWidth") &&
+                pipeline.contains("fw == mFlowWidth") &&
+                pipeline.contains("fh == mFlowHeight"),
+        )
+    }
+
+    @Test
+    fun interpolationControlsAreSnapshottedForTheWholeAdmittedSourcePair() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        assertTrue(engine.contains("InterpolationSettings"))
+        assertTrue(engine.contains("mActiveInterpolationSettings"))
+        assertTrue(pipeline.contains("snapshotInterpolationSettings"))
+        val interpolateStart = pipeline.indexOf("void ApexEngine::dispatchInterpolate")
+        val next = pipeline.indexOf("bool ApexEngine::isHealthy", interpolateStart)
+        assertTrue(interpolateStart >= 0 && next > interpolateStart)
+        val interpolate = pipeline.substring(interpolateStart, next)
+        assertTrue(interpolate.contains("mActiveInterpolationSettings"))
+        assertFalse(interpolate.contains("mLiquidFeel.load"))
+        assertFalse(interpolate.contains("mShutterGain.load"))
+        assertFalse(interpolate.contains("mEdgeGuard.load"))
+    }
+
+    @Test
+    fun activeApexHealthCompilesOnlyShadersUsedByTheRuntimePath() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        listOf("DisVrSetup", "DisVrSor", "DisRcas").forEach { dormant ->
+            assertFalse(
+                "dormant compute shader $dormant must not be compiled or required for Apex health",
+                pipeline.contains("compileOne(\"$dormant\""),
+            )
+        }
+        assertTrue(pipeline.contains("mCompiledShaderCount == 5"))
+        assertTrue(pipeline.contains("5/5 compute shaders"))
+        assertFalse(engine.contains("mProgVrSetup"))
+        assertFalse(engine.contains("mProgVrSor"))
+        assertFalse(engine.contains("mProgRcas"))
+    }
+
+    @Test
+    fun apexDiagnosticsAreSampledWithoutPermanentHotPathCounterTraffic() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        assertTrue(
+            "GPU timing should remain available but at a sparse optimization/debug cadence",
+            engine.contains("GPU_TIMER_SAMPLE_INTERVAL = 120"),
+        )
+        assertTrue(
+            "hot pass counters must be conditional rather than atomic work on every dispatch",
+            pipeline.contains("if (collectTelemetry) mPassLumaGrad") &&
+                pipeline.contains("if (collectTelemetry) mPassInterpolate"),
+        )
+        assertTrue(
+            "resource telemetry must report requested/effective Flow Scale dimensions",
+            pipeline.contains("Apex flow config:") &&
+                pipeline.contains("requestedScale=") &&
+                pipeline.contains("effectiveShortSide="),
+        )
+    }
+
+    @Test
+    fun adreno650FlowScaleHasAQualityFloorWithoutRestoringMotionAttenuation() {
+        val presenter = repoFile("app/src/main/cpp/apex/apex_vulkan_presenter.cpp").readText()
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        assertTrue(presenter.contains("setFlowShortSideFloor(120)"))
+        assertTrue(engine.contains("setFlowShortSideFloor"))
+        assertTrue(pipeline.contains("mFlowShortSideFloor.load"))
+        assertTrue(pipeline.contains("std::max(minSide"))
+    }
+
+    @Test
+    fun presenterBudgetPathSkipsDuplicateLegacyNativeCadenceWork() {
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val frameCaptured = pipeline.indexOf("onFrameCaptured(sourceClockNanos")
+        assertTrue(frameCaptured >= 0)
+        val context = pipeline.substring(
+            kotlin.math.max(0, frameCaptured - 500),
+            kotlin.math.min(pipeline.length, frameCaptured + 500),
+        )
+        assertTrue(
+            "legacy native pacing should run only when no presenter budget is supplied",
+            context.contains("generatedOpportunityBudget < 0"),
+        )
+    }
+
 }

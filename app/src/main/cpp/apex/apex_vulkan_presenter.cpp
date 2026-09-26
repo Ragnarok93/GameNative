@@ -522,9 +522,11 @@ bool initializePresenter(Presenter& presenter) {
         (std::strstr(renderer, "Adreno (TM) 650") != nullptr ||
          std::strstr(renderer, "Adreno 650") != nullptr);
     if (adreno650) {
+        apexEngine.setFlowShortSideFloor(120);
         apexEngine.setFlowShortSideCap(180);
-        PRES_LOGI("Apex Adreno 650 flow ceiling: 180p");
+        PRES_LOGI("Apex Adreno 650 flow range: 120p-180p");
     } else {
+        apexEngine.setFlowShortSideFloor(0);
         apexEngine.setFlowShortSideCap(0);
     }
 

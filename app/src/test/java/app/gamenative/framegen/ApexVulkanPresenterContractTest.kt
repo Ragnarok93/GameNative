@@ -567,4 +567,40 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+
+    @Test
+    fun admittedSyntheticBatchIsPreparedBeforeDisplayCallbacks() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        assertTrue(
+            "Apex must retain one ready texture per possible generated slot",
+            engine.contains("mGeneratedBatchTex") &&
+                engine.contains("MAX_GENERATED_FRAMES"),
+        )
+
+        val newSourceStart = pipeline.indexOf("if (isNewRealFrame)")
+        val pulseStart = pipeline.indexOf(
+            "// Display opportunity with no newly accepted source.",
+            newSourceStart,
+        )
+        assertTrue(newSourceStart >= 0 && pulseStart > newSourceStart)
+        val sourcePath = pipeline.substring(newSourceStart, pulseStart)
+        val pulsePath = pipeline.substring(pulseStart)
+
+        assertTrue(
+            "source processing must prepare every admitted interpolation position before presenting the first synthetic",
+            sourcePath.contains("for (int generatedIndex = 0; generatedIndex < generationBudget; ++generatedIndex)") &&
+                sourcePath.contains("mGeneratedBatchTex[generatedIndex]"),
+        )
+        assertFalse(
+            "generated display callbacks must not run interpolation compute on the display deadline",
+            pulsePath.contains("dispatchInterpolate("),
+        )
+        assertTrue(
+            "generated display callbacks must present an already prepared batch texture",
+            pulsePath.contains("mGeneratedBatchTex[fs]"),
+        )
+    }
+
 }

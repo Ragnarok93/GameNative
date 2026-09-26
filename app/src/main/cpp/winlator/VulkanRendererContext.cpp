@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 #include <inttypes.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -41,6 +42,17 @@ bool apexVkPresentRequested() {
 constexpr int APEX_VK_OUTPUT_NONE = 0;
 constexpr int APEX_VK_OUTPUT_SOURCE = 1;
 constexpr int APEX_VK_OUTPUT_GENERATED = 2;
+constexpr uint64_t APEX_VK_TELEMETRY_INTERVAL = 120;
+
+using ApexVkClock = std::chrono::steady_clock;
+
+uint64_t apexVkElapsedNanos(
+    ApexVkClock::time_point start,
+    ApexVkClock::time_point end) {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            end - start).count());
+}
 
 int packApexVkPresentResult(int outputKind, bool success) {
     return (outputKind & 0xff) | (success ? 0x100 : 0);
@@ -1517,6 +1529,7 @@ bool VulkanRendererContext::createApexPresentSwapchain(ANativeWindow* presentWin
 }
 
 void VulkanRendererContext::destroyApexPresentSwapchain() {
+    maybeLogApexVkValidationTelemetry(true);
     apexVkPresentActive.store(false, std::memory_order_release);
     apexPresent.active = false;
     apexPresent.pendingSource = false;
@@ -1572,23 +1585,92 @@ void VulkanRendererContext::destroyApexPresentSwapchain() {
     apexPresent.frameIndex = 0;
     apexPresent.generationBudget = 0;
     apexPresent.generatedPresented = 0;
+    apexPresent.sourceCalls = 0;
+    apexPresent.sourcePresented = 0;
+    apexPresent.generatedPresentedTotal = 0;
+    apexPresent.presentFailures = 0;
+    apexPresent.requestedGeneratedTotal = 0;
+    apexPresent.actualGeneratedTotal = 0;
+    apexPresent.sourceRecordCostNanos = 0;
+    apexPresent.sourceAcquireCostNanos = 0;
+    apexPresent.sourceQueuePresentCostNanos = 0;
+    apexPresent.generatedPresentCostNanos = 0;
+    apexPresent.maxSourceCostNanos = 0;
+    apexPresent.maxGeneratedCostNanos = 0;
+    apexPresent.telemetryOutputs = 0;
+}
+
+void VulkanRendererContext::maybeLogApexVkValidationTelemetry(bool force) {
+    const uint64_t outputs = apexPresent.telemetryOutputs;
+    if (apexPresent.sourceCalls == 0 && outputs == 0 && apexPresent.presentFailures == 0)
+        return;
+    if (!force &&
+        (outputs == 0 || outputs % APEX_VK_TELEMETRY_INTERVAL != 0)) {
+        return;
+    }
+
+    const double sourceDivisor =
+        static_cast<double>(std::max<uint64_t>(1, apexPresent.sourceCalls)) *
+        1000000.0;
+    const double generatedDivisor =
+        static_cast<double>(
+            std::max<uint64_t>(1, apexPresent.generatedPresentedTotal)) *
+        1000000.0;
+
+    RLOG(
+        "apexVkPresent: validation backend=vulkan-direct "
+        "source_calls=%" PRIu64 " source_presented=%" PRIu64
+        " generated_presented=%" PRIu64 " present_failures=%" PRIu64
+        " requested_generated=%" PRIu64 " actual_generated=%" PRIu64
+        " record_ms=%.3f acquire_ms=%.3f queue_present_ms=%.3f "
+        "generated_present_ms=%.3f max_source_ms=%.3f max_generated_ms=%.3f "
+        "pending=%d diagnostics=%s",
+        apexPresent.sourceCalls,
+        apexPresent.sourcePresented,
+        apexPresent.generatedPresentedTotal,
+        apexPresent.presentFailures,
+        apexPresent.requestedGeneratedTotal,
+        apexPresent.actualGeneratedTotal,
+        apexPresent.sourceRecordCostNanos / sourceDivisor,
+        apexPresent.sourceAcquireCostNanos / sourceDivisor,
+        apexPresent.sourceQueuePresentCostNanos / sourceDivisor,
+        apexPresent.generatedPresentCostNanos / generatedDivisor,
+        apexPresent.maxSourceCostNanos / 1000000.0,
+        apexPresent.maxGeneratedCostNanos / 1000000.0,
+        apexPresent.pendingSource ? 1 : 0,
+        apexVkBackend ? apexVkBackend->diagnostics().c_str() : "backend-null");
 }
 
 bool VulkanRendererContext::attachApexVulkanPresenter(ANativeWindow* presentWindow) {
-    if (!apexVkPresentRequested() ||
-        !apexTargetActive.load(std::memory_order_acquire) ||
-        !ensureApexVkBackend()) {
+    if (!apexVkPresentRequested()) {
+        RLOG("apexVkPresent: backend=gles-fallback reason=property-disabled");
+        return false;
+    }
+    if (!apexTargetActive.load(std::memory_order_acquire)) {
+        RLOG("apexVkPresent: backend=gles-fallback reason=target-inactive");
+        return false;
+    }
+    if (!ensureApexVkBackend()) {
+        RLOG(
+            "apexVkPresent: backend=gles-fallback reason=compute-backend-unavailable");
         return false;
     }
     if (!createApexPresentSwapchain(presentWindow)) {
-        RLOG("apexVkPresent: unavailable; GLES compatibility presenter retained");
+        RLOG(
+            "apexVkPresent: backend=gles-fallback reason=swapchain-unavailable");
         return false;
     }
 
     apexVkShadowActive.store(false, std::memory_order_release);
     apexPresent.active = true;
     apexVkPresentActive.store(true, std::memory_order_release);
-    RLOG("apexVkPresent: direct same-device Vulkan presenter enabled");
+    RLOG(
+        "apexVkPresent: backend=vulkan-direct same_device=1 "
+        "processing=%ux%u output=%ux%u",
+        apexExt.width,
+        apexExt.height,
+        apexPresent.extent.width,
+        apexPresent.extent.height);
     return true;
 }
 

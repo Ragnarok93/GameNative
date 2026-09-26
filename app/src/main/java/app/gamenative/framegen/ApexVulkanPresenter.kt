@@ -297,8 +297,9 @@ class ApexVulkanPresenter(
         val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f ceiling=%.1f effective=%.1f pressure=%.3f prep_submit_ms=%.3f interp_submit_ms=%.3f sourceIn=%.1f generated=%.1f output=%.1f no_generation=%d native_no_generation=%d remaining=%d".format(
+            "display cadence: backend=%s mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f ceiling=%.1f effective=%.1f pressure=%.3f prep_submit_ms=%.3f interp_submit_ms=%.3f sourceIn=%.1f generated=%.1f output=%.1f no_generation=%d native_no_generation=%d remaining=%d".format(
                 java.util.Locale.US,
+                if (useRendererVulkanPresenter) "vulkan" else "gles",
                 if (adaptive) "adaptive" else "fixed",
                 targetFps,
                 fixedMultiplier,

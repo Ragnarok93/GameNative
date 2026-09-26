@@ -95,4 +95,49 @@ class ApexPowerMetricsContractTest {
         )
     }
 
+
+    @Test
+    fun apexPresenterSurfaceRequestsHighestSupportedDisplayRefreshRate() {
+        val renderer = repoFile(
+            "app/src/main/java/com/winlator/renderer/VulkanRenderer.java",
+        ).readText()
+
+        val transactionStart = renderer.indexOf(
+            "android.view.SurfaceControl.Transaction apexTransaction",
+        )
+        val refreshDiscovery = renderer.indexOf("getSupportedModes()", transactionStart)
+        val frameRateRequest = renderer.indexOf("setFrameRate(", transactionStart)
+        val transactionApply = renderer.indexOf("apexTransaction.apply()", transactionStart)
+
+        assertTrue(
+            "Apex refresh signaling must be API-gated for pre-Android-11 devices",
+            renderer.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.R"),
+        )
+        assertTrue(
+            "Apex must derive its refresh request from the display's supported modes",
+            refreshDiscovery > transactionStart,
+        )
+        assertTrue(
+            "Apex must apply the refresh request to its child SurfaceControl transaction",
+            frameRateRequest > refreshDiscovery &&
+                frameRateRequest < transactionApply,
+        )
+        assertTrue(
+            "Apex refresh signaling must use Android's default frame-rate compatibility",
+            renderer.contains("Surface.FRAME_RATE_COMPATIBILITY_DEFAULT"),
+        )
+        assertTrue(
+            "Apex refresh diagnostics must report active, maximum, requested, and applied state",
+            renderer.contains("Apex presenter frame-rate request:") &&
+                renderer.contains("active=") &&
+                renderer.contains("max=") &&
+                renderer.contains("requested=") &&
+                renderer.contains("applied="),
+        )
+        assertTrue(
+            "Apex must never hardcode a 120 Hz presentation request",
+            !renderer.contains("setFrameRate(apexGameSurfaceControl, 120"),
+        )
+    }
+
 }

@@ -277,4 +277,82 @@ class ApexCadenceSchedulerTest {
         )
     }
 
+
+    @Test
+    fun transientCallbackStallDoesNotCollapseKnownPresentationCeiling() {
+        val scheduler = ApexCadenceScheduler()
+        val ceilingSetter = scheduler.javaClass.methods.firstOrNull {
+            it.name == "setPresentationCeilingFps" &&
+                it.parameterTypes.contentEquals(arrayOf(Float::class.javaPrimitiveType))
+        }
+        assertTrue(
+            "scheduler must retain the compositor/display ceiling separately from short-term callback timing",
+            ceilingSetter != null,
+        )
+        ceilingSetter!!.invoke(scheduler, 120f)
+
+        seedDisplay(scheduler, 10_000_000_000L, period = 8_333_333L)
+        var t = seedSource(scheduler, 10_000_000_000L, 50_000_000L)
+
+        // Simulate a temporary presentation stall after the 120-Hz ceiling has
+        // already been established. It is pressure evidence, not a new physical cap.
+        repeat(6) {
+            scheduler.recordDisplayOpportunity(11_000_000_000L + it * 25_000_000L)
+        }
+        t += 50_000_000L
+        scheduler.recordSourceFrame(t)
+
+        assertEquals(
+            "fixed 4x must not self-throttle because its own short-term callback stalls poisoned the opportunity EWMA",
+            3,
+            scheduler.generationBudget(
+                adaptive = false,
+                fixedGeneratedCeiling = 3,
+                targetFps = 120,
+            ),
+        )
+        assertTrue(
+            "diagnostics must still expose the degraded observed callback rate",
+            scheduler.diagnostics().measuredOpportunityFps < 80f,
+        )
+    }
+
+    @Test
+    fun firstPresentedSyntheticStartsBoundedPresentationWindowForLateProducerTimestamp() {
+        val scheduler = ApexCadenceScheduler()
+        val generatedPresented = scheduler.javaClass.methods.firstOrNull {
+            it.name == "onGeneratedPresented" &&
+                it.parameterTypes.contentEquals(arrayOf(Long::class.javaPrimitiveType))
+        }
+        assertTrue(
+            "scheduler must accept the actual presentation timestamp when advancing a generated prefix",
+            generatedPresented != null,
+        )
+
+        seedDisplay(scheduler, 12_000_000_000L, period = 8_333_333L)
+        val source = seedSource(scheduler, 12_000_000_000L, 33_333_333L)
+        assertEquals(
+            2,
+            scheduler.generationBudget(
+                adaptive = false,
+                fixedGeneratedCeiling = 2,
+                targetFps = 90,
+            ),
+        )
+
+        // The source reached Apex after its producer-cadence deadline. Once the
+        // first synthetic is actually shown, the admitted pair still gets one
+        // bounded source interval to finish; no catch-up debt is created.
+        val firstSyntheticPresented = source + 40_000_000L
+        generatedPresented!!.invoke(scheduler, firstSyntheticPresented)
+
+        assertFalse(
+            scheduler.shouldPresentSourceNow(firstSyntheticPresented + 8_333_333L),
+        )
+        assertTrue(
+            "real-frame protection must still preempt before the bounded presentation window is exceeded",
+            scheduler.shouldPresentSourceNow(firstSyntheticPresented + 30_000_000L),
+        )
+    }
+
 }

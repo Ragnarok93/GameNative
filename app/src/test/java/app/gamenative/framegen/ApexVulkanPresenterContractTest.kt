@@ -655,4 +655,45 @@ class ApexVulkanPresenterContractTest {
         }
     }
 
+
+    @Test
+    fun generatedBatchIsRefilledOneSlotAtATimeAfterSwap() {
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val presenter = repoFile("app/src/main/cpp/apex/apex_vulkan_presenter.cpp").readText()
+
+        val newSourceStart = pipeline.indexOf("if (isNewRealFrame)")
+        val pulseStart = pipeline.indexOf(
+            "// Display opportunity with no newly accepted source.",
+            newSourceStart,
+        )
+        assertTrue(newSourceStart >= 0 && pulseStart > newSourceStart)
+        val sourcePath = pipeline.substring(newSourceStart, pulseStart)
+
+        assertTrue(
+            "new-source work must prepare only the first synthetic required for immediate generation-first presentation",
+            sourcePath.contains("prepareGeneratedSlot(0") ||
+                sourcePath.contains("prepareGeneratedSlot(\n            0"),
+        )
+        assertFalse(
+            "new-source work must not submit the entire admitted 2x/3x/4x interpolation batch in one GPU burst",
+            sourcePath.contains("dispatchInterpolateBatch("),
+        )
+
+        assertTrue(
+            "native presenter must refill at most one future synthetic after a successful swap",
+            presenter.contains("prepareNextGeneratedReady("),
+        )
+        val generatedPulseStart = presenter.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame",
+        )
+        assertTrue(generatedPulseStart >= 0)
+        val generatedPulse = presenter.substring(generatedPulseStart)
+        val swap = generatedPulse.indexOf("eglSwapBuffers")
+        val refill = generatedPulse.indexOf("prepareNextGeneratedReady", swap)
+        assertTrue(
+            "refill must happen after swap so interpolation submission is spread across presentation intervals",
+            swap >= 0 && refill > swap,
+        )
+    }
+
 }

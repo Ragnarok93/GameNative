@@ -153,10 +153,44 @@ class ApexCadenceSchedulerTest {
     }
 
     @Test
-    fun nativeCostCanDropCurrentWorkWithoutCreatingCatchUpDebt() {
+    fun fixedMultiplierIgnoresHeuristicNativeCostBudget() {
         val scheduler = ApexCadenceScheduler()
-        seedDisplay(scheduler, 6_000_000_000L)
+        scheduler.setPresentationCeilingFps(120f)
+        seedDisplay(scheduler, 6_000_000_000L, period = 8_333_333L)
         var t = seedSource(scheduler, 6_000_000_000L, 33_333_333L)
+        scheduler.recordNativeCost(
+            preparationCostNanos = 5_000_000L,
+            pipelineCostNanos = 24_000_000L,
+            generatedFrames = 1,
+        )
+
+        repeat(3) {
+            t += 33_333_333L
+            scheduler.recordSourceFrame(t)
+            assertEquals(
+                "fixed mode must preserve the requested multiplier when physical presentation capacity exists",
+                1,
+                scheduler.generationBudget(
+                    adaptive = false,
+                    fixedGeneratedCeiling = 1,
+                    targetFps = 60,
+                ),
+            )
+        }
+        assertEquals(0f, scheduler.diagnostics().fractionalPhase, 0.0001f)
+        assertEquals(
+            "cost remains diagnostic in fixed mode even though it cannot redefine the multiplier",
+            0,
+            scheduler.diagnostics().pipelineCostBudget,
+        )
+    }
+
+    @Test
+    fun adaptiveModeStillUsesNativeCostBudgetWithoutCatchUpDebt() {
+        val scheduler = ApexCadenceScheduler()
+        scheduler.setPresentationCeilingFps(120f)
+        seedDisplay(scheduler, 6_500_000_000L, period = 8_333_333L)
+        var t = seedSource(scheduler, 6_500_000_000L, 33_333_333L)
         scheduler.recordNativeCost(
             preparationCostNanos = 5_000_000L,
             pipelineCostNanos = 24_000_000L,
@@ -169,8 +203,8 @@ class ApexCadenceSchedulerTest {
             assertEquals(
                 0,
                 scheduler.generationBudget(
-                    adaptive = false,
-                    fixedGeneratedCeiling = 1,
+                    adaptive = true,
+                    fixedGeneratedCeiling = 3,
                     targetFps = 60,
                 ),
             )

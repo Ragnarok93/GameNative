@@ -1475,6 +1475,11 @@ void ApexEngine::presentGeneratedReady(
     }
 }
 
+void ApexEngine::processFrameWithData(GLuint i, GLuint d, GLuint h, GLuint o, int w, int height) {
+    (void)d; (void)h;
+    processFrame(i, o, w, height, 0, 0, w, height, true);
+}
+
 void ApexEngine::commitPresentedOutput(int outputKind) {
     const int64_t nowNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1504,11 +1509,6 @@ void ApexEngine::commitPresentedOutput(int outputKind) {
         mActiveGenerationBudget.store(0, std::memory_order_release);
         mPreparedGenerationSlots.store(0, std::memory_order_release);
     }
-}
-
-void ApexEngine::processFrameWithData(GLuint i, GLuint d, GLuint h, GLuint o, int w, int height) {
-    (void)d; (void)h;
-    processFrame(i, o, w, height, 0, 0, w, height, true);
 }
 
 } // namespace apex

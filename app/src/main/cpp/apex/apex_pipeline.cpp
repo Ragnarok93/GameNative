@@ -1038,8 +1038,6 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             blitQuad(inputTextureId, sourceUMin, sourceVMin, sourceUSpan, sourceVSpan);
         }
         if (isNewRealFrame) {
-            mActualRealFrameCount.fetch_add(1);
-            mTotalRealFramesPresented++;
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
         } else if (inputTextureId != 0) {
             mLastOutputKind.store(APEX_OUTPUT_REPEAT, std::memory_order_relaxed);
@@ -1156,9 +1154,6 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
             endGpuTimer();
             mGpuTimerSampleActive = false;
-            mActualRealFrameCount.fetch_add(1);
-            mTotalRealFramesPresented++;
-            mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
             mActiveGenerationBudget.store(0, std::memory_order_release);
             mPreparedGenerationSlots.store(0, std::memory_order_release);
@@ -1246,8 +1241,6 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
             glViewport(viewX, viewY, presentationWidth, presentationHeight);
             blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
-            mActualRealFrameCount.fetch_add(1);
-            mTotalRealFramesPresented++;
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
             mActiveGenerationBudget.store(0, std::memory_order_release);
             mPreparedGenerationSlots.store(0, std::memory_order_release);
@@ -1485,8 +1478,7 @@ void ApexEngine::commitPresentedOutput(int outputKind) {
         return;
     }
 
-    if (outputKind == APEX_OUTPUT_SOURCE &&
-        mPendingRealPresentation.load(std::memory_order_acquire)) {
+    if (outputKind == APEX_OUTPUT_SOURCE) {
         mActualRealFrameCount.fetch_add(1, std::memory_order_relaxed);
         ++mTotalRealFramesPresented;
         mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);

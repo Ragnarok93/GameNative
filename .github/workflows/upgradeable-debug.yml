@@ -96,6 +96,7 @@ jobs:
           --tests app.gamenative.framegen.FrameGenerationBackendTest
           --tests app.gamenative.framegen.ApexVulkanTargetContractTest
           --tests app.gamenative.framegen.ApexVulkanPresenterContractTest
+          --tests app.gamenative.framegen.ApexVulkanComputeBackendContractTest
           --tests app.gamenative.framegen.ApexPresentationHandoffContractTest
           --tests app.gamenative.framegen.ApexHudTelemetryContractTest
           --tests app.gamenative.framegen.ApexPresentationTelemetryTest

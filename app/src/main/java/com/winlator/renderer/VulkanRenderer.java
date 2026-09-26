@@ -193,6 +193,11 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native int nativeTakeApexFrameFenceFd(long handle, long token);
     private native boolean nativeReleaseApexFrame(long handle, long token, int consumerReleaseFenceFd);
     private native long nativeGetApexTargetExtent(long handle);
+    private native boolean nativeAttachApexVulkanPresenter(long handle, Surface surface);
+    private native void nativeDetachApexVulkanPresenter(long handle);
+    private native int nativePresentApexVulkanSource(long handle, long token, int generationBudget);
+    private native int nativePresentApexVulkanGenerated(long handle);
+    private native boolean nativeHasApexVulkanPendingSource(long handle);
 
     private static volatile boolean gpuImageChecked = false;
 
@@ -557,6 +562,41 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             long extent = nativeGetApexTargetExtent(nativeHandle);
             return (int) (extent & 0xFFFFFFFFL);
         }
+    }
+
+    public boolean attachApexVulkanPresenter(Surface surface) {
+        if (surface == null) return false;
+        long handle = nativeHandle;
+        return handle != 0 && nativeAttachApexVulkanPresenter(handle, surface);
+    }
+
+    public void detachApexVulkanPresenter() {
+        long handle = nativeHandle;
+        if (handle != 0) nativeDetachApexVulkanPresenter(handle);
+    }
+
+    public int presentApexVulkanSource(ApexFrame frame, int generationBudget) {
+        if (frame == null) return -1;
+        long handle = nativeHandle;
+        return handle != 0
+            ? nativePresentApexVulkanSource(
+                handle,
+                frame.token,
+                Math.max(0, Math.min(3, generationBudget))
+            )
+            : -1;
+    }
+
+    public int presentApexVulkanGenerated() {
+        long handle = nativeHandle;
+        return handle != 0
+            ? nativePresentApexVulkanGenerated(handle)
+            : -1;
+    }
+
+    public boolean hasApexVulkanPendingSource() {
+        long handle = nativeHandle;
+        return handle != 0 && nativeHasApexVulkanPendingSource(handle);
     }
 
     public ApexFrame pollApexFrame() {

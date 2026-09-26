@@ -8,12 +8,43 @@
 #include <inttypes.h>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <sys/system_properties.h>
 #include "window_vert.h"
 #include "window_frag.h"
 
 namespace {
 constexpr float APEX_PROCESSING_SCALE = 0.5f;
 constexpr uint32_t APEX_MIN_PROCESSING_SHORT_SIDE = 540;
+
+bool apexVkShadowRequested() {
+    char value[PROP_VALUE_MAX] = {};
+    const int length = __system_property_get(
+        "debug.gamenative.apex_vk_shadow",
+        value);
+    if (length <= 0) return false;
+    return std::strcmp(value, "1") == 0 ||
+        std::strcmp(value, "true") == 0 ||
+        std::strcmp(value, "on") == 0;
+}
+
+bool apexVkPresentRequested() {
+    char value[PROP_VALUE_MAX] = {};
+    const int length = __system_property_get(
+        "debug.gamenative.apex_vk_present",
+        value);
+    if (length <= 0) return false;
+    return std::strcmp(value, "1") == 0 ||
+        std::strcmp(value, "true") == 0 ||
+        std::strcmp(value, "on") == 0;
+}
+
+constexpr int APEX_VK_OUTPUT_NONE = 0;
+constexpr int APEX_VK_OUTPUT_SOURCE = 1;
+constexpr int APEX_VK_OUTPUT_GENERATED = 2;
+
+int packApexVkPresentResult(int outputKind, bool success) {
+    return (outputKind & 0xff) | (success ? 0x100 : 0);
+}
 
 VkExtent2D computeApexProcessingExtent(VkExtent2D presentationExtent) {
     if (presentationExtent.width == 0 || presentationExtent.height == 0)
@@ -69,7 +100,9 @@ VulkanRendererContext::~VulkanRendererContext() {
         if (wt.stg  != VK_NULL_HANDLE) { vk_.DestroyBuffer(device, wt.stg, nullptr); vk_.FreeMemory(device, wt.stgMem, nullptr); }
     }
     deleteQueue.clear();
+    destroyApexPresentSwapchain();
     destroyApexTargetResources();
+    destroyApexVkBackend();
     destroyXrTargetResources();
     cleanupSwapchain(); cleanupCursorTex();
     
@@ -98,6 +131,7 @@ void VulkanRendererContext::loadInstanceDispatch() {
     LOAD_I2(EnumeratePhysicalDevices);
     LOAD_I2(GetPhysicalDeviceProperties);
     LOAD_I2(GetPhysicalDeviceMemoryProperties);
+    LOAD_I2(GetPhysicalDeviceFormatProperties);
     LOAD_I2(GetPhysicalDeviceSurfaceCapabilitiesKHR);
     LOAD_I2(GetPhysicalDeviceSurfaceFormatsKHR);
     LOAD_I2(GetPhysicalDeviceSurfacePresentModesKHR);
@@ -145,6 +179,7 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(DestroyDescriptorSetLayout);
     LOAD_D2(CreateDescriptorPool);
     LOAD_D2(DestroyDescriptorPool);
+    LOAD_D2(ResetDescriptorPool);
     LOAD_D2(AllocateDescriptorSets);
     LOAD_D2(FreeDescriptorSets);
     LOAD_D2(UpdateDescriptorSets);
@@ -153,6 +188,7 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(CreateShaderModule);
     LOAD_D2(DestroyShaderModule);
     LOAD_D2(CreateGraphicsPipelines);
+    LOAD_D2(CreateComputePipelines);
     LOAD_D2(DestroyPipeline);
     LOAD_D2(CreateCommandPool);
     LOAD_D2(DestroyCommandPool);
@@ -166,11 +202,13 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(CmdBindPipeline);
     LOAD_D2(CmdBindDescriptorSets);
     LOAD_D2(CmdDraw);
+    LOAD_D2(CmdDispatch);
     LOAD_D2(CmdPushConstants);
     LOAD_D2(CmdSetViewport);
     LOAD_D2(CmdSetScissor);
     LOAD_D2(CmdPipelineBarrier);
     LOAD_D2(CmdCopyImage);
+    LOAD_D2(CmdBlitImage);
     LOAD_D2(CmdCopyBufferToImage);
     LOAD_D2(CreateSampler);
     LOAD_D2(DestroySampler);
@@ -516,7 +554,11 @@ void VulkanRendererContext::endOneTime(VkCommandBuffer cb) {
     VkSubmitInfo si{}; si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO; si.commandBufferCount=1; si.pCommandBuffers=&cb;
     VkFenceCreateInfo fi{}; fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; VkFence fence;
     vk_.CreateFence(device,&fi,nullptr,&fence);
-    vk_.QueueSubmit(graphicsQueue,1,&si,fence); vk_.WaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX);
+    {
+        std::lock_guard<std::mutex> queueLock(queueMutex);
+        vk_.QueueSubmit(graphicsQueue,1,&si,fence);
+    }
+    vk_.WaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX);
     vk_.DestroyFence(device,fence,nullptr); vk_.FreeCommandBuffers(device,cmdPool,1,&cb);
 }
 
@@ -858,6 +900,25 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
     }
     vk_.CmdEndRenderPass(cb);
 
+    if (toApex &&
+        apexVkShadowActive.load(std::memory_order_acquire) &&
+        !apexVkPresentActive.load(std::memory_order_acquire) &&
+        apexVkBackend &&
+        apexTargets[apexSlot].sourceTimestampNanos > 0) {
+        ApexTargetSlot& slot = apexTargets[apexSlot];
+        if (!apexVkBackend->recordSourceGraph(
+                static_cast<uint32_t>(apexSlot),
+                cb,
+                slot.image,
+                slot.view,
+                slot.sourceTimestampNanos)) {
+            RLOG_E(
+                "apexVk: shadow graph disabled after record failure: %s",
+                apexVkBackend->diagnostics().c_str());
+            apexVkShadowActive.store(false, std::memory_order_release);
+        }
+    }
+
     VkResult endStatus = vk_.EndCommandBuffer(cb);
     if (endStatus!=VK_SUCCESS) {
         RLOG_E("recordCmdBuf: EndCommandBuffer failed with status=%d (swapRB=%d draws=%zu imgIdx=%u)",
@@ -977,7 +1038,8 @@ bool VulkanRendererContext::createApexTargetResources(uint32_t w, uint32_t h) {
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.usage =
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-            VK_IMAGE_USAGE_SAMPLED_BIT;
+            VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (vk_.CreateImage(device, &imageInfo, nullptr, &slot.image) != VK_SUCCESS) {
@@ -1136,12 +1198,926 @@ void VulkanRendererContext::destroyApexTargetResources() {
     }
     apexExt = {0, 0};
     apexTargetRing.reset();
+    apexVkShadowActive.store(false, std::memory_order_release);
+    if (apexVkBackend) {
+        apexVkBackend->destroyResources();
+    }
+}
+
+
+bool VulkanRendererContext::ensureApexVkBackend() {
+    if (apexVkBackend && apexVkBackend->healthy()) return true;
+
+    auto backend = std::make_unique<gamenative::apex::vk::Backend>();
+    gamenative::apex::vk::Context context{};
+    context.physicalDevice = physicalDevice;
+    context.device = device;
+    context.queue = graphicsQueue;
+    context.queueFamilyIndex = graphicsQueueFamilyIndex;
+    context.memoryProperties = memProperties;
+    context.dispatch.GetPhysicalDeviceFormatProperties = vk_.GetPhysicalDeviceFormatProperties;
+    context.dispatch.CreateDescriptorSetLayout = vk_.CreateDescriptorSetLayout;
+    context.dispatch.DestroyDescriptorSetLayout = vk_.DestroyDescriptorSetLayout;
+    context.dispatch.CreatePipelineLayout = vk_.CreatePipelineLayout;
+    context.dispatch.DestroyPipelineLayout = vk_.DestroyPipelineLayout;
+    context.dispatch.CreateShaderModule = vk_.CreateShaderModule;
+    context.dispatch.DestroyShaderModule = vk_.DestroyShaderModule;
+    context.dispatch.CreateComputePipelines = vk_.CreateComputePipelines;
+    context.dispatch.DestroyPipeline = vk_.DestroyPipeline;
+    context.dispatch.CreateImage = vk_.CreateImage;
+    context.dispatch.DestroyImage = vk_.DestroyImage;
+    context.dispatch.AllocateMemory = vk_.AllocateMemory;
+    context.dispatch.FreeMemory = vk_.FreeMemory;
+    context.dispatch.BindImageMemory = vk_.BindImageMemory;
+    context.dispatch.GetImageMemoryRequirements = vk_.GetImageMemoryRequirements;
+    context.dispatch.CreateImageView = vk_.CreateImageView;
+    context.dispatch.DestroyImageView = vk_.DestroyImageView;
+    context.dispatch.CreateBuffer = vk_.CreateBuffer;
+    context.dispatch.DestroyBuffer = vk_.DestroyBuffer;
+    context.dispatch.BindBufferMemory = vk_.BindBufferMemory;
+    context.dispatch.GetBufferMemoryRequirements = vk_.GetBufferMemoryRequirements;
+    context.dispatch.CreateDescriptorPool = vk_.CreateDescriptorPool;
+    context.dispatch.DestroyDescriptorPool = vk_.DestroyDescriptorPool;
+    context.dispatch.ResetDescriptorPool = vk_.ResetDescriptorPool;
+    context.dispatch.AllocateDescriptorSets = vk_.AllocateDescriptorSets;
+    context.dispatch.UpdateDescriptorSets = vk_.UpdateDescriptorSets;
+    context.dispatch.CreateSampler = vk_.CreateSampler;
+    context.dispatch.DestroySampler = vk_.DestroySampler;
+    context.dispatch.CmdBindPipeline = vk_.CmdBindPipeline;
+    context.dispatch.CmdBindDescriptorSets = vk_.CmdBindDescriptorSets;
+    context.dispatch.CmdPushConstants = vk_.CmdPushConstants;
+    context.dispatch.CmdDispatch = vk_.CmdDispatch;
+    context.dispatch.CmdPipelineBarrier = vk_.CmdPipelineBarrier;
+    context.dispatch.CmdCopyImage = vk_.CmdCopyImage;
+
+    if (!backend->initialize(context)) {
+        RLOG(
+            "apexVk: native compute backend unavailable; retaining compatibility presenter: %s",
+            backend->diagnostics().c_str());
+        return false;
+    }
+
+    RLOG("apexVk: %s", backend->diagnostics().c_str());
+    apexVkBackend = std::move(backend);
+    return true;
+}
+
+void VulkanRendererContext::destroyApexVkBackend() {
+    if (!apexVkBackend) return;
+    apexVkBackend->destroy();
+    apexVkBackend.reset();
+}
+
+
+bool VulkanRendererContext::createApexPresentSwapchain(ANativeWindow* presentWindow) {
+    if (!presentWindow ||
+        device == VK_NULL_HANDLE ||
+        instance == VK_NULL_HANDLE ||
+        apexExt.width == 0 ||
+        apexExt.height == 0 ||
+        !vk_.CmdBlitImage) {
+        return false;
+    }
+
+    destroyApexPresentSwapchain();
+
+    ANativeWindow_setBuffersGeometry(
+        presentWindow,
+        static_cast<int32_t>(apexExt.width),
+        static_cast<int32_t>(apexExt.height),
+        WINDOW_FORMAT_RGBA_8888);
+
+    VkAndroidSurfaceCreateInfoKHR surfaceInfo{};
+    surfaceInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+    surfaceInfo.window = presentWindow;
+    if (vk_.CreateAndroidSurfaceKHR(
+            instance,
+            &surfaceInfo,
+            nullptr,
+            &apexPresent.surface) != VK_SUCCESS) {
+        apexPresent.surface = VK_NULL_HANDLE;
+        return false;
+    }
+
+    VkBool32 supported = VK_FALSE;
+    if (vk_.GetPhysicalDeviceSurfaceSupportKHR(
+            physicalDevice,
+            graphicsQueueFamilyIndex,
+            apexPresent.surface,
+            &supported) != VK_SUCCESS ||
+        supported != VK_TRUE) {
+        destroyApexPresentSwapchain();
+        return false;
+    }
+
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vk_.GetPhysicalDeviceSurfaceCapabilitiesKHR(
+            physicalDevice,
+            apexPresent.surface,
+            &caps) != VK_SUCCESS ||
+        !(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        destroyApexPresentSwapchain();
+        return false;
+    }
+
+    uint32_t formatCount = 0;
+    if (vk_.GetPhysicalDeviceSurfaceFormatsKHR(
+            physicalDevice,
+            apexPresent.surface,
+            &formatCount,
+            nullptr) != VK_SUCCESS ||
+        formatCount == 0) {
+        destroyApexPresentSwapchain();
+        return false;
+    }
+    std::vector<VkSurfaceFormatKHR> formats(formatCount);
+    vk_.GetPhysicalDeviceSurfaceFormatsKHR(
+        physicalDevice,
+        apexPresent.surface,
+        &formatCount,
+        formats.data());
+
+    VkSurfaceFormatKHR chosen = formats.front();
+    if (formatCount == 1 && chosen.format == VK_FORMAT_UNDEFINED) {
+        chosen.format = VK_FORMAT_R8G8B8A8_UNORM;
+        chosen.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    } else {
+        for (const auto& candidate : formats) {
+            if (candidate.format == VK_FORMAT_R8G8B8A8_UNORM ||
+                candidate.format == VK_FORMAT_B8G8R8A8_UNORM) {
+                chosen = candidate;
+                break;
+            }
+        }
+    }
+
+    VkFormatProperties srcFormatProps{};
+    VkFormatProperties dstFormatProps{};
+    vk_.GetPhysicalDeviceFormatProperties(
+        physicalDevice,
+        VK_FORMAT_R8G8B8A8_UNORM,
+        &srcFormatProps);
+    vk_.GetPhysicalDeviceFormatProperties(
+        physicalDevice,
+        chosen.format,
+        &dstFormatProps);
+    const VkFormatFeatureFlags srcRequired =
+        VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    if ((srcFormatProps.optimalTilingFeatures & srcRequired) != srcRequired ||
+        !(dstFormatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+        RLOG(
+            "apexVkPresent: blit unsupported srcFeatures=0x%x dstFeatures=0x%x",
+            srcFormatProps.optimalTilingFeatures,
+            dstFormatProps.optimalTilingFeatures);
+        destroyApexPresentSwapchain();
+        return false;
+    }
+
+    VkExtent2D extent = caps.currentExtent;
+    if (extent.width == UINT32_MAX) {
+        extent.width = static_cast<uint32_t>(
+            std::max(1, ANativeWindow_getWidth(presentWindow)));
+        extent.height = static_cast<uint32_t>(
+            std::max(1, ANativeWindow_getHeight(presentWindow)));
+        extent.width = std::clamp(
+            extent.width,
+            caps.minImageExtent.width,
+            caps.maxImageExtent.width);
+        extent.height = std::clamp(
+            extent.height,
+            caps.minImageExtent.height,
+            caps.maxImageExtent.height);
+    }
+
+    uint32_t imageCount = caps.minImageCount + 1;
+    if (caps.maxImageCount > 0)
+        imageCount = std::min(imageCount, caps.maxImageCount);
+
+    VkSurfaceTransformFlagBitsKHR preTransform =
+        (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+            : caps.currentTransform;
+    VkCompositeAlphaFlagBitsKHR compositeAlpha =
+        (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
+            ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+            : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+
+    VkSwapchainCreateInfoKHR swapInfo{};
+    swapInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    swapInfo.surface = apexPresent.surface;
+    swapInfo.minImageCount = imageCount;
+    swapInfo.imageFormat = chosen.format;
+    swapInfo.imageColorSpace = chosen.colorSpace;
+    swapInfo.imageExtent = extent;
+    swapInfo.imageArrayLayers = 1;
+    swapInfo.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    swapInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapInfo.preTransform = preTransform;
+    swapInfo.compositeAlpha = compositeAlpha;
+    swapInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    swapInfo.clipped = VK_TRUE;
+
+    if (vk_.CreateSwapchainKHR(
+            device,
+            &swapInfo,
+            nullptr,
+            &apexPresent.swapchain) != VK_SUCCESS) {
+        destroyApexPresentSwapchain();
+        return false;
+    }
+
+    vk_.GetSwapchainImagesKHR(
+        device,
+        apexPresent.swapchain,
+        &imageCount,
+        nullptr);
+    apexPresent.images.resize(imageCount);
+    if (vk_.GetSwapchainImagesKHR(
+            device,
+            apexPresent.swapchain,
+            &imageCount,
+            apexPresent.images.data()) != VK_SUCCESS) {
+        destroyApexPresentSwapchain();
+        return false;
+    }
+    apexPresent.imageLayouts.assign(imageCount, VK_IMAGE_LAYOUT_UNDEFINED);
+
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    poolInfo.queueFamilyIndex = graphicsQueueFamilyIndex;
+    if (vk_.CreateCommandPool(
+            device,
+            &poolInfo,
+            nullptr,
+            &apexPresent.commandPool) != VK_SUCCESS) {
+        destroyApexPresentSwapchain();
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo commandInfo{};
+    commandInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    commandInfo.commandPool = apexPresent.commandPool;
+    commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandInfo.commandBufferCount = APEX_PRESENT_FRAMES;
+    if (vk_.AllocateCommandBuffers(
+            device,
+            &commandInfo,
+            apexPresent.commandBuffers.data()) != VK_SUCCESS) {
+        destroyApexPresentSwapchain();
+        return false;
+    }
+
+    for (uint32_t i = 0; i < APEX_PRESENT_FRAMES; ++i) {
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vk_.CreateSemaphore(
+                device,
+                &semaphoreInfo,
+                nullptr,
+                &apexPresent.imageAvailable[i]) != VK_SUCCESS ||
+            vk_.CreateSemaphore(
+                device,
+                &semaphoreInfo,
+                nullptr,
+                &apexPresent.renderFinished[i]) != VK_SUCCESS) {
+            destroyApexPresentSwapchain();
+            return false;
+        }
+
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        if (vk_.CreateFence(
+                device,
+                &fenceInfo,
+                nullptr,
+                &apexPresent.inFlight[i]) != VK_SUCCESS) {
+            destroyApexPresentSwapchain();
+            return false;
+        }
+    }
+
+    ANativeWindow_acquire(presentWindow);
+    apexPresent.window = presentWindow;
+    apexPresent.format = chosen.format;
+    apexPresent.extent = extent;
+    apexPresent.frameIndex = 0;
+    apexPresent.generationBudget = 0;
+    apexPresent.generatedPresented = 0;
+    apexPresent.pendingSource = false;
+    RLOG(
+        "apexVkPresent: swapchain ready extent=%ux%u format=%d images=%zu",
+        extent.width,
+        extent.height,
+        static_cast<int>(chosen.format),
+        apexPresent.images.size());
+    return true;
+}
+
+void VulkanRendererContext::destroyApexPresentSwapchain() {
+    apexVkPresentActive.store(false, std::memory_order_release);
+    apexPresent.active = false;
+    apexPresent.pendingSource = false;
+
+    if (device != VK_NULL_HANDLE) {
+        {
+            std::lock_guard<std::mutex> queueLock(queueMutex);
+            vk_.DeviceWaitIdle(device);
+        }
+
+        for (auto& fence : apexPresent.inFlight) {
+            if (fence != VK_NULL_HANDLE) {
+                vk_.DestroyFence(device, fence, nullptr);
+                fence = VK_NULL_HANDLE;
+            }
+        }
+        for (auto& semaphore : apexPresent.renderFinished) {
+            if (semaphore != VK_NULL_HANDLE) {
+                vk_.DestroySemaphore(device, semaphore, nullptr);
+                semaphore = VK_NULL_HANDLE;
+            }
+        }
+        for (auto& semaphore : apexPresent.imageAvailable) {
+            if (semaphore != VK_NULL_HANDLE) {
+                vk_.DestroySemaphore(device, semaphore, nullptr);
+                semaphore = VK_NULL_HANDLE;
+            }
+        }
+        if (apexPresent.commandPool != VK_NULL_HANDLE) {
+            vk_.DestroyCommandPool(device, apexPresent.commandPool, nullptr);
+            apexPresent.commandPool = VK_NULL_HANDLE;
+            apexPresent.commandBuffers.fill(VK_NULL_HANDLE);
+        }
+        if (apexPresent.swapchain != VK_NULL_HANDLE) {
+            vk_.DestroySwapchainKHR(device, apexPresent.swapchain, nullptr);
+            apexPresent.swapchain = VK_NULL_HANDLE;
+        }
+    }
+
+    if (apexPresent.surface != VK_NULL_HANDLE && instance != VK_NULL_HANDLE) {
+        vk_.DestroySurfaceKHR(instance, apexPresent.surface, nullptr);
+        apexPresent.surface = VK_NULL_HANDLE;
+    }
+    if (apexPresent.window) {
+        ANativeWindow_release(apexPresent.window);
+        apexPresent.window = nullptr;
+    }
+
+    apexPresent.images.clear();
+    apexPresent.imageLayouts.clear();
+    apexPresent.extent = {0, 0};
+    apexPresent.format = VK_FORMAT_UNDEFINED;
+    apexPresent.frameIndex = 0;
+    apexPresent.generationBudget = 0;
+    apexPresent.generatedPresented = 0;
+}
+
+bool VulkanRendererContext::attachApexVulkanPresenter(ANativeWindow* presentWindow) {
+    if (!apexVkPresentRequested() ||
+        !apexTargetActive.load(std::memory_order_acquire) ||
+        !ensureApexVkBackend()) {
+        return false;
+    }
+    if (!createApexPresentSwapchain(presentWindow)) {
+        RLOG("apexVkPresent: unavailable; GLES compatibility presenter retained");
+        return false;
+    }
+
+    apexVkShadowActive.store(false, std::memory_order_release);
+    apexPresent.active = true;
+    apexVkPresentActive.store(true, std::memory_order_release);
+    RLOG("apexVkPresent: direct same-device Vulkan presenter enabled");
+    return true;
+}
+
+void VulkanRendererContext::detachApexVulkanPresenter() {
+    if (!apexPresent.active &&
+        apexPresent.swapchain == VK_NULL_HANDLE &&
+        apexPresent.surface == VK_NULL_HANDLE) {
+        return;
+    }
+    RLOG("apexVkPresent: detaching direct Vulkan presenter");
+    destroyApexPresentSwapchain();
+}
+
+bool VulkanRendererContext::hasApexVulkanPendingSource() const {
+    return apexVkPresentActive.load(std::memory_order_acquire) &&
+        apexPresent.active &&
+        apexPresent.pendingSource;
+}
+
+int VulkanRendererContext::presentApexVulkanImage(
+    VkImage image,
+    VkExtent2D sourceExtent,
+    int outputKind) {
+    if (!apexPresent.active ||
+        !apexVkPresentActive.load(std::memory_order_acquire) ||
+        image == VK_NULL_HANDLE ||
+        sourceExtent.width == 0 ||
+        sourceExtent.height == 0 ||
+        apexPresent.swapchain == VK_NULL_HANDLE) {
+        return -1;
+    }
+
+    const uint32_t frameSlot =
+        apexPresent.frameIndex % APEX_PRESENT_FRAMES;
+    VkFence fence = apexPresent.inFlight[frameSlot];
+    if (fence == VK_NULL_HANDLE ||
+        vk_.WaitForFences(
+            device,
+            1,
+            &fence,
+            VK_TRUE,
+            UINT64_MAX) != VK_SUCCESS) {
+        return -1;
+    }
+
+    uint32_t imageIndex = 0;
+    const VkResult acquireResult = vk_.AcquireNextImageKHR(
+        device,
+        apexPresent.swapchain,
+        UINT64_MAX,
+        apexPresent.imageAvailable[frameSlot],
+        VK_NULL_HANDLE,
+        &imageIndex);
+    if (acquireResult != VK_SUCCESS &&
+        acquireResult != VK_SUBOPTIMAL_KHR) {
+        return -1;
+    }
+    if (imageIndex >= apexPresent.images.size()) return -1;
+
+    VkCommandBuffer commandBuffer = apexPresent.commandBuffers[frameSlot];
+    vk_.ResetCommandBuffer(commandBuffer, 0);
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vk_.BeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+        return -1;
+
+    VkImageMemoryBarrier sourceToTransfer{};
+    sourceToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    sourceToTransfer.srcAccessMask =
+        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    sourceToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sourceToTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    sourceToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    sourceToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sourceToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sourceToTransfer.image = image;
+    sourceToTransfer.subresourceRange =
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkImageMemoryBarrier targetToTransfer{};
+    targetToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    targetToTransfer.srcAccessMask =
+        apexPresent.imageLayouts[imageIndex] == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            ? VK_ACCESS_MEMORY_READ_BIT
+            : 0;
+    targetToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    targetToTransfer.oldLayout = apexPresent.imageLayouts[imageIndex];
+    targetToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    targetToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    targetToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    targetToTransfer.image = apexPresent.images[imageIndex];
+    targetToTransfer.subresourceRange =
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkImageMemoryBarrier preBarriers[] = {
+        sourceToTransfer,
+        targetToTransfer,
+    };
+    vk_.CmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_TRANSFER_BIT |
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        2,
+        preBarriers);
+
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[0] = {0, 0, 0};
+    blit.srcOffsets[1] = {
+        static_cast<int32_t>(sourceExtent.width),
+        static_cast<int32_t>(sourceExtent.height),
+        1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[0] = {0, 0, 0};
+    blit.dstOffsets[1] = {
+        static_cast<int32_t>(apexPresent.extent.width),
+        static_cast<int32_t>(apexPresent.extent.height),
+        1};
+    vk_.CmdBlitImage(
+        commandBuffer,
+        image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        apexPresent.images[imageIndex],
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &blit,
+        VK_FILTER_LINEAR);
+
+    VkImageMemoryBarrier sourceToGeneral = sourceToTransfer;
+    sourceToGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sourceToGeneral.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    sourceToGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    sourceToGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkImageMemoryBarrier targetToPresent = targetToTransfer;
+    targetToPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    targetToPresent.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    targetToPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    targetToPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkImageMemoryBarrier postBarriers[] = {
+        sourceToGeneral,
+        targetToPresent,
+    };
+    vk_.CmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        2,
+        postBarriers);
+
+    if (vk_.EndCommandBuffer(commandBuffer) != VK_SUCCESS) return -1;
+
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = &apexPresent.imageAvailable[frameSlot];
+    submitInfo.pWaitDstStageMask = &waitStage;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &apexPresent.renderFinished[frameSlot];
+
+    vk_.ResetFences(device, 1, &fence);
+    VkResult submitResult = VK_ERROR_DEVICE_LOST;
+    VkResult presentResult = VK_ERROR_DEVICE_LOST;
+    {
+        std::lock_guard<std::mutex> queueLock(queueMutex);
+        submitResult = vk_.QueueSubmit(
+            graphicsQueue,
+            1,
+            &submitInfo,
+            fence);
+        if (submitResult == VK_SUCCESS) {
+            VkPresentInfoKHR presentInfo{};
+            presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores =
+                &apexPresent.renderFinished[frameSlot];
+            presentInfo.swapchainCount = 1;
+            presentInfo.pSwapchains = &apexPresent.swapchain;
+            presentInfo.pImageIndices = &imageIndex;
+            presentResult = vk_.QueuePresentKHR(
+                graphicsQueue,
+                &presentInfo);
+        }
+    }
+
+    if (submitResult != VK_SUCCESS) return -1;
+    apexPresent.imageLayouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    if (presentResult != VK_SUCCESS &&
+        presentResult != VK_SUBOPTIMAL_KHR) {
+        return -1;
+    }
+
+    apexPresent.frameIndex =
+        (apexPresent.frameIndex + 1u) % APEX_PRESENT_FRAMES;
+    return packApexVkPresentResult(outputKind, true);
+}
+
+int VulkanRendererContext::presentApexVulkanSource(
+    int64_t token,
+    int generationBudget) {
+    if (!apexPresent.active ||
+        !apexVkPresentActive.load(std::memory_order_acquire) ||
+        !apexVkBackend ||
+        !apexVkBackend->healthy()) {
+        return -1;
+    }
+
+    const int slotIndex = apexTokenSlot(token);
+    const uint64_t sequence = apexTokenSequence(token);
+    VkImage sourceImage = VK_NULL_HANDLE;
+    VkImageView sourceView = VK_NULL_HANDLE;
+    uint64_t sourceTimestampNanos = 0;
+    {
+        std::lock_guard<std::mutex> apexLock(apexTargetMutex);
+        if (slotIndex < 0 ||
+            slotIndex >= APEX_TARGET_COUNT ||
+            apexTargets[slotIndex].consumerSequence != sequence) {
+            return -1;
+        }
+        ApexTargetSlot& slot = apexTargets[slotIndex];
+        sourceImage = slot.image;
+        sourceView = slot.view;
+        sourceTimestampNanos = slot.sourceTimestampNanos;
+    }
+
+    if (sourceImage == VK_NULL_HANDLE ||
+        sourceView == VK_NULL_HANDLE ||
+        sourceTimestampNanos == 0 ||
+        !apexVkBackend->ensureResources(
+            apexExt.width,
+            apexExt.height,
+            180)) {
+        releaseApexFrame(token, -1);
+        return -1;
+    }
+
+    const uint32_t frameSlot =
+        apexPresent.frameIndex % APEX_PRESENT_FRAMES;
+    VkFence fence = apexPresent.inFlight[frameSlot];
+    if (fence == VK_NULL_HANDLE ||
+        vk_.WaitForFences(
+            device,
+            1,
+            &fence,
+            VK_TRUE,
+            UINT64_MAX) != VK_SUCCESS) {
+        releaseApexFrame(token, -1);
+        return -1;
+    }
+
+    uint32_t imageIndex = 0;
+    const VkResult acquireResult = vk_.AcquireNextImageKHR(
+        device,
+        apexPresent.swapchain,
+        UINT64_MAX,
+        apexPresent.imageAvailable[frameSlot],
+        VK_NULL_HANDLE,
+        &imageIndex);
+    if ((acquireResult != VK_SUCCESS &&
+         acquireResult != VK_SUBOPTIMAL_KHR) ||
+        imageIndex >= apexPresent.images.size()) {
+        releaseApexFrame(token, -1);
+        return -1;
+    }
+
+    VkCommandBuffer commandBuffer = apexPresent.commandBuffers[frameSlot];
+    vk_.ResetCommandBuffer(commandBuffer, 0);
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vk_.BeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        releaseApexFrame(token, -1);
+        return -1;
+    }
+
+    const uint32_t clampedBudget =
+        static_cast<uint32_t>(std::clamp(generationBudget, 0, 3));
+    if (!apexVkBackend->recordSourceGraph(
+            frameSlot,
+            commandBuffer,
+            sourceImage,
+            sourceView,
+            sourceTimestampNanos,
+            clampedBudget)) {
+        vk_.ResetCommandBuffer(commandBuffer, 0);
+        releaseApexFrame(token, -1);
+        RLOG_E(
+            "apexVkPresent: source graph failed: %s",
+            apexVkBackend->diagnostics().c_str());
+        return -1;
+    }
+
+    const uint32_t actualGenerated =
+        apexVkBackend->generatedCount();
+    const bool presentGenerated = actualGenerated > 0;
+    VkImage outputImage = presentGenerated
+        ? apexVkBackend->generatedImage(0)
+        : apexVkBackend->currentSourceImage();
+    const int outputKind = presentGenerated
+        ? APEX_VK_OUTPUT_GENERATED
+        : APEX_VK_OUTPUT_SOURCE;
+    const VkExtent2D sourceExtent =
+        apexVkBackend->generatedExtent();
+    if (outputImage == VK_NULL_HANDLE) {
+        vk_.ResetCommandBuffer(commandBuffer, 0);
+        releaseApexFrame(token, -1);
+        return -1;
+    }
+
+    VkImageMemoryBarrier sourceToTransfer{};
+    sourceToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    sourceToTransfer.srcAccessMask =
+        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    sourceToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sourceToTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    sourceToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    sourceToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sourceToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sourceToTransfer.image = outputImage;
+    sourceToTransfer.subresourceRange =
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkImageMemoryBarrier targetToTransfer{};
+    targetToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    targetToTransfer.srcAccessMask =
+        apexPresent.imageLayouts[imageIndex] == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            ? VK_ACCESS_MEMORY_READ_BIT
+            : 0;
+    targetToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    targetToTransfer.oldLayout = apexPresent.imageLayouts[imageIndex];
+    targetToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    targetToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    targetToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    targetToTransfer.image = apexPresent.images[imageIndex];
+    targetToTransfer.subresourceRange =
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkImageMemoryBarrier preBarriers[] = {
+        sourceToTransfer,
+        targetToTransfer,
+    };
+    vk_.CmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_TRANSFER_BIT |
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        2,
+        preBarriers);
+
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[0] = {0, 0, 0};
+    blit.srcOffsets[1] = {
+        static_cast<int32_t>(sourceExtent.width),
+        static_cast<int32_t>(sourceExtent.height),
+        1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[0] = {0, 0, 0};
+    blit.dstOffsets[1] = {
+        static_cast<int32_t>(apexPresent.extent.width),
+        static_cast<int32_t>(apexPresent.extent.height),
+        1};
+    vk_.CmdBlitImage(
+        commandBuffer,
+        outputImage,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        apexPresent.images[imageIndex],
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &blit,
+        VK_FILTER_LINEAR);
+
+    VkImageMemoryBarrier sourceToGeneral = sourceToTransfer;
+    sourceToGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sourceToGeneral.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    sourceToGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    sourceToGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkImageMemoryBarrier targetToPresent = targetToTransfer;
+    targetToPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    targetToPresent.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    targetToPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    targetToPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkImageMemoryBarrier postBarriers[] = {
+        sourceToGeneral,
+        targetToPresent,
+    };
+    vk_.CmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        2,
+        postBarriers);
+
+    if (vk_.EndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        releaseApexFrame(token, -1);
+        return -1;
+    }
+
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = &apexPresent.imageAvailable[frameSlot];
+    submitInfo.pWaitDstStageMask = &waitStage;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &apexPresent.renderFinished[frameSlot];
+
+    vk_.ResetFences(device, 1, &fence);
+    VkResult submitResult = VK_ERROR_DEVICE_LOST;
+    VkResult presentResult = VK_ERROR_DEVICE_LOST;
+    {
+        std::lock_guard<std::mutex> queueLock(queueMutex);
+        submitResult = vk_.QueueSubmit(
+            graphicsQueue,
+            1,
+            &submitInfo,
+            fence);
+        if (submitResult == VK_SUCCESS) {
+            VkPresentInfoKHR presentInfo{};
+            presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores =
+                &apexPresent.renderFinished[frameSlot];
+            presentInfo.swapchainCount = 1;
+            presentInfo.pSwapchains = &apexPresent.swapchain;
+            presentInfo.pImageIndices = &imageIndex;
+            presentResult = vk_.QueuePresentKHR(
+                graphicsQueue,
+                &presentInfo);
+        }
+    }
+
+    // The graph copied the producer image into private Vulkan history. Once its
+    // submission is ordered on the same queue, the producer slot can be reused.
+    releaseApexFrame(token, -1);
+
+    if (submitResult != VK_SUCCESS) return -1;
+    apexPresent.imageLayouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    if (presentResult != VK_SUCCESS &&
+        presentResult != VK_SUBOPTIMAL_KHR) {
+        return -1;
+    }
+
+    apexPresent.frameIndex =
+        (apexPresent.frameIndex + 1u) % APEX_PRESENT_FRAMES;
+    apexPresent.generationBudget = actualGenerated;
+    apexPresent.generatedPresented = presentGenerated ? 1u : 0u;
+    apexPresent.pendingSource = presentGenerated;
+    return packApexVkPresentResult(outputKind, true);
+}
+
+int VulkanRendererContext::presentApexVulkanGenerated() {
+    if (!hasApexVulkanPendingSource() ||
+        !apexVkBackend ||
+        !apexVkBackend->resourcesReady()) {
+        return packApexVkPresentResult(APEX_VK_OUTPUT_NONE, false);
+    }
+
+    int result = -1;
+    if (apexPresent.generatedPresented < apexPresent.generationBudget) {
+        const uint32_t generatedIndex =
+            apexPresent.generatedPresented;
+        result = presentApexVulkanImage(
+            apexVkBackend->generatedImage(generatedIndex),
+            apexVkBackend->generatedExtent(),
+            APEX_VK_OUTPUT_GENERATED);
+        if (result >= 0 && (result & 0x100) != 0) {
+            ++apexPresent.generatedPresented;
+        }
+        return result;
+    }
+
+    result = presentApexVulkanImage(
+        apexVkBackend->currentSourceImage(),
+        apexVkBackend->generatedExtent(),
+        APEX_VK_OUTPUT_SOURCE);
+    if (result >= 0 && (result & 0x100) != 0) {
+        apexPresent.pendingSource = false;
+        apexPresent.generationBudget = 0;
+        apexPresent.generatedPresented = 0;
+    }
+    return result;
 }
 
 bool VulkanRendererContext::enableApexTarget() {
     std::unique_lock<std::shared_mutex> frameLock(frameMutex);
     std::lock_guard<std::mutex> apexLock(apexTargetMutex);
     if (device == VK_NULL_HANDLE || xrTargetActive.load()) return false;
+
+    // Stage all Apex compute pipelines on the renderer-owned device. Until the
+    // resource/descriptor migration is complete, failure is non-fatal and the
+    // compatibility presenter remains the active frame consumer.
+    const bool apexVkReady = ensureApexVkBackend();
+    RLOG("apexTarget: native Vulkan compute backend=%s",
+        apexVkReady ? "ready" : "fallback");
 
     // Keep the Android presentation surface at its native extent, but render the
     // Apex producer ring at a bounded processing extent with the same aspect ratio.
@@ -1185,6 +2161,20 @@ bool VulkanRendererContext::enableApexTarget() {
     destroyApexTargetResources();
 
     if (!createApexTargetResources(width, height)) return false;
+
+    apexVkShadowActive.store(false, std::memory_order_release);
+    if (apexVkReady && apexVkShadowRequested()) {
+        const bool resourcesReady =
+            apexVkBackend->ensureResources(width, height, 180);
+        apexVkShadowActive.store(resourcesReady, std::memory_order_release);
+        RLOG(
+            "apexVk: shadow graph requested=1 resources=%s %s",
+            resourcesReady ? "ready" : "failed",
+            apexVkBackend->diagnostics().c_str());
+    } else {
+        RLOG(
+            "apexVk: shadow graph requested=0; compatibility presenter remains authoritative");
+    }
 
     apexProducerBacklogged.store(false, std::memory_order_release);
     apexSourceTimestampNanos.store(0, std::memory_order_release);
@@ -1463,6 +2453,9 @@ void VulkanRendererContext::renderApexFrame() {
         ptrX, ptrY, curHotX, curHotY, curW, curH,
         effectiveCurVis, apexSlot);
 
+    const bool directVulkanPresenter =
+        apexVkPresentActive.load(std::memory_order_acquire) ||
+        apexVkPresentRequested();
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1471,7 +2464,8 @@ void VulkanRendererContext::renderApexFrame() {
         submitInfo.pWaitSemaphores = &consumerWaitSemaphore;
         submitInfo.pWaitDstStageMask = &waitStage;
     }
-    if (externalSemaphoreFdSupported &&
+    if (!directVulkanPresenter &&
+        externalSemaphoreFdSupported &&
         slot.producerReadySemaphore != VK_NULL_HANDLE &&
         slot.producerSemaphoreUsable) {
         submitInfo.signalSemaphoreCount = 1;
@@ -1481,7 +2475,13 @@ void VulkanRendererContext::renderApexFrame() {
     submitInfo.pCommandBuffers = &slot.commandBuffer;
 
     vk_.ResetFences(device, 1, &slot.producerFence);
-    if (vk_.QueueSubmit(graphicsQueue, 1, &submitInfo, slot.producerFence) != VK_SUCCESS) {
+    VkResult apexSubmitResult = VK_ERROR_DEVICE_LOST;
+    {
+        std::lock_guard<std::mutex> queueLock(queueMutex);
+        apexSubmitResult =
+            vk_.QueueSubmit(graphicsQueue, 1, &submitInfo, slot.producerFence);
+    }
+    if (apexSubmitResult != VK_SUCCESS) {
         vk_.DestroyFence(device, slot.producerFence, nullptr);
         VkFenceCreateInfo fenceInfo{};
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -1493,7 +2493,8 @@ void VulkanRendererContext::renderApexFrame() {
     }
 
     bool exported = false;
-    if (externalSemaphoreFdSupported &&
+    if (!directVulkanPresenter &&
+        externalSemaphoreFdSupported &&
         slot.producerReadySemaphore != VK_NULL_HANDLE &&
         vk_.GetSemaphoreFdKHR != nullptr) {
         VkSemaphoreGetFdInfoKHR fdInfo{};
@@ -1827,17 +2828,25 @@ ok=true;}catch(...){}
     si.commandBufferCount=1; si.pCommandBuffers=&cmdBufs[currentFrame];
 
     vk_.ResetFences(device,1,&inFlightFences[currentFrame]);
-    if (vk_.QueueSubmit(graphicsQueue,1,&si,inFlightFences[currentFrame])!=VK_SUCCESS) {
+    VkResult frameSubmitResult = VK_ERROR_DEVICE_LOST;
+    {
+        std::lock_guard<std::mutex> queueLock(queueMutex);
+        frameSubmitResult =
+            vk_.QueueSubmit(graphicsQueue,1,&si,inFlightFences[currentFrame]);
+        if (frameSubmitResult == VK_SUCCESS && !toXr) {
+            VkSwapchainKHR scs[]={swapchain};
+            VkPresentInfoKHR pi{}; pi.sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            pi.waitSemaphoreCount=1; pi.pWaitSemaphores=sSem; pi.swapchainCount=1; pi.pSwapchains=scs; pi.pImageIndices=&imgIdx;
+            res=vk_.QueuePresentKHR(graphicsQueue,&pi);
+        }
+    }
+    if (frameSubmitResult!=VK_SUCCESS) {
         vk_.DestroyFence(device,inFlightFences[currentFrame],nullptr);
         VkFenceCreateInfo fi{}; fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; fi.flags=VK_FENCE_CREATE_SIGNALED_BIT;
         vk_.CreateFence(device,&fi,nullptr,&inFlightFences[currentFrame]);
         return;
     }
     if (!toXr) {
-        VkSwapchainKHR scs[]={swapchain};
-        VkPresentInfoKHR pi{}; pi.sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        pi.waitSemaphoreCount=1; pi.pWaitSemaphores=sSem; pi.swapchainCount=1; pi.pSwapchains=scs; pi.pImageIndices=&imgIdx;
-        res=vk_.QueuePresentKHR(graphicsQueue,&pi);
         if (res==VK_SUCCESS || res==VK_SUBOPTIMAL_KHR) {
             normalPresentSerial.fetch_add(1, std::memory_order_release);
         }

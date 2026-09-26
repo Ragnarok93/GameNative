@@ -1,0 +1,101 @@
+// Vulkan-native Apex compute port. Kept algorithmically aligned with apex_shaders.h.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D sparseFlowMap;
+layout(set = 0, binding = 1) uniform sampler2D lastImage;
+layout(set = 0, binding = 2) uniform sampler2D nextImage;
+layout(set = 0, binding = 3, rgba16f) writeonly uniform image2D denseFlowMap;
+
+// Unified GPU Mathematical Divergence & Pipeline Telemetry Buffer
+layout(std430, set = 0, binding = 5) buffer UnifiedTelemetryBuffer {
+    uint u_lumaTotalPixels;
+    uint u_lumaNanInfCount;
+    uint u_searchTotalPatches;
+    uint u_searchNanInfCount;
+    uint u_searchRevertedCount;
+    uint u_searchZeroCollapseCount;
+    uint u_searchActiveMovingCount;
+    uint u_propTotalPatches;
+    uint u_propImprovedCount;
+    uint u_propNanInfCount;
+    uint u_denseTotalPixels;
+    uint u_denseActiveMovingCount;
+    uint u_denseZeroWeightCount;
+    uint u_denseNanInfCount;
+    uint u_interpTotalPixels;
+    uint u_interpOccludedCount;
+    uint u_interpOutOfBoundsCount;
+    uint u_interpNanInfCount;
+};
+
+layout(push_constant) uniform PushConstants {
+    int level;
+    int collectTelemetry;
+} pc;
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 denseSize = imageSize(denseFlowMap);
+    if (pix.x >= denseSize.x || pix.y >= denseSize.y) return;
+
+    ivec2 sparseSize = textureSize(sparseFlowMap, 0);
+    vec2 invDenseSize = 1.0 / vec2(denseSize);
+    vec2 uv = (vec2(pix) + 0.5) * invDenseSize;
+    float lastLum = textureLod(lastImage, uv, 0.0).x;
+
+    vec4 cand[9];
+    int candCount = 0;
+    float bestSsd = -1.0;
+
+    ivec2 s0 = ivec2(pix.x / 3, pix.y / 3) - 1;
+    for (int dy = 0; dy <= 2; dy++) {
+        for (int dx = 0; dx <= 2; dx++) {
+            ivec2 s = s0 + ivec2(dx, dy);
+            if (s.x < 0 || s.y < 0 || s.x >= sparseSize.x || s.y >= sparseSize.y) continue;
+            vec4 f = texelFetch(sparseFlowMap, s, 0);
+            f.w = textureLod(lastImage, (vec2(s * 3) + 4.0) * invDenseSize, 0.0).x;
+            cand[candCount++] = f;
+            if (f.z >= 0.0 && (bestSsd < 0.0 || f.z < bestSsd)) bestSsd = f.z;
+        }
+    }
+
+    const float floorSsd = 64.0 * 2.25;
+    const float invGuide2 = 1.0 / (18.0 * 18.0);
+    float refSsd = max(bestSsd, floorSsd);
+
+    vec2 acc = vec2(0.0);
+    float accW = 0.0;
+    for (int i = 0; i < candCount; i++) {
+        vec4 f = cand[i];
+        float diff = textureLod(nextImage, uv + f.xy, 0.0).x - lastLum;
+        float w = 1.0 / (1.0 + abs(diff) * 0.15);
+        if (bestSsd >= 0.0 && f.z >= 0.0) {
+            float r = f.z / refSsd;
+            w /= (1.0 + r * r);
+        }
+        float dl = f.w - lastLum;
+        w /= (1.0 + dl * dl * invGuide2);
+
+        acc += f.xy * w;
+        accW += w;
+    }
+
+    vec2 fallbackFlow = texelFetch(sparseFlowMap, clamp(ivec2(pix.x / 3, pix.y / 3), ivec2(0), sparseSize - 1), 0).xy;
+    vec2 denseFlow = accW > 0.0 ? (acc / accW) : fallbackFlow;
+
+    if (pc.collectTelemetry != 0 && pc.level == 0) {
+        atomicAdd(u_denseTotalPixels, 1u);
+        if (accW <= 0.0) {
+            atomicAdd(u_denseZeroWeightCount, 1u);
+        }
+        if (any(isnan(denseFlow)) || any(isinf(denseFlow))) {
+            atomicAdd(u_denseNanInfCount, 1u);
+        }
+        if (dot(denseFlow, denseFlow) > 1e-6) {
+            atomicAdd(u_denseActiveMovingCount, 1u);
+        }
+    }
+
+    imageStore(denseFlowMap, pix, vec4(denseFlow, 0.0, 1.0));
+}

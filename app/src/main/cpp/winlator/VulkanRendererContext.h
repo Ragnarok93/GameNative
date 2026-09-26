@@ -3,6 +3,7 @@
 #include <list>
 #include <vulkan/vulkan_android.h>
 #include "../apex/apex_frame_target_ring.h"
+#include "../apex/vulkan/apex_vk_backend.h"
 struct VkTable {
 
     PFN_vkCreateInstance CreateInstance;
@@ -11,6 +12,7 @@ struct VkTable {
     PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties;
     PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
+    PFN_vkGetPhysicalDeviceFormatProperties GetPhysicalDeviceFormatProperties;
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR GetPhysicalDeviceSurfaceCapabilitiesKHR;
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR GetPhysicalDeviceSurfaceFormatsKHR;
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR GetPhysicalDeviceSurfacePresentModesKHR;
@@ -52,6 +54,7 @@ struct VkTable {
     PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout;
     PFN_vkCreateDescriptorPool CreateDescriptorPool;
     PFN_vkDestroyDescriptorPool DestroyDescriptorPool;
+    PFN_vkResetDescriptorPool ResetDescriptorPool;
     PFN_vkAllocateDescriptorSets AllocateDescriptorSets;
     PFN_vkFreeDescriptorSets FreeDescriptorSets;
     PFN_vkUpdateDescriptorSets UpdateDescriptorSets;
@@ -60,6 +63,7 @@ struct VkTable {
     PFN_vkCreateShaderModule CreateShaderModule;
     PFN_vkDestroyShaderModule DestroyShaderModule;
     PFN_vkCreateGraphicsPipelines CreateGraphicsPipelines;
+    PFN_vkCreateComputePipelines CreateComputePipelines;
     PFN_vkDestroyPipeline DestroyPipeline;
     PFN_vkCreateCommandPool CreateCommandPool;
     PFN_vkDestroyCommandPool DestroyCommandPool;
@@ -73,11 +77,13 @@ struct VkTable {
     PFN_vkCmdBindPipeline CmdBindPipeline;
     PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets;
     PFN_vkCmdDraw CmdDraw;
+    PFN_vkCmdDispatch CmdDispatch;
     PFN_vkCmdPushConstants CmdPushConstants;
     PFN_vkCmdSetViewport CmdSetViewport;
     PFN_vkCmdSetScissor CmdSetScissor;
     PFN_vkCmdPipelineBarrier CmdPipelineBarrier;
     PFN_vkCmdCopyImage CmdCopyImage;
+    PFN_vkCmdBlitImage CmdBlitImage;
     PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage;
     PFN_vkCreateSampler CreateSampler;
     PFN_vkDestroySampler DestroySampler;
@@ -109,6 +115,7 @@ struct VkTable {
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <memory>
 #include <shared_mutex>
 #include <condition_variable>
 
@@ -143,6 +150,12 @@ public:
     int takeApexFrameFenceFd(int64_t token);
     bool releaseApexFrame(int64_t token, int consumerReleaseFenceFd);
     int64_t apexTargetExtentPacked();
+
+    bool attachApexVulkanPresenter(ANativeWindow* window);
+    void detachApexVulkanPresenter();
+    int presentApexVulkanSource(int64_t token, int generationBudget);
+    int presentApexVulkanGenerated();
+    bool hasApexVulkanPendingSource() const;
     VulkanRendererContext(ANativeWindow* window, int cWidth, int cHeight, void* adrenotoolsHandle = nullptr);
     ~VulkanRendererContext();
 
@@ -364,9 +377,34 @@ private:
     };
     ApexTargetSlot apexTargets[APEX_TARGET_COUNT]{};
     gamenative::apex::FrameTargetRing apexTargetRing{APEX_TARGET_COUNT};
+
+    static constexpr uint32_t APEX_PRESENT_FRAMES = 2;
+    struct ApexPresentSurface {
+        ANativeWindow* window = nullptr;
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        VkExtent2D extent{0, 0};
+        std::vector<VkImage> images;
+        std::vector<VkImageLayout> imageLayouts;
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+        std::array<VkCommandBuffer, APEX_PRESENT_FRAMES> commandBuffers{};
+        std::array<VkSemaphore, APEX_PRESENT_FRAMES> imageAvailable{};
+        std::array<VkSemaphore, APEX_PRESENT_FRAMES> renderFinished{};
+        std::array<VkFence, APEX_PRESENT_FRAMES> inFlight{};
+        uint32_t frameIndex = 0;
+        uint32_t generationBudget = 0;
+        uint32_t generatedPresented = 0;
+        bool pendingSource = false;
+        bool active = false;
+    };
+    ApexPresentSurface apexPresent{};
+    std::atomic<bool> apexVkPresentActive{false};
     VkRenderPass apexRp = VK_NULL_HANDLE;
     VkExtent2D apexExt{0,0};
     std::atomic<bool> apexTargetActive{false};
+    std::unique_ptr<gamenative::apex::vk::Backend> apexVkBackend;
+    std::atomic<bool> apexVkShadowActive{false};
     // A consumer release only schedules another capture when a real renderer
     // update previously lost the race for a free Apex target slot. Without
     // this distinction every release feeds back into another identical source
@@ -378,8 +416,13 @@ private:
     std::mutex apexTargetMutex;
     bool createApexTargetResources(uint32_t w, uint32_t h);
     void destroyApexTargetResources();
+    bool ensureApexVkBackend();
+    void destroyApexVkBackend();
     bool recreateApexProducerSemaphore(ApexTargetSlot& slot);
     void renderApexFrame();
+    bool createApexPresentSwapchain(ANativeWindow* window);
+    void destroyApexPresentSwapchain();
+    int presentApexVulkanImage(VkImage image, VkExtent2D sourceExtent, int outputKind);
 
     VkRenderPass          renderPass  = VK_NULL_HANDLE;
     VkDescriptorSetLayout dsLayout    = VK_NULL_HANDLE;
@@ -404,6 +447,7 @@ private:
     std::atomic<bool> isRunning{false};
     std::atomic<bool> fbResized{false};
     std::mutex        renderMutex;
+    std::mutex queueMutex;
     std::mutex        dirtyMutex;
     std::condition_variable dirtyCV;
     std::shared_mutex frameMutex;

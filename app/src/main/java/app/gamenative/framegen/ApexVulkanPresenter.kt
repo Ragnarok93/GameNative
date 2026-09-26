@@ -26,6 +26,7 @@ class ApexVulkanPresenter(
     private val thread = HandlerThread("ApexVulkanPresenter", Process.THREAD_PRIORITY_DISPLAY)
     @Volatile private var running = false
     @Volatile private var nativeHandle = 0L
+    @Volatile private var useRendererVulkanPresenter = false
     private var handler: Handler? = null
     private var choreographer: Choreographer? = null
     private var hasSourceHistory = false
@@ -41,7 +42,7 @@ class ApexVulkanPresenter(
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
             val handle = nativeHandle
-            if (handle == 0L) {
+            if (!useRendererVulkanPresenter && handle == 0L) {
                 failPresenter()
                 return
             }
@@ -72,63 +73,88 @@ class ApexVulkanPresenter(
                 }
             }
 
-            if (nativeHasPendingSource(handle)) {
-                // Once a generation budget is admitted, finish that prefix in
-                // order. Newer source input may queue, but it cannot cancel
-                // already-admitted synthetic work.
-                presentGeneratedOpportunity(handle)
+            if (useRendererVulkanPresenter) {
+                if (renderer.hasApexVulkanPendingSource()) {
+                    // Once a generation budget is admitted, finish that prefix
+                    // in order. A newer source may queue but never cancels it.
+                    presentGeneratedOpportunity(handle)
+                } else {
+                    presentPendingSource(handle)
+                }
             } else {
-                val frame = pendingSourceFrame
-                if (frame != null) {
-                    val sourceTimestampNanos =
-                        pendingSourceTimestampNanos.takeIf { it > 0L }
-                            ?: frame.sourceTimestampNanos
-                    pendingSourceFrame = null
-                    pendingSourceTimestampNanos = 0L
-                    // Source cadence is captured at the producer boundary.
-                    // Choreographer remains only the display-opportunity clock.
-                    scheduler.recordSourceFrame(sourceTimestampNanos)
-                    val adaptive = ApexNativeBridge.nativeIsAdaptiveFrameGeneration()
-                    val requestedCeiling = if (adaptive) {
-                        3
-                    } else {
-                        (ApexNativeBridge.nativeGetFixedMultiplier() - 1).coerceIn(0, 3)
-                    }
-                    scheduler.recordNativeCost(
-                        preparationCostNanos =
-                            ApexNativeBridge.nativeGetLastPreparationCostNanos(),
-                        pipelineCostNanos =
-                            ApexNativeBridge.nativeGetLastSyntheticCostNanos(),
-                        generatedFrames =
-                            ApexNativeBridge.nativeGetLastSyntheticCostBudget(),
-                    )
-                    val generationBudget = scheduler.generationBudget(
-                        adaptive = adaptive,
-                        fixedGeneratedCeiling = requestedCeiling,
-                        targetFps = ApexNativeBridge.nativeGetTargetFPS(),
-                    )
-                    ApexPresentationTelemetry.recordAdmission(generationBudget)
-                    val result = nativePresentSourceFrame(
-                        handle,
-                        frame.hardwareBufferPtr,
-                        frame.acquireFenceFd,
-                        frame.width,
-                        frame.height,
-                        sourceTimestampNanos,
-                        generationBudget,
-                    )
-                    val releaseFenceFd = result.toInt()
-                    val outputKind = ((result ushr 32) and 0xffL).toInt()
-                    val swapSucceeded = ((result ushr 40) and 0x1L) != 0L
-                    renderer.releaseApexFrame(frame, releaseFenceFd)
-                    recordPresentedOutput(outputKind, swapSucceeded)
-                    hasSourceHistory = true
-                    maybeLogPresentationTelemetry()
+                if (nativeHasPendingSource(handle)) {
+                    // Preserve the proven GLES fallback cadence contract.
+                    presentGeneratedOpportunity(handle)
+                } else {
+                    presentPendingSource(handle)
                 }
             }
 
             if (running) choreographer?.postFrameCallback(this)
         }
+    }
+
+    private fun presentPendingSource(handle: Long) {
+        val frame = pendingSourceFrame ?: return
+        val sourceTimestampNanos =
+            pendingSourceTimestampNanos.takeIf { it > 0L }
+                ?: frame.sourceTimestampNanos
+        pendingSourceFrame = null
+        pendingSourceTimestampNanos = 0L
+
+        // Source cadence is captured at the producer boundary.
+        // Choreographer remains only the display-opportunity clock.
+        scheduler.recordSourceFrame(sourceTimestampNanos)
+        val adaptive = ApexNativeBridge.nativeIsAdaptiveFrameGeneration()
+        val requestedCeiling = if (adaptive) {
+            3
+        } else {
+            (ApexNativeBridge.nativeGetFixedMultiplier() - 1).coerceIn(0, 3)
+        }
+        scheduler.recordNativeCost(
+            preparationCostNanos =
+                ApexNativeBridge.nativeGetLastPreparationCostNanos(),
+            pipelineCostNanos =
+                ApexNativeBridge.nativeGetLastSyntheticCostNanos(),
+            generatedFrames =
+                ApexNativeBridge.nativeGetLastSyntheticCostBudget(),
+        )
+        val generationBudget = scheduler.generationBudget(
+            adaptive = adaptive,
+            fixedGeneratedCeiling = requestedCeiling,
+            targetFps = ApexNativeBridge.nativeGetTargetFPS(),
+        )
+        ApexPresentationTelemetry.recordAdmission(generationBudget)
+
+        if (useRendererVulkanPresenter) {
+            val result =
+                renderer.presentApexVulkanSource(frame, generationBudget)
+            if (result < 0) {
+                failPresenter()
+                return
+            }
+            val outputKind = result and 0xff
+            val swapSucceeded = (result and 0x100) != 0
+            recordPresentedOutput(outputKind, swapSucceeded)
+        } else {
+            val result = nativePresentSourceFrame(
+                handle,
+                frame.hardwareBufferPtr,
+                frame.acquireFenceFd,
+                frame.width,
+                frame.height,
+                sourceTimestampNanos,
+                generationBudget,
+            )
+            val releaseFenceFd = result.toInt()
+            val outputKind = ((result ushr 32) and 0xffL).toInt()
+            val swapSucceeded = ((result ushr 40) and 0x1L) != 0L
+            renderer.releaseApexFrame(frame, releaseFenceFd)
+            recordPresentedOutput(outputKind, swapSucceeded)
+        }
+
+        hasSourceHistory = true
+        maybeLogPresentationTelemetry()
     }
 
     fun start() {
@@ -147,20 +173,29 @@ class ApexVulkanPresenter(
         handler = localHandler
         localHandler.post {
             if (!running) return@post
-            val processingWidth =
-                renderer.getApexTargetWidth().takeIf { it > 0 } ?: renderer.surfaceWidth
-            val processingHeight =
-                renderer.getApexTargetHeight().takeIf { it > 0 } ?: renderer.surfaceHeight
-            val handle = nativeCreatePresenter(
-                surface,
-                processingWidth,
-                processingHeight,
-            )
-            if (handle == 0L) {
-                failPresenter()
-                return@post
+            useRendererVulkanPresenter =
+                renderer.attachApexVulkanPresenter(surface)
+            if (!useRendererVulkanPresenter) {
+                val processingWidth =
+                    renderer.getApexTargetWidth().takeIf { it > 0 } ?: renderer.surfaceWidth
+                val processingHeight =
+                    renderer.getApexTargetHeight().takeIf { it > 0 } ?: renderer.surfaceHeight
+                val handle = nativeCreatePresenter(
+                    surface,
+                    processingWidth,
+                    processingHeight,
+                )
+                if (handle == 0L) {
+                    failPresenter()
+                    return@post
+                }
+                nativeHandle = handle
+            } else {
+                android.util.Log.i(
+                    "ApexPresenter",
+                    "using renderer-owned same-device Vulkan presentation path",
+                )
             }
-            nativeHandle = handle
             refreshPresentationCeiling(forceLog = true)
             choreographer = Choreographer.getInstance()
             choreographer?.postFrameCallback(frameCallback)
@@ -235,7 +270,16 @@ class ApexVulkanPresenter(
     }
 
     private fun presentGeneratedOpportunity(handle: Long) {
-        val result = nativePresentGeneratedFrame(handle)
+        val result =
+            if (useRendererVulkanPresenter) {
+                renderer.presentApexVulkanGenerated()
+            } else {
+                nativePresentGeneratedFrame(handle)
+            }
+        if (result < 0) {
+            failPresenter()
+            return
+        }
         val outputKind = result and 0xff
         val swapSucceeded = (result and 0x100) != 0
         recordPresentedOutput(outputKind, swapSucceeded)
@@ -303,7 +347,7 @@ class ApexVulkanPresenter(
     }
 
     fun stop() {
-        if (!running && nativeHandle == 0L) {
+        if (!running && nativeHandle == 0L && !useRendererVulkanPresenter) {
             scheduleThreadShutdown(handler)
             return
         }
@@ -323,7 +367,12 @@ class ApexVulkanPresenter(
                 }
                 pendingSourceFrame = null
                 pendingSourceTimestampNanos = 0L
-                if (handle != 0L) nativeDestroyPresenter(handle)
+                if (useRendererVulkanPresenter) {
+                    renderer.detachApexVulkanPresenter()
+                    useRendererVulkanPresenter = false
+                } else if (handle != 0L) {
+                    nativeDestroyPresenter(handle)
+                }
                 hasSourceHistory = false
                 nextSourceAdmissionNanos = 0L
                 scheduler.reset()

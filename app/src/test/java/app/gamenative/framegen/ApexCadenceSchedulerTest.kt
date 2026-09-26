@@ -71,7 +71,6 @@ class ApexCadenceSchedulerTest {
                 adaptive = false,
                 fixedGeneratedCeiling = 1,
                 targetFps = 60,
-                presentation = telemetry(),
             ),
         )
 
@@ -84,10 +83,6 @@ class ApexCadenceSchedulerTest {
                 adaptive = false,
                 fixedGeneratedCeiling = 1,
                 targetFps = 60,
-                presentation = telemetry(
-                    sourceInFps = 20f,
-                    sourceOutFps = 20f,
-                ),
             ),
         )
     }
@@ -101,7 +96,6 @@ class ApexCadenceSchedulerTest {
             adaptive = true,
             fixedGeneratedCeiling = 3,
             targetFps = 60,
-            presentation = telemetry(),
         )
         val before = scheduler.diagnostics().wantedGeneratedFrames
 
@@ -111,10 +105,6 @@ class ApexCadenceSchedulerTest {
             adaptive = true,
             fixedGeneratedCeiling = 3,
             targetFps = 60,
-            presentation = telemetry(
-                sourceInFps = 20f,
-                sourceOutFps = 20f,
-            ),
         )
 
         assertTrue(admitted > 0)
@@ -131,7 +121,6 @@ class ApexCadenceSchedulerTest {
             adaptive = false,
             fixedGeneratedCeiling = 3,
             targetFps = 120,
-            presentation = telemetry(opportunityFps = 90f),
         )
 
         assertEquals(2, budget)
@@ -154,11 +143,6 @@ class ApexCadenceSchedulerTest {
                 adaptive = true,
                 fixedGeneratedCeiling = 3,
                 targetFps = 30,
-                presentation = telemetry(
-                    sourceInFps = 24.1f,
-                    sourceOutFps = 24.1f,
-                    opportunityFps = 25.6f,
-                ),
             )
             if (budget > 0) generatedIntervals++ else zeroIntervals++
         }
@@ -177,7 +161,6 @@ class ApexCadenceSchedulerTest {
             adaptive = false,
             fixedGeneratedCeiling = 3,
             targetFps = 120,
-            presentation = telemetry(),
         )
 
         val queuedSourceTimestamp = t + 39_000_000L
@@ -209,7 +192,6 @@ class ApexCadenceSchedulerTest {
                     adaptive = false,
                     fixedGeneratedCeiling = 1,
                     targetFps = 60,
-                    presentation = telemetry(),
                 ),
             )
         }
@@ -228,7 +210,6 @@ class ApexCadenceSchedulerTest {
                 adaptive = true,
                 fixedGeneratedCeiling = 3,
                 targetFps = 45,
-                presentation = telemetry(),
             )
         }
 
@@ -252,7 +233,6 @@ class ApexCadenceSchedulerTest {
                 adaptive = false,
                 fixedGeneratedCeiling = 2,
                 targetFps = 90,
-                presentation = telemetry(opportunityFps = 120f),
             ),
         )
 
@@ -283,7 +263,6 @@ class ApexCadenceSchedulerTest {
                 adaptive = false,
                 fixedGeneratedCeiling = 3,
                 targetFps = 120,
-                presentation = telemetry(opportunityFps = 120f),
             ),
         )
         scheduler.onGeneratedPresented()

@@ -283,7 +283,6 @@ class ApexCadenceScheduler {
         adaptive: Boolean,
         fixedGeneratedCeiling: Int,
         targetFps: Int,
-        presentation: ApexPresentationTelemetry.Snapshot,
     ): Int {
         val fixedCeiling =
             fixedGeneratedCeiling.coerceIn(0, MAX_GENERATED_FRAMES)
@@ -347,7 +346,7 @@ class ApexCadenceScheduler {
                 .coerceIn(0, MAX_GENERATED_FRAMES)
 
         val presentationCapacity =
-            computePresentationCapacityPerSource(presentation)
+            computePresentationCapacityPerSource()
         presentationOpportunityBudget =
             ceil(presentationCapacity - INTEGER_SNAP_EPSILON)
                 .toInt()
@@ -395,12 +394,9 @@ class ApexCadenceScheduler {
         return whole.coerceAtMost(MAX_GENERATED_FRAMES)
     }
 
-    private fun computePresentationCapacityPerSource(
-        presentation: ApexPresentationTelemetry.Snapshot,
-    ): Double {
+    private fun computePresentationCapacityPerSource(): Double {
         val measuredOpportunityFps =
-            presentation.opportunityFps.takeIf { it > 1f }?.toDouble()
-                ?: measuredCapacityFps().toDouble().takeIf { it > 1.0 }
+            measuredCapacityFps().toDouble().takeIf { it > 1.0 }
                 ?: return MAX_GENERATED_FRAMES.toDouble()
         val opportunitiesPerSource =
             measuredOpportunityFps * sourcePeriodNanos / NANOS_PER_SECOND

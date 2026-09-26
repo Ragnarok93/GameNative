@@ -289,8 +289,14 @@ void ApexEngine::cacheUniformLocations() {
 }
 
 void ApexEngine::setDedicatedPresentationContext(bool enabled) {
+    if (mDedicatedPresentationContext == enabled) return;
     mDedicatedPresentationContext = enabled;
-    if (!enabled) return;
+    mBoundProgram = 0;
+    mDedicatedQuadVaoBound = false;
+    if (!enabled) {
+        glBindVertexArray(0);
+        return;
+    }
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -756,9 +762,13 @@ void ApexEngine::blitQuad(GLuint tex, float uMin, float vMin, float uScale, floa
         glUniform4f(mUniforms.quadBounds, uMin, vMin, uScale, vScale);
     }
 
-    if (mQuadVao) glBindVertexArray(mQuadVao);
+    if (!mDedicatedPresentationContext && mQuadVao) glBindVertexArray(mQuadVao);
+    if (mDedicatedPresentationContext && mQuadVao && !mDedicatedQuadVaoBound) {
+        glBindVertexArray(mQuadVao);
+        mDedicatedQuadVaoBound = true;
+    }
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    if (mQuadVao) glBindVertexArray(0);
+    if (!mDedicatedPresentationContext && mQuadVao) glBindVertexArray(0);
 
     endBlitState(state);
     mPassBlit.fetch_add(1, std::memory_order_relaxed);
@@ -876,11 +886,13 @@ void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw,
     if (mUniforms.interpolateCollectTelemetry >= 0) glUniform1i(mUniforms.interpolateCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((w + 15) / 16, (h + 7) / 8, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
-    glBindImageTexture(4, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
+    if (!mDedicatedPresentationContext) {
+        glBindImageTexture(4, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
+    }
     mPassInterpolate.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisInterpolate");
 }
@@ -892,8 +904,10 @@ void ApexEngine::dispatchRcas(GLuint inTex, GLuint outImage, int w, int h, float
     if (mUniforms.rcasSharpness >= 0) glUniform1f(mUniforms.rcasSharpness, sharpness);
     glDispatchCompute((w + 15) / 16, (h + 15) / 16, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
-    glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
+    if (!mDedicatedPresentationContext) {
+        glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
+    }
     checkGlPassError("DisRcas");
 }
 

@@ -109,7 +109,6 @@ class ApexVulkanPresenter(
                     // Source cadence is captured at the producer boundary.
                     // Choreographer remains only the display-opportunity clock.
                     scheduler.recordSourceFrame(sourceTimestampNanos)
-                    val presentation = ApexPresentationTelemetry.snapshot(frameTimeNanos)
                     val adaptive = ApexNativeBridge.nativeIsAdaptiveFrameGeneration()
                     val requestedCeiling = if (adaptive) {
                         3
@@ -128,7 +127,6 @@ class ApexVulkanPresenter(
                         adaptive = adaptive,
                         fixedGeneratedCeiling = requestedCeiling,
                         targetFps = ApexNativeBridge.nativeGetTargetFPS(),
-                        presentation = presentation,
                     )
                     ApexPresentationTelemetry.recordAdmission(generationBudget)
                     val result = nativePresentSourceFrame(

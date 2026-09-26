@@ -297,6 +297,7 @@ private:
     UniformLocations mUniforms{};
     GLuint mBoundProgram{0};
     bool mDedicatedPresentationContext{false};
+    bool mDedicatedQuadVaoBound{false};
 
     // Hardware & Extension Audit
     void auditHardwareAndExtensions();

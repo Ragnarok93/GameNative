@@ -707,4 +707,99 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+
+    @Test
+    fun generatedPrefixProgressCommitsOnlyAfterSuccessfulSwap() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val presenter = repoFile("app/src/main/cpp/apex/apex_vulkan_presenter.cpp").readText()
+
+        assertTrue(
+            "ApexEngine must expose an explicit successful-presentation commit seam",
+            engine.contains("commitPresentedOutput"),
+        )
+
+        val readyStart = pipeline.indexOf("void ApexEngine::presentGeneratedReady")
+        val processWithData = pipeline.indexOf("void ApexEngine::processFrameWithData", readyStart)
+        assertTrue(readyStart >= 0 && processWithData > readyStart)
+        val readyPath = pipeline.substring(readyStart, processWithData)
+        assertFalse(
+            "generated prefix progress must not advance before eglSwapBuffers succeeds",
+            readyPath.contains("mFramesSinceReal.store("),
+        )
+        assertFalse(
+            "source-prefix ownership must not clear before source swap succeeds",
+            readyPath.contains("mPendingRealPresentation.store(false"),
+        )
+
+        val sourcePresentStart = presenter.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame",
+        )
+        val generatedPresentStart = presenter.indexOf(
+            "Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame",
+        )
+        assertTrue(sourcePresentStart >= 0 && generatedPresentStart > sourcePresentStart)
+        val sourcePresent = presenter.substring(sourcePresentStart, generatedPresentStart)
+        val generatedPresent = presenter.substring(generatedPresentStart)
+
+        assertTrue(
+            "source-path state must commit only after a successful swap",
+            sourcePresent.contains("if (swapSucceeded") &&
+                sourcePresent.contains("commitPresentedOutput(outputKind)"),
+        )
+        assertTrue(
+            "generated-path state must commit only after a successful swap",
+            generatedPresent.contains("if (swapSucceeded") &&
+                generatedPresent.contains("commitPresentedOutput(outputKind)"),
+        )
+    }
+
+    @Test
+    fun flowScaleChangesProcessingResolutionWithoutShrinkingMotionVectors() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val shaders = repoFile("app/src/main/cpp/apex/apex_shaders.h").readText()
+
+        assertTrue(
+            "Flow Scale must remain part of optical-flow resource sizing",
+            pipeline.contains("mFlowScale.load") &&
+                engine.contains("setFlowScale"),
+        )
+        assertFalse(
+            "LSFG-style Flow Scale must not also attenuate the computed motion-vector magnitude",
+            shaders.contains("sampleFlow(denseFlow, uv) * (u_flowScale"),
+        )
+        val interpolateStart = pipeline.indexOf("void ApexEngine::dispatchInterpolate")
+        val rcasStart = pipeline.indexOf("void ApexEngine::dispatchRcas", interpolateStart)
+        assertTrue(interpolateStart >= 0 && rcasStart > interpolateStart)
+        val interpolate = pipeline.substring(interpolateStart, rcasStart)
+        assertFalse(
+            "interpolation must not feed the processing-resolution scale back into motion magnitude",
+            interpolate.contains("mFlowScale.load"),
+        )
+    }
+
+    @Test
+    fun readyAheadInterpolationCostCountsActualPreparedSyntheticFrames() {
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        val prepareStart = pipeline.indexOf("bool ApexEngine::prepareGeneratedSlot")
+        val refillStart = pipeline.indexOf("bool ApexEngine::prepareNextGeneratedReady", prepareStart)
+        assertTrue(prepareStart >= 0 && refillStart > prepareStart)
+        val prepare = pipeline.substring(prepareStart, refillStart)
+
+        assertTrue(
+            "every prepared synthetic slot must contribute to the measured interpolation cost",
+            prepare.contains("mLastSyntheticCostNanos.store"),
+        )
+        assertTrue(
+            "the cost sample count must track prepared synthetics rather than the admitted budget",
+            prepare.contains("mLastSyntheticCostBudget.store"),
+        )
+        assertFalse(
+            "admitted 3x/4x budget must not be reported as if every synthetic had already been measured",
+            pipeline.contains("mLastSyntheticCostBudget.store(generationBudget"),
+        )
+    }
+
 }

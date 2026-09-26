@@ -45,11 +45,40 @@ add_custom_command(
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/winlator/window.frag
 )
 
+set(APEX_VK_SHADER_NAMES
+    luma_grad
+    inverse_search
+    propagate
+    densify
+    vr_setup
+    vr_sor
+    interpolate
+    rcas
+)
+set(APEX_VK_SHADER_HEADERS)
+foreach(APEX_VK_SHADER IN LISTS APEX_VK_SHADER_NAMES)
+    set(APEX_VK_SHADER_SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/apex/vulkan/shaders/${APEX_VK_SHADER}.comp")
+    set(APEX_VK_SHADER_HEADER
+        "${CMAKE_CURRENT_BINARY_DIR}/apex_vk_${APEX_VK_SHADER}.h")
+    add_custom_command(
+        OUTPUT ${APEX_VK_SHADER_HEADER}
+        COMMAND glslangValidator -V --target-env vulkan1.1
+            --vn apex_vk_${APEX_VK_SHADER}_code -x
+            -o ${APEX_VK_SHADER_HEADER}
+            ${APEX_VK_SHADER_SOURCE}
+        DEPENDS ${APEX_VK_SHADER_SOURCE}
+    )
+    list(APPEND APEX_VK_SHADER_HEADERS ${APEX_VK_SHADER_HEADER})
+endforeach()
+
 add_library(vulkan_renderer SHARED
             winlator/vulkan_jni.cpp
             winlator/VulkanRendererContext.cpp
             winlator/VulkanRendererScanout.cpp
             apex/apex_frame_target_ring.cpp
+            apex/vulkan/apex_vk_backend.cpp
+            ${APEX_VK_SHADER_HEADERS}
             ${CMAKE_CURRENT_BINARY_DIR}/window_vert.h
             ${CMAKE_CURRENT_BINARY_DIR}/window_frag.h)
 

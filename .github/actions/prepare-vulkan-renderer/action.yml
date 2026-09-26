@@ -38,6 +38,7 @@ runs:
         built="$build_dir/libvulkan_renderer.so"
         test -s "$built"
         strings "$built" | grep -Fq 'gamenative-apex-vulkan-target-v1'
+        strings "$built" | grep -Fq 'gamenative-apex-vulkan-compute-v1'
         symbols="$("$readelf_bin" -Ws "$built")"
         for symbol in           Java_com_winlator_renderer_VulkanRenderer_nativeEnableApexTarget           Java_com_winlator_renderer_VulkanRenderer_nativeDequeueApexFrame           Java_com_winlator_renderer_VulkanRenderer_nativeReleaseApexFrame; do
           grep -q "$symbol" <<<"$symbols"

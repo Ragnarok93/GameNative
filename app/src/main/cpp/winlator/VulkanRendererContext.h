@@ -395,6 +395,23 @@ private:
         uint32_t frameIndex = 0;
         uint32_t generationBudget = 0;
         uint32_t generatedPresented = 0;
+
+        // Low-frequency validation telemetry. These counters describe the
+        // renderer-owned Vulkan path without adding per-frame log traffic.
+        uint64_t sourceCalls = 0;
+        uint64_t sourcePresented = 0;
+        uint64_t generatedPresentedTotal = 0;
+        uint64_t presentFailures = 0;
+        uint64_t requestedGeneratedTotal = 0;
+        uint64_t actualGeneratedTotal = 0;
+        uint64_t sourceRecordCostNanos = 0;
+        uint64_t sourceAcquireCostNanos = 0;
+        uint64_t sourceQueuePresentCostNanos = 0;
+        uint64_t generatedPresentCostNanos = 0;
+        uint64_t maxSourceCostNanos = 0;
+        uint64_t maxGeneratedCostNanos = 0;
+        uint64_t telemetryOutputs = 0;
+
         bool pendingSource = false;
         bool active = false;
     };
@@ -422,6 +439,7 @@ private:
     void renderApexFrame();
     bool createApexPresentSwapchain(ANativeWindow* window);
     void destroyApexPresentSwapchain();
+    void maybeLogApexVkValidationTelemetry(bool force = false);
     int presentApexVulkanImage(VkImage image, VkExtent2D sourceExtent, int outputKind);
 
     VkRenderPass          renderPass  = VK_NULL_HANDLE;

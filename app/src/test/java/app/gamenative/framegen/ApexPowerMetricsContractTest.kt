@@ -140,4 +140,17 @@ class ApexPowerMetricsContractTest {
         )
     }
 
+
+    @Test
+    fun apexSessionSkipsLsfgRuntimePressureFilePublication() {
+        val collector = repoFile(
+            "app/src/main/java/app/gamenative/powercontrol/metrics/PerformanceMetricsCollector.kt",
+        ).readText()
+        assertTrue(
+            "LSFG runtime-pressure filesystem writes are wasted while Apex owns frame generation",
+            collector.contains("if (!apexPresentation.active)") &&
+                collector.contains("LsfgVkManager.publishRuntimePressure"),
+        )
+    }
+
 }

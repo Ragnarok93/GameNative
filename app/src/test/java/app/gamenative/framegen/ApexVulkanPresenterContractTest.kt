@@ -469,11 +469,13 @@ class ApexVulkanPresenterContractTest {
                 native.contains("setFlowShortSideCap(180)"),
         )
         assertTrue(
-            "flow scale must affect resource sizing and invalidate resources when changed",
-            engine.contains("setFlowShortSideCap") &&
-                engine.contains("mResourcesDirty.store(true") &&
+            "flow scale and the Adreno range must participate in effective resource sizing",
+            engine.contains("setFlowScale") &&
+                engine.contains("setFlowShortSideCap") &&
                 pipeline.contains("mFlowScale.load") &&
-                pipeline.contains("mFlowShortSideCap.load"),
+                pipeline.contains("mFlowShortSideCap.load") &&
+                pipeline.contains("fw == mFlowWidth") &&
+                pipeline.contains("fh == mFlowHeight"),
         )
     }
 
@@ -582,19 +584,17 @@ class ApexVulkanPresenterContractTest {
         val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
 
         val interpolateStart = pipeline.indexOf("void ApexEngine::dispatchInterpolate")
-        val rcasStart = pipeline.indexOf("void ApexEngine::dispatchRcas", interpolateStart)
-        val healthyStart = pipeline.indexOf("bool ApexEngine::isHealthy", rcasStart)
-        assertTrue(interpolateStart >= 0 && rcasStart > interpolateStart && healthyStart > rcasStart)
-        val interpolate = pipeline.substring(interpolateStart, rcasStart)
-        val rcas = pipeline.substring(rcasStart, healthyStart)
+        val healthyStart = pipeline.indexOf("bool ApexEngine::isHealthy", interpolateStart)
+        assertTrue(interpolateStart >= 0 && healthyStart > interpolateStart)
+        val interpolate = pipeline.substring(interpolateStart, healthyStart)
 
         assertTrue(
             "dedicated Apex context must skip texture/image unbind churn after interpolation",
             interpolate.contains("if (!mDedicatedPresentationContext)"),
         )
-        assertTrue(
-            "dedicated Apex context must skip RCAS cleanup that the next pass overwrites",
-            rcas.contains("if (!mDedicatedPresentationContext)"),
+        assertFalse(
+            "removed RCAS work must not re-enter the active presenter hot path",
+            pipeline.contains("void ApexEngine::dispatchRcas"),
         )
         assertTrue(
             "program-cache state must be reset whenever dedicated-context ownership changes",
@@ -770,9 +770,9 @@ class ApexVulkanPresenterContractTest {
             shaders.contains("sampleFlow(denseFlow, uv) * (u_flowScale"),
         )
         val interpolateStart = pipeline.indexOf("void ApexEngine::dispatchInterpolate")
-        val rcasStart = pipeline.indexOf("void ApexEngine::dispatchRcas", interpolateStart)
-        assertTrue(interpolateStart >= 0 && rcasStart > interpolateStart)
-        val interpolate = pipeline.substring(interpolateStart, rcasStart)
+        val healthyStart = pipeline.indexOf("bool ApexEngine::isHealthy", interpolateStart)
+        assertTrue(interpolateStart >= 0 && healthyStart > interpolateStart)
+        val interpolate = pipeline.substring(interpolateStart, healthyStart)
         assertFalse(
             "interpolation must not feed the processing-resolution scale back into motion magnitude",
             interpolate.contains("mFlowScale.load"),
@@ -845,6 +845,10 @@ class ApexVulkanPresenterContractTest {
             pipeline.contains("sw == mScaledWidth") &&
                 pipeline.contains("fw == mFlowWidth") &&
                 pipeline.contains("fh == mFlowHeight"),
+        )
+        assertFalse(
+            "obsolete forced-dirty state must not add an atomic exchange to every resource check",
+            engine.contains("mResourcesDirty") || pipeline.contains("mResourcesDirty"),
         )
     }
 

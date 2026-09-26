@@ -554,8 +554,7 @@ void ApexEngine::ensureResources(int width, int height) {
     int fw = std::max(64, (int)(width * k + 0.5f));
     int fh = std::max(64, (int)(height * k + 0.5f));
 
-    const bool resourcesDirty = mResourcesDirty.exchange(false, std::memory_order_acq_rel);
-    if (mInitialized && !resourcesDirty && width == mSurfaceWidth && height == mSurfaceHeight &&
+    if (mInitialized && width == mSurfaceWidth && height == mSurfaceHeight &&
         sw == mScaledWidth && sh == mScaledHeight && fw == mFlowWidth && fh == mFlowHeight) {
         return;
     }

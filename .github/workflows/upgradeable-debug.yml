@@ -90,6 +90,28 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Run frame-generation and FrameRating Legacy tests
+        run: >-
+          ./gradlew :app:testLegacyDebugUnitTest --no-daemon
+          --tests app.gamenative.framegen.FrameGenerationBackendTest
+          --tests app.gamenative.framegen.ApexVulkanTargetContractTest
+          --tests app.gamenative.framegen.ApexVulkanPresenterContractTest
+          --tests app.gamenative.framegen.ApexPresentationHandoffContractTest
+          --tests app.gamenative.framegen.ApexHudTelemetryContractTest
+          --tests app.gamenative.framegen.ApexPresentationTelemetryTest
+          --tests app.gamenative.framegen.ApexCadenceSchedulerTest
+          --tests app.gamenative.framegen.ApexPowerMetricsContractTest
+          --tests app.gamenative.framegen.ApexXclipseCompatibilityContractTest
+          --tests app.gamenative.framegen.ApexContainerSettingsContractTest
+          --tests app.gamenative.framegen.ApexQuickMenuContractTest
+          --tests app.gamenative.utils.LsfgVkManagerTest
+          --tests app.gamenative.utils.LsfgQuickMenuHelperModeTest
+          --tests app.gamenative.utils.LsfgAdaptiveFlowUiContractTest
+          --tests app.gamenative.utils.LsfgBuildWorkflowContractTest
+          --tests app.gamenative.powercontrol.metrics.FrameTimeRingTest
+          --tests com.winlator.widget.FrameRatingTest
+          --tests com.winlator.widget.XServerFrameRatingRetargetContractTest
+
       - name: Build upgradeable LegacyDebug APK
         shell: bash
         run: |

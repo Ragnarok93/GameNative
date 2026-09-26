@@ -326,7 +326,6 @@ private:
 
     // Atomics
     std::atomic<bool> mActive{false}, mLoggingEnabled{false}, mDebugOverlay{false}, mPendingRealFrame{false}, mRenderingGeneratedFrame{false};
-    std::atomic<bool> mResourcesDirty{false};
     std::atomic<int> mLastOutputKind{APEX_OUTPUT_NONE};
     std::atomic<bool> mAdaptiveFrameGeneration{true};
     std::atomic<bool> mPendingRealPresentation{false};

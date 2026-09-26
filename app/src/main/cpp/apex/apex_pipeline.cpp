@@ -600,9 +600,6 @@ void ApexEngine::ensureResources(int width, int height) {
         mFlowColorTex[i] = createStorageTexture(fw, fh, GL_RGBA8, GL_LINEAR, "FlowColorTex", err);
         if (!mFlowColorTex[i]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
     }
-    mNativeWarpTex = createStorageTexture(sw, sh, GL_RGBA8, GL_LINEAR, "NativeWarpTex", err);
-    if (!mNativeWarpTex) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
-
     for (uint32_t generatedIndex = 0; generatedIndex < MAX_GENERATED_FRAMES; ++generatedIndex) {
         mGeneratedBatchTex[generatedIndex] =
             createStorageTexture(sw, sh, GL_RGBA8, GL_LINEAR, "GeneratedBatchTex", err);
@@ -641,17 +638,6 @@ void ApexEngine::ensureResources(int width, int height) {
         mLevels[i].denseFlowTex = createStorageTexture(lw, lh, motionStorageFormat(), motionStorageFilter(), "DenseFlowTex", err);
         if (!mLevels[i].denseFlowTex) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
 
-        mLevels[i].vrATex = createStorageTexture(lw, lh, motionStorageFormat(), GL_NEAREST, "vrATex", err);
-        if (!mLevels[i].vrATex) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
-
-        mLevels[i].vrBTex = createStorageTexture(lw, lh, motionStorageFormat(), GL_NEAREST, "vrBTex", err);
-        if (!mLevels[i].vrBTex) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
-
-        mLevels[i].vrDWTex[0] = createStorageTexture(lw, lh, motionStorageFormat(), motionStorageFilter(), "vrDWTex0", err);
-        if (!mLevels[i].vrDWTex[0]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
-
-        mLevels[i].vrDWTex[1] = createStorageTexture(lw, lh, motionStorageFormat(), motionStorageFilter(), "vrDWTex1", err);
-        if (!mLevels[i].vrDWTex[1]) { mResourceAllocSuccess = false; mResourceErrorDetails += err + "; "; }
     }
 
     if (!mTelemetrySsbo) {
@@ -709,7 +695,6 @@ void ApexEngine::cleanupResources() {
         if (mColorRingTex[i]) { glDeleteTextures(1, &mColorRingTex[i]); mColorRingTex[i] = 0; }
         if (mFlowColorTex[i]) { glDeleteTextures(1, &mFlowColorTex[i]); mFlowColorTex[i] = 0; }
     }
-    if (mNativeWarpTex) { glDeleteTextures(1, &mNativeWarpTex); mNativeWarpTex = 0; }
     for (uint32_t generatedIndex = 0; generatedIndex < MAX_GENERATED_FRAMES; ++generatedIndex) {
         if (mGeneratedBatchTex[generatedIndex]) {
             glDeleteTextures(1, &mGeneratedBatchTex[generatedIndex]);
@@ -729,10 +714,6 @@ void ApexEngine::cleanupResources() {
         if (mLevels[i].sparseFlowTex[0]) { glDeleteTextures(1, &mLevels[i].sparseFlowTex[0]); mLevels[i].sparseFlowTex[0] = 0; }
         if (mLevels[i].sparseFlowTex[1]) { glDeleteTextures(1, &mLevels[i].sparseFlowTex[1]); mLevels[i].sparseFlowTex[1] = 0; }
         if (mLevels[i].denseFlowTex) { glDeleteTextures(1, &mLevels[i].denseFlowTex); mLevels[i].denseFlowTex = 0; }
-        if (mLevels[i].vrATex) { glDeleteTextures(1, &mLevels[i].vrATex); mLevels[i].vrATex = 0; }
-        if (mLevels[i].vrBTex) { glDeleteTextures(1, &mLevels[i].vrBTex); mLevels[i].vrBTex = 0; }
-        if (mLevels[i].vrDWTex[0]) { glDeleteTextures(1, &mLevels[i].vrDWTex[0]); mLevels[i].vrDWTex[0] = 0; }
-        if (mLevels[i].vrDWTex[1]) { glDeleteTextures(1, &mLevels[i].vrDWTex[1]); mLevels[i].vrDWTex[1] = 0; }
     }
     if (mTelemetrySsbo) {
         glDeleteBuffers(1, &mTelemetrySsbo);
@@ -878,6 +859,89 @@ void ApexEngine::dispatchVrSor(GLuint at, GLuint bt, GLuint dwi, GLuint dwo, flo
     glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     checkGlPassError("DisVrSor");
+}
+
+void ApexEngine::dispatchInterpolateBatch(
+    GLuint pc,
+    GLuint nc,
+    GLuint df,
+    GLuint dw,
+    const GLuint* outputs,
+    int generationCount,
+    int w,
+    int h) {
+    const int count = std::clamp(
+        generationCount,
+        0,
+        static_cast<int>(MAX_GENERATED_FRAMES));
+    if (count <= 0 || outputs == nullptr) return;
+
+    useProgram(mProgInterpolate);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, pc);
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, nc);
+    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, df);
+    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, dw);
+
+    const bool collectTelemetry =
+        mLoggingEnabled.load(std::memory_order_relaxed);
+    const GLbitfield telemetryBarrier =
+        collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
+    if (mUniforms.interpolateFlowScale >= 0) {
+        glUniform1f(mUniforms.interpolateFlowScale, mFlowScale.load());
+    }
+    if (mUniforms.interpolateLiquidFeel >= 0) {
+        glUniform1f(mUniforms.interpolateLiquidFeel, mLiquidFeel.load());
+    }
+    if (mUniforms.interpolateShutterGain >= 0) {
+        glUniform1f(mUniforms.interpolateShutterGain, mShutterGain.load());
+    }
+    if (mUniforms.interpolateEdgeGuard >= 0) {
+        glUniform1f(mUniforms.interpolateEdgeGuard, mEdgeGuard.load());
+    }
+    if (mUniforms.interpolateCollectTelemetry >= 0) {
+        glUniform1i(
+            mUniforms.interpolateCollectTelemetry,
+            collectTelemetry ? 1 : 0);
+    }
+
+    const float denominator = static_cast<float>(count + 1);
+    for (int generatedIndex = 0; generatedIndex < count; ++generatedIndex) {
+        glBindImageTexture(
+            4,
+            outputs[generatedIndex],
+            0,
+            GL_FALSE,
+            0,
+            GL_WRITE_ONLY,
+            GL_RGBA8);
+        if (mUniforms.interpolateT >= 0) {
+            glUniform1f(
+                mUniforms.interpolateT,
+                static_cast<float>(generatedIndex + 1) / denominator);
+        }
+        glDispatchCompute((w + 15) / 16, (h + 7) / 8, 1);
+    }
+
+    // All batch outputs are independent writes from the same read-only inputs.
+    // Publish them once after the final dispatch instead of serializing every
+    // synthetic with its own image/texture barrier.
+    glMemoryBarrier(
+        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+        GL_TEXTURE_FETCH_BARRIER_BIT |
+        telemetryBarrier);
+
+    if (!mDedicatedPresentationContext) {
+        glBindImageTexture(4, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    mPassInterpolate.fetch_add(
+        static_cast<uint64_t>(count),
+        std::memory_order_relaxed);
+    checkGlPassError("DisInterpolateBatch");
 }
 
 void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h) {
@@ -1299,21 +1363,16 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         // pair and flow field are hot. Display callbacks then only select and
         // present an already-ready texture instead of submitting interpolation
         // compute on the Choreographer deadline.
-        const int mult = generationBudget + 1;
         beginGpuTimer(ApexGpuTimerStage::Interpolate);
-        for (int generatedIndex = 0; generatedIndex < generationBudget; ++generatedIndex) {
-            const float t =
-                static_cast<float>(generatedIndex + 1) / static_cast<float>(mult);
-            dispatchInterpolate(
-                mColorRingTex[mPreviousSlot],
-                mColorRingTex[mCurrentSlot],
-                l0.denseFlowTex,
-                l0.denseFlowTex,
-                mGeneratedBatchTex[generatedIndex],
-                t,
-                mScaledWidth,
-                mScaledHeight);
-        }
+        dispatchInterpolateBatch(
+            mColorRingTex[mPreviousSlot],
+            mColorRingTex[mCurrentSlot],
+            l0.denseFlowTex,
+            l0.denseFlowTex,
+            mGeneratedBatchTex,
+            generationBudget,
+            mScaledWidth,
+            mScaledHeight);
         endGpuTimer();
         mLastSyntheticCostNanos.store(
             std::chrono::duration_cast<std::chrono::nanoseconds>(

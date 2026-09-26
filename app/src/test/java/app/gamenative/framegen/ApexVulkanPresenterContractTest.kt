@@ -600,8 +600,25 @@ class ApexVulkanPresenterContractTest {
 
         assertTrue(
             "source processing must prepare every admitted interpolation position before presenting the first synthetic",
-            sourcePath.contains("for (int generatedIndex = 0; generatedIndex < generationBudget; ++generatedIndex)") &&
-                sourcePath.contains("mGeneratedBatchTex[generatedIndex]"),
+            sourcePath.contains("dispatchInterpolateBatch(") &&
+                sourcePath.contains("mGeneratedBatchTex"),
+        )
+        val batchStart = pipeline.indexOf("void ApexEngine::dispatchInterpolateBatch")
+        val singleStart = pipeline.indexOf("void ApexEngine::dispatchInterpolate(", batchStart)
+        assertTrue(batchStart >= 0 && singleStart > batchStart)
+        val batchPath = pipeline.substring(batchStart, singleStart)
+        assertTrue(
+            "batch interpolation must bind shared inputs once and vary only output image / interpolation position",
+            batchPath.contains("for (int generatedIndex = 0; generatedIndex < count; ++generatedIndex)") &&
+                batchPath.indexOf("glBindTexture(GL_TEXTURE_2D, pc)") <
+                    batchPath.indexOf("for (int generatedIndex = 0; generatedIndex < count; ++generatedIndex)"),
+        )
+        val firstBarrier = batchPath.indexOf("glMemoryBarrier(")
+        assertTrue(firstBarrier >= 0)
+        assertEquals(
+            "independent generated outputs should publish with one final barrier",
+            -1,
+            batchPath.indexOf("glMemoryBarrier(", firstBarrier + 1),
         )
         assertFalse(
             "generated display callbacks must not run interpolation compute on the display deadline",
@@ -611,6 +628,30 @@ class ApexVulkanPresenterContractTest {
             "generated display callbacks must present an already prepared batch texture",
             pulsePath.contains("mGeneratedBatchTex[fs]"),
         )
+    }
+
+
+    @Test
+    fun dormantVrResourcesAreNotAllocatedByActiveApexPipeline() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        listOf(
+            "mNativeWarpTex",
+            "vrATex",
+            "vrBTex",
+            "vrDWTex",
+            "\"NativeWarpTex\"",
+            "\"vrATex\"",
+            "\"vrBTex\"",
+            "\"vrDWTex0\"",
+            "\"vrDWTex1\"",
+        ).forEach { token ->
+            assertFalse(
+                "active Apex pipeline still allocates dormant resource $token",
+                engine.contains(token) || pipeline.contains(token),
+            )
+        }
     }
 
 }

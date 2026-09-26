@@ -84,9 +84,6 @@ struct DisLevel {
     GLuint gradientTex[DIS_SLOTS]{0}; // Per-slot to preserve template frame gradients
     GLuint sparseFlowTex[2]{0}; // Ping-pong for propagation
     GLuint denseFlowTex{0};
-    GLuint vrATex{0};
-    GLuint vrBTex{0};
-    GLuint vrDWTex[2]{0};       // Ping-pong for Red-Black SOR sweeps
 };
 
 class ApexEngine {
@@ -121,6 +118,15 @@ public:
     void dispatchVrSetup(GLuint denseFlow, GLuint prevColor, GLuint nextColor, GLuint outA, GLuint outB, GLuint outDW, int w, int h);
     void dispatchVrSor(GLuint at, GLuint bt, GLuint dwi, GLuint dwo, float om, int p, int w, int h);
     void dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h);
+    void dispatchInterpolateBatch(
+        GLuint pc,
+        GLuint nc,
+        GLuint df,
+        GLuint dw,
+        const GLuint* outputs,
+        int generationCount,
+        int w,
+        int h);
     void dispatchRcas(GLuint inTex, GLuint outImage, int w, int h, float sharpness);
 
     // Pacing & Telemetry
@@ -258,7 +264,6 @@ private:
 
     GLuint mColorRingTex[DIS_SLOTS]{0};    // Native-res real frames
     GLuint mFlowColorTex[DIS_SLOTS]{0};    // 180p downscaled flow inputs
-    GLuint mNativeWarpTex{0};               // Native-res intermediate warped frame
     GLuint mGeneratedBatchTex[MAX_GENERATED_FRAMES]{0}; // Ready synthetics for the active source pair
     GLuint mCaptureFbo[DIS_SLOTS]{0};
     GLuint mFlowFbo[DIS_SLOTS]{0};

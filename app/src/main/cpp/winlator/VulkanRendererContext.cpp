@@ -70,6 +70,7 @@ VulkanRendererContext::~VulkanRendererContext() {
     }
     deleteQueue.clear();
     destroyApexTargetResources();
+    destroyApexVkBackend();
     destroyXrTargetResources();
     cleanupSwapchain(); cleanupCursorTex();
     
@@ -153,6 +154,7 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(CreateShaderModule);
     LOAD_D2(DestroyShaderModule);
     LOAD_D2(CreateGraphicsPipelines);
+    LOAD_D2(CreateComputePipelines);
     LOAD_D2(DestroyPipeline);
     LOAD_D2(CreateCommandPool);
     LOAD_D2(DestroyCommandPool);
@@ -166,6 +168,7 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(CmdBindPipeline);
     LOAD_D2(CmdBindDescriptorSets);
     LOAD_D2(CmdDraw);
+    LOAD_D2(CmdDispatch);
     LOAD_D2(CmdPushConstants);
     LOAD_D2(CmdSetViewport);
     LOAD_D2(CmdSetScissor);
@@ -1138,10 +1141,59 @@ void VulkanRendererContext::destroyApexTargetResources() {
     apexTargetRing.reset();
 }
 
+
+bool VulkanRendererContext::ensureApexVkBackend() {
+    if (apexVkBackend && apexVkBackend->healthy()) return true;
+
+    auto backend = std::make_unique<gamenative::apex::vk::Backend>();
+    gamenative::apex::vk::Context context{};
+    context.physicalDevice = physicalDevice;
+    context.device = device;
+    context.queue = graphicsQueue;
+    context.queueFamilyIndex = graphicsQueueFamilyIndex;
+    context.memoryProperties = memProperties;
+    context.dispatch.CreateDescriptorSetLayout = vk_.CreateDescriptorSetLayout;
+    context.dispatch.DestroyDescriptorSetLayout = vk_.DestroyDescriptorSetLayout;
+    context.dispatch.CreatePipelineLayout = vk_.CreatePipelineLayout;
+    context.dispatch.DestroyPipelineLayout = vk_.DestroyPipelineLayout;
+    context.dispatch.CreateShaderModule = vk_.CreateShaderModule;
+    context.dispatch.DestroyShaderModule = vk_.DestroyShaderModule;
+    context.dispatch.CreateComputePipelines = vk_.CreateComputePipelines;
+    context.dispatch.DestroyPipeline = vk_.DestroyPipeline;
+    context.dispatch.CmdBindPipeline = vk_.CmdBindPipeline;
+    context.dispatch.CmdBindDescriptorSets = vk_.CmdBindDescriptorSets;
+    context.dispatch.CmdPushConstants = vk_.CmdPushConstants;
+    context.dispatch.CmdDispatch = vk_.CmdDispatch;
+
+    if (!backend->initialize(context)) {
+        RLOG(
+            "apexVk: native compute backend unavailable; retaining compatibility presenter: %s",
+            backend->diagnostics().c_str());
+        return false;
+    }
+
+    RLOG("apexVk: %s", backend->diagnostics().c_str());
+    apexVkBackend = std::move(backend);
+    return true;
+}
+
+void VulkanRendererContext::destroyApexVkBackend() {
+    if (!apexVkBackend) return;
+    apexVkBackend->destroy();
+    apexVkBackend.reset();
+}
+
 bool VulkanRendererContext::enableApexTarget() {
     std::unique_lock<std::shared_mutex> frameLock(frameMutex);
     std::lock_guard<std::mutex> apexLock(apexTargetMutex);
     if (device == VK_NULL_HANDLE || xrTargetActive.load()) return false;
+
+    // Stage all Apex compute pipelines on the renderer-owned device. Until the
+    // resource/descriptor migration is complete, failure is non-fatal and the
+    // compatibility presenter remains the active frame consumer.
+    const bool apexVkReady = ensureApexVkBackend();
+    RLOG("apexTarget: native Vulkan compute backend=%s",
+        apexVkReady ? "ready" : "fallback");
 
     // Keep the Android presentation surface at its native extent, but render the
     // Apex producer ring at a bounded processing extent with the same aspect ratio.

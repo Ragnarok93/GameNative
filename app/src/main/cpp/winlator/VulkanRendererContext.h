@@ -3,6 +3,7 @@
 #include <list>
 #include <vulkan/vulkan_android.h>
 #include "../apex/apex_frame_target_ring.h"
+#include "../apex/vulkan/apex_vk_backend.h"
 struct VkTable {
 
     PFN_vkCreateInstance CreateInstance;
@@ -60,6 +61,7 @@ struct VkTable {
     PFN_vkCreateShaderModule CreateShaderModule;
     PFN_vkDestroyShaderModule DestroyShaderModule;
     PFN_vkCreateGraphicsPipelines CreateGraphicsPipelines;
+    PFN_vkCreateComputePipelines CreateComputePipelines;
     PFN_vkDestroyPipeline DestroyPipeline;
     PFN_vkCreateCommandPool CreateCommandPool;
     PFN_vkDestroyCommandPool DestroyCommandPool;
@@ -73,6 +75,7 @@ struct VkTable {
     PFN_vkCmdBindPipeline CmdBindPipeline;
     PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets;
     PFN_vkCmdDraw CmdDraw;
+    PFN_vkCmdDispatch CmdDispatch;
     PFN_vkCmdPushConstants CmdPushConstants;
     PFN_vkCmdSetViewport CmdSetViewport;
     PFN_vkCmdSetScissor CmdSetScissor;
@@ -109,6 +112,7 @@ struct VkTable {
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <memory>
 #include <shared_mutex>
 #include <condition_variable>
 
@@ -367,6 +371,7 @@ private:
     VkRenderPass apexRp = VK_NULL_HANDLE;
     VkExtent2D apexExt{0,0};
     std::atomic<bool> apexTargetActive{false};
+    std::unique_ptr<gamenative::apex::vk::Backend> apexVkBackend;
     // A consumer release only schedules another capture when a real renderer
     // update previously lost the race for a free Apex target slot. Without
     // this distinction every release feeds back into another identical source
@@ -378,6 +383,8 @@ private:
     std::mutex apexTargetMutex;
     bool createApexTargetResources(uint32_t w, uint32_t h);
     void destroyApexTargetResources();
+    bool ensureApexVkBackend();
+    void destroyApexVkBackend();
     bool recreateApexProducerSemaphore(ApexTargetSlot& slot);
     void renderApexFrame();
 

@@ -66,6 +66,8 @@ struct Presenter {
     uint64_t generatedPresented = 0;
     uint64_t repeatedPresented = 0;
     uint64_t swapFailures = 0;
+    uint64_t sourceSwapFailures = 0;
+    uint64_t generatedSwapFailures = 0;
     uint64_t costSamples = 0;
     uint64_t acquireCostNanos = 0;
     uint64_t processCostNanos = 0;
@@ -148,6 +150,19 @@ void recordPresentation(Presenter& presenter, int outputKind, bool swapSucceeded
     presenter.presentAttempts++;
     if (!swapSucceeded) {
         presenter.swapFailures++;
+        if (outputKind == apex::APEX_OUTPUT_SOURCE) {
+            presenter.sourceSwapFailures++;
+        } else if (outputKind == apex::APEX_OUTPUT_GENERATED) {
+            presenter.generatedSwapFailures++;
+        }
+        const EGLint eglError = eglGetError();
+        PRES_LOGW(
+            "Apex swap failure: kind=%d eglError=0x%x total=%llu source=%llu generated=%llu",
+            outputKind,
+            eglError,
+            (unsigned long long)presenter.swapFailures,
+            (unsigned long long)presenter.sourceSwapFailures,
+            (unsigned long long)presenter.generatedSwapFailures);
     } else {
         presenter.outputPresented++;
         switch (outputKind) {
@@ -159,13 +174,15 @@ void recordPresentation(Presenter& presenter, int outputKind, bool swapSucceeded
     }
     if ((presenter.presentAttempts % 120ULL) == 0ULL) {
         PRES_LOGI(
-            "Apex presentation telemetry: attempts=%llu output=%llu source=%llu generated=%llu repeats=%llu swapFailures=%llu",
+            "Apex presentation telemetry: attempts=%llu output=%llu source=%llu generated=%llu repeats=%llu swapFailures=%llu sourceSwapFailures=%llu generatedSwapFailures=%llu",
             (unsigned long long)presenter.presentAttempts,
             (unsigned long long)presenter.outputPresented,
             (unsigned long long)presenter.sourcePresented,
             (unsigned long long)presenter.generatedPresented,
             (unsigned long long)presenter.repeatedPresented,
-            (unsigned long long)presenter.swapFailures);
+            (unsigned long long)presenter.swapFailures,
+            (unsigned long long)presenter.sourceSwapFailures,
+            (unsigned long long)presenter.generatedSwapFailures);
         if (presenter.costSamples > 0) {
             const double d = static_cast<double>(presenter.costSamples) * 1000000.0;
             const double sourceSwapMs =

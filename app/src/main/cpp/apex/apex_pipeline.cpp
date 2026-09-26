@@ -1156,7 +1156,10 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
             mActiveGenerationBudget.store(0, std::memory_order_release);
             mPreparedGenerationSlots.store(0, std::memory_order_release);
-            mPendingRealPresentation.store(false, std::memory_order_release);
+            // The source is copied into mColorRingTex and must remain retryable
+            // until eglSwapBuffers succeeds and commitPresentedOutput(SOURCE)
+            // clears the transaction.
+            mPendingRealPresentation.store(true, std::memory_order_release);
             return;
         }
 
@@ -1243,7 +1246,9 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
             mActiveGenerationBudget.store(0, std::memory_order_release);
             mPreparedGenerationSlots.store(0, std::memory_order_release);
-            mPendingRealPresentation.store(false, std::memory_order_release);
+            // Keep the copied real frame pending so a failed source swap can
+            // be retried on the next display opportunity.
+            mPendingRealPresentation.store(true, std::memory_order_release);
             return;
         }
         // PRESENT GENERATED FRAME FIRST
@@ -1307,7 +1312,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             float interpClipPct = mMathTelemetry.interpTotalPixels > 0
                 ? (float)mMathTelemetry.interpOutOfBoundsCount / (float)mMathTelemetry.interpTotalPixels * 100.0f : 0.0f;
 
-            APEX_LOGI("[APEX GPU VALIDATION] Frame #%llu | RealPres=%llu GenPres=%llu Fallbacks=%llu | Passes: LumaGrad=%llu InvSearch=%llu Propagate=%llu Densify=%llu Interp=%llu Blit=%llu | Shaders: %d/8 | LastGLErr: %s (%s)",
+            APEX_LOGI("[APEX GPU VALIDATION] Frame #%llu | RealPres=%llu GenPres=%llu Fallbacks=%llu | Passes: LumaGrad=%llu InvSearch=%llu Propagate=%llu Densify=%llu Interp=%llu Blit=%llu | Shaders: %d/5 | LastGLErr: %s (%s)",
                       (unsigned long long)mTotalFramesProcessed,
                       (unsigned long long)mTotalRealFramesPresented,
                       (unsigned long long)mTotalGenFramesPresented,
@@ -1336,7 +1341,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             APEX_LOGI("  • 4. Densification: Level 0 DenseMoving=%.1f%% (%u) | ZeroWeightFails=%u | NaN/Inf=%u",
                       denseActivePct, mMathTelemetry.denseActiveMovingCount,
                       mMathTelemetry.denseZeroWeightCount, mMathTelemetry.denseNanInfCount);
-            APEX_LOGI("  • 5. Interpolation: FSR 3 OcclusionRate=%.1f%% (%u) | BoundaryClip=%.1f%% (%u) | NaN/Inf=%u",
+            APEX_LOGI("  • 5. Interpolation: OcclusionRate=%.1f%% (%u) | BoundaryClip=%.1f%% (%u) | NaN/Inf=%u",
                       interpOcclPct, mMathTelemetry.interpOccludedCount,
                       interpClipPct, mMathTelemetry.interpOutOfBoundsCount,
                       mMathTelemetry.interpNanInfCount);
@@ -1417,13 +1422,13 @@ void ApexEngine::presentGeneratedReady(
 
     const int activeBudget =
         mActiveGenerationBudget.load(std::memory_order_acquire);
-    if (mRealFramesCaptured.load(std::memory_order_acquire) < 2 ||
-        activeBudget <= 0 ||
-        !mPendingRealPresentation.load(std::memory_order_acquire) ||
+    if (!mPendingRealPresentation.load(std::memory_order_acquire) ||
         viewWidth <= 0 ||
         viewHeight <= 0) {
         return;
     }
+    const bool hasInterpolationHistory =
+        mRealFramesCaptured.load(std::memory_order_acquire) >= 2;
 
     // mFramesSinceReal is the count of generated frames whose swaps have
     // actually succeeded. Selecting an output must not mutate that committed
@@ -1431,7 +1436,7 @@ void ApexEngine::presentGeneratedReady(
     const int fs =
         mFramesSinceReal.load(std::memory_order_acquire);
 
-    if (fs < activeBudget) {
+    if (activeBudget > 0 && hasInterpolationHistory && fs < activeBudget) {
         const int prepared =
             mPreparedGenerationSlots.load(std::memory_order_acquire);
         if (prepared <= fs) return;
@@ -1445,7 +1450,7 @@ void ApexEngine::presentGeneratedReady(
         return;
     }
 
-    if (fs == activeBudget) {
+    if (activeBudget <= 0 || !hasInterpolationHistory || fs >= activeBudget) {
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
         glViewport(viewX, viewY, viewWidth, viewHeight);
         blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);

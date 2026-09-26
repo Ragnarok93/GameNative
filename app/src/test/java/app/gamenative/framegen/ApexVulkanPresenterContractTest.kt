@@ -912,18 +912,32 @@ class ApexVulkanPresenterContractTest {
     }
 
     @Test
-    fun adreno650FlowScaleHasAQualityFloorWithoutRestoringMotionAttenuation() {
+    fun adreno650FlowScaleIsNotHardClampedToOneResolutionTier() {
         val presenter = repoFile("app/src/main/cpp/apex/apex_vulkan_presenter.cpp").readText()
-        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
         val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
 
-        assertTrue(
-            "Adreno 650 must not drop below the demonstrated 180p safe flow tier",
-            presenter.contains("setFlowShortSideFloor(180)"),
+        assertFalse(
+            "Adreno 650 must not force a minimum flow short side that overrides Flow Scale",
+            presenter.contains("setFlowShortSideFloor(180)") ||
+                presenter.contains("setFlowShortSideFloor(120)"),
         )
-        assertTrue(engine.contains("setFlowShortSideFloor"))
-        assertTrue(pipeline.contains("mFlowShortSideFloor.load"))
-        assertTrue(pipeline.contains("std::max(minSide"))
+        assertFalse(
+            "Adreno 650 must not force a maximum flow short side that overrides quality presets",
+            presenter.contains("setFlowShortSideCap(180)"),
+        )
+        assertFalse(
+            "runtime flow sizing must not depend on a device-specific floor",
+            pipeline.contains("mFlowShortSideFloor.load"),
+        )
+        assertFalse(
+            "runtime flow sizing must not depend on a device-specific cap",
+            pipeline.contains("mFlowShortSideCap.load"),
+        )
+        assertTrue(
+            "effective flow resolution must come from preset multiplied by Flow Scale",
+            pipeline.contains("scaledRequestedMinSide") &&
+                pipeline.contains("requestedMinSide * flowScale"),
+        )
     }
 
     @Test

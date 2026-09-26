@@ -10,9 +10,9 @@ import kotlin.math.min
  *
  * Source production timestamps describe demand; Choreographer callbacks describe
  * presentation opportunities. Neither fixed nor adaptive generation is disabled
- * because the source cadence slows. Generated slots may still be dropped when
- * the display has no opportunity, measured pipeline cost exceeds the interval,
- * or measured pipeline cost exceeds the source interval.
+ * because the source cadence slows. Admission may be bounded by presentation
+ * capacity or measured pipeline cost, but an admitted synthetic prefix is never
+ * canceled to prioritize newer source input.
  */
 class ApexCadenceScheduler {
     data class Diagnostics(

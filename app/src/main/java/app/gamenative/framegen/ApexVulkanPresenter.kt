@@ -30,7 +30,7 @@ class ApexVulkanPresenter(
     private var choreographer: Choreographer? = null
     private var hasSourceHistory = false
     private var callbacksSinceTelemetryLog = 0
-    private var nextSourceDeadlineNanos = 0L
+    private var nextSourceAdmissionNanos = 0L
     private var pendingSourceFrame: VulkanRenderer.ApexFrame? = null
     private var pendingSourceTimestampNanos = 0L
     private val scheduler = ApexCadenceScheduler()
@@ -128,7 +128,7 @@ class ApexVulkanPresenter(
         if (running) return
         ApexPresentationTelemetry.beginSession()
         callbacksSinceTelemetryLog = 0
-        nextSourceDeadlineNanos = 0L
+        nextSourceAdmissionNanos = 0L
         pendingSourceFrame = null
         pendingSourceTimestampNanos = 0L
         scheduler.reset()
@@ -169,20 +169,20 @@ class ApexVulkanPresenter(
     private fun shouldAcceptSource(sourceTimestampNanos: Long): Boolean {
         val sourceCap = renderer.fpsLimit
         if (sourceCap <= 0) {
-            nextSourceDeadlineNanos = 0L
+            nextSourceAdmissionNanos = 0L
             return true
         }
         val periodNanos = 1_000_000_000L / sourceCap.coerceAtLeast(1)
-        if (nextSourceDeadlineNanos == 0L) {
-            nextSourceDeadlineNanos = sourceTimestampNanos + periodNanos
+        if (nextSourceAdmissionNanos == 0L) {
+            nextSourceAdmissionNanos = sourceTimestampNanos + periodNanos
             return true
         }
         // Half-millisecond tolerance avoids alternating accept/drop decisions
         // from normal Choreographer timestamp jitter.
-        if (sourceTimestampNanos + 500_000L < nextSourceDeadlineNanos) return false
+        if (sourceTimestampNanos + 500_000L < nextSourceAdmissionNanos) return false
         do {
-            nextSourceDeadlineNanos += periodNanos
-        } while (nextSourceDeadlineNanos <= sourceTimestampNanos)
+            nextSourceAdmissionNanos += periodNanos
+        } while (nextSourceAdmissionNanos <= sourceTimestampNanos)
         return true
     }
 
@@ -290,7 +290,7 @@ class ApexVulkanPresenter(
                 pendingSourceTimestampNanos = 0L
                 if (handle != 0L) nativeDestroyPresenter(handle)
                 hasSourceHistory = false
-                nextSourceDeadlineNanos = 0L
+                nextSourceAdmissionNanos = 0L
                 scheduler.reset()
                 scheduleThreadShutdown(localHandler)
                 latch.countDown()

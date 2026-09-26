@@ -360,9 +360,9 @@ private:
     int mHistoryIdx{0};
     float mSmoothedDesired{0.0f};
 
-    // Synthetic admission is owned by ApexSourceProtectedScheduler. Native
-    // keeps only measured execution cost and the minimal temporal history
-    // required to execute an admitted batch.
+    // Synthetic admission is owned by ApexCadenceScheduler. Native keeps only
+    // measured execution cost and the minimal temporal history required to
+    // execute an admitted batch; it has no source-priority/preemption policy.
 
     std::atomic<int> mActualRealFrameCount{0}, mGeneratedFrameCount{0}, mRealFramesCaptured{0}, mRealFramesCapturedCount{0};
 };

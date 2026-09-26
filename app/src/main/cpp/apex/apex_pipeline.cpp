@@ -1450,14 +1450,14 @@ void ApexEngine::presentGeneratedReady(
     // mFramesSinceReal is the count of generated frames whose swaps have
     // actually succeeded. Selecting an output must not mutate that committed
     // progress; a failed swap retries the same output on the next opportunity.
-    const int delivered =
+    const int fs =
         mFramesSinceReal.load(std::memory_order_acquire);
 
-    if (delivered < activeBudget) {
+    if (fs < activeBudget) {
         const int prepared =
             mPreparedGenerationSlots.load(std::memory_order_acquire);
-        if (prepared <= delivered) return;
-        const GLuint readyTexture = mGeneratedBatchTex[delivered];
+        if (prepared <= fs) return;
+        const GLuint readyTexture = mGeneratedBatchTex[fs];
         if (readyTexture == 0) return;
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
         glViewport(viewX, viewY, viewWidth, viewHeight);
@@ -1467,7 +1467,7 @@ void ApexEngine::presentGeneratedReady(
         return;
     }
 
-    if (delivered == activeBudget) {
+    if (fs == activeBudget) {
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
         glViewport(viewX, viewY, viewWidth, viewHeight);
         blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);

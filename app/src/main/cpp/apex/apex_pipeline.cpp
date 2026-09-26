@@ -852,12 +852,11 @@ void ApexEngine::snapshotInterpolationSettings() {
     };
 }
 
-void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h) {
+void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint oi, float t, int w, int h) {
     useProgram(mProgInterpolate);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, pc);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, nc);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, df);
-    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, dw);
     glBindImageTexture(4, oi, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
     const bool collectTelemetry = mLoggingEnabled.load(std::memory_order_relaxed);
     const GLbitfield telemetryBarrier = collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
@@ -870,7 +869,6 @@ void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw,
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
     if (!mDedicatedPresentationContext) {
         glBindImageTexture(4, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-        glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
@@ -1378,7 +1376,6 @@ bool ApexEngine::prepareGeneratedSlot(
     dispatchInterpolate(
         mColorRingTex[mPreviousSlot],
         mColorRingTex[mCurrentSlot],
-        l0.denseFlowTex,
         l0.denseFlowTex,
         mGeneratedBatchTex[generatedIndex],
         t,

@@ -582,7 +582,6 @@ layout(local_size_x = 16, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D prevColor;
 layout(binding = 1) uniform sampler2D nextColor;
 layout(binding = 2) uniform sampler2D denseFlow;
-layout(binding = 3) uniform sampler2D dW;
 layout(binding = 4, rgba8) writeonly uniform highp image2D outImage;
 
 // Unified GPU Mathematical Divergence & Pipeline Telemetry Buffer

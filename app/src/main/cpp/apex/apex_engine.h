@@ -115,7 +115,7 @@ public:
                                      GLuint coarseFlow, GLuint outSparse, int sw, int sh, int coarseLevel);
     void dispatchPropagate(int level, GLuint lastLuma, GLuint nextLuma, GLuint fi, GLuint fo, int sw, int sh, int dist);
     void dispatchDensify(int level, GLuint sparseFlow, GLuint lastLuma, GLuint nextLuma, GLuint denseFlow, int w, int h);
-    void dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h);
+    void dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint oi, float t, int w, int h);
 
     // Pacing & Telemetry
     void onFrameCaptured(int64_t nowNanos, bool isActualNewFrame);

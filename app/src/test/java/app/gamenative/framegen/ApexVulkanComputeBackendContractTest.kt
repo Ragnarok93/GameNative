@@ -240,4 +240,78 @@ class ApexVulkanComputeBackendContractTest {
         )
     }
 
+
+    @Test
+    fun vulkanValidationTelemetryExplainsBackendCostAndOutput() {
+        val presenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
+        val rendererHeader = repoFile(
+            "app/src/main/cpp/winlator/VulkanRendererContext.h",
+        ).readText()
+        val rendererSource = repoFile(
+            "app/src/main/cpp/winlator/VulkanRendererContext.cpp",
+        ).readText()
+
+        listOf(
+            "sourceCalls",
+            "sourcePresented",
+            "generatedPresentedTotal",
+            "presentFailures",
+            "requestedGeneratedTotal",
+            "actualGeneratedTotal",
+            "sourceRecordCostNanos",
+            "sourceAcquireCostNanos",
+            "sourceQueuePresentCostNanos",
+            "generatedPresentCostNanos",
+            "maxSourceCostNanos",
+            "maxGeneratedCostNanos",
+        ).forEach { token ->
+            assertTrue(
+                "Vulkan presenter validation counters are missing $token",
+                rendererHeader.contains(token),
+            )
+        }
+
+        listOf(
+            "APEX_VK_TELEMETRY_INTERVAL = 120",
+            "backend=vulkan-direct",
+            "backend=gles-fallback",
+            "reason=property-disabled",
+            "reason=target-inactive",
+            "reason=compute-backend-unavailable",
+            "reason=swapchain-unavailable",
+            "apexVkPresent: validation",
+            "source_calls=",
+            "source_presented=",
+            "generated_presented=",
+            "present_failures=",
+            "requested_generated=",
+            "actual_generated=",
+            "record_ms=",
+            "acquire_ms=",
+            "queue_present_ms=",
+            "generated_present_ms=",
+            "max_source_ms=",
+            "max_generated_ms=",
+        ).forEach { token ->
+            assertTrue(
+                "Vulkan validation log is missing $token",
+                rendererSource.contains(token),
+            )
+        }
+
+        assertTrue(
+            "cadence telemetry must identify the active presentation backend",
+            presenter.contains("backend=%s") &&
+                presenter.contains(
+                    "if (useRendererVulkanPresenter) \"vulkan\" else \"gles\"",
+                ),
+        )
+        assertFalse(
+            "validation telemetry must not log on every Vulkan output",
+            rendererSource.contains("APEX_VK_TELEMETRY_INTERVAL = 1"),
+        )
+    }
+
 }

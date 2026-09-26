@@ -217,10 +217,12 @@ object PerformanceMetricsCollector {
         if (!publish(snapshot, generation, frameGeneration)) return
         synchronized(lifecycleLock) {
             if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation()) return
-            LsfgVkManager.publishRuntimePressure(
-                PowerManager.activeContainerRootDir(),
-                snapshot,
-            )
+            if (!apexPresentation.active) {
+                LsfgVkManager.publishRuntimePressure(
+                    PowerManager.activeContainerRootDir(),
+                    snapshot,
+                )
+            }
             appendLog(snapshot)
 
             sampleCount++

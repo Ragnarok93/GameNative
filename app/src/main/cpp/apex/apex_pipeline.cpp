@@ -1278,8 +1278,6 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             coarseFlow = lvl.denseFlowTex;
         }
 
-        DisLevel& l0 = mLevels[0];
-
         // Prepare only the first interpolation required for generation-first
         // presentation. Later slots are refilled one at a time after successful
         // swaps so 3x/4x do not submit a full-resolution interpolation burst.

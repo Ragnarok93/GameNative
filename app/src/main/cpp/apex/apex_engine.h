@@ -29,7 +29,7 @@ enum ApexOutputKind : int {
 static constexpr uint32_t DIS_SLOTS = 3;
 static constexpr uint32_t MAX_PYR_LEVELS = 4;
 static constexpr uint32_t MAX_GENERATED_FRAMES = 3;
-static constexpr uint64_t GPU_TIMER_SAMPLE_INTERVAL = 30;
+static constexpr uint64_t GPU_TIMER_SAMPLE_INTERVAL = 120;
 
 enum class ApexGpuTimerStage : uint8_t {
     Capture = 0,
@@ -115,10 +115,7 @@ public:
                                      GLuint coarseFlow, GLuint outSparse, int sw, int sh, int coarseLevel);
     void dispatchPropagate(int level, GLuint lastLuma, GLuint nextLuma, GLuint fi, GLuint fo, int sw, int sh, int dist);
     void dispatchDensify(int level, GLuint sparseFlow, GLuint lastLuma, GLuint nextLuma, GLuint denseFlow, int w, int h);
-    void dispatchVrSetup(GLuint denseFlow, GLuint prevColor, GLuint nextColor, GLuint outA, GLuint outB, GLuint outDW, int w, int h);
-    void dispatchVrSor(GLuint at, GLuint bt, GLuint dwi, GLuint dwo, float om, int p, int w, int h);
     void dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h);
-    void dispatchRcas(GLuint inTex, GLuint outImage, int w, int h, float sharpness);
 
     // Pacing & Telemetry
     void onFrameCaptured(int64_t nowNanos, bool isActualNewFrame);
@@ -149,8 +146,7 @@ public:
     void setDedicatedPresentationContext(bool enabled);
     void setQualityPreset(int q) {
         const int sanitized = q < 0 ? 0 : (q > 2 ? 2 : q);
-        const int previous = mQualityPreset.exchange(sanitized, std::memory_order_acq_rel);
-        if (previous != sanitized) mResourcesDirty.store(true, std::memory_order_release);
+        mQualityPreset.store(sanitized, std::memory_order_release);
     }
     int getQualityPreset() const { return mQualityPreset.load(); }
     void setLoggingEnabled(bool e) { mLoggingEnabled.store(e); }
@@ -165,14 +161,14 @@ public:
     float getShutterGain() const { return mShutterGain.load(); }
     void setFlowScale(float s) {
         const float sanitized = s < 0.25f ? 0.25f : (s > 1.0f ? 1.0f : s);
-        const float previous = mFlowScale.exchange(sanitized, std::memory_order_acq_rel);
-        if (previous != sanitized) mResourcesDirty.store(true, std::memory_order_release);
+        mFlowScale.store(sanitized, std::memory_order_release);
     }
     float getFlowScale() const { return mFlowScale.load(); }
     void setFlowShortSideCap(int pixels) {
-        const int sanitized = pixels < 0 ? 0 : pixels;
-        const int previous = mFlowShortSideCap.exchange(sanitized, std::memory_order_acq_rel);
-        if (previous != sanitized) mResourcesDirty.store(true, std::memory_order_release);
+        mFlowShortSideCap.store(pixels < 0 ? 0 : pixels, std::memory_order_release);
+    }
+    void setFlowShortSideFloor(int pixels) {
+        mFlowShortSideFloor.store(pixels < 0 ? 0 : pixels, std::memory_order_release);
     }
     void setLiquidFeel(float f) { mLiquidFeel.store(f); }
     float getLiquidFeel() const { return mLiquidFeel.load(); }
@@ -180,8 +176,7 @@ public:
     float getEdgeGuard() const { return mEdgeGuard.load(); }
     void setRenderScale(float s) {
         const float sanitized = s < 0.25f ? 0.25f : (s > 1.0f ? 1.0f : s);
-        const float previous = mRenderScale.exchange(sanitized, std::memory_order_acq_rel);
-        if (previous != sanitized) mResourcesDirty.store(true, std::memory_order_release);
+        mRenderScale.store(sanitized, std::memory_order_release);
     }
     float getRenderScale() const { return mRenderScale.load(); }
     void setPendingRealFrame(bool p) { mPendingRealFrame.store(p); }
@@ -208,6 +203,7 @@ private:
     void cleanupResources();
     void pollGpuTimerQueries();
     bool prepareGeneratedSlot(int generatedIndex, int generationBudget);
+    void snapshotInterpolationSettings();
     void discardGpuTimerQueries();
     void beginGpuTimer(ApexGpuTimerStage stage);
     void endGpuTimer();
@@ -262,10 +258,7 @@ private:
     GLuint mProgInverseSearch{0};
     GLuint mProgPropagate{0};
     GLuint mProgDensify{0};
-    GLuint mProgVrSetup{0};
-    GLuint mProgVrSor{0};
     GLuint mProgInterpolate{0};
-    GLuint mProgRcas{0};
     GLuint mQuadProg{0}, mQuadVao{0}, mQuadVbo{0};
 
     struct UniformLocations {
@@ -281,14 +274,11 @@ private:
         GLint propagateCollectTelemetry{-1};
         GLint densifyLevel{-1};
         GLint densifyCollectTelemetry{-1};
-        GLint vrSorOmega{-1};
-        GLint vrSorParity{-1};
         GLint interpolateT{-1};
         GLint interpolateLiquidFeel{-1};
         GLint interpolateShutterGain{-1};
         GLint interpolateEdgeGuard{-1};
         GLint interpolateCollectTelemetry{-1};
-        GLint rcasSharpness{-1};
     };
     UniformLocations mUniforms{};
     GLuint mBoundProgram{0};
@@ -346,8 +336,16 @@ private:
     std::atomic<int64_t> mLastSyntheticCostNanos{0};
     std::atomic<int> mLastSyntheticCostBudget{0};
     std::atomic<uint64_t> mNoGenerationSourceFrames{0};
+    struct InterpolationSettings {
+        float liquidFeel{0.5f};
+        float shutterGain{0.0f};
+        float edgeGuard{0.5f};
+    };
+    InterpolationSettings mActiveInterpolationSettings{};
+
     std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
     std::atomic<int> mFlowShortSideCap{0};
+    std::atomic<int> mFlowShortSideFloor{0};
     std::atomic<float> mShutterGain{0.0f}, mFlowScale{1.0f}, mLiquidFeel{0.5f}, mEdgeGuard{0.5f}, mRenderScale{1.0f}, mAutoMultiplierVal{2.0f};
 
     // Pacing History

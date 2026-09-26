@@ -309,7 +309,7 @@ class ApexCadenceScheduler {
 
         lastPipelineCostBudget = computeCostBudget()
         val admitted =
-            if (lastPipelineCostBudget >= 0) {
+            if (adaptive && lastPipelineCostBudget >= 0) {
                 min(desiredWhole, lastPipelineCostBudget)
             } else {
                 desiredWhole

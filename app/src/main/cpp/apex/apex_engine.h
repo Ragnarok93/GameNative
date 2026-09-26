@@ -198,6 +198,7 @@ public:
         int viewY,
         int viewWidth,
         int viewHeight);
+    void commitPresentedOutput(int outputKind);
     bool prepareNextGeneratedReady();
 
 private:
@@ -283,7 +284,6 @@ private:
         GLint vrSorOmega{-1};
         GLint vrSorParity{-1};
         GLint interpolateT{-1};
-        GLint interpolateFlowScale{-1};
         GLint interpolateLiquidFeel{-1};
         GLint interpolateShutterGain{-1};
         GLint interpolateEdgeGuard{-1};

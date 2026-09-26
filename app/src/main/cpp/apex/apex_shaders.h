@@ -608,7 +608,6 @@ layout(std430, binding = 5) buffer UnifiedTelemetryBuffer {
 };
 
 uniform float u_t;
-uniform float u_flowScale;
 uniform float u_liquidFeel;
 uniform float u_shutterGain;
 uniform float u_edgeGuard;
@@ -660,7 +659,7 @@ void main() {
     float edgeMix = min(easedRamp.x, easedRamp.y);
 
     // Uniform optical flow with boundary anchoring (no destructive per-pixel HUD mask!)
-    vec2 f = sampleFlow(denseFlow, uv) * (u_flowScale > 0.0 ? u_flowScale : 1.0);
+    vec2 f = sampleFlow(denseFlow, uv);
     f *= edgeMix; // Fades flow smoothly to 0 at borders -> zero edge bleed at screen borders!
 
     // Liquid Smooth Motion Pacing: Maintains uniform physical velocity across all frame generation steps

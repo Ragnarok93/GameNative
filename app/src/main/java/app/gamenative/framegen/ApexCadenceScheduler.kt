@@ -26,6 +26,10 @@ class ApexCadenceScheduler {
         val fractionalPhase: Float,
         val measuredOpportunityFps: Float,
         val presentationCeilingFps: Float,
+        val effectivePresentationFps: Float,
+        val presentationPressureRatio: Float,
+        val preparationSubmitMs: Float,
+        val syntheticSubmitMs: Float,
         val remainingSyntheticSlots: Int,
     )
 
@@ -52,6 +56,7 @@ class ApexCadenceScheduler {
     private var presentationOpportunityBudget = MAX_GENERATED_FRAMES
     private var lastPipelineCostBudget = -1
     private var remainingSyntheticSlots = 0
+    private var lastEffectivePresentationFps = 0.0
 
     private var preparationCostEstimateNanos = 0.0
     private var syntheticCostPerFrameNanos = 0.0
@@ -77,6 +82,7 @@ class ApexCadenceScheduler {
         presentationOpportunityBudget = MAX_GENERATED_FRAMES
         lastPipelineCostBudget = -1
         remainingSyntheticSlots = 0
+        lastEffectivePresentationFps = 0.0
 
         preparationCostEstimateNanos = 0.0
         syntheticCostPerFrameNanos = 0.0
@@ -228,6 +234,18 @@ class ApexCadenceScheduler {
             fractionalPhase = generationPhase.toFloat(),
             measuredOpportunityFps = measuredCapacityFps(),
             presentationCeilingFps = presentationCeilingFps.toFloat(),
+            effectivePresentationFps = lastEffectivePresentationFps.toFloat(),
+            presentationPressureRatio =
+                if (presentationCeilingFps > 1.0 && measuredCapacityFps() > 0f) {
+                    (measuredCapacityFps() / presentationCeilingFps.toFloat())
+                        .coerceIn(0f, 1.5f)
+                } else {
+                    1f
+                },
+            preparationSubmitMs =
+                (preparationCostEstimateNanos / 1_000_000.0).toFloat(),
+            syntheticSubmitMs =
+                (syntheticCostPerFrameNanos / 1_000_000.0).toFloat(),
             remainingSyntheticSlots = remainingSyntheticSlots,
         )
     }
@@ -298,7 +316,7 @@ class ApexCadenceScheduler {
                 .coerceIn(0, MAX_GENERATED_FRAMES)
 
         val presentationCapacity =
-            computePresentationCapacityPerSource()
+            computePresentationCapacityPerSource(adaptive)
         presentationOpportunityBudget =
             ceil(presentationCapacity - INTEGER_SNAP_EPSILON)
                 .toInt()
@@ -339,11 +357,26 @@ class ApexCadenceScheduler {
         return whole.coerceAtMost(MAX_GENERATED_FRAMES)
     }
 
-    private fun computePresentationCapacityPerSource(): Double {
+    private fun computePresentationCapacityPerSource(adaptive: Boolean): Double {
+        val physical = presentationCeilingFps.takeIf { it > 1.0 }
+        val observed =
+            measuredCapacityFps().toDouble().takeIf { it > 1.0 }
         val capacityFps =
-            presentationCeilingFps.takeIf { it > 1.0 }
-                ?: measuredCapacityFps().toDouble().takeIf { it > 1.0 }
-                ?: return MAX_GENERATED_FRAMES.toDouble()
+            if (adaptive) {
+                when {
+                    physical != null && observed != null -> min(physical, observed)
+                    physical != null -> physical
+                    observed != null -> observed
+                    else -> 0.0
+                }
+            } else {
+                physical ?: observed ?: 0.0
+            }
+        if (capacityFps <= 1.0) {
+            lastEffectivePresentationFps = 0.0
+            return MAX_GENERATED_FRAMES.toDouble()
+        }
+        lastEffectivePresentationFps = capacityFps
         val opportunitiesPerSource =
             capacityFps * sourcePeriodNanos / NANOS_PER_SECOND
         return (opportunitiesPerSource - 1.0)

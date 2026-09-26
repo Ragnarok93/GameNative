@@ -455,7 +455,7 @@ class ApexVulkanPresenterContractTest {
         assertTrue(
             "successful generated presentation must advance scheduler prefix progress",
             presenter.contains("OUTPUT_GENERATED") &&
-                presenter.contains("scheduler.onGeneratedPresented()"),
+                presenter.contains("scheduler.onGeneratedPresented(presentationTimeNanos)"),
         )
         assertTrue(
             "cadence diagnostics must expose remaining synthetic work",

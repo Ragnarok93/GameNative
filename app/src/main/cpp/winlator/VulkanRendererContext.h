@@ -12,6 +12,7 @@ struct VkTable {
     PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties;
     PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
+    PFN_vkGetPhysicalDeviceFormatProperties GetPhysicalDeviceFormatProperties;
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR GetPhysicalDeviceSurfaceCapabilitiesKHR;
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR GetPhysicalDeviceSurfaceFormatsKHR;
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR GetPhysicalDeviceSurfacePresentModesKHR;
@@ -53,6 +54,7 @@ struct VkTable {
     PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout;
     PFN_vkCreateDescriptorPool CreateDescriptorPool;
     PFN_vkDestroyDescriptorPool DestroyDescriptorPool;
+    PFN_vkResetDescriptorPool ResetDescriptorPool;
     PFN_vkAllocateDescriptorSets AllocateDescriptorSets;
     PFN_vkFreeDescriptorSets FreeDescriptorSets;
     PFN_vkUpdateDescriptorSets UpdateDescriptorSets;
@@ -372,6 +374,7 @@ private:
     VkExtent2D apexExt{0,0};
     std::atomic<bool> apexTargetActive{false};
     std::unique_ptr<gamenative::apex::vk::Backend> apexVkBackend;
+    std::atomic<bool> apexVkShadowActive{false};
     // A consumer release only schedules another capture when a real renderer
     // update previously lost the race for a free Apex target slot. Without
     // this distinction every release feeds back into another identical source

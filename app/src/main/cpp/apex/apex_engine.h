@@ -164,6 +164,12 @@ public:
         mFlowScale.store(sanitized, std::memory_order_release);
     }
     float getFlowScale() const { return mFlowScale.load(); }
+    void setFlowShortSideCap(int pixels) {
+        mFlowShortSideCap.store(pixels < 0 ? 0 : pixels, std::memory_order_release);
+    }
+    void setFlowShortSideFloor(int pixels) {
+        mFlowShortSideFloor.store(pixels < 0 ? 0 : pixels, std::memory_order_release);
+    }
     void setLiquidFeel(float f) { mLiquidFeel.store(f); }
     float getLiquidFeel() const { return mLiquidFeel.load(); }
     void setEdgeGuard(float g) { mEdgeGuard.store(g); }
@@ -337,6 +343,8 @@ private:
     InterpolationSettings mActiveInterpolationSettings{};
 
     std::atomic<int> mQualityPreset{0}, mTargetFPS{60}, mFixedMultiplier{2}, mPlannedGen{1}, mAutoMultiplier{2};
+    std::atomic<int> mFlowShortSideCap{0};
+    std::atomic<int> mFlowShortSideFloor{0};
     std::atomic<float> mShutterGain{0.0f}, mFlowScale{1.0f}, mLiquidFeel{0.5f}, mEdgeGuard{0.5f}, mRenderScale{1.0f}, mAutoMultiplierVal{2.0f};
 
     // Pacing History

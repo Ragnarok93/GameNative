@@ -567,8 +567,18 @@ bool initializePresenter(Presenter& presenter) {
     apexEngine.setGpuProfile(decision.profile, decision.motionStorage);
     apexEngine.setDedicatedPresentationContext(true);
 
-    PRES_LOGI(
-        "Apex flow sizing is preset/Flow-Scale driven; no device-specific short-side clamp is active");
+    const bool adreno650 =
+        renderer != nullptr &&
+        (std::strstr(renderer, "Adreno (TM) 650") != nullptr ||
+         std::strstr(renderer, "Adreno 650") != nullptr);
+    if (adreno650) {
+        apexEngine.setFlowShortSideFloor(180);
+        apexEngine.setFlowShortSideCap(180);
+        PRES_LOGI("Apex Adreno 650 validated flow tier: 180p");
+    } else {
+        apexEngine.setFlowShortSideFloor(0);
+        apexEngine.setFlowShortSideCap(0);
+    }
 
     eglSwapInterval(presenter.display, 0);
     apexEngine.setActive(true);

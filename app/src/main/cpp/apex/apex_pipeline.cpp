@@ -537,7 +537,17 @@ void ApexEngine::ensureResources(int width, int height) {
     const uint32_t scaledRequestedMinSide = std::max(
         64u,
         static_cast<uint32_t>(requestedMinSide * flowScale + 0.5f));
-    const uint32_t minSide = scaledRequestedMinSide;
+    uint32_t minSide = scaledRequestedMinSide;
+    const int flowShortSideFloor =
+        mFlowShortSideFloor.load(std::memory_order_acquire);
+    if (flowShortSideFloor > 0) {
+        minSide = std::max(minSide, static_cast<uint32_t>(flowShortSideFloor));
+    }
+    const int flowShortSideCap =
+        mFlowShortSideCap.load(std::memory_order_acquire);
+    if (flowShortSideCap > 0) {
+        minSide = std::min(minSide, static_cast<uint32_t>(flowShortSideCap));
+    }
 
     uint32_t minor = width < height ? width : height;
     float k = (float)minSide / (float)(minor > 0 ? minor : 1);
@@ -566,10 +576,12 @@ void ApexEngine::ensureResources(int width, int height) {
     mDeltaHistory.fill(0.0f);
     mSortedHistory.fill(0.0f);
     APEX_LOGI(
-        "Apex flow config: preset=%d requestedScale=%.3f requestedShortSide=%u effectiveShortSide=%u flow=%dx%d processing=%dx%d",
+        "Apex flow config: preset=%d requestedScale=%.3f requestedShortSide=%u floor=%d cap=%d effectiveShortSide=%u flow=%dx%d processing=%dx%d",
         preset,
         static_cast<double>(flowScale),
         scaledRequestedMinSide,
+        flowShortSideFloor,
+        flowShortSideCap,
         minSide,
         fw,
         fh,

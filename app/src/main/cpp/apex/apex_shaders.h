@@ -692,8 +692,8 @@ void main() {
     // without hard binary threshold cutting.
     float diff = dot(abs(c0 - c1), vec3(0.299, 0.587, 0.114));
     float occl = smoothstep(0.08, 0.32, diff);
-    float blendWeight = mix(smoothT, (smoothT < 0.5 ? 0.0 : 1.0), occl * 0.65);
-    vec3 result = mix(c0, c1, clamp(blendWeight, 0.0, 1.0));
+    vec3 occlusionChoice = smoothT < 0.5 ? c0 : c1;
+    vec3 result = mix(blended, occlusionChoice, occl * 0.65);
 
     if (u_collectTelemetry != 0) {
         atomicAdd(u_interpTotalPixels, 1u);

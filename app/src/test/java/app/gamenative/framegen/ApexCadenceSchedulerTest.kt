@@ -153,26 +153,6 @@ class ApexCadenceSchedulerTest {
     }
 
     @Test
-    fun queuedSourceCanPreemptSyntheticPrefixAtItsRealDeadline() {
-        val scheduler = ApexCadenceScheduler()
-        seedDisplay(scheduler, 5_000_000_000L)
-        val t = seedSource(scheduler, 5_000_000_000L, 33_333_333L)
-        scheduler.generationBudget(
-            adaptive = false,
-            fixedGeneratedCeiling = 3,
-            targetFps = 120,
-        )
-
-        val queuedSourceTimestamp = t + 39_000_000L
-        assertTrue(
-            scheduler.shouldPreemptForQueuedSource(
-                nowNanos = t + 47_000_000L,
-                queuedSourceTimestampNanos = queuedSourceTimestamp,
-            ),
-        )
-    }
-
-    @Test
     fun nativeCostCanDropCurrentWorkWithoutCreatingCatchUpDebt() {
         val scheduler = ApexCadenceScheduler()
         seedDisplay(scheduler, 6_000_000_000L)
@@ -222,63 +202,6 @@ class ApexCadenceSchedulerTest {
     }
 
     @Test
-    fun highRefreshThreeXFinishesSyntheticPrefixBeforeQueuedSourcePreempts() {
-        val scheduler = ApexCadenceScheduler()
-        seedDisplay(scheduler, 8_000_000_000L, period = 8_333_333L)
-        val t = seedSource(scheduler, 8_000_000_000L, 33_333_333L)
-
-        assertEquals(
-            2,
-            scheduler.generationBudget(
-                adaptive = false,
-                fixedGeneratedCeiling = 2,
-                targetFps = 90,
-            ),
-        )
-
-        // nativePresentSourceFrame immediately displays the first admitted
-        // synthetic. One synthetic remains before the buffered real frame.
-        scheduler.onGeneratedPresented()
-        val queuedSourceTimestamp = t + 33_333_333L
-
-        assertFalse(
-            "a fresh queued source must not truncate a 3x prefix that can still finish before its source deadline",
-            scheduler.shouldPreemptForQueuedSource(
-                nowNanos = queuedSourceTimestamp + 8_333_333L,
-                queuedSourceTimestampNanos = queuedSourceTimestamp,
-            ),
-        )
-        assertEquals(1, scheduler.diagnostics().remainingSyntheticSlots)
-    }
-
-    @Test
-    fun queuedSourcePreemptsWhenRemainingPrefixWouldActuallyMissItsDeadline() {
-        val scheduler = ApexCadenceScheduler()
-        seedDisplay(scheduler, 9_000_000_000L, period = 8_333_333L)
-        val t = seedSource(scheduler, 9_000_000_000L, 33_333_333L)
-
-        assertEquals(
-            3,
-            scheduler.generationBudget(
-                adaptive = false,
-                fixedGeneratedCeiling = 3,
-                targetFps = 120,
-            ),
-        )
-        scheduler.onGeneratedPresented()
-        val queuedSourceTimestamp = t + 33_333_333L
-
-        assertTrue(
-            "real-source protection must still preempt when two remaining synthetics cannot finish inside the queued source latency window",
-            scheduler.shouldPreemptForQueuedSource(
-                nowNanos = queuedSourceTimestamp + 20_000_000L,
-                queuedSourceTimestampNanos = queuedSourceTimestamp,
-            ),
-        )
-    }
-
-
-    @Test
     fun transientCallbackStallDoesNotCollapseKnownPresentationCeiling() {
         val scheduler = ApexCadenceScheduler()
         val ceilingSetter = scheduler.javaClass.methods.firstOrNull {
@@ -317,42 +240,34 @@ class ApexCadenceSchedulerTest {
         )
     }
 
-    @Test
-    fun firstPresentedSyntheticStartsBoundedPresentationWindowForLateProducerTimestamp() {
-        val scheduler = ApexCadenceScheduler()
-        val generatedPresented = scheduler.javaClass.methods.firstOrNull {
-            it.name == "onGeneratedPresented" &&
-                it.parameterTypes.contentEquals(arrayOf(Long::class.javaPrimitiveType))
-        }
-        assertTrue(
-            "scheduler must accept the actual presentation timestamp when advancing a generated prefix",
-            generatedPresented != null,
-        )
 
-        seedDisplay(scheduler, 12_000_000_000L, period = 8_333_333L)
-        val source = seedSource(scheduler, 12_000_000_000L, 33_333_333L)
+
+    @Test
+    fun fixedFourXPrefixCompletesOnlyByGeneratedProgressThenSourcePresentation() {
+        val scheduler = ApexCadenceScheduler()
+        scheduler.setPresentationCeilingFps(120f)
+        seedDisplay(scheduler, 8_000_000_000L, period = 8_333_333L)
+        seedSource(scheduler, 8_000_000_000L, 41_666_667L)
+
         assertEquals(
-            2,
+            3,
             scheduler.generationBudget(
                 adaptive = false,
-                fixedGeneratedCeiling = 2,
-                targetFps = 90,
+                fixedGeneratedCeiling = 3,
+                targetFps = 120,
             ),
         )
+        assertEquals(3, scheduler.diagnostics().remainingSyntheticSlots)
 
-        // The source reached Apex after its producer-cadence deadline. Once the
-        // first synthetic is actually shown, the admitted pair still gets one
-        // bounded source interval to finish; no catch-up debt is created.
-        val firstSyntheticPresented = source + 40_000_000L
-        generatedPresented!!.invoke(scheduler, firstSyntheticPresented)
+        scheduler.onGeneratedPresented()
+        assertEquals(2, scheduler.diagnostics().remainingSyntheticSlots)
+        scheduler.onGeneratedPresented()
+        assertEquals(1, scheduler.diagnostics().remainingSyntheticSlots)
+        scheduler.onGeneratedPresented()
+        assertEquals(0, scheduler.diagnostics().remainingSyntheticSlots)
 
-        assertFalse(
-            scheduler.shouldPresentSourceNow(firstSyntheticPresented + 8_333_333L),
-        )
-        assertTrue(
-            "real-frame protection must still preempt before the bounded presentation window is exceeded",
-            scheduler.shouldPresentSourceNow(firstSyntheticPresented + 30_000_000L),
-        )
+        scheduler.onSourcePresented()
+        assertEquals(0, scheduler.diagnostics().remainingSyntheticSlots)
     }
 
 }

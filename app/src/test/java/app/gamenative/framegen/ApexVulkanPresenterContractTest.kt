@@ -116,13 +116,17 @@ class ApexVulkanPresenterContractTest {
         assertTrue(
             "generated work must be admitted by the target-authoritative future-slot scheduler",
             presenter.contains("ApexCadenceScheduler") &&
-                presenter.contains("scheduler.generationBudget") &&
-                presenter.contains("scheduler.shouldPresentSourceNow"),
+                presenter.contains("scheduler.generationBudget"),
         )
         assertTrue(
-            "a newer source must be held until the previously buffered real frame is presented",
+            "a newer source must remain queued until the admitted prefix and buffered real frame finish naturally",
             presenter.contains("pendingSourceFrame") &&
-                presenter.contains("nativeHasPendingSource") &&
+                presenter.contains("nativeHasPendingSource"),
+        )
+        assertFalse(
+            "source-protection preemption must not cancel admitted synthetic work",
+            presenter.contains("shouldPreemptForQueuedSource") ||
+                presenter.contains("shouldPresentSourceNow") ||
                 presenter.contains("nativePresentPendingSourceFrame"),
         )
         assertTrue(
@@ -185,10 +189,10 @@ class ApexVulkanPresenterContractTest {
             "native diagnostics must not claim the deleted source-protection architecture is active",
             pipeline.contains("source-protected"),
         )
-        assertTrue(engine.contains("presentPendingReal"))
+        assertFalse(engine.contains("presentPendingReal"))
         assertFalse(pipeline.contains("sourcePreemptsPending"))
         assertTrue(pipeline.contains("generatedOpportunityBudget < 0"))
-        assertTrue(pipeline.contains("presentPendingReal"))
+        assertFalse(pipeline.contains("presentPendingReal"))
         assertTrue(
             "resource rebuilds must invalidate temporal history before new DIS work",
             pipeline.contains("Any resource rebuild invalidates color/luma/flow history") &&
@@ -228,29 +232,60 @@ class ApexVulkanPresenterContractTest {
 
 
     @Test
-    fun queuedSourceCanPreemptSyntheticPrefixToProtectRealSource() {
+    fun queuedSourceNeverPreemptsAnAdmittedSyntheticPrefix() {
         val presenter = repoFile(
             "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
         ).readText()
+        val scheduler = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexCadenceScheduler.kt",
+        ).readText()
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val nativePresenter = repoFile(
+            "app/src/main/cpp/apex/apex_vulkan_presenter.cpp",
+        ).readText()
+        val bridge = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexNativeBridge.kt",
+        ).readText()
 
-        assertTrue(presenter.contains("pendingSourceTimestampNanos"))
         val pendingStart = presenter.indexOf("if (nativeHasPendingSource(handle))")
-        val pendingEnd = presenter.indexOf("} else {", pendingStart)
-        assertTrue(pendingStart >= 0 && pendingEnd > pendingStart)
-        val pendingBranch = presenter.substring(pendingStart, pendingEnd)
+        val sourceBranch = presenter.indexOf("} else {", pendingStart)
+        assertTrue(pendingStart >= 0 && sourceBranch > pendingStart)
+        val pendingBranch = presenter.substring(pendingStart, sourceBranch)
+
         assertTrue(
-            "queued real input must participate in the preemption decision",
-            pendingBranch.contains("pendingSourceFrame != null") &&
-                pendingBranch.contains("scheduler.shouldPreemptForQueuedSource") &&
-                pendingBranch.contains("queuedSourceTimestampNanos = pendingSourceTimestampNanos"),
+            "an active admitted prefix must advance only through generated presentation opportunities",
+            pendingBranch.contains("presentGeneratedOpportunity(handle"),
         )
+        listOf(
+            "shouldPreemptForQueuedSource",
+            "shouldPresentSourceNow",
+            "queuedSourcePreempt",
+            "sourceDeadlinePreempt",
+            "nativePresentPendingSourceFrame",
+            "nativeConsumeAbandonedSyntheticSlots",
+            "recordSyntheticSlotsAbandoned",
+        ).forEach { token ->
+            assertFalse("presenter still contains source-protection token $token", presenter.contains(token))
+        }
+        listOf(
+            "shouldPreemptForQueuedSource",
+            "shouldPresentSourceNow",
+            "pendingSourceDeadlineNanos",
+            "presentationWindowDeadlineNanos",
+            "QUEUED_SOURCE_SLOT_ALLOWANCE",
+            "QUEUED_SOURCE_CADENCE_ALLOWANCE",
+        ).forEach { token ->
+            assertFalse("scheduler still contains source-protection token $token", scheduler.contains(token))
+        }
+        assertFalse(engine.contains("presentPendingReal"))
+        assertFalse(engine.contains("mAbandonedSyntheticSlots"))
+        assertFalse(pipeline.contains("presentPendingReal"))
+        assertFalse(nativePresenter.contains("nativePresentPendingSourceFrame"))
+        assertFalse(bridge.contains("nativeConsumeAbandonedSyntheticSlots"))
+
         assertTrue(
-            "preemption must abandon unused synthetic slots instead of carrying debt",
-            pendingBranch.contains("nativeConsumeAbandonedSyntheticSlots") &&
-                pendingBranch.contains("recordSyntheticSlotsAbandoned"),
-        )
-        assertTrue(
-            "source cadence must be recorded from producer time only when the queued frame becomes active",
+            "source cadence must still be recorded from producer time when the queued frame becomes active",
             presenter.contains("scheduler.recordSourceFrame(sourceTimestampNanos)"),
         )
     }
@@ -444,7 +479,7 @@ class ApexVulkanPresenterContractTest {
 
 
     @Test
-    fun presenterTracksDeliveredSyntheticProgressBeforeMakingPreemptionDecisions() {
+    fun presenterTracksDeliveredSyntheticProgressWithoutSourceProtectionPolicy() {
         val presenter = repoFile(
             "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
         ).readText()
@@ -455,17 +490,14 @@ class ApexVulkanPresenterContractTest {
         assertTrue(
             "successful generated presentation must advance scheduler prefix progress",
             presenter.contains("OUTPUT_GENERATED") &&
-                presenter.contains("scheduler.onGeneratedPresented(presentationTimeNanos)"),
+                presenter.contains("scheduler.onGeneratedPresented"),
         )
         assertTrue(
             "cadence diagnostics must expose remaining synthetic work",
             scheduler.contains("remainingSyntheticSlots"),
         )
-        assertTrue(
-            "abandonment telemetry must distinguish queued-source and active-source deadline preemption",
-            presenter.contains("queuedSourcePreempt") &&
-                presenter.contains("sourceDeadlinePreempt"),
-        )
+        assertFalse(presenter.contains("queuedSourcePreempt"))
+        assertFalse(presenter.contains("sourceDeadlinePreempt"))
     }
 
     @Test

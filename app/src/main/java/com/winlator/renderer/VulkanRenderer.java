@@ -3,6 +3,7 @@ package com.winlator.renderer;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.Build;
 import android.view.Surface;
 import android.widget.Toast;
 
@@ -339,6 +340,53 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         surfaceHeight
                 );
             }
+            float apexActiveRefreshRate = 0.0f;
+            float apexMaxRefreshRate = 0.0f;
+            float apexRequestedRefreshRate = 0.0f;
+            boolean apexFrameRateApplied = false;
+            try {
+                android.view.Display apexDisplay = xServerView.getDisplay();
+                if (apexDisplay != null) {
+                    apexActiveRefreshRate = apexDisplay.getRefreshRate();
+                    apexMaxRefreshRate = apexActiveRefreshRate;
+                    android.view.Display.Mode activeMode = apexDisplay.getMode();
+                    if (activeMode != null) {
+                        for (android.view.Display.Mode mode : apexDisplay.getSupportedModes()) {
+                            if (mode.getPhysicalWidth() == activeMode.getPhysicalWidth() &&
+                                mode.getPhysicalHeight() == activeMode.getPhysicalHeight()) {
+                                apexMaxRefreshRate = Math.max(
+                                    apexMaxRefreshRate,
+                                    mode.getRefreshRate()
+                                );
+                            }
+                        }
+                    }
+                    apexRequestedRefreshRate = apexMaxRefreshRate;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                        apexRequestedRefreshRate > 0.0f) {
+                        apexTransaction.setFrameRate(
+                            apexGameSurfaceControl,
+                            apexRequestedRefreshRate,
+                            Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
+                        );
+                        apexFrameRateApplied = true;
+                    }
+                }
+            } catch (Throwable frameRateError) {
+                android.util.Log.w(
+                    "VulkanRenderer",
+                    "Apex presenter frame-rate request failed; continuing without a layer vote",
+                    frameRateError
+                );
+            }
+            android.util.Log.i(
+                "VulkanRenderer",
+                "Apex presenter frame-rate request: active=" + apexActiveRefreshRate +
+                    " max=" + apexMaxRefreshRate +
+                    " requested=" + apexRequestedRefreshRate +
+                    " applied=" + apexFrameRateApplied +
+                    " sdk=" + Build.VERSION.SDK_INT
+            );
             apexTransaction.apply();
             app.gamenative.framegen.ApexVulkanPresenter presenter =
                 new app.gamenative.framegen.ApexVulkanPresenter(this, apexGameSurface);

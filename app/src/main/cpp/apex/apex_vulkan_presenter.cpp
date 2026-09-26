@@ -762,16 +762,9 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
 
     const auto totalStart = PresenterClock::now();
     const auto processStart = totalStart;
-    apex::ApexEngine::getInstance().processFrame(0, 0,
-        presenter->sourceWidth,
-        presenter->sourceHeight,
+    apex::ApexEngine::getInstance().presentGeneratedReady(
         0,
         0,
-        presenter->sourceWidth,
-        presenter->sourceHeight,
-        false,
-        false,
-        -1,
         0,
         presenter->outputWidth,
         presenter->outputHeight);

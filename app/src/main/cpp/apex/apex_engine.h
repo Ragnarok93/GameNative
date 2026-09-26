@@ -28,6 +28,7 @@ enum ApexOutputKind : int {
 
 static constexpr uint32_t DIS_SLOTS = 3;
 static constexpr uint32_t MAX_PYR_LEVELS = 4;
+static constexpr uint32_t MAX_GENERATED_FRAMES = 3;
 static constexpr uint64_t GPU_TIMER_SAMPLE_INTERVAL = 30;
 
 enum class ApexGpuTimerStage : uint8_t {
@@ -203,6 +204,12 @@ public:
         int viewY,
         int viewWidth,
         int viewHeight);
+    void presentGeneratedReady(
+        GLuint outputFboId,
+        int viewX,
+        int viewY,
+        int viewWidth,
+        int viewHeight);
 
 private:
     ApexEngine();
@@ -252,7 +259,7 @@ private:
     GLuint mColorRingTex[DIS_SLOTS]{0};    // Native-res real frames
     GLuint mFlowColorTex[DIS_SLOTS]{0};    // 180p downscaled flow inputs
     GLuint mNativeWarpTex{0};               // Native-res intermediate warped frame
-    GLuint mInterpOutTex{0};                // Final output texture (before screen blit)
+    GLuint mGeneratedBatchTex[MAX_GENERATED_FRAMES]{0}; // Ready synthetics for the active source pair
     GLuint mCaptureFbo[DIS_SLOTS]{0};
     GLuint mFlowFbo[DIS_SLOTS]{0};
     GLuint mTelemetrySsbo{0};

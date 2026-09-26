@@ -123,10 +123,13 @@ public:
         VkCommandBuffer commandBuffer,
         VkImage sourceImage,
         VkImageView sourceView,
-        uint64_t sourceTimestampNanos);
+        uint64_t sourceTimestampNanos,
+        uint32_t generatedBudget = 3);
 
     VkImage generatedImage(uint32_t index) const;
     VkImageView generatedImageView(uint32_t index) const;
+    VkImage currentSourceImage() const;
+    VkImageView currentSourceImageView() const;
     VkExtent2D generatedExtent() const { return sourceExtent_; }
     uint32_t generatedCount() const { return generatedCount_; }
     uint64_t generatedSourceTimestampNanos() const {

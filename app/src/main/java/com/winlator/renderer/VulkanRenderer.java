@@ -85,6 +85,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private static final long APEX_DIRECT_SOURCE_GRACE_NS = 250_000_000L;
     private android.view.SurfaceControl apexGameSurfaceControl = null;
     private android.view.Surface apexGameSurface = null;
+    private volatile float apexPresentationRefreshRate = 0.0f;
 
     /** See VulkanXrFrameBridge's kdoc — null except for the Meta Quest immersive path. */
     public void setVulkanXrFrameBridge(VulkanXrFrameBridge xrFrameBridge) {
@@ -379,6 +380,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     frameRateError
                 );
             }
+            apexPresentationRefreshRate =
+                apexRequestedRefreshRate > 1.0f
+                    ? apexRequestedRefreshRate
+                    : apexActiveRefreshRate;
             android.util.Log.i(
                 "VulkanRenderer",
                 "Apex presenter frame-rate request: active=" + apexActiveRefreshRate +
@@ -399,6 +404,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         }
     }
 
+    public float getApexPresentationRefreshRate() {
+        return apexPresentationRefreshRate;
+    }
+
     /** Stops the Apex consumer but intentionally keeps its last child layer latched. */
     private void retireApexPresenter() {
         app.gamenative.framegen.ApexVulkanPresenter presenter = apexPresenter;
@@ -408,6 +417,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     /** Releases only the retained Apex child layer after the normal path is visible. */
     private void releaseApexPresenterLayer() {
+        apexPresentationRefreshRate = 0.0f;
         if (apexGameSurface != null) {
             apexGameSurface.release();
             apexGameSurface = null;

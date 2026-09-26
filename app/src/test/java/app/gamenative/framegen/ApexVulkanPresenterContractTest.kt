@@ -431,4 +431,87 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+
+    @Test
+    fun presenterTracksDeliveredSyntheticProgressBeforeMakingPreemptionDecisions() {
+        val presenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
+        val scheduler = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexCadenceScheduler.kt",
+        ).readText()
+
+        assertTrue(
+            "successful generated presentation must advance scheduler prefix progress",
+            presenter.contains("OUTPUT_GENERATED") &&
+                presenter.contains("scheduler.onGeneratedPresented()"),
+        )
+        assertTrue(
+            "cadence diagnostics must expose remaining synthetic work",
+            scheduler.contains("remainingSyntheticSlots"),
+        )
+        assertTrue(
+            "abandonment telemetry must distinguish queued-source and active-source deadline preemption",
+            presenter.contains("queuedSourcePreempt") &&
+                presenter.contains("sourceDeadlinePreempt"),
+        )
+    }
+
+    @Test
+    fun apexHotGlPathsCacheUniformsAndAvoidRedundantBlitStateWork() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        val blitStart = pipeline.indexOf("void ApexEngine::blitQuad")
+        val dispatchStart = pipeline.indexOf("void ApexEngine::dispatchLumaGrad", blitStart)
+        val processStart = pipeline.indexOf("void ApexEngine::processFrame", dispatchStart)
+        assertTrue(blitStart >= 0 && dispatchStart > blitStart && processStart > dispatchStart)
+
+        val blitHotPath = pipeline.substring(blitStart, dispatchStart)
+        val dispatchHotPath = pipeline.substring(dispatchStart, processStart)
+
+        assertFalse(
+            "fullscreen output blits must not query GL enable state every presented frame",
+            blitHotPath.contains("glIsEnabled"),
+        )
+        assertFalse(
+            "texture sampling parameters are immutable and must not be re-applied on every blit",
+            blitHotPath.contains("glTexParameteri"),
+        )
+        assertFalse(
+            "uniform locations must be cached after program link, not looked up inside compute dispatches",
+            dispatchHotPath.contains("glGetUniformLocation"),
+        )
+        assertFalse(
+            "blit uniform locations must be cached after program link",
+            blitHotPath.contains("glGetUniformLocation"),
+        )
+        assertTrue(
+            "ApexEngine must retain cached uniform locations",
+            engine.contains("UniformLocations") ||
+                engine.contains("mQuadTexLoc"),
+        )
+    }
+
+    @Test
+    fun disabledMathTelemetryDoesNotPayPerDispatchSsboSynchronizationCost() {
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val dispatchStart = pipeline.indexOf("void ApexEngine::dispatchLumaGrad")
+        val processStart = pipeline.indexOf("void ApexEngine::processFrame", dispatchStart)
+        assertTrue(dispatchStart >= 0 && processStart > dispatchStart)
+        val dispatchHotPath = pipeline.substring(dispatchStart, processStart)
+
+        assertTrue(
+            "shader-storage barriers must be conditional on telemetry collection",
+            dispatchHotPath.contains("telemetryBarrier") ||
+                dispatchHotPath.contains("collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT"),
+        )
+        assertFalse(
+            "telemetry SSBO must be bound once outside individual dispatch functions",
+            dispatchHotPath.contains(
+                "glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, mTelemetrySsbo)",
+            ),
+        )
+    }
+
 }

@@ -239,4 +239,63 @@ class ApexCadenceSchedulerTest {
         assertEquals(0, diagnostics.admittedSyntheticCount)
         assertFalse(diagnostics.measuredOpportunityFps > 0f)
     }
+
+    @Test
+    fun highRefreshThreeXFinishesSyntheticPrefixBeforeQueuedSourcePreempts() {
+        val scheduler = ApexCadenceScheduler()
+        seedDisplay(scheduler, 8_000_000_000L, period = 8_333_333L)
+        val t = seedSource(scheduler, 8_000_000_000L, 33_333_333L)
+
+        assertEquals(
+            2,
+            scheduler.generationBudget(
+                adaptive = false,
+                fixedGeneratedCeiling = 2,
+                targetFps = 90,
+                presentation = telemetry(opportunityFps = 120f),
+            ),
+        )
+
+        // nativePresentSourceFrame immediately displays the first admitted
+        // synthetic. One synthetic remains before the buffered real frame.
+        scheduler.onGeneratedPresented()
+        val queuedSourceTimestamp = t + 33_333_333L
+
+        assertFalse(
+            "a fresh queued source must not truncate a 3x prefix that can still finish before its source deadline",
+            scheduler.shouldPreemptForQueuedSource(
+                nowNanos = queuedSourceTimestamp + 8_333_333L,
+                queuedSourceTimestampNanos = queuedSourceTimestamp,
+            ),
+        )
+        assertEquals(1, scheduler.diagnostics().remainingSyntheticSlots)
+    }
+
+    @Test
+    fun queuedSourcePreemptsWhenRemainingPrefixWouldActuallyMissItsDeadline() {
+        val scheduler = ApexCadenceScheduler()
+        seedDisplay(scheduler, 9_000_000_000L, period = 8_333_333L)
+        val t = seedSource(scheduler, 9_000_000_000L, 33_333_333L)
+
+        assertEquals(
+            3,
+            scheduler.generationBudget(
+                adaptive = false,
+                fixedGeneratedCeiling = 3,
+                targetFps = 120,
+                presentation = telemetry(opportunityFps = 120f),
+            ),
+        )
+        scheduler.onGeneratedPresented()
+        val queuedSourceTimestamp = t + 33_333_333L
+
+        assertTrue(
+            "real-source protection must still preempt when two remaining synthetics cannot finish inside the queued source latency window",
+            scheduler.shouldPreemptForQueuedSource(
+                nowNanos = queuedSourceTimestamp + 20_000_000L,
+                queuedSourceTimestampNanos = queuedSourceTimestamp,
+            ),
+        )
+    }
+
 }

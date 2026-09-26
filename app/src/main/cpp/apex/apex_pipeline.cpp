@@ -167,7 +167,7 @@ static GLuint compileGraphicsProgram(const char* name, const char* vs_src, const
 
 void ApexEngine::compileShaders() {
     if (mProgLumaGrad && mProgInverseSearch && mProgPropagate && mProgDensify &&
-        mProgVrSetup && mProgVrSor && mProgInterpolate && mProgRcas && mQuadProg) {
+        mProgInterpolate && mQuadProg) {
         return;
     }
 
@@ -194,10 +194,7 @@ void ApexEngine::compileShaders() {
     compileOne("DisInverseSearch", mProgInverseSearch, kShaderDisInverseSearch);
     compileOne("DisPropagate", mProgPropagate, kShaderDisPropagate);
     compileOne("DisDensify", mProgDensify, kShaderDisDensify);
-    compileOne("DisVrSetup", mProgVrSetup, kShaderDisVrSetup);
-    compileOne("DisVrSor", mProgVrSor, kShaderDisVrSor);
     compileOne("DisInterpolate", mProgInterpolate, kShaderDisInterpolate);
-    compileOne("DisRcas", mProgRcas, kShaderDisRcas);
 
     static const char* kQuadVS = R"(#version 300 es
     precision highp float;
@@ -239,12 +236,12 @@ void ApexEngine::compileShaders() {
 
     cacheUniformLocations();
 
-    mShaderCompileSuccess = (mCompiledShaderCount == 8 && mQuadProg != 0);
+    mShaderCompileSuccess = (mCompiledShaderCount == 5 && mQuadProg != 0);
     if (!mShaderCompileSuccess) {
-        APEX_LOGE("ApexDIS Shader verification FAILED (%d/8 compiled). Details: %s",
+        APEX_LOGE("ApexDIS Shader verification FAILED (%d/5 compiled). Details: %s",
                   mCompiledShaderCount, mShaderErrorDetails.c_str());
     } else {
-        APEX_LOGI("ApexDIS Shader verification: SUCCESS (8/8 compute shaders + blit quad OK)");
+        APEX_LOGI("ApexDIS Shader verification: SUCCESS (5/5 compute shaders + blit quad OK)");
     }
 }
 
@@ -271,14 +268,11 @@ void ApexEngine::cacheUniformLocations() {
     mUniforms.propagateCollectTelemetry = uniform(mProgPropagate, "u_collectTelemetry");
     mUniforms.densifyLevel = uniform(mProgDensify, "u_level");
     mUniforms.densifyCollectTelemetry = uniform(mProgDensify, "u_collectTelemetry");
-    mUniforms.vrSorOmega = uniform(mProgVrSor, "u_omega");
-    mUniforms.vrSorParity = uniform(mProgVrSor, "u_parity");
     mUniforms.interpolateT = uniform(mProgInterpolate, "u_t");
     mUniforms.interpolateLiquidFeel = uniform(mProgInterpolate, "u_liquidFeel");
     mUniforms.interpolateShutterGain = uniform(mProgInterpolate, "u_shutterGain");
     mUniforms.interpolateEdgeGuard = uniform(mProgInterpolate, "u_edgeGuard");
     mUniforms.interpolateCollectTelemetry = uniform(mProgInterpolate, "u_collectTelemetry");
-    mUniforms.rcasSharpness = uniform(mProgRcas, "u_sharpness");
 
     if (mQuadProg && mUniforms.quadTex >= 0) {
         useProgram(mQuadProg);
@@ -540,9 +534,15 @@ void ApexEngine::ensureResources(int width, int height) {
 
     const float flowScale =
         std::clamp(mFlowScale.load(std::memory_order_acquire), 0.25f, 1.0f);
-    uint32_t minSide = std::max(
+    const uint32_t scaledRequestedMinSide = std::max(
         64u,
         static_cast<uint32_t>(requestedMinSide * flowScale + 0.5f));
+    uint32_t minSide = scaledRequestedMinSide;
+    const int flowShortSideFloor =
+        mFlowShortSideFloor.load(std::memory_order_acquire);
+    if (flowShortSideFloor > 0) {
+        minSide = std::max(minSide, static_cast<uint32_t>(flowShortSideFloor));
+    }
     const int flowShortSideCap =
         mFlowShortSideCap.load(std::memory_order_acquire);
     if (flowShortSideCap > 0) {
@@ -576,6 +576,18 @@ void ApexEngine::ensureResources(int width, int height) {
     mHistoryIdx = 0;
     mDeltaHistory.fill(0.0f);
     mSortedHistory.fill(0.0f);
+    APEX_LOGI(
+        "Apex flow config: preset=%d requestedScale=%.3f requestedShortSide=%u floor=%d cap=%d effectiveShortSide=%u flow=%dx%d processing=%dx%d",
+        preset,
+        static_cast<double>(flowScale),
+        scaledRequestedMinSide,
+        flowShortSideFloor,
+        flowShortSideCap,
+        minSide,
+        fw,
+        fh,
+        sw,
+        sh);
     mSurfaceWidth = width;
     mSurfaceHeight = height;
     mScaledWidth = sw;
@@ -727,10 +739,7 @@ void ApexEngine::destroy() {
     if (mProgInverseSearch) { glDeleteProgram(mProgInverseSearch); mProgInverseSearch = 0; }
     if (mProgPropagate) { glDeleteProgram(mProgPropagate); mProgPropagate = 0; }
     if (mProgDensify) { glDeleteProgram(mProgDensify); mProgDensify = 0; }
-    if (mProgVrSetup) { glDeleteProgram(mProgVrSetup); mProgVrSetup = 0; }
-    if (mProgVrSor) { glDeleteProgram(mProgVrSor); mProgVrSor = 0; }
     if (mProgInterpolate) { glDeleteProgram(mProgInterpolate); mProgInterpolate = 0; }
-    if (mProgRcas) { glDeleteProgram(mProgRcas); mProgRcas = 0; }
     if (mQuadProg) { glDeleteProgram(mQuadProg); mQuadProg = 0; }
     if (mQuadVao) { glDeleteVertexArrays(1, &mQuadVao); mQuadVao = 0; }
     if (mQuadVbo) { glDeleteBuffers(1, &mQuadVbo); mQuadVbo = 0; }
@@ -762,7 +771,9 @@ void ApexEngine::blitQuad(GLuint tex, float uMin, float vMin, float uScale, floa
     if (!mDedicatedPresentationContext && mQuadVao) glBindVertexArray(0);
 
     endBlitState(state);
-    mPassBlit.fetch_add(1, std::memory_order_relaxed);
+    if (mLoggingEnabled.load(std::memory_order_relaxed)) {
+        mPassBlit.fetch_add(1, std::memory_order_relaxed);
+    }
     checkGlPassError("BlitQuad");
 }
 
@@ -778,7 +789,7 @@ void ApexEngine::dispatchLumaGrad(int level, GLuint inTex, uint32_t slot) {
     if (mUniforms.lumaCollectTelemetry >= 0) glUniform1i(mUniforms.lumaCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((mLevels[level].width + 15) / 16, (mLevels[level].height + 15) / 16, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
-    mPassLumaGrad.fetch_add(1, std::memory_order_relaxed);
+    if (collectTelemetry) mPassLumaGrad.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisLumaGrad");
 }
 
@@ -797,7 +808,7 @@ void ApexEngine::dispatchHierarchicalSearch(int level, GLuint lastLuma, GLuint n
     if (mUniforms.searchCollectTelemetry >= 0) glUniform1i(mUniforms.searchCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((sw + 7) / 8, (sh + 7) / 8, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
-    mPassInvSearch.fetch_add(1, std::memory_order_relaxed);
+    if (collectTelemetry) mPassInvSearch.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisInverseSearch");
 }
 
@@ -814,7 +825,7 @@ void ApexEngine::dispatchPropagate(int level, GLuint lastLuma, GLuint nextLuma, 
     if (mUniforms.propagateCollectTelemetry >= 0) glUniform1i(mUniforms.propagateCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((sw + 7) / 8, (sh + 7) / 8, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
-    mPassPropagate.fetch_add(1, std::memory_order_relaxed);
+    if (collectTelemetry) mPassPropagate.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisPropagate");
 }
 
@@ -830,34 +841,16 @@ void ApexEngine::dispatchDensify(int level, GLuint sparseFlow, GLuint lastLuma, 
     if (mUniforms.densifyCollectTelemetry >= 0) glUniform1i(mUniforms.densifyCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
-    mPassDensify.fetch_add(1, std::memory_order_relaxed);
+    if (collectTelemetry) mPassDensify.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisDensify");
 }
 
-void ApexEngine::dispatchVrSetup(GLuint denseFlow, GLuint prevColor, GLuint nextColor, GLuint outA, GLuint outB, GLuint outDW, int w, int h) {
-    useProgram(mProgVrSetup);
-    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, denseFlow);
-    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, prevColor);
-    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, nextColor);
-    glBindImageTexture(3, outA, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    glBindImageTexture(4, outB, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    glBindImageTexture(5, outDW, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
-    checkGlPassError("DisVrSetup");
-}
-
-void ApexEngine::dispatchVrSor(GLuint at, GLuint bt, GLuint dwi, GLuint dwo, float om, int p, int w, int h) {
-    useProgram(mProgVrSor);
-    glBindImageTexture(0, at, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
-    glBindImageTexture(1, bt, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
-    glBindImageTexture(2, dwi, 0, GL_FALSE, 0, GL_READ_ONLY, motionStorageFormat());
-    glBindImageTexture(3, dwo, 0, GL_FALSE, 0, GL_WRITE_ONLY, motionStorageFormat());
-    if (mUniforms.vrSorOmega >= 0) glUniform1f(mUniforms.vrSorOmega, om);
-    if (mUniforms.vrSorParity >= 0) glUniform1i(mUniforms.vrSorParity, p);
-    glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    checkGlPassError("DisVrSor");
+void ApexEngine::snapshotInterpolationSettings() {
+    mActiveInterpolationSettings = {
+        .liquidFeel = mLiquidFeel.load(std::memory_order_acquire),
+        .shutterGain = mShutterGain.load(std::memory_order_acquire),
+        .edgeGuard = mEdgeGuard.load(std::memory_order_acquire),
+    };
 }
 
 void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h) {
@@ -870,9 +863,9 @@ void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw,
     const bool collectTelemetry = mLoggingEnabled.load(std::memory_order_relaxed);
     const GLbitfield telemetryBarrier = collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
     if (mUniforms.interpolateT >= 0) glUniform1f(mUniforms.interpolateT, t);
-    if (mUniforms.interpolateLiquidFeel >= 0) glUniform1f(mUniforms.interpolateLiquidFeel, mLiquidFeel.load());
-    if (mUniforms.interpolateShutterGain >= 0) glUniform1f(mUniforms.interpolateShutterGain, mShutterGain.load());
-    if (mUniforms.interpolateEdgeGuard >= 0) glUniform1f(mUniforms.interpolateEdgeGuard, mEdgeGuard.load());
+    if (mUniforms.interpolateLiquidFeel >= 0) glUniform1f(mUniforms.interpolateLiquidFeel, mActiveInterpolationSettings.liquidFeel);
+    if (mUniforms.interpolateShutterGain >= 0) glUniform1f(mUniforms.interpolateShutterGain, mActiveInterpolationSettings.shutterGain);
+    if (mUniforms.interpolateEdgeGuard >= 0) glUniform1f(mUniforms.interpolateEdgeGuard, mActiveInterpolationSettings.edgeGuard);
     if (mUniforms.interpolateCollectTelemetry >= 0) glUniform1i(mUniforms.interpolateCollectTelemetry, collectTelemetry ? 1 : 0);
     glDispatchCompute((w + 15) / 16, (h + 7) / 8, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | telemetryBarrier);
@@ -883,22 +876,8 @@ void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw,
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
     }
-    mPassInterpolate.fetch_add(1, std::memory_order_relaxed);
+    if (collectTelemetry) mPassInterpolate.fetch_add(1, std::memory_order_relaxed);
     checkGlPassError("DisInterpolate");
-}
-
-void ApexEngine::dispatchRcas(GLuint inTex, GLuint outImage, int w, int h, float sharpness) {
-    useProgram(mProgRcas);
-    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, inTex);
-    glBindImageTexture(1, outImage, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    if (mUniforms.rcasSharpness >= 0) glUniform1f(mUniforms.rcasSharpness, sharpness);
-    glDispatchCompute((w + 15) / 16, (h + 15) / 16, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
-    if (!mDedicatedPresentationContext) {
-        glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
-    }
-    checkGlPassError("DisRcas");
 }
 
 bool ApexEngine::isHealthy() const {
@@ -919,7 +898,7 @@ std::string ApexEngine::getDiagnostics() {
     diag += "ApexDIS [20-Pass DIS Status]\n";
     diag += "• Active: " + std::string(mActive.load() ? "YES" : "NO");
     diag += " | Healthy: " + std::string(isHealthy() ? "YES" : "NO");
-    diag += " | Shaders: " + std::to_string(mCompiledShaderCount) + "/8 " + (mShaderCompileSuccess ? "[OK]" : "[FAIL]");
+    diag += " | Shaders: " + std::to_string(mCompiledShaderCount) + "/5 " + (mShaderCompileSuccess ? "[OK]" : "[FAIL]");
     if (!mShaderErrorDetails.empty()) {
         diag += " (" + mShaderErrorDetails + ")";
     }
@@ -1111,7 +1090,13 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mLastOutputKind.store(APEX_OUTPUT_NONE, std::memory_order_relaxed);
             return;
         }
-        onFrameCaptured(sourceClockNanos, true);
+        if (generatedOpportunityBudget < 0) {
+            onFrameCaptured(sourceClockNanos, true);
+        } else {
+            // ApexCadenceScheduler already owns presenter admission. Avoid the
+            // duplicate native history copy/sort/multiplier calculation here.
+            mLastRealFrameTimeNanos.store(sourceClockNanos, std::memory_order_release);
+        }
         mRealFramesCaptured.fetch_add(1);
         mRealFramesCapturedCount.fetch_add(1);
         mFramesSinceReal.store(0);
@@ -1141,6 +1126,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         const int generationBudget = generatedOpportunityBudget < 0
             ? std::clamp(mPlannedGen.load(std::memory_order_acquire), 0, 3)
             : std::clamp(generatedOpportunityBudget, 0, 3);
+        snapshotInterpolationSettings();
 
         const auto preparationStart = std::chrono::steady_clock::now();
         beginGpuTimer(ApexGpuTimerStage::Pyramid);

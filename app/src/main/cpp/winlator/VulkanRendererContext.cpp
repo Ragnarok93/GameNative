@@ -2454,7 +2454,8 @@ void VulkanRendererContext::renderApexFrame() {
         effectiveCurVis, apexSlot);
 
     const bool directVulkanPresenter =
-        apexVkPresentActive.load(std::memory_order_acquire);
+        apexVkPresentActive.load(std::memory_order_acquire) ||
+        apexVkPresentRequested();
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;

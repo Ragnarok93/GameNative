@@ -73,6 +73,7 @@ struct Presenter {
     uint64_t processCostNanos = 0;
     uint64_t releaseCostNanos = 0;
     uint64_t swapCostNanos = 0;
+    uint64_t postSwapCostNanos = 0;
     uint64_t sourceSwapCostNanos = 0;
     uint64_t generatedSwapCostNanos = 0;
     uint64_t sourceSwapSamples = 0;
@@ -114,6 +115,7 @@ void recordPresenterCost(
     uint64_t processNanos,
     uint64_t releaseNanos,
     uint64_t swapNanos,
+    uint64_t postSwapNanos,
     uint64_t totalNanos,
     int outputKind) {
     presenter.costSamples++;
@@ -121,6 +123,7 @@ void recordPresenterCost(
     presenter.processCostNanos += processNanos;
     presenter.releaseCostNanos += releaseNanos;
     presenter.swapCostNanos += swapNanos;
+    presenter.postSwapCostNanos += postSwapNanos;
     if (outputKind == apex::APEX_OUTPUT_SOURCE) {
         presenter.sourceSwapCostNanos += swapNanos;
         presenter.sourceSwapSamples++;
@@ -138,6 +141,7 @@ void resetPresenterCost(Presenter& presenter) {
     presenter.processCostNanos = 0;
     presenter.releaseCostNanos = 0;
     presenter.swapCostNanos = 0;
+    presenter.postSwapCostNanos = 0;
     presenter.sourceSwapCostNanos = 0;
     presenter.generatedSwapCostNanos = 0;
     presenter.sourceSwapSamples = 0;
@@ -196,12 +200,13 @@ void recordPresentation(Presenter& presenter, int outputKind, bool swapSucceeded
                         (static_cast<double>(presenter.generatedSwapSamples) * 1000000.0)
                     : 0.0;
             PRES_LOGI(
-                "Apex presenter cost: samples=%llu acquire_ms=%.3f process_ms=%.3f release_ms=%.3f swap_ms=%.3f source_swap_ms=%.3f generated_swap_ms=%.3f total_ms=%.3f max_total_ms=%.3f",
+                "Apex presenter cost: samples=%llu acquire_ms=%.3f process_ms=%.3f release_ms=%.3f swap_ms=%.3f post_swap_ms=%.3f source_swap_ms=%.3f generated_swap_ms=%.3f total_ms=%.3f max_total_ms=%.3f",
                 (unsigned long long)presenter.costSamples,
                 presenter.acquireCostNanos / d,
                 presenter.processCostNanos / d,
                 presenter.releaseCostNanos / d,
                 presenter.swapCostNanos / d,
+                presenter.postSwapCostNanos / d,
                 sourceSwapMs,
                 generatedSwapMs,
                 presenter.totalCostNanos / d,
@@ -569,7 +574,7 @@ bool initializePresenter(Presenter& presenter) {
     if (adreno650) {
         apexEngine.setFlowShortSideFloor(180);
         apexEngine.setFlowShortSideCap(180);
-        PRES_LOGI("Apex Adreno 650 flow range: locked 180p safe tier");
+        PRES_LOGI("Apex Adreno 650 validated flow tier: 180p");
     } else {
         apexEngine.setFlowShortSideFloor(0);
         apexEngine.setFlowShortSideCap(0);
@@ -734,22 +739,26 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentSourceFrame(
     const bool swapSucceeded =
         eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
     const uint64_t swapNanos = elapsedNanos(swapStart, PresenterClock::now());
+    uint64_t postSwapNanos = 0;
+    presenter->hasSource = true;
+    if (swapSucceeded) {
+        const auto postSwapStart = PresenterClock::now();
+        apex::ApexEngine::getInstance().commitPresentedOutput(outputKind);
+        if (outputKind == apex::APEX_OUTPUT_GENERATED) {
+            apex::ApexEngine::getInstance().prepareNextGeneratedReady();
+        }
+        postSwapNanos = elapsedNanos(postSwapStart, PresenterClock::now());
+    }
     recordPresenterCost(
         *presenter,
         acquireNanos,
         processNanos,
         releaseNanos,
         swapNanos,
+        postSwapNanos,
         elapsedNanos(totalStart, PresenterClock::now()),
         outputKind);
     recordPresentation(*presenter, outputKind, swapSucceeded);
-    presenter->hasSource = true;
-    if (swapSucceeded) {
-        apex::ApexEngine::getInstance().commitPresentedOutput(outputKind);
-        if (outputKind == apex::APEX_OUTPUT_GENERATED) {
-            apex::ApexEngine::getInstance().prepareNextGeneratedReady();
-        }
-    }
     return packSourcePresentResult(releaseFenceFd, outputKind, swapSucceeded);
 }
 
@@ -795,14 +804,17 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
     const bool swapSucceeded =
         eglSwapBuffers(presenter->display, presenter->surface) == EGL_TRUE;
     const uint64_t swapNanos = elapsedNanos(swapStart, PresenterClock::now());
-    recordPresenterCost(*presenter, 0, processNanos, 0, swapNanos,
-        elapsedNanos(totalStart, PresenterClock::now()), outputKind);
-    recordPresentation(*presenter, outputKind, swapSucceeded);
+    uint64_t postSwapNanos = 0;
     if (swapSucceeded) {
+        const auto postSwapStart = PresenterClock::now();
         apex::ApexEngine::getInstance().commitPresentedOutput(outputKind);
         if (outputKind == apex::APEX_OUTPUT_GENERATED) {
             apex::ApexEngine::getInstance().prepareNextGeneratedReady();
         }
+        postSwapNanos = elapsedNanos(postSwapStart, PresenterClock::now());
     }
+    recordPresenterCost(*presenter, 0, processNanos, 0, swapNanos,
+        postSwapNanos, elapsedNanos(totalStart, PresenterClock::now()), outputKind);
+    recordPresentation(*presenter, outputKind, swapSucceeded);
     return packPulsePresentResult(outputKind, swapSucceeded);
 }

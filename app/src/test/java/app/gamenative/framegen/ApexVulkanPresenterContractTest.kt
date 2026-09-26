@@ -982,6 +982,29 @@ class ApexVulkanPresenterContractTest {
     }
 
     @Test
+    fun boundaryFeatheringParticipatesInFinalInterpolationColor() {
+        val shaders = repoFile("app/src/main/cpp/apex/apex_shaders.h").readText()
+
+        val interpolationStart = shaders.indexOf("static const char* kShaderDisInterpolate")
+        val interpolationEnd = shaders.indexOf("static const char* kShaderDisRcas", interpolationStart)
+        assertTrue(interpolationStart >= 0 && interpolationEnd > interpolationStart)
+        val interpolation = shaders.substring(interpolationStart, interpolationEnd)
+
+        assertTrue(
+            "interpolator must keep the boundary-aware normalized blend",
+            interpolation.contains("vec3 blended ="),
+        )
+        assertTrue(
+            "occlusion selection must start from the boundary-aware blend rather than discard it",
+            interpolation.contains("vec3 result = mix(blended,"),
+        )
+        assertFalse(
+            "raw c0/c1 mixing bypasses the computed boundary feathering",
+            interpolation.contains("vec3 result = mix(c0, c1"),
+        )
+    }
+
+    @Test
     fun interpolationDoesNotBindUnusedSecondFlowSampler() {
         val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
         val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()

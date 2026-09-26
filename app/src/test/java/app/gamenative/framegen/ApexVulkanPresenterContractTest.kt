@@ -74,8 +74,18 @@ class ApexVulkanPresenterContractTest {
             pipeline.contains("if (isNewRealFrame && inputTextureId == 0)"),
         )
         assertTrue(
-            "generated presentation must invoke Apex with no source texture dependency",
-            native.contains("processFrame(0, 0,"),
+            "generated presentation must use the ready-batch path with no source texture dependency",
+            native.contains("presentGeneratedReady("),
+        )
+        val readyStart = pipeline.indexOf("void ApexEngine::presentGeneratedReady")
+        val readyEnd = pipeline.indexOf("void ApexEngine::processFrameWithData", readyStart)
+        assertTrue(readyStart >= 0 && readyEnd > readyStart)
+        val readyPath = pipeline.substring(readyStart, readyEnd)
+        assertFalse(
+            "ready generated presentation must not read the released source AHB texture",
+            readyPath.contains("inputTextureId") ||
+                readyPath.contains("ImportedSource") ||
+                readyPath.contains("getOrImportSource"),
         )
         assertTrue(
             "source imports must be released after a release fence is exported",

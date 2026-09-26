@@ -174,8 +174,8 @@ class ApexVulkanPresenterContractTest {
             "Apex Vulkan ingestion must not horizontally mirror the source",
             pipeline.contains("sourceUSpan = sourceVerticalFlip ? -sourceUScale"),
         )
-        assertTrue(engine.contains("mQualityPreset.exchange"))
-        assertTrue(engine.contains("mResourcesDirty.store(true"))
+        assertTrue(engine.contains("mQualityPreset.store"))
+        assertTrue(pipeline.contains("sw == mScaledWidth") && pipeline.contains("fw == mFlowWidth") && pipeline.contains("fh == mFlowHeight"))
         assertTrue(engine.contains("mPendingRealPresentation"))
         assertTrue(engine.contains("mActiveGenerationBudget"))
         assertFalse(

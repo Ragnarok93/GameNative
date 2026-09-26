@@ -917,7 +917,10 @@ class ApexVulkanPresenterContractTest {
         val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
         val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
 
-        assertTrue(presenter.contains("setFlowShortSideFloor(120)"))
+        assertTrue(
+            "Adreno 650 must not drop below the demonstrated 180p safe flow tier",
+            presenter.contains("setFlowShortSideFloor(180)"),
+        )
         assertTrue(engine.contains("setFlowShortSideFloor"))
         assertTrue(pipeline.contains("mFlowShortSideFloor.load"))
         assertTrue(pipeline.contains("std::max(minSide"))
@@ -975,6 +978,32 @@ class ApexVulkanPresenterContractTest {
             readyPath.contains(
                 "if (activeBudget <= 0 || !hasInterpolationHistory || fs >= activeBudget)",
             ),
+        )
+    }
+
+    @Test
+    fun interpolationDoesNotBindUnusedSecondFlowSampler() {
+        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+        val shaders = repoFile("app/src/main/cpp/apex/apex_shaders.h").readText()
+
+        assertFalse(
+            "interpolation shader must not declare the unused dW sampler",
+            shaders.contains("uniform sampler2D dW"),
+        )
+
+        val interpolateStart = pipeline.indexOf("void ApexEngine::dispatchInterpolate")
+        val healthyStart = pipeline.indexOf("bool ApexEngine::isHealthy", interpolateStart)
+        assertTrue(interpolateStart >= 0 && healthyStart > interpolateStart)
+        val interpolate = pipeline.substring(interpolateStart, healthyStart)
+
+        assertFalse(
+            "generated-frame interpolation must not bind an unused fourth flow texture",
+            interpolate.contains("GL_TEXTURE3"),
+        )
+        assertFalse(
+            "dispatch interface must not carry a dead second-flow parameter",
+            engine.contains("GLuint df, GLuint dw"),
         )
     }
 

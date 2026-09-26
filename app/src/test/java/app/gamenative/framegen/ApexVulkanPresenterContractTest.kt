@@ -514,4 +514,57 @@ class ApexVulkanPresenterContractTest {
         )
     }
 
+
+    @Test
+    fun schedulerAdmissionDoesNotScanFullPresentationTelemetryOnEverySource() {
+        val presenter = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexVulkanPresenter.kt",
+        ).readText()
+        val scheduler = repoFile(
+            "app/src/main/java/app/gamenative/framegen/ApexCadenceScheduler.kt",
+        ).readText()
+
+        assertFalse(
+            "admission must use the scheduler's local display-period measurement instead of rescanning six telemetry rings for every accepted source",
+            presenter.contains("ApexPresentationTelemetry.snapshot(frameTimeNanos)"),
+        )
+        assertFalse(
+            "scheduler generationBudget must not require a full presentation telemetry snapshot",
+            scheduler.contains("presentation: ApexPresentationTelemetry.Snapshot"),
+        )
+    }
+
+    @Test
+    fun dedicatedPresenterAvoidsRedundantGlCleanupAcrossGeneratedPulses() {
+        val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
+
+        val interpolateStart = pipeline.indexOf("void ApexEngine::dispatchInterpolate")
+        val rcasStart = pipeline.indexOf("void ApexEngine::dispatchRcas", interpolateStart)
+        val healthyStart = pipeline.indexOf("bool ApexEngine::isHealthy", rcasStart)
+        assertTrue(interpolateStart >= 0 && rcasStart > interpolateStart && healthyStart > rcasStart)
+        val interpolate = pipeline.substring(interpolateStart, rcasStart)
+        val rcas = pipeline.substring(rcasStart, healthyStart)
+
+        assertTrue(
+            "dedicated Apex context must skip texture/image unbind churn after interpolation",
+            interpolate.contains("if (!mDedicatedPresentationContext)"),
+        )
+        assertTrue(
+            "dedicated Apex context must skip RCAS cleanup that the next pass overwrites",
+            rcas.contains("if (!mDedicatedPresentationContext)"),
+        )
+        assertTrue(
+            "program-cache state must be reset whenever dedicated-context ownership changes",
+            pipeline.substring(
+                pipeline.indexOf("void ApexEngine::setDedicatedPresentationContext"),
+                pipeline.indexOf("ApexEngine::BlitStateSnapshot", pipeline.indexOf("void ApexEngine::setDedicatedPresentationContext")),
+            ).contains("mBoundProgram = 0"),
+        )
+        assertTrue(
+            "dedicated fullscreen quad VAO must stay bound rather than bind/unbind on every output",
+            pipeline.contains("if (!mDedicatedPresentationContext && mQuadVao) glBindVertexArray(mQuadVao)") &&
+                pipeline.contains("if (!mDedicatedPresentationContext && mQuadVao) glBindVertexArray(0)"),
+        )
+    }
+
 }

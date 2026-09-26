@@ -91,4 +91,68 @@ class ApexVulkanComputeBackendContractTest {
             fallbackCmake.contains("EGL") && fallbackCmake.contains("GLESv3"),
         )
     }
+
+    @Test
+    fun rendererOwnedSourceFeedsVulkanHistoryAndFullActiveDisGraph() {
+        val header = repoFile(
+            "app/src/main/cpp/apex/vulkan/apex_vk_backend.h",
+        ).readText()
+        val source = repoFile(
+            "app/src/main/cpp/apex/vulkan/apex_vk_backend.cpp",
+        ).readText()
+        val renderer = repoFile(
+            "app/src/main/cpp/winlator/VulkanRendererContext.cpp",
+        ).readText()
+
+        listOf(
+            "struct ImageResource",
+            "struct LevelResources",
+            "ensureResources",
+            "recordSourceGraph",
+            "generatedImage",
+            "generatedImageView",
+        ).forEach { token ->
+            assertTrue("Vulkan resource graph is missing $token", header.contains(token))
+        }
+
+        listOf(
+            "VK_IMAGE_USAGE_STORAGE_BIT",
+            "VK_IMAGE_USAGE_TRANSFER_DST_BIT",
+            "CreateDescriptorPool",
+            "ResetDescriptorPool",
+            "UpdateDescriptorSets",
+            "CmdCopyImage",
+            "CmdPipelineBarrier",
+            "Stage::LumaGrad",
+            "Stage::InverseSearch",
+            "Stage::Propagate",
+            "Stage::Densify",
+            "Stage::Interpolate",
+        ).forEach { token ->
+            assertTrue("Vulkan resource/dispatch implementation is missing $token", source.contains(token))
+        }
+
+        assertTrue(
+            "Apex renderer target must be copyable directly into Vulkan history",
+            renderer.contains("VK_IMAGE_USAGE_TRANSFER_SRC_BIT"),
+        )
+        assertTrue(
+            "shadow Vulkan graph must consume the renderer-owned source image and view",
+            renderer.contains("recordSourceGraph(") &&
+                renderer.contains("slot.image") &&
+                renderer.contains("slot.view"),
+        )
+        assertTrue(
+            "Vulkan migration must stay behind an explicit runtime gate until presentation is ported",
+            renderer.contains("debug.gamenative.apex_vk_shadow"),
+        )
+
+        listOf("AHardwareBuffer", "EGL", "GLES", "glDispatchCompute").forEach { token ->
+            assertFalse(
+                "native Vulkan graph must not depend on compatibility API $token",
+                source.contains(token),
+            )
+        }
+    }
+
 }

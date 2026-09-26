@@ -1,0 +1,41 @@
+// Vulkan-native Apex compute port. Kept algorithmically aligned with apex_shaders.h.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) readonly uniform image2D u_A;
+layout(set = 0, binding = 1, rgba16f) readonly uniform image2D u_B;
+layout(set = 0, binding = 2, rgba16f) readonly uniform image2D u_dWin;
+layout(set = 0, binding = 3, rgba16f) writeonly uniform image2D u_dWout;
+
+layout(push_constant) uniform PushConstants {
+    float omega;
+    int parity;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(u_dWout);
+    if (p.x >= sz.x || p.y >= sz.y) return;
+
+    if (((p.x + p.y) & 1) != pc.parity) {
+        imageStore(u_dWout, p, imageLoad(u_dWin, p));
+        return;
+    }
+
+    vec4 A = imageLoad(u_A, p);
+    vec2 B = imageLoad(u_B, p).xy;
+    vec2 cur = imageLoad(u_dWin, p).xy;
+
+    vec2 d_left  = imageLoad(u_dWin, clamp(p + ivec2(-1, 0), ivec2(0), sz - 1)).xy;
+    vec2 d_right = imageLoad(u_dWin, clamp(p + ivec2( 1, 0), ivec2(0), sz - 1)).xy;
+    vec2 d_up    = imageLoad(u_dWin, clamp(p + ivec2( 0,-1), ivec2(0), sz - 1)).xy;
+    vec2 d_down  = imageLoad(u_dWin, clamp(p + ivec2( 0, 1), ivec2(0), sz - 1)).xy;
+    vec2 lap = d_left + d_right + d_up + d_down;
+
+    // Gauss-Seidel step with spatial smoothing
+    vec2 sigma = lap * 20.0 + B;
+    vec2 gs = vec2(sigma.x / (A.x + 80.0), sigma.y / (A.y + 80.0));
+    vec2 nextDW = clamp(cur + pc.omega * (gs - cur), vec2(-2.0), vec2(2.0));
+
+    imageStore(u_dWout, p, vec4(nextDW, 0.0, 1.0));
+}

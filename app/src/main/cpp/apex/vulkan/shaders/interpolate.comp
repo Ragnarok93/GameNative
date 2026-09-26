@@ -1,0 +1,131 @@
+// Vulkan-native Apex compute port. Kept algorithmically aligned with apex_shaders.h.
+#version 450
+layout(local_size_x = 16, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D prevColor;
+layout(set = 0, binding = 1) uniform sampler2D nextColor;
+layout(set = 0, binding = 2) uniform sampler2D denseFlow;
+layout(set = 0, binding = 4, rgba8) writeonly uniform image2D outImage;
+
+// Unified GPU Mathematical Divergence & Pipeline Telemetry Buffer
+layout(std430, set = 0, binding = 5) buffer UnifiedTelemetryBuffer {
+    uint u_lumaTotalPixels;
+    uint u_lumaNanInfCount;
+    uint u_searchTotalPatches;
+    uint u_searchNanInfCount;
+    uint u_searchRevertedCount;
+    uint u_searchZeroCollapseCount;
+    uint u_searchActiveMovingCount;
+    uint u_propTotalPatches;
+    uint u_propImprovedCount;
+    uint u_propNanInfCount;
+    uint u_denseTotalPixels;
+    uint u_denseActiveMovingCount;
+    uint u_denseZeroWeightCount;
+    uint u_denseNanInfCount;
+    uint u_interpTotalPixels;
+    uint u_interpOccludedCount;
+    uint u_interpOutOfBoundsCount;
+    uint u_interpNanInfCount;
+};
+
+layout(push_constant) uniform PushConstants {
+    float t;
+    float liquidFeel;
+    float shutterGain;
+    float edgeGuard;
+    int collectTelemetry;
+} pc;
+
+// Hardware-Independent Subpixel Bilinear Flow with Motion Discontinuity Protection
+vec2 sampleFlow(sampler2D flowMap, vec2 uv) {
+    vec2 sz = vec2(textureSize(flowMap, 0));
+    vec2 p = uv * sz - 0.5;
+    vec2 frac = fract(p);
+    ivec2 i0 = ivec2(floor(p));
+    ivec2 mx = ivec2(sz) - 1;
+
+    vec2 a = texelFetch(flowMap, clamp(i0,                ivec2(0), mx), 0).xy;
+    vec2 b = texelFetch(flowMap, clamp(i0 + ivec2(1, 0), ivec2(0), mx), 0).xy;
+    vec2 c = texelFetch(flowMap, clamp(i0 + ivec2(0, 1), ivec2(0), mx), 0).xy;
+    vec2 e = texelFetch(flowMap, clamp(i0 + ivec2(1, 1), ivec2(0), mx), 0).xy;
+
+    // Motion Discontinuity Guard:
+    // Across object silhouettes (e.g. guns, weapons, character clothes against background),
+    // blending different velocity vectors creates a non-existent half-speed vector that
+    // smears foreground pixels into the background (color leaking).
+    // Snap to the nearest vector when vectors cross a sharp motion boundary!
+    vec2 d1 = a - b;
+    vec2 d2 = a - c;
+    vec2 d3 = a - e;
+    float maxDelta2 = max(max(dot(d1, d1), dot(d2, d2)), dot(d3, d3));
+    if (maxDelta2 > 0.00008) {
+        ivec2 nearest = i0 + ivec2(frac.x >= 0.5 ? 1 : 0, frac.y >= 0.5 ? 1 : 0);
+        return texelFetch(flowMap, clamp(nearest, ivec2(0), mx), 0).xy;
+    }
+
+    return mix(mix(a, b, frac.x), mix(c, e, frac.x), frac.y);
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(outImage);
+    if (pix.x >= sz.x || pix.y >= sz.y) return;
+    vec2 uv = (vec2(pix) + 0.5) / vec2(sz);
+    vec2 texel = 1.0 / vec2(sz);
+
+    // Screen Boundary Anchor: Smoothly decays optical flow to zero at physical display boundaries
+    float guardPx = mix(8.0, 24.0, clamp(pc.edgeGuard, 0.0, 1.0));
+    vec2 guard = guardPx * texel;
+    vec2 dEdge = min(uv, 1.0 - uv);
+    vec2 ramp = clamp(dEdge / max(guard, texel), 0.0, 1.0);
+    vec2 easedRamp = ramp * ramp * (3.0 - 2.0 * ramp);
+    float edgeMix = min(easedRamp.x, easedRamp.y);
+
+    // Uniform optical flow with boundary anchoring (no destructive per-pixel HUD mask!)
+    vec2 f = sampleFlow(denseFlow, uv);
+    f *= edgeMix; // Fades flow smoothly to 0 at borders -> zero edge bleed at screen borders!
+
+    // Liquid Smooth Motion Pacing: Maintains uniform physical velocity across all frame generation steps
+    float smoothT = mix(pc.t, pc.t * pc.t * (3.0 - 2.0 * pc.t), clamp(pc.liquidFeel, 0.0, 1.0) * 0.15);
+
+    // Bilateral Forward-Backward Warp
+    vec2 uv0 = uv - smoothT * f;
+    vec2 uv1 = uv + (1.0 - smoothT) * f;
+
+    // Stable, non-ringing hardware bilinear texture sampling (Zero wobble / Zero flicker)
+    vec3 c0 = textureLod(prevColor, clamp(uv0, 0.0, 1.0), 0.0).rgb;
+    vec3 c1 = textureLod(nextColor, clamp(uv1, 0.0, 1.0), 0.0).rgb;
+
+    // Boundary Feathering: prevents screen-edge stretching
+    const float FEATHER_PX = 6.0;
+    vec2 feather = FEATHER_PX * texel;
+    vec2 e0 = max(max(-uv0, uv0 - 1.0), vec2(0.0)) / feather;
+    vec2 e1 = max(max(-uv1, uv1 - 1.0), vec2(0.0)) / feather;
+    float out0 = clamp(max(e0.x, e0.y), 0.0, 1.0);
+    float out1 = clamp(max(e1.x, e1.y), 0.0, 1.0);
+
+    float w0 = (1.0 - smoothT) * (1.0 - out0);
+    float w1 = smoothT * (1.0 - out1);
+    float wsum = w0 + w1;
+
+    vec3 blended = wsum > 1e-4 ? (c0 * w0 + c1 * w1) / wsum : (out0 <= out1 ? c0 : c1);
+
+    // Continuous Bilateral Motion Synthesis (bionic-fg / FSR 3 continuous weighting):
+    // Zero temporal popping and zero edge flickering across t = 0.5.
+    // Softly weights continuous blending, preserving 100% of fluid character motion
+    // without hard binary threshold cutting.
+    float diff = dot(abs(c0 - c1), vec3(0.299, 0.587, 0.114));
+    float occl = smoothstep(0.08, 0.32, diff);
+    float blendWeight = mix(smoothT, (smoothT < 0.5 ? 0.0 : 1.0), occl * 0.65);
+    vec3 result = mix(c0, c1, clamp(blendWeight, 0.0, 1.0));
+
+    if (pc.collectTelemetry != 0) {
+        atomicAdd(u_interpTotalPixels, 1u);
+        if (occl > 0.5) atomicAdd(u_interpOccludedCount, 1u);
+        if (out0 > 0.0 || out1 > 0.0) atomicAdd(u_interpOutOfBoundsCount, 1u);
+        if (any(isnan(result)) || any(isinf(result))) atomicAdd(u_interpNanInfCount, 1u);
+    }
+
+    imageStore(outImage, pix, vec4(clamp(result, 0.0, 1.0), 1.0));
+}

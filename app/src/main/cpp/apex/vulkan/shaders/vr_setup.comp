@@ -1,0 +1,39 @@
+// Vulkan-native Apex compute port. Kept algorithmically aligned with apex_shaders.h.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D denseFlow;
+layout(set = 0, binding = 1) uniform sampler2D prevColor;
+layout(set = 0, binding = 2) uniform sampler2D nextColor;
+layout(set = 0, binding = 3, rgba16f) writeonly uniform image2D outA;
+layout(set = 0, binding = 4, rgba16f) writeonly uniform image2D outB;
+layout(set = 0, binding = 5, rgba16f) writeonly uniform image2D outDW;
+
+float getLum(vec3 c) { return (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) * 255.0; }
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(outDW);
+    if (pix.x >= sz.x || pix.y >= sz.y) return;
+    vec2 uv = (vec2(pix) + 0.5) / vec2(sz);
+    vec2 invSz = 1.0 / vec2(sz);
+
+    vec2 f = textureLod(denseFlow, uv, 0.0).xy;
+    float i0 = getLum(textureLod(prevColor, uv, 0.0).xyz);
+    float w  = getLum(textureLod(nextColor, uv + f, 0.0).xyz);
+    float it = w - i0;
+
+    // Spatial gradients on warped nextColor
+    float w_r = getLum(textureLod(nextColor, uv + f + vec2(invSz.x, 0.0), 0.0).xyz);
+    float w_l = getLum(textureLod(nextColor, uv + f - vec2(invSz.x, 0.0), 0.0).xyz);
+    float w_d = getLum(textureLod(nextColor, uv + f + vec2(0.0, invSz.y), 0.0).xyz);
+    float w_u = getLum(textureLod(nextColor, uv + f - vec2(0.0, invSz.y), 0.0).xyz);
+    float ix = (w_r - w_l) * 0.5;
+    float iy = (w_d - w_u) * 0.5;
+
+    // Diagonal components of tensor system
+    const float alpha = 20.0;
+    imageStore(outA, pix, vec4(ix * ix + alpha, iy * iy + alpha, ix * iy, 1.0));
+    imageStore(outB, pix, vec4(-ix * it, -iy * it, 0.0, 1.0));
+    imageStore(outDW, pix, vec4(0.0));
+}

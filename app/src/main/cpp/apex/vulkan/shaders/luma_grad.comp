@@ -1,0 +1,78 @@
+// Vulkan-native Apex compute port. Kept algorithmically aligned with apex_shaders.h.
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D u_colorMap;
+layout(set = 0, binding = 1, r32f) writeonly uniform image2D u_pyrOut;
+layout(set = 0, binding = 2, rgba16f) writeonly uniform image2D u_gradOut;
+
+// Unified GPU Mathematical Divergence & Pipeline Telemetry Buffer
+layout(std430, set = 0, binding = 5) buffer UnifiedTelemetryBuffer {
+    uint u_lumaTotalPixels;
+    uint u_lumaNanInfCount;
+    uint u_searchTotalPatches;
+    uint u_searchNanInfCount;
+    uint u_searchRevertedCount;
+    uint u_searchZeroCollapseCount;
+    uint u_searchActiveMovingCount;
+    uint u_propTotalPatches;
+    uint u_propImprovedCount;
+    uint u_propNanInfCount;
+    uint u_denseTotalPixels;
+    uint u_denseActiveMovingCount;
+    uint u_denseZeroWeightCount;
+    uint u_denseNanInfCount;
+    uint u_interpTotalPixels;
+    uint u_interpOccludedCount;
+    uint u_interpOutOfBoundsCount;
+    uint u_interpNanInfCount;
+};
+
+layout(push_constant) uniform PushConstants {
+    int isColor;
+    int collectTelemetry;
+} pc;
+
+float getLum(vec4 c) {
+    if (pc.isColor != 0) {
+        return (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) * 255.0;
+    } else {
+        return c.r;
+    }
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(u_pyrOut);
+    if (pix.x >= sz.x || pix.y >= sz.y) return;
+    ivec2 mx = sz - 1;
+
+    ivec2 inSz = textureSize(u_colorMap, 0);
+    vec2 scale = vec2(inSz) / vec2(sz);
+    ivec2 srcP = ivec2(vec2(pix) * scale);
+    ivec2 srcMx = inSz - 1;
+
+    float a00 = getLum(texelFetch(u_colorMap, clamp(srcP + ivec2(-1, -1), ivec2(0), srcMx), 0));
+    float a10 = getLum(texelFetch(u_colorMap, clamp(srcP + ivec2( 0, -1), ivec2(0), srcMx), 0));
+    float a20 = getLum(texelFetch(u_colorMap, clamp(srcP + ivec2( 1, -1), ivec2(0), srcMx), 0));
+    float a01 = getLum(texelFetch(u_colorMap, clamp(srcP + ivec2(-1,  0), ivec2(0), srcMx), 0));
+    float a11 = getLum(texelFetch(u_colorMap, clamp(srcP,                 ivec2(0), srcMx), 0));
+    float a21 = getLum(texelFetch(u_colorMap, clamp(srcP + ivec2( 1,  0), ivec2(0), srcMx), 0));
+    float a02 = getLum(texelFetch(u_colorMap, clamp(srcP + ivec2(-1,  1), ivec2(0), srcMx), 0));
+    float a12 = getLum(texelFetch(u_colorMap, clamp(srcP + ivec2( 0,  1), ivec2(0), srcMx), 0));
+    float a22 = getLum(texelFetch(u_colorMap, clamp(srcP + ivec2( 1,  1), ivec2(0), srcMx), 0));
+
+    float sx = (3.0 * a00 + 10.0 * a01 + 3.0 * a02) - (3.0 * a20 + 10.0 * a21 + 3.0 * a22);
+    float sy = (3.0 * a00 + 10.0 * a10 + 3.0 * a20) - (3.0 * a02 + 10.0 * a12 + 3.0 * a22);
+    const float normVal = 1.0 / 32.0;
+
+    imageStore(u_pyrOut, pix, vec4(a11, 0.0, 0.0, 1.0));
+    imageStore(u_gradOut, pix, vec4(sx * normVal, sy * normVal, 0.0, 1.0));
+
+    if (pc.collectTelemetry != 0 && pc.isColor != 0) {
+        atomicAdd(u_lumaTotalPixels, 1u);
+        if (isnan(a11) || isinf(a11) || isnan(sx) || isinf(sx) || isnan(sy) || isinf(sy)) {
+            atomicAdd(u_lumaNanInfCount, 1u);
+        }
+    }
+}

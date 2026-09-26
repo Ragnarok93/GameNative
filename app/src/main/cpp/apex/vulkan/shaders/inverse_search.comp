@@ -1,0 +1,167 @@
+// Vulkan-native Apex compute port. Kept algorithmically aligned with apex_shaders.h.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D lastLumaMap;
+layout(set = 0, binding = 1) uniform sampler2D nextLumaMap;
+layout(set = 0, binding = 2) uniform sampler2D lastGradientMap;
+layout(set = 0, binding = 3) uniform sampler2D flowMap;
+layout(set = 0, binding = 4, rgba16f) writeonly uniform image2D outSparseFlow;
+
+// Unified GPU Mathematical Divergence & Pipeline Telemetry Buffer
+layout(std430, set = 0, binding = 5) buffer UnifiedTelemetryBuffer {
+    uint u_lumaTotalPixels;
+    uint u_lumaNanInfCount;
+    uint u_searchTotalPatches;
+    uint u_searchNanInfCount;
+    uint u_searchRevertedCount;
+    uint u_searchZeroCollapseCount;
+    uint u_searchActiveMovingCount;
+    uint u_propTotalPatches;
+    uint u_propImprovedCount;
+    uint u_propNanInfCount;
+    uint u_denseTotalPixels;
+    uint u_denseActiveMovingCount;
+    uint u_denseZeroWeightCount;
+    uint u_denseNanInfCount;
+    uint u_interpTotalPixels;
+    uint u_interpOccludedCount;
+    uint u_interpOutOfBoundsCount;
+    uint u_interpNanInfCount;
+};
+
+layout(push_constant) uniform PushConstants {
+    int level;
+    int coarseLevel;
+    int collectTelemetry;
+} pc;
+
+mat2 invertMat2(mat2 m) {
+    float det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+    if (abs(det) < 1e-6) return mat2(0.0);
+    return mat2(m[1][1], -m[0][1], -m[1][0], m[0][0]) / det;
+}
+
+void main() {
+    const float patchSize = 8.0;
+    ivec2 pixSparse = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sparseSize = imageSize(outSparseFlow);
+    if (pixSparse.x >= sparseSize.x || pixSparse.y >= sparseSize.y) return;
+
+    ivec2 pix = pixSparse * 3;
+    ivec2 denseSize = textureSize(lastLumaMap, 0);
+    ivec2 denseMax = denseSize - 1;
+
+    float lastImageData[64];
+    vec2 gradData[64];
+    vec2 gradSum = vec2(0.0);
+    mat2 H = mat2(0.0);
+
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            int idx = i * 8 + j;
+            ivec2 q = clamp(pix + ivec2(i, j), ivec2(0), denseMax);
+            gradData[idx] = -texelFetch(lastGradientMap, q, 0).xy;
+            H[0][0] += gradData[idx].x * gradData[idx].x;
+            H[1][1] += gradData[idx].y * gradData[idx].y;
+            H[0][1] += gradData[idx].x * gradData[idx].y;
+            lastImageData[idx] = texelFetch(lastLumaMap, q, 0).x;
+            gradSum += gradData[idx];
+        }
+    }
+    H[1][0] = H[0][1];
+    H[0][0] += 1e-4;
+    H[1][1] += 1e-4;
+    mat2 H_inv = invertMat2(H);
+
+    vec2 flow = vec2(0.0);
+    vec2 invImageSize = 1.0 / vec2(denseSize);
+    if (pc.level != pc.coarseLevel) {
+        vec2 uv = (vec2(pix) + 4.0) * invImageSize;
+        vec4 cf = textureLod(flowMap, uv, 0.0);
+        flow = cf.xy * vec2(denseSize);
+        if (any(isnan(flow)) || any(isinf(flow))) flow = vec2(0.0);
+    }
+    vec2 initialFlow = flow;
+
+    vec2 bestFlow = flow;
+    float prevSSD = 1e10;
+    int maxIter = 8;
+    for (int iter = 0; iter < maxIter; iter++) {
+        vec2 warpOrigin = clamp(vec2(pix) + flow, vec2(0.0), vec2(denseSize) - patchSize);
+        float sd = 0.0;
+        float sd2 = 0.0;
+        vec2 sIg = vec2(0.0);
+
+        for (int i = 0; i < 8; i++) {
+            for (int j = 0; j < 8; j++) {
+                int idx = i * 8 + j;
+                vec2 tc = (warpOrigin + vec2(i, j) + 0.5) * invImageSize;
+                float warped = textureLod(nextLumaMap, tc, 0.0).x;
+                float diff = warped - lastImageData[idx];
+                sd += diff;
+                sd2 += diff * diff;
+                sIg += gradData[idx] * diff;
+            }
+        }
+
+        vec2 dU = sIg - sd * gradSum / 64.0;
+        float SSD = sd2 - sd * sd / 64.0;
+
+        if (SSD >= prevSSD) {
+            flow = bestFlow;
+            break;
+        }
+        prevSSD = SSD;
+        bestFlow = flow;
+        flow -= H_inv * dU;
+    }
+
+    vec2 wantOrigin = vec2(pix) + flow;
+    vec2 maxOrigin = vec2(denseSize) - patchSize;
+    bool clamped = any(lessThan(wantOrigin, vec2(-0.5))) || any(greaterThan(wantOrigin, maxOrigin + 0.5));
+    bool unmatched = (prevSSD / 64.0) > (36.0 * 36.0);
+
+    bool reverted = any(isnan(flow)) || any(isinf(flow)) || clamped || unmatched || length(flow - initialFlow) > patchSize;
+    if (reverted) flow = initialFlow;
+
+    // Zero-Motion HUD Shield (DIS_ZERO_MATCH_RATIO = 0.5, squared = 0.25)
+    float zeroSsd = -1.0;
+    if (!reverted && dot(flow, flow) > 0.25) {
+        float zsd = 0.0;
+        float zsd2 = 0.0;
+        for (int i = 0; i < 8; i++) {
+            for (int j = 0; j < 8; j++) {
+                int idx = i * 8 + j;
+                vec2 tc = (vec2(pix) + vec2(i, j) + 0.5) * invImageSize;
+                float warped = textureLod(nextLumaMap, tc, 0.0).x;
+                float diff = warped - lastImageData[idx];
+                zsd += diff;
+                zsd2 += diff * diff;
+            }
+        }
+        float zssd = zsd2 - zsd * zsd / 64.0;
+        if (zssd <= prevSSD * 0.25) {
+            flow = vec2(0.0);
+            zeroSsd = zssd;
+        }
+    }
+
+    // Telemetry capture on Level 0 (finest level which dictates final interpolation)
+    if (pc.collectTelemetry != 0 && pc.level == 0) {
+        atomicAdd(u_searchTotalPatches, 1u);
+        if (any(isnan(flow)) || any(isinf(flow))) {
+            atomicAdd(u_searchNanInfCount, 1u);
+        }
+        if (reverted) {
+            atomicAdd(u_searchRevertedCount, 1u);
+        }
+        if (dot(flow, flow) < 1e-4) {
+            atomicAdd(u_searchZeroCollapseCount, 1u);
+        } else {
+            atomicAdd(u_searchActiveMovingCount, 1u);
+        }
+    }
+
+    imageStore(outSparseFlow, pixSparse, vec4(flow * invImageSize, zeroSsd, 1.0));
+}

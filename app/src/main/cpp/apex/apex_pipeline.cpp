@@ -861,89 +861,6 @@ void ApexEngine::dispatchVrSor(GLuint at, GLuint bt, GLuint dwi, GLuint dwo, flo
     checkGlPassError("DisVrSor");
 }
 
-void ApexEngine::dispatchInterpolateBatch(
-    GLuint pc,
-    GLuint nc,
-    GLuint df,
-    GLuint dw,
-    const GLuint* outputs,
-    int generationCount,
-    int w,
-    int h) {
-    const int count = std::clamp(
-        generationCount,
-        0,
-        static_cast<int>(MAX_GENERATED_FRAMES));
-    if (count <= 0 || outputs == nullptr) return;
-
-    useProgram(mProgInterpolate);
-    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, pc);
-    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, nc);
-    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, df);
-    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, dw);
-
-    const bool collectTelemetry =
-        mLoggingEnabled.load(std::memory_order_relaxed);
-    const GLbitfield telemetryBarrier =
-        collectTelemetry ? GL_SHADER_STORAGE_BARRIER_BIT : 0;
-    if (mUniforms.interpolateFlowScale >= 0) {
-        glUniform1f(mUniforms.interpolateFlowScale, mFlowScale.load());
-    }
-    if (mUniforms.interpolateLiquidFeel >= 0) {
-        glUniform1f(mUniforms.interpolateLiquidFeel, mLiquidFeel.load());
-    }
-    if (mUniforms.interpolateShutterGain >= 0) {
-        glUniform1f(mUniforms.interpolateShutterGain, mShutterGain.load());
-    }
-    if (mUniforms.interpolateEdgeGuard >= 0) {
-        glUniform1f(mUniforms.interpolateEdgeGuard, mEdgeGuard.load());
-    }
-    if (mUniforms.interpolateCollectTelemetry >= 0) {
-        glUniform1i(
-            mUniforms.interpolateCollectTelemetry,
-            collectTelemetry ? 1 : 0);
-    }
-
-    const float denominator = static_cast<float>(count + 1);
-    for (int generatedIndex = 0; generatedIndex < count; ++generatedIndex) {
-        glBindImageTexture(
-            4,
-            outputs[generatedIndex],
-            0,
-            GL_FALSE,
-            0,
-            GL_WRITE_ONLY,
-            GL_RGBA8);
-        if (mUniforms.interpolateT >= 0) {
-            glUniform1f(
-                mUniforms.interpolateT,
-                static_cast<float>(generatedIndex + 1) / denominator);
-        }
-        glDispatchCompute((w + 15) / 16, (h + 7) / 8, 1);
-    }
-
-    // All batch outputs are independent writes from the same read-only inputs.
-    // Publish them once after the final dispatch instead of serializing every
-    // synthetic with its own image/texture barrier.
-    glMemoryBarrier(
-        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
-        GL_TEXTURE_FETCH_BARRIER_BIT |
-        telemetryBarrier);
-
-    if (!mDedicatedPresentationContext) {
-        glBindImageTexture(4, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-        glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
-        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
-        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
-    mPassInterpolate.fetch_add(
-        static_cast<uint64_t>(count),
-        std::memory_order_relaxed);
-    checkGlPassError("DisInterpolateBatch");
-}
-
 void ApexEngine::dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h) {
     useProgram(mProgInterpolate);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, pc);
@@ -1121,6 +1038,7 @@ void ApexEngine::presentPendingReal(
     }
     mFramesSinceReal.store(0, std::memory_order_release);
     mActiveGenerationBudget.store(0, std::memory_order_release);
+    mPreparedGenerationSlots.store(0, std::memory_order_release);
     mRenderingGeneratedFrame.store(false, std::memory_order_release);
     mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
 }
@@ -1215,6 +1133,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mFramesSinceReal.store(0, std::memory_order_release);
             mPendingRealPresentation.store(false, std::memory_order_release);
             mActiveGenerationBudget.store(0, std::memory_order_release);
+            mPreparedGenerationSlots.store(0, std::memory_order_release);
             mLastPreparationCostNanos.store(0, std::memory_order_release);
             mLastSyntheticCostNanos.store(0, std::memory_order_release);
             mLastSyntheticCostBudget.store(0, std::memory_order_release);
@@ -1237,6 +1156,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
         mRealFramesCaptured.fetch_add(1);
         mRealFramesCapturedCount.fetch_add(1);
         mFramesSinceReal.store(0);
+        mPreparedGenerationSlots.store(0, std::memory_order_release);
         mPreviousSlot = mCurrentSlot;
         mCurrentSlot = (mCurrentSlot + 1) % DIS_SLOTS;
 
@@ -1296,6 +1216,7 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
             mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
             mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
             mActiveGenerationBudget.store(0, std::memory_order_release);
+            mPreparedGenerationSlots.store(0, std::memory_order_release);
             mPendingRealPresentation.store(false, std::memory_order_release);
             return;
         }
@@ -1359,21 +1280,26 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 
         DisLevel& l0 = mLevels[0];
 
-        // Prepare every admitted interpolation position now, while the source
-        // pair and flow field are hot. Display callbacks then only select and
-        // present an already-ready texture instead of submitting interpolation
-        // compute on the Choreographer deadline.
+        // Prepare only the first interpolation required for generation-first
+        // presentation. Later slots are refilled one at a time after successful
+        // swaps so 3x/4x do not submit a full-resolution interpolation burst.
         beginGpuTimer(ApexGpuTimerStage::Interpolate);
-        dispatchInterpolateBatch(
-            mColorRingTex[mPreviousSlot],
-            mColorRingTex[mCurrentSlot],
-            l0.denseFlowTex,
-            l0.denseFlowTex,
-            mGeneratedBatchTex,
-            generationBudget,
-            mScaledWidth,
-            mScaledHeight);
+        const bool firstSyntheticReady = prepareGeneratedSlot(0, generationBudget);
         endGpuTimer();
+        if (!firstSyntheticReady) {
+            mLastSyntheticCostNanos.store(0, std::memory_order_release);
+            mLastSyntheticCostBudget.store(0, std::memory_order_release);
+            glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
+            glViewport(viewX, viewY, presentationWidth, presentationHeight);
+            blitQuad(mColorRingTex[mCurrentSlot], 0, 0, 1, 1);
+            mActualRealFrameCount.fetch_add(1);
+            mTotalRealFramesPresented++;
+            mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
+            mActiveGenerationBudget.store(0, std::memory_order_release);
+            mPreparedGenerationSlots.store(0, std::memory_order_release);
+            mPendingRealPresentation.store(false, std::memory_order_release);
+            return;
+        }
         mLastSyntheticCostNanos.store(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - syntheticStart).count(),
@@ -1488,6 +1414,48 @@ void ApexEngine::processFrame(GLuint inputTextureId, GLuint outputFboId, int wid
 }
 
 
+
+bool ApexEngine::prepareGeneratedSlot(
+    int generatedIndex,
+    int generationBudget) {
+    if (!mActive.load(std::memory_order_relaxed) ||
+        generatedIndex < 0 ||
+        generatedIndex >= MAX_GENERATED_FRAMES ||
+        generationBudget <= 0 ||
+        generatedIndex >= generationBudget ||
+        mRealFramesCaptured.load(std::memory_order_acquire) < 2) {
+        return false;
+    }
+
+    DisLevel& l0 = mLevels[0];
+    const float t =
+        static_cast<float>(generatedIndex + 1) /
+        static_cast<float>(generationBudget + 1);
+    dispatchInterpolate(
+        mColorRingTex[mPreviousSlot],
+        mColorRingTex[mCurrentSlot],
+        l0.denseFlowTex,
+        l0.denseFlowTex,
+        mGeneratedBatchTex[generatedIndex],
+        t,
+        mScaledWidth,
+        mScaledHeight);
+    mPreparedGenerationSlots.store(
+        generatedIndex + 1,
+        std::memory_order_release);
+    return true;
+}
+
+bool ApexEngine::prepareNextGeneratedReady() {
+    if (!mPendingRealPresentation.load(std::memory_order_acquire)) return false;
+    const int activeBudget =
+        mActiveGenerationBudget.load(std::memory_order_acquire);
+    const int prepared =
+        mPreparedGenerationSlots.load(std::memory_order_acquire);
+    if (activeBudget <= 0 || prepared >= activeBudget) return false;
+    return prepareGeneratedSlot(prepared, activeBudget);
+}
+
 void ApexEngine::presentGeneratedReady(
     GLuint outputFboId,
     int viewX,
@@ -1508,16 +1476,20 @@ void ApexEngine::presentGeneratedReady(
         return;
     }
 
-    const int fs = mFramesSinceReal.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const int fs = mFramesSinceReal.load(std::memory_order_acquire) + 1;
     const int64_t nowNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
     if (fs < activeBudget) {
+        const int prepared =
+            mPreparedGenerationSlots.load(std::memory_order_acquire);
+        if (prepared <= fs) return;
         const GLuint readyTexture = mGeneratedBatchTex[fs];
         if (readyTexture == 0) return;
         glBindFramebuffer(GL_FRAMEBUFFER, outputFboId);
         glViewport(viewX, viewY, viewWidth, viewHeight);
         blitQuad(readyTexture, 0, 0, 1, 1);
+        mFramesSinceReal.store(fs, std::memory_order_release);
         mGeneratedFrameCount.fetch_add(1, std::memory_order_relaxed);
         mTotalGenFramesPresented++;
         mLastPresentedNanos.store(nowNanos, std::memory_order_relaxed);
@@ -1536,6 +1508,7 @@ void ApexEngine::presentGeneratedReady(
         mLastOutputKind.store(APEX_OUTPUT_SOURCE, std::memory_order_relaxed);
         mPendingRealPresentation.store(false, std::memory_order_release);
         mActiveGenerationBudget.store(0, std::memory_order_release);
+        mPreparedGenerationSlots.store(0, std::memory_order_release);
     }
 }
 

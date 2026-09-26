@@ -580,15 +580,9 @@ class ApexVulkanPresenterContractTest {
 
 
     @Test
-    fun admittedSyntheticBatchIsPreparedBeforeDisplayCallbacks() {
-        val engine = repoFile("app/src/main/cpp/apex/apex_engine.h").readText()
+    fun boundedReadyAheadKeepsGeneratedDisplayCallbacksComputeFree() {
         val pipeline = repoFile("app/src/main/cpp/apex/apex_pipeline.cpp").readText()
-
-        assertTrue(
-            "Apex must retain one ready texture per possible generated slot",
-            engine.contains("mGeneratedBatchTex") &&
-                engine.contains("MAX_GENERATED_FRAMES"),
-        )
+        val presenter = repoFile("app/src/main/cpp/apex/apex_vulkan_presenter.cpp").readText()
 
         val newSourceStart = pipeline.indexOf("if (isNewRealFrame)")
         val pulseStart = pipeline.indexOf(
@@ -597,37 +591,22 @@ class ApexVulkanPresenterContractTest {
         )
         assertTrue(newSourceStart >= 0 && pulseStart > newSourceStart)
         val sourcePath = pipeline.substring(newSourceStart, pulseStart)
-        val pulsePath = pipeline.substring(pulseStart)
+        assertTrue(sourcePath.contains("prepareGeneratedSlot(0"))
+        assertFalse(sourcePath.contains("dispatchInterpolateBatch("))
+
+        val readyStart = pipeline.indexOf("void ApexEngine::presentGeneratedReady")
+        val processWithData = pipeline.indexOf("void ApexEngine::processFrameWithData", readyStart)
+        assertTrue(readyStart >= 0 && processWithData > readyStart)
+        val readyPath = pipeline.substring(readyStart, processWithData)
+        assertFalse(
+            "display-time ready-frame selection must not submit interpolation compute",
+            readyPath.contains("dispatchInterpolate("),
+        )
+        assertTrue(readyPath.contains("mGeneratedBatchTex[fs]"))
 
         assertTrue(
-            "source processing must prepare every admitted interpolation position before presenting the first synthetic",
-            sourcePath.contains("dispatchInterpolateBatch(") &&
-                sourcePath.contains("mGeneratedBatchTex"),
-        )
-        val batchStart = pipeline.indexOf("void ApexEngine::dispatchInterpolateBatch")
-        val singleStart = pipeline.indexOf("void ApexEngine::dispatchInterpolate(", batchStart)
-        assertTrue(batchStart >= 0 && singleStart > batchStart)
-        val batchPath = pipeline.substring(batchStart, singleStart)
-        assertTrue(
-            "batch interpolation must bind shared inputs once and vary only output image / interpolation position",
-            batchPath.contains("for (int generatedIndex = 0; generatedIndex < count; ++generatedIndex)") &&
-                batchPath.indexOf("glBindTexture(GL_TEXTURE_2D, pc)") <
-                    batchPath.indexOf("for (int generatedIndex = 0; generatedIndex < count; ++generatedIndex)"),
-        )
-        val firstBarrier = batchPath.indexOf("glMemoryBarrier(")
-        assertTrue(firstBarrier >= 0)
-        assertEquals(
-            "independent generated outputs should publish with one final barrier",
-            -1,
-            batchPath.indexOf("glMemoryBarrier(", firstBarrier + 1),
-        )
-        assertFalse(
-            "generated display callbacks must not run interpolation compute on the display deadline",
-            pulsePath.contains("dispatchInterpolate("),
-        )
-        assertTrue(
-            "generated display callbacks must present an already prepared batch texture",
-            pulsePath.contains("mGeneratedBatchTex[fs]"),
+            "the native presenter must refill future interpolation only after the current swap",
+            presenter.contains("prepareNextGeneratedReady()"),
         )
     }
 

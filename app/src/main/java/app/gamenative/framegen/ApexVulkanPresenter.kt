@@ -84,7 +84,7 @@ class ApexVulkanPresenter(
                     !queuedSourcePreempt &&
                         scheduler.shouldPresentSourceNow(frameTimeNanos)
                 if (queuedSourcePreempt || sourceDeadlinePreempt) {
-                    presentPendingSource(handle)
+                    presentPendingSource(handle, frameTimeNanos)
                     val abandoned =
                         ApexNativeBridge.nativeConsumeAbandonedSyntheticSlots()
                     ApexPresentationTelemetry.recordSyntheticSlotsAbandoned(abandoned)
@@ -96,7 +96,7 @@ class ApexVulkanPresenter(
                         sourceDeadlineAbandonedSlots += abandoned.toLong()
                     }
                 } else {
-                    presentGeneratedOpportunity(handle)
+                    presentGeneratedOpportunity(handle, frameTimeNanos)
                 }
             } else {
                 val frame = pendingSourceFrame
@@ -142,7 +142,7 @@ class ApexVulkanPresenter(
                     val outputKind = ((result ushr 32) and 0xffL).toInt()
                     val swapSucceeded = ((result ushr 40) and 0x1L) != 0L
                     renderer.releaseApexFrame(frame, releaseFenceFd)
-                    recordPresentedOutput(outputKind, swapSucceeded)
+                    recordPresentedOutput(outputKind, swapSucceeded, frameTimeNanos)
                     hasSourceHistory = true
                     maybeLogPresentationTelemetry()
                 }
@@ -184,6 +184,9 @@ class ApexVulkanPresenter(
                 return@post
             }
             nativeHandle = handle
+            scheduler.setPresentationCeilingFps(
+                renderer.xServerView.display?.refreshRate ?: 0f,
+            )
             choreographer = Choreographer.getInstance()
             choreographer?.postFrameCallback(frameCallback)
         }
@@ -215,7 +218,11 @@ class ApexVulkanPresenter(
         return true
     }
 
-    private fun recordPresentedOutput(outputKind: Int, swapSucceeded: Boolean) {
+    private fun recordPresentedOutput(
+        outputKind: Int,
+        swapSucceeded: Boolean,
+        presentationTimeNanos: Long = 0L,
+    ) {
         if (outputKind != ApexPresentationTelemetry.OUTPUT_NONE) {
             ApexPresentationTelemetry.record(outputKind, swapSucceeded)
             if (swapSucceeded) {
@@ -223,25 +230,25 @@ class ApexVulkanPresenter(
                     ApexPresentationTelemetry.OUTPUT_SOURCE ->
                         scheduler.onSourcePresented()
                     ApexPresentationTelemetry.OUTPUT_GENERATED ->
-                        scheduler.onGeneratedPresented()
+                        scheduler.onGeneratedPresented(presentationTimeNanos)
                 }
             }
         }
     }
 
-    private fun presentGeneratedOpportunity(handle: Long) {
+    private fun presentGeneratedOpportunity(handle: Long, frameTimeNanos: Long) {
         val result = nativePresentGeneratedFrame(handle)
         val outputKind = result and 0xff
         val swapSucceeded = (result and 0x100) != 0
-        recordPresentedOutput(outputKind, swapSucceeded)
+        recordPresentedOutput(outputKind, swapSucceeded, frameTimeNanos)
         maybeLogPresentationTelemetry()
     }
 
-    private fun presentPendingSource(handle: Long) {
+    private fun presentPendingSource(handle: Long, frameTimeNanos: Long) {
         val result = nativePresentPendingSourceFrame(handle)
         val outputKind = result and 0xff
         val swapSucceeded = (result and 0x100) != 0
-        recordPresentedOutput(outputKind, swapSucceeded)
+        recordPresentedOutput(outputKind, swapSucceeded, frameTimeNanos)
         maybeLogPresentationTelemetry()
     }
 
@@ -256,7 +263,7 @@ class ApexVulkanPresenter(
         val fixedMultiplier = ApexNativeBridge.nativeGetFixedMultiplier()
         android.util.Log.i(
             "ApexPresenter",
-            "display cadence: mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f sourceIn=%.1f generated=%.1f output=%.1f abandoned=%d no_generation=%d native_no_generation=%d remaining=%d queuedSourcePreempt=%d sourceDeadlinePreempt=%d abandonedQueued=%d abandonedDeadline=%d".format(
+            "display cadence: mode=%s target=%d fixed=%dx source_fps=%.1f source_ms=%.2f requested=%d admitted=%d opportunity_budget=%d cost_budget=%d wanted=%.3f phase=%.3f measuredOpportunities=%.1f ceiling=%.1f sourceIn=%.1f generated=%.1f output=%.1f abandoned=%d no_generation=%d native_no_generation=%d remaining=%d queuedSourcePreempt=%d sourceDeadlinePreempt=%d abandonedQueued=%d abandonedDeadline=%d".format(
                 java.util.Locale.US,
                 if (adaptive) "adaptive" else "fixed",
                 targetFps,
@@ -270,6 +277,7 @@ class ApexVulkanPresenter(
                 schedulerDiagnostics.wantedGeneratedFrames,
                 schedulerDiagnostics.fractionalPhase,
                 schedulerDiagnostics.measuredOpportunityFps,
+                schedulerDiagnostics.presentationCeilingFps,
                 stats.sourceInputFps,
                 stats.generatedFps,
                 stats.outputFps,

@@ -118,15 +118,6 @@ public:
     void dispatchVrSetup(GLuint denseFlow, GLuint prevColor, GLuint nextColor, GLuint outA, GLuint outB, GLuint outDW, int w, int h);
     void dispatchVrSor(GLuint at, GLuint bt, GLuint dwi, GLuint dwo, float om, int p, int w, int h);
     void dispatchInterpolate(GLuint pc, GLuint nc, GLuint df, GLuint dw, GLuint oi, float t, int w, int h);
-    void dispatchInterpolateBatch(
-        GLuint pc,
-        GLuint nc,
-        GLuint df,
-        GLuint dw,
-        const GLuint* outputs,
-        int generationCount,
-        int w,
-        int h);
     void dispatchRcas(GLuint inTex, GLuint outImage, int w, int h, float sharpness);
 
     // Pacing & Telemetry
@@ -216,6 +207,7 @@ public:
         int viewY,
         int viewWidth,
         int viewHeight);
+    bool prepareNextGeneratedReady();
 
 private:
     ApexEngine();
@@ -223,6 +215,7 @@ private:
     void ensureResources(int width, int height);
     void cleanupResources();
     void pollGpuTimerQueries();
+    bool prepareGeneratedSlot(int generatedIndex, int generationBudget);
     void discardGpuTimerQueries();
     void beginGpuTimer(ApexGpuTimerStage stage);
     void endGpuTimer();
@@ -357,6 +350,7 @@ private:
     std::atomic<bool> mAdaptiveFrameGeneration{true};
     std::atomic<bool> mPendingRealPresentation{false};
     std::atomic<int> mActiveGenerationBudget{0};
+    std::atomic<int> mPreparedGenerationSlots{0};
     std::atomic<int64_t> mLastPreparationCostNanos{0};
     std::atomic<int64_t> mLastSyntheticCostNanos{0};
     std::atomic<int> mLastSyntheticCostBudget{0};

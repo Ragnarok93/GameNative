@@ -25,17 +25,20 @@ class ApexCadenceScheduler {
         val wantedGeneratedFrames: Float,
         val fractionalPhase: Float,
         val measuredOpportunityFps: Float,
+        val presentationCeilingFps: Float,
         val remainingSyntheticSlots: Int,
     )
 
     private var lastOpportunityNanos = 0L
     private var displayPeriodNanos = 0.0
+    private var presentationCeilingFps = 0.0
 
     private var lastSourceTimestampNanos = 0L
     private var lastObservedSourceIntervalNanos = 0L
     private var sourcePeriodNanos = 0.0
     private var lastTrustedSourcePeriodNanos = 0.0
     private var pendingSourceDeadlineNanos = 0L
+    private var presentationWindowDeadlineNanos = 0L
     private var plannedOutputPeriodNanos = 0.0
 
     private val recentSourcePeriodsNanos = DoubleArray(SOURCE_CADENCE_WINDOW)
@@ -60,12 +63,14 @@ class ApexCadenceScheduler {
     fun reset() {
         lastOpportunityNanos = 0L
         displayPeriodNanos = 0.0
+        presentationCeilingFps = 0.0
 
         lastSourceTimestampNanos = 0L
         lastObservedSourceIntervalNanos = 0L
         sourcePeriodNanos = 0.0
         lastTrustedSourcePeriodNanos = 0.0
         pendingSourceDeadlineNanos = 0L
+        presentationWindowDeadlineNanos = 0L
         plannedOutputPeriodNanos = 0.0
         resetSourceCadenceWindow()
 
@@ -82,6 +87,15 @@ class ApexCadenceScheduler {
 
         preparationCostEstimateNanos = 0.0
         syntheticCostPerFrameNanos = 0.0
+    }
+
+    fun setPresentationCeilingFps(frameRate: Float) {
+        presentationCeilingFps =
+            if (frameRate.isFinite() && frameRate > 1f) {
+                frameRate.toDouble()
+            } else {
+                0.0
+            }
     }
 
     fun recordDisplayOpportunity(nowNanos: Long) {
@@ -165,10 +179,37 @@ class ApexCadenceScheduler {
 
     fun onSourcePresented() {
         pendingSourceDeadlineNanos = 0L
+        presentationWindowDeadlineNanos = 0L
         remainingSyntheticSlots = 0
     }
 
     fun onGeneratedPresented() {
+        markGeneratedPresented(0L)
+    }
+
+    fun onGeneratedPresented(nowNanos: Long) {
+        markGeneratedPresented(nowNanos)
+    }
+
+    private fun markGeneratedPresented(nowNanos: Long) {
+        if (
+            nowNanos > 0L &&
+            presentationWindowDeadlineNanos <= 0L &&
+            remainingSyntheticSlots > 0
+        ) {
+            val cadence =
+                sourcePeriodNanos.takeIf { it > 0.0 }
+                    ?: lastObservedSourceIntervalNanos.toDouble().takeIf { it > 0.0 }
+            if (cadence != null) {
+                val producerDeadline =
+                    pendingSourceDeadlineNanos.toDouble().coerceAtLeast(0.0)
+                presentationWindowDeadlineNanos =
+                    max(
+                        producerDeadline,
+                        nowNanos.toDouble() + cadence,
+                    ).toLong()
+            }
+        }
         if (remainingSyntheticSlots > 0) {
             remainingSyntheticSlots--
         }
@@ -229,6 +270,7 @@ class ApexCadenceScheduler {
             wantedGeneratedFrames = wantedGeneratedFrames.toFloat(),
             fractionalPhase = generationPhase.toFloat(),
             measuredOpportunityFps = measuredCapacityFps(),
+            presentationCeilingFps = presentationCeilingFps.toFloat(),
             remainingSyntheticSlots = remainingSyntheticSlots,
         )
     }
@@ -245,9 +287,12 @@ class ApexCadenceScheduler {
 
         // Preempt only when finishing the synthetic prefix would actually push
         // the buffered real frame beyond its producer-cadence deadline.
+        val deadlineNanos =
+            presentationWindowDeadlineNanos.takeIf { it > 0L }
+                ?: pendingSourceDeadlineNanos
         val completionNanos =
             nowNanos.toDouble() + slot * remainingSyntheticSlots.toDouble()
-        return completionNanos > pendingSourceDeadlineNanos.toDouble()
+        return completionNanos > deadlineNanos.toDouble()
     }
 
     fun shouldPreemptForQueuedSource(
@@ -307,6 +352,7 @@ class ApexCadenceScheduler {
             requestedSyntheticCount = 0
             lastAdmittedBudget = 0
             remainingSyntheticSlots = 0
+            presentationWindowDeadlineNanos = 0L
             plannedOutputPeriodNanos = 0.0
             return 0
         }
@@ -365,6 +411,7 @@ class ApexCadenceScheduler {
         lastAdmittedBudget =
             admitted.coerceIn(0, MAX_GENERATED_FRAMES)
         remainingSyntheticSlots = lastAdmittedBudget
+        presentationWindowDeadlineNanos = 0L
 
         plannedOutputPeriodNanos =
             if (adaptive) {
@@ -395,11 +442,12 @@ class ApexCadenceScheduler {
     }
 
     private fun computePresentationCapacityPerSource(): Double {
-        val measuredOpportunityFps =
-            measuredCapacityFps().toDouble().takeIf { it > 1.0 }
+        val capacityFps =
+            presentationCeilingFps.takeIf { it > 1.0 }
+                ?: measuredCapacityFps().toDouble().takeIf { it > 1.0 }
                 ?: return MAX_GENERATED_FRAMES.toDouble()
         val opportunitiesPerSource =
-            measuredOpportunityFps * sourcePeriodNanos / NANOS_PER_SECOND
+            capacityFps * sourcePeriodNanos / NANOS_PER_SECOND
         return (opportunitiesPerSource - 1.0)
             .coerceIn(0.0, MAX_GENERATED_FRAMES.toDouble())
     }
@@ -422,8 +470,10 @@ class ApexCadenceScheduler {
     }
 
     private fun effectiveSlotPeriodNanos(): Double = when {
-        // Presentation completion is bounded by actual display callbacks, not
-        // by the idealized output cadence. Prefer measured opportunity timing.
+        // Ready synthetics cost a physical presentation slot. Short-lived
+        // callback stalls are pressure evidence, not a new display ceiling.
+        presentationCeilingFps > 1.0 ->
+            NANOS_PER_SECOND / presentationCeilingFps
         displayPeriodNanos > 0.0 -> displayPeriodNanos
         plannedOutputPeriodNanos > 0.0 -> plannedOutputPeriodNanos
         sourcePeriodNanos > 0.0 -> sourcePeriodNanos

@@ -747,9 +747,6 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentPendingSourceFrame
     recordPresenterCost(*presenter, 0, processNanos, 0, swapNanos,
         elapsedNanos(totalStart, PresenterClock::now()));
     recordPresentation(*presenter, outputKind, swapSucceeded);
-    if (swapSucceeded && outputKind == apex::APEX_OUTPUT_GENERATED) {
-        apex::ApexEngine::getInstance().prepareNextGeneratedReady();
-    }
     return packPulsePresentResult(outputKind, swapSucceeded);
 }
 
@@ -786,5 +783,8 @@ Java_app_gamenative_framegen_ApexVulkanPresenter_nativePresentGeneratedFrame(
     recordPresenterCost(*presenter, 0, processNanos, 0, swapNanos,
         elapsedNanos(totalStart, PresenterClock::now()));
     recordPresentation(*presenter, outputKind, swapSucceeded);
+    if (swapSucceeded && outputKind == apex::APEX_OUTPUT_GENERATED) {
+        apex::ApexEngine::getInstance().prepareNextGeneratedReady();
+    }
     return packPulsePresentResult(outputKind, swapSucceeded);
 }

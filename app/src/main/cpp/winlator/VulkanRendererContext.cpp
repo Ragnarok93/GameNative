@@ -1595,6 +1595,7 @@ void VulkanRendererContext::destroyApexPresentSwapchain() {
     apexPresent.sourceAcquireCostNanos = 0;
     apexPresent.sourceQueuePresentCostNanos = 0;
     apexPresent.generatedPresentCostNanos = 0;
+    apexPresent.generatedPresentSamples = 0;
     apexPresent.maxSourceCostNanos = 0;
     apexPresent.maxGeneratedCostNanos = 0;
     apexPresent.telemetryOutputs = 0;
@@ -1614,7 +1615,7 @@ void VulkanRendererContext::maybeLogApexVkValidationTelemetry(bool force) {
         1000000.0;
     const double generatedDivisor =
         static_cast<double>(
-            std::max<uint64_t>(1, apexPresent.generatedPresentedTotal)) *
+            std::max<uint64_t>(1, apexPresent.generatedPresentSamples)) *
         1000000.0;
 
     RLOG(
@@ -1694,13 +1695,30 @@ int VulkanRendererContext::presentApexVulkanImage(
     VkImage image,
     VkExtent2D sourceExtent,
     int outputKind) {
+    const auto presentStart = ApexVkClock::now();
+    auto failPresent = [&](const char* reason) -> int {
+        ++apexPresent.presentFailures;
+        const uint64_t totalNanos =
+            apexVkElapsedNanos(presentStart, ApexVkClock::now());
+        if (outputKind == APEX_VK_OUTPUT_GENERATED) {
+            apexPresent.maxGeneratedCostNanos =
+                std::max(apexPresent.maxGeneratedCostNanos, totalNanos);
+        }
+        RLOG_E(
+            "apexVkPresent: output-failure backend=vulkan-direct kind=%d reason=%s",
+            outputKind,
+            reason);
+        maybeLogApexVkValidationTelemetry();
+        return -1;
+    };
+
     if (!apexPresent.active ||
         !apexVkPresentActive.load(std::memory_order_acquire) ||
         image == VK_NULL_HANDLE ||
         sourceExtent.width == 0 ||
         sourceExtent.height == 0 ||
         apexPresent.swapchain == VK_NULL_HANDLE) {
-        return -1;
+        return failPresent("invalid-state");
     }
 
     const uint32_t frameSlot =
@@ -1713,7 +1731,7 @@ int VulkanRendererContext::presentApexVulkanImage(
             &fence,
             VK_TRUE,
             UINT64_MAX) != VK_SUCCESS) {
-        return -1;
+        return failPresent("in-flight-fence");
     }
 
     uint32_t imageIndex = 0;
@@ -1726,9 +1744,10 @@ int VulkanRendererContext::presentApexVulkanImage(
         &imageIndex);
     if (acquireResult != VK_SUCCESS &&
         acquireResult != VK_SUBOPTIMAL_KHR) {
-        return -1;
+        return failPresent("acquire-next-image");
     }
-    if (imageIndex >= apexPresent.images.size()) return -1;
+    if (imageIndex >= apexPresent.images.size())
+        return failPresent("swapchain-image-index");
 
     VkCommandBuffer commandBuffer = apexPresent.commandBuffers[frameSlot];
     vk_.ResetCommandBuffer(commandBuffer, 0);
@@ -1736,7 +1755,7 @@ int VulkanRendererContext::presentApexVulkanImage(
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vk_.BeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
-        return -1;
+        return failPresent("begin-command-buffer");
 
     VkImageMemoryBarrier sourceToTransfer{};
     sourceToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1836,7 +1855,8 @@ int VulkanRendererContext::presentApexVulkanImage(
         2,
         postBarriers);
 
-    if (vk_.EndCommandBuffer(commandBuffer) != VK_SUCCESS) return -1;
+    if (vk_.EndCommandBuffer(commandBuffer) != VK_SUCCESS)
+        return failPresent("end-command-buffer");
 
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo submitInfo{};
@@ -1874,26 +1894,57 @@ int VulkanRendererContext::presentApexVulkanImage(
         }
     }
 
-    if (submitResult != VK_SUCCESS) return -1;
+    if (submitResult != VK_SUCCESS)
+        return failPresent("queue-submit");
     apexPresent.imageLayouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     if (presentResult != VK_SUCCESS &&
         presentResult != VK_SUBOPTIMAL_KHR) {
-        return -1;
+        return failPresent("queue-present");
     }
 
     apexPresent.frameIndex =
         (apexPresent.frameIndex + 1u) % APEX_PRESENT_FRAMES;
+
+    const uint64_t totalNanos =
+        apexVkElapsedNanos(presentStart, ApexVkClock::now());
+    if (outputKind == APEX_VK_OUTPUT_GENERATED) {
+        ++apexPresent.generatedPresentedTotal;
+        ++apexPresent.generatedPresentSamples;
+        apexPresent.generatedPresentCostNanos += totalNanos;
+        apexPresent.maxGeneratedCostNanos =
+            std::max(apexPresent.maxGeneratedCostNanos, totalNanos);
+    } else if (outputKind == APEX_VK_OUTPUT_SOURCE) {
+        ++apexPresent.sourcePresented;
+    }
+    ++apexPresent.telemetryOutputs;
+    maybeLogApexVkValidationTelemetry();
     return packApexVkPresentResult(outputKind, true);
 }
+
 
 int VulkanRendererContext::presentApexVulkanSource(
     int64_t token,
     int generationBudget) {
+    const auto sourceStart = ApexVkClock::now();
+    ++apexPresent.sourceCalls;
+    auto failSource = [&](const char* reason) -> int {
+        ++apexPresent.presentFailures;
+        const uint64_t totalNanos =
+            apexVkElapsedNanos(sourceStart, ApexVkClock::now());
+        apexPresent.maxSourceCostNanos =
+            std::max(apexPresent.maxSourceCostNanos, totalNanos);
+        RLOG_E(
+            "apexVkPresent: source-failure backend=vulkan-direct reason=%s",
+            reason);
+        maybeLogApexVkValidationTelemetry();
+        return -1;
+    };
+
     if (!apexPresent.active ||
         !apexVkPresentActive.load(std::memory_order_acquire) ||
         !apexVkBackend ||
         !apexVkBackend->healthy()) {
-        return -1;
+        return failSource("invalid-state");
     }
 
     const int slotIndex = apexTokenSlot(token);
@@ -1906,7 +1957,7 @@ int VulkanRendererContext::presentApexVulkanSource(
         if (slotIndex < 0 ||
             slotIndex >= APEX_TARGET_COUNT ||
             apexTargets[slotIndex].consumerSequence != sequence) {
-            return -1;
+            return failSource("invalid-token");
         }
         ApexTargetSlot& slot = apexTargets[slotIndex];
         sourceImage = slot.image;
@@ -1922,9 +1973,16 @@ int VulkanRendererContext::presentApexVulkanSource(
             apexExt.height,
             180)) {
         releaseApexFrame(token, -1);
-        return -1;
+        return failSource("resources");
     }
 
+    if (apexPresent.sourceCalls == 1) {
+        RLOG(
+            "apexVkPresent: resources backend=vulkan-direct %s",
+            apexVkBackend->diagnostics().c_str());
+    }
+
+    const auto acquireStart = ApexVkClock::now();
     const uint32_t frameSlot =
         apexPresent.frameIndex % APEX_PRESENT_FRAMES;
     VkFence fence = apexPresent.inFlight[frameSlot];
@@ -1935,8 +1993,10 @@ int VulkanRendererContext::presentApexVulkanSource(
             &fence,
             VK_TRUE,
             UINT64_MAX) != VK_SUCCESS) {
+        apexPresent.sourceAcquireCostNanos +=
+            apexVkElapsedNanos(acquireStart, ApexVkClock::now());
         releaseApexFrame(token, -1);
-        return -1;
+        return failSource("in-flight-fence");
     }
 
     uint32_t imageIndex = 0;
@@ -1947,11 +2007,13 @@ int VulkanRendererContext::presentApexVulkanSource(
         apexPresent.imageAvailable[frameSlot],
         VK_NULL_HANDLE,
         &imageIndex);
+    apexPresent.sourceAcquireCostNanos +=
+        apexVkElapsedNanos(acquireStart, ApexVkClock::now());
     if ((acquireResult != VK_SUCCESS &&
          acquireResult != VK_SUBOPTIMAL_KHR) ||
         imageIndex >= apexPresent.images.size()) {
         releaseApexFrame(token, -1);
-        return -1;
+        return failSource("acquire-next-image");
     }
 
     VkCommandBuffer commandBuffer = apexPresent.commandBuffers[frameSlot];
@@ -1961,28 +2023,35 @@ int VulkanRendererContext::presentApexVulkanSource(
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vk_.BeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
         releaseApexFrame(token, -1);
-        return -1;
+        return failSource("begin-command-buffer");
     }
 
     const uint32_t clampedBudget =
         static_cast<uint32_t>(std::clamp(generationBudget, 0, 3));
-    if (!apexVkBackend->recordSourceGraph(
-            frameSlot,
-            commandBuffer,
-            sourceImage,
-            sourceView,
-            sourceTimestampNanos,
-            clampedBudget)) {
+    apexPresent.requestedGeneratedTotal += clampedBudget;
+
+    const auto recordStart = ApexVkClock::now();
+    const bool graphRecorded = apexVkBackend->recordSourceGraph(
+        frameSlot,
+        commandBuffer,
+        sourceImage,
+        sourceView,
+        sourceTimestampNanos,
+        clampedBudget);
+    apexPresent.sourceRecordCostNanos +=
+        apexVkElapsedNanos(recordStart, ApexVkClock::now());
+    if (!graphRecorded) {
         vk_.ResetCommandBuffer(commandBuffer, 0);
         releaseApexFrame(token, -1);
         RLOG_E(
             "apexVkPresent: source graph failed: %s",
             apexVkBackend->diagnostics().c_str());
-        return -1;
+        return failSource("record-source-graph");
     }
 
     const uint32_t actualGenerated =
         apexVkBackend->generatedCount();
+    apexPresent.actualGeneratedTotal += actualGenerated;
     const bool presentGenerated = actualGenerated > 0;
     VkImage outputImage = presentGenerated
         ? apexVkBackend->generatedImage(0)
@@ -1995,7 +2064,7 @@ int VulkanRendererContext::presentApexVulkanSource(
     if (outputImage == VK_NULL_HANDLE) {
         vk_.ResetCommandBuffer(commandBuffer, 0);
         releaseApexFrame(token, -1);
-        return -1;
+        return failSource("output-image");
     }
 
     VkImageMemoryBarrier sourceToTransfer{};
@@ -2098,7 +2167,7 @@ int VulkanRendererContext::presentApexVulkanSource(
 
     if (vk_.EndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         releaseApexFrame(token, -1);
-        return -1;
+        return failSource("end-command-buffer");
     }
 
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -2115,6 +2184,7 @@ int VulkanRendererContext::presentApexVulkanSource(
     vk_.ResetFences(device, 1, &fence);
     VkResult submitResult = VK_ERROR_DEVICE_LOST;
     VkResult presentResult = VK_ERROR_DEVICE_LOST;
+    const auto queuePresentStart = ApexVkClock::now();
     {
         std::lock_guard<std::mutex> queueLock(queueMutex);
         submitResult = vk_.QueueSubmit(
@@ -2136,16 +2206,19 @@ int VulkanRendererContext::presentApexVulkanSource(
                 &presentInfo);
         }
     }
+    apexPresent.sourceQueuePresentCostNanos +=
+        apexVkElapsedNanos(queuePresentStart, ApexVkClock::now());
 
     // The graph copied the producer image into private Vulkan history. Once its
     // submission is ordered on the same queue, the producer slot can be reused.
     releaseApexFrame(token, -1);
 
-    if (submitResult != VK_SUCCESS) return -1;
+    if (submitResult != VK_SUCCESS)
+        return failSource("queue-submit");
     apexPresent.imageLayouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     if (presentResult != VK_SUCCESS &&
         presentResult != VK_SUBOPTIMAL_KHR) {
-        return -1;
+        return failSource("queue-present");
     }
 
     apexPresent.frameIndex =
@@ -2153,8 +2226,21 @@ int VulkanRendererContext::presentApexVulkanSource(
     apexPresent.generationBudget = actualGenerated;
     apexPresent.generatedPresented = presentGenerated ? 1u : 0u;
     apexPresent.pendingSource = presentGenerated;
+
+    if (outputKind == APEX_VK_OUTPUT_GENERATED) {
+        ++apexPresent.generatedPresentedTotal;
+    } else {
+        ++apexPresent.sourcePresented;
+    }
+    ++apexPresent.telemetryOutputs;
+    const uint64_t totalNanos =
+        apexVkElapsedNanos(sourceStart, ApexVkClock::now());
+    apexPresent.maxSourceCostNanos =
+        std::max(apexPresent.maxSourceCostNanos, totalNanos);
+    maybeLogApexVkValidationTelemetry();
     return packApexVkPresentResult(outputKind, true);
 }
+
 
 int VulkanRendererContext::presentApexVulkanGenerated() {
     if (!hasApexVulkanPendingSource() ||

@@ -56,6 +56,20 @@ class LsfgPacingCallSiteContractTest {
     }
 
     @Test
+    fun adaptiveTargetChangesRefreshFifoPresentationVote() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/component/QuickMenu.kt")),
+            Charsets.UTF_8,
+        )
+        val tab = source.substringAfter("private fun LsfgQuickMenuTab(")
+
+        assertTrue(tab.contains("fun reapplyPresentationHint()"))
+        assertTrue(tab.contains("setAdaptiveTargetFps(it, next)"))
+        assertTrue(tab.contains("reapplyPresentationHint()"))
+        assertTrue(tab.contains("adaptiveTargetFps = next"))
+    }
+
+    @Test
     fun xServerScreenDoesNotRunAuxiliaryLsfgVsyncClock() {
         val source = String(
             Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),

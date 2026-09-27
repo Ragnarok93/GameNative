@@ -961,8 +961,34 @@ fun QuickMenu(
                                                 presentMode = lsfgPresentMode,
                                                 onPresentModeChanged = { mode ->
                                                     lsfgPresentMode = mode
-                                                    container?.let {
-                                                        app.gamenative.utils.LsfgQuickMenuHelper.applyPresentMode(it, mode)
+                                                    container?.let { activeContainer ->
+                                                        app.gamenative.utils.LsfgQuickMenuHelper.applyPresentMode(
+                                                            activeContainer,
+                                                            mode,
+                                                        )
+                                                        val view = app.gamenative.PluviaApp.xServerView
+                                                        val displayMax = view?.display
+                                                            ?.supportedModes
+                                                            ?.maxOfOrNull { it.refreshRate }
+                                                            ?.roundToInt()
+                                                            ?.coerceAtLeast(1)
+                                                            ?: 60
+                                                        applyLsfgPresentationFrameRateHint(
+                                                            renderer = view?.renderer as? VulkanRenderer,
+                                                            sourceFpsCap = view?.frameRateLimit ?: 0,
+                                                            lsfgActive = lsfgMultiplier >= 2,
+                                                            strictFifo = mode == "fifo",
+                                                            adaptive =
+                                                                app.gamenative.utils.LsfgQuickMenuHelper
+                                                                    .generationMode(activeContainer) ==
+                                                                    app.gamenative.utils.LsfgQuickMenuHelper
+                                                                        .FrameGenerationMode.ADAPTIVE,
+                                                            adaptiveTargetFps =
+                                                                app.gamenative.utils.LsfgQuickMenuHelper
+                                                                    .adaptiveTargetFps(activeContainer),
+                                                            lsfgMultiplier = lsfgMultiplier.coerceIn(2, 4),
+                                                            maxRefreshRateHz = displayMax,
+                                                        )
                                                     }
                                                 },
                                                 scrollState = lsfgScrollState,

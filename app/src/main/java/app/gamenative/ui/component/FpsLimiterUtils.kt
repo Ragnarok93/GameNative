@@ -1,6 +1,7 @@
 package app.gamenative.ui.component
 
 import com.winlator.renderer.VulkanRenderer
+import timber.log.Timber
 import java.util.Locale
 
 internal fun parsePositiveFpsLimit(value: String): Int? = value.toIntOrNull()?.takeIf { it > 0 }
@@ -123,6 +124,16 @@ internal fun applyLsfgPresentationFrameRateHint(
     )
     renderer?.setLsfgPresentationFrameRateHint(
         if (lsfgActive && strictFifo) vote else 0,
+    )
+    Timber.i(
+        "LSFG presentation pacing: source_cap=%d fifo=%b adaptive=%b adaptive_target=%d multiplier=%d presentation_vote=%d display_refresh=%d",
+        sourceFpsCap,
+        strictFifo,
+        adaptive,
+        adaptiveTargetFps,
+        lsfgMultiplier,
+        vote,
+        maxRefreshRateHz,
     )
     return vote
 }

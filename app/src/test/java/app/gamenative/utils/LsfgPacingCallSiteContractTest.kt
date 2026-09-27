@@ -53,7 +53,7 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(source.contains("activeContainer,"))
         assertTrue(source.contains("mode,"))
         assertTrue(source.contains("applyLsfgPresentationFrameRateHint("))
-        assertTrue(source.contains("getFrameRateLimit()"))
+        assertTrue(source.contains("sourceFpsCap = vulkanView?.frameRateLimit ?: 0"))
         assertFalse(callback.contains("PresentExtension"))
         assertFalse(callback.contains("ShmFramePacer"))
     }

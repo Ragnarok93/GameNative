@@ -26,10 +26,17 @@ jobs:
             > source/artifact.zip
           unzip -q source/artifact.zip -d source/extracted
           test -s source/extracted/GameNative-upgradeable-debug.apk
-          (
-            cd source/extracted
-            sha256sum -c GameNative-upgradeable-debug.apk.sha256
-          )
+          expected_sha="$(
+            awk '{print $1}' source/extracted/GameNative-upgradeable-debug.apk.sha256 |
+              head -n 1
+          )"
+          actual_sha="$(
+            sha256sum source/extracted/GameNative-upgradeable-debug.apk |
+              awk '{print $1}'
+          )"
+          test -n "$expected_sha"
+          [[ "$actual_sha" == "$expected_sha" ]]
+          echo "Verified APK SHA256: $actual_sha"
 
       - name: Split APK for connector handoff
         shell: bash

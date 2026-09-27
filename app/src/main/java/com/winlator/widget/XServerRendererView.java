@@ -15,6 +15,9 @@ public interface XServerRendererView {
     void queueEvent(Runnable r);
     void requestRender();
     void setFrameRateLimit(int limit);
+    default void setFrameRateLimits(int sourceFrameRateLimit, int rendererFrameRateLimit) {
+        setFrameRateLimit(sourceFrameRateLimit);
+    }
 
     void onResume();
     void onPause();

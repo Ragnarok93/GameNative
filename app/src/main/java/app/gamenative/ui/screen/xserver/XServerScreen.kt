@@ -928,6 +928,10 @@ fun XServerScreen(
         lsfgMultiplier = nextMultiplier
         applyLsfgSettings()
         if (previousRequested != nextRequested) {
+            if (previousRequested && !nextRequested) {
+                (xServerView?.renderer as? VulkanRenderer)
+                    ?.setLsfgPresentationFrameRateHint(0)
+            }
             scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)
         } else if (nextRequested) {
             lsfgRuntimeMultiplier = nextMultiplier.coerceIn(2, 4)

@@ -124,16 +124,19 @@ class LsfgPacingCallSiteContractTest {
         )
         val multiplier = source.substringAfter("fun applyLsfgMultiplier(mult: Int)")
             .substringBefore("fun applyLsfgFlowScale")
-        val disableBranch = multiplier.substringAfter("if (previousRequested && !nextRequested)")
-
-        assertTrue(disableBranch.contains("setLsfgPresentationFrameRateHint(0)"))
-        assertTrue(disableBranch.contains("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"))
+        assertTrue(multiplier.contains("if (previousRequested && !nextRequested)"))
+        val transitionBranch = multiplier
+            .substringAfter("if (previousRequested != nextRequested) {")
+            .substringBefore("} else if (nextRequested)")
+        assertTrue(transitionBranch.contains("if (previousRequested && !nextRequested)"))
+        assertTrue(transitionBranch.contains("setLsfgPresentationFrameRateHint(0)"))
+        assertTrue(transitionBranch.contains("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"))
         assertTrue(
-            disableBranch.indexOf("setLsfgPresentationFrameRateHint(0)") <
-                disableBranch.indexOf("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"),
+            transitionBranch.indexOf("setLsfgPresentationFrameRateHint(0)") <
+                transitionBranch.indexOf("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"),
         )
-        assertFalse(disableBranch.contains("PresentExtension"))
-        assertFalse(disableBranch.contains("ShmFramePacer"))
+        assertFalse(transitionBranch.contains("PresentExtension"))
+        assertFalse(transitionBranch.contains("ShmFramePacer"))
     }
 
     @Test

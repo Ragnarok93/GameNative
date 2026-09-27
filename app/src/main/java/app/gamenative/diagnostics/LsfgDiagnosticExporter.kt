@@ -24,8 +24,9 @@ object LsfgDiagnosticExporter {
     private const val TEXT_TAIL_BYTES = 2L * 1024L * 1024L
     private const val NATIVE_EVENT_TAIL_BYTES = 4L * 1024L * 1024L
     private const val LOGCAT_LINES = 8_000
-    private const val UID_LOGCAT_LINES = 12_000
+    private const val UID_LOGCAT_LINES = 20_000
     private const val PRESENTATION_LOG_LINES = 4_000
+    private const val NATIVE_EVENT_LOG_LINES = 8_000
     private const val MAX_SCAN_DEPTH = 8
     private const val MAX_SCAN_NODES = 4_000
 
@@ -76,6 +77,18 @@ object LsfgDiagnosticExporter {
      * Legacy lines remain visible in an explicit unsegmented bucket instead of
      * being discarded.
      */
+    internal fun isNativeLsfgLogLine(line: String): Boolean {
+        val normalized = line.lowercase(Locale.US)
+        return normalized.contains("lsfg_metrics") ||
+            normalized.contains("lsfg_event") ||
+            normalized.contains("lsfg_flow") ||
+            normalized.contains("lsfg_provenance") ||
+            normalized.contains("lsfg-vk:") ||
+            normalized.contains("lsfgvkmanager") ||
+            normalized.contains("vk_layer_ls_frame_generation") ||
+            normalized.contains(" lsfg ")
+    }
+
     internal fun segmentNativeEvents(nativeLogcat: String): String {
         if (nativeLogcat.isBlank()) return ""
 
@@ -240,14 +253,8 @@ object LsfgDiagnosticExporter {
 
         section("LSFG NATIVE EVENTS") {
             val nativeLogcat = uidLogcat.lineSequence()
-                .filter { line ->
-                    line.contains("LSFG_METRICS") ||
-                        line.contains("LSFG_EVENT") ||
-                        line.contains("LSFG_FLOW") ||
-                        line.contains(" LSFG ") ||
-                        line.contains("LSFG:")
-                }
-                .takeLastLines(PRESENTATION_LOG_LINES)
+                .filter(::isNativeLsfgLogLine)
+                .takeLastLines(NATIVE_EVENT_LOG_LINES)
             when {
                 nativeLogcat.isNotBlank() ->
                     "source=same_uid_logcat\n${segmentNativeEvents(nativeLogcat)}"
@@ -555,6 +562,8 @@ object LsfgDiagnosticExporter {
         listOf(
             "logcat",
             "-d",
+            "-b",
+            "all",
             "-t",
             lineCount.coerceIn(1, 20_000).toString(),
             "--uid=$uid",

@@ -185,6 +185,42 @@ class LsfgDiagnosticExporterTest {
         assertTrue(grouped.contains("LSFG_FLOW: runtime_session_id=101 config_revision=1"))
     }
 
+
+    @Test
+    fun nativeLsfgLogFilter_keepsAllRuntimePrefixesAndRejectsApexNoise() {
+        val accepted = listOf(
+            "09-26 I System.out: LSFG_METRICS runtime_session_id=9 config_revision=2",
+            "09-26 I System.out: LSFG_EVENT runtime_session_id=9 config_revision=2",
+            "09-26 I System.out: LSFG_FLOW runtime_session_id=9 config_revision=2",
+            "09-26 I System.out: LSFG_PROVENANCE invoke name=vkQueuePresentKHR",
+            "09-26 I System.out: lsfg-vk: init stage=swapchain-ready",
+            "09-26 I LsfgVkManager: LSFG layer armed target=game.exe multiplier=2",
+        )
+        accepted.forEach { line ->
+            assertTrue(
+                "Expected LSFG diagnostic line to survive filtering: $line",
+                LsfgDiagnosticExporter.isNativeLsfgLogLine(line),
+            )
+        }
+
+        assertTrue(
+            !LsfgDiagnosticExporter.isNativeLsfgLogLine(
+                "09-26 I ApexPresenter: display cadence mode=adaptive target=90",
+            ),
+        )
+    }
+
+    @Test
+    fun uidLogcatCommand_supportsFullTwentyThousandLineDiagnosticTail() {
+        val command = LsfgDiagnosticExporter.uidLogcatCommand(
+            lineCount = 20_000,
+            uid = 10_774,
+        )
+
+        assertTrue(command.contains("20000"))
+        assertTrue(command.contains("--uid=10774"))
+    }
+
     @Test
     fun uidLogcatCommand_collectsSameUidProcessesWithoutPidFilter() {
         val command = LsfgDiagnosticExporter.uidLogcatCommand(

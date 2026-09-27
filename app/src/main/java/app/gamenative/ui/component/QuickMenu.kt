@@ -967,15 +967,17 @@ fun QuickMenu(
                                                             mode,
                                                         )
                                                         val view = app.gamenative.PluviaApp.xServerView
-                                                        val displayMax = view?.display
+                                                        val vulkanView =
+                                                            view as? com.winlator.widget.XServerView
+                                                        val displayMax = vulkanView?.display
                                                             ?.supportedModes
                                                             ?.maxOfOrNull { it.refreshRate }
                                                             ?.roundToInt()
                                                             ?.coerceAtLeast(1)
                                                             ?: 60
                                                         applyLsfgPresentationFrameRateHint(
-                                                            renderer = view?.renderer as? VulkanRenderer,
-                                                            sourceFpsCap = view?.frameRateLimit ?: 0,
+                                                            renderer = vulkanView?.renderer as? VulkanRenderer,
+                                                            sourceFpsCap = vulkanView?.frameRateLimit ?: 0,
                                                             lsfgActive = lsfgMultiplier >= 2,
                                                             strictFifo = mode == "fifo",
                                                             adaptive =
@@ -1836,15 +1838,16 @@ private fun LsfgQuickMenuTab(
 
     fun reapplyPresentationHint() {
         val view = app.gamenative.PluviaApp.xServerView
-        val displayMax = view?.display
+        val vulkanView = view as? com.winlator.widget.XServerView
+        val displayMax = vulkanView?.display
             ?.supportedModes
             ?.maxOfOrNull { it.refreshRate }
             ?.roundToInt()
             ?.coerceAtLeast(1)
             ?: 60
         applyLsfgPresentationFrameRateHint(
-            renderer = view?.renderer as? VulkanRenderer,
-            sourceFpsCap = view?.frameRateLimit ?: 0,
+            renderer = vulkanView?.renderer as? VulkanRenderer,
+            sourceFpsCap = vulkanView?.frameRateLimit ?: 0,
             lsfgActive = frameGenerationEnabled,
             strictFifo = presentMode == "fifo",
             adaptive =

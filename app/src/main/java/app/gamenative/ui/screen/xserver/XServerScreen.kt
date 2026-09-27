@@ -119,6 +119,7 @@ import app.gamenative.ui.component.QuickMenu
 import app.gamenative.ui.component.QuickMenuAction
 import app.gamenative.ui.component.SteamInviteState
 import app.gamenative.ui.component.effectiveSourceFpsCap
+import app.gamenative.ui.component.applyLsfgPresentationFrameRateHint
 import app.gamenative.ui.component.parseBooleanExtra
 import app.gamenative.ui.component.parsePositiveFpsLimit
 import app.gamenative.ui.component.predictedLsfgOutputFps
@@ -763,6 +764,19 @@ fun XServerScreen(
         ShmFramePacer.setFrameRateLimit(sourceFrameCap)
         PowerManager.targetFps = sourceFrameCap
         PowerManager.frameSampleStride = runtimeMultiplier
+
+        applyLsfgPresentationFrameRateHint(
+            renderer = xServerView?.renderer as? VulkanRenderer,
+            sourceFpsCap = sourceFrameCap,
+            lsfgActive = lsfgActive,
+            strictFifo = lsfgActive && LsfgQuickMenuHelper.presentMode(container) == "fifo",
+            adaptive = lsfgActive &&
+                LsfgQuickMenuHelper.generationMode(container) ==
+                    LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,
+            adaptiveTargetFps = LsfgQuickMenuHelper.adaptiveTargetFps(container),
+            lsfgMultiplier = runtimeMultiplier,
+            maxRefreshRateHz = detectedMaxRefreshRateHz,
+        )
 
         val predictedOutput = predictedLsfgOutputFps(sourceFrameCap, runtimeMultiplier)
         val budgetKey = "$sourceFrameCap:$runtimeMultiplier:$detectedMaxRefreshRateHz:$runtimeConfigRevision"

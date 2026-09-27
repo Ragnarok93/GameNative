@@ -24,16 +24,35 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(source.contains("var lsfgRuntimeMultiplier by rememberSaveable(container.id)"))
         assertTrue(limiter.contains("val sourceFrameCap = effectiveSourceFpsCap(limit)"))
         assertTrue(limiter.contains("val runtimeMultiplier = if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1"))
+        assertTrue(limiter.contains("val strictFifoLsfg"))
         assertTrue(limiter.contains("val presentationFrameRate = presentationFrameRateVote("))
-        assertTrue(limiter.contains("xServerView?.setFrameRateLimit(presentationFrameRate)"))
+        assertTrue(limiter.contains("xServerView?.setFrameRateLimit(sourceFrameCap)"))
         assertTrue(limiter.contains("?.setFrameRateLimit(sourceFrameCap)"))
         assertTrue(limiter.contains("ShmFramePacer.setFrameRateLimit(sourceFrameCap)"))
         assertTrue(limiter.contains("PowerManager.targetFps = sourceFrameCap"))
+        assertTrue(limiter.contains("setLsfgPresentationFrameRateHint("))
+        assertTrue(limiter.contains("strictFifoLsfg"))
         assertTrue(limiter.contains("PerformanceMetricsCollector.resetFrameEpoch()"))
         assertFalse(limiter.contains("if (lsfgActive) 0 else limit"))
         assertFalse(limiter.contains("transitionLsfgFramePacing"))
         assertFalse(limiter.contains("transitionFramePacing"))
         assertFalse(limiter.contains("LsfgRuntimeGate"))
+    }
+
+    @Test
+    fun quickMenuPresentModeChangeReappliesPresentationVoteWithoutChangingSourceCap() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/component/QuickMenu.kt")),
+            Charsets.UTF_8,
+        )
+        val callback = source.substringAfter("onPresentModeChanged = { mode ->")
+            .substringBefore("},", missingDelimiterValue = source.substringAfter("onPresentModeChanged = { mode ->"))
+
+        assertTrue(source.contains("applyPresentMode(it, mode)"))
+        assertTrue(source.contains("applyLsfgPresentationFrameRateHint("))
+        assertTrue(source.contains("getFrameRateLimit()"))
+        assertFalse(callback.contains("PresentExtension"))
+        assertFalse(callback.contains("ShmFramePacer"))
     }
 
     @Test

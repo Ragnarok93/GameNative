@@ -46,4 +46,34 @@ class ApexQuickMenuContractTest {
         assertTrue(pacing.contains("mAdaptiveFrameGeneration"))
         assertTrue(pacing.contains("mFixedMultiplier"))
     }
+    @Test
+    fun disablingLsfgClearsFifoPresentationHintBeforeRuntimeHandoff() {
+        val screen = repoFile(
+            "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt",
+        ).readText()
+        val multiplier = screen.substringAfter("fun applyLsfgMultiplier(mult: Int)")
+            .substringBefore("fun applyLsfgFlowScale")
+
+        assertTrue(
+            "LSFG Off transition must have an explicit immediate cleanup branch",
+            multiplier.contains("if (previousRequested && !nextRequested)"),
+        )
+        val transition = multiplier
+            .substringAfter("if (previousRequested != nextRequested) {")
+            .substringBefore("} else if (nextRequested)")
+        val clear = transition.indexOf("setLsfgPresentationFrameRateHint(0)")
+        val handoff = transition.indexOf(
+            "scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)",
+        )
+
+        assertTrue("FIFO presentation hint is not cleared on LSFG Off", clear >= 0)
+        assertTrue("Runtime handoff is missing from LSFG Off", handoff >= 0)
+        assertTrue(
+            "FIFO presentation hint must be cleared before asynchronous Off handoff",
+            clear < handoff,
+        )
+        assertTrue(!transition.contains("PresentExtension"))
+        assertTrue(!transition.contains("ShmFramePacer"))
+    }
+
 }

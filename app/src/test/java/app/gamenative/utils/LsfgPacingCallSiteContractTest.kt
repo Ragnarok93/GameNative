@@ -117,6 +117,26 @@ class LsfgPacingCallSiteContractTest {
     }
 
     @Test
+    fun disablingLsfgClearsFifoPresentationHintBeforeRuntimeHandoff() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
+            Charsets.UTF_8,
+        )
+        val multiplier = source.substringAfter("fun applyLsfgMultiplier(mult: Int)")
+            .substringBefore("fun applyLsfgFlowScale")
+        val disableBranch = multiplier.substringAfter("if (previousRequested && !nextRequested)")
+
+        assertTrue(disableBranch.contains("setLsfgPresentationFrameRateHint(0)"))
+        assertTrue(disableBranch.contains("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"))
+        assertTrue(
+            disableBranch.indexOf("setLsfgPresentationFrameRateHint(0)") <
+                disableBranch.indexOf("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"),
+        )
+        assertFalse(disableBranch.contains("PresentExtension"))
+        assertFalse(disableBranch.contains("ShmFramePacer"))
+    }
+
+    @Test
     fun capOnlyChangesDoNotRepublishLsfgRuntimeSettings() {
         val source = String(
             Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),

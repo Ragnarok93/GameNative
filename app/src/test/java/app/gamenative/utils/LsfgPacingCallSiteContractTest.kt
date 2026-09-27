@@ -49,7 +49,9 @@ class LsfgPacingCallSiteContractTest {
         val callback = source.substringAfter("onPresentModeChanged = { mode ->")
             .substringBefore("},", missingDelimiterValue = source.substringAfter("onPresentModeChanged = { mode ->"))
 
-        assertTrue(source.contains("applyPresentMode(it, mode)"))
+        assertTrue(source.contains("LsfgQuickMenuHelper.applyPresentMode("))
+        assertTrue(source.contains("activeContainer,"))
+        assertTrue(source.contains("mode,"))
         assertTrue(source.contains("applyLsfgPresentationFrameRateHint("))
         assertTrue(source.contains("getFrameRateLimit()"))
         assertFalse(callback.contains("PresentExtension"))
@@ -102,6 +104,8 @@ class LsfgPacingCallSiteContractTest {
             .substringBefore("fun applyLsfgFlowScale")
         val applier = source.substringAfter("PowerManager.fpsCapApplier = applier@")
             .substringBefore("val detectedMax")
+        val adaptiveCap = source.substringAfter("fun applyAdaptiveFpsCapOnMain(capFps: Int)")
+            .substringBefore("LaunchedEffect(xServerView)")
 
         assertTrue(handoff.contains("LsfgVkManager.readRuntimeState(container)"))
         assertTrue(handoff.contains("runtimeState.readyForGeneration"))
@@ -114,7 +118,8 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(multiplier.contains("val previousRequested = isLsfgRequested"))
         assertTrue(multiplier.contains("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"))
         assertFalse(applier.contains("!isLsfgGenerationActive"))
-        assertTrue(applier.contains("applyFpsLimiterToEngines(capFps)"))
+        assertTrue(applier.contains("applyAdaptiveFpsCapOnMain(capFps)"))
+        assertTrue(adaptiveCap.contains("applyFpsLimiterToEngines(capFps)"))
     }
 
     @Test

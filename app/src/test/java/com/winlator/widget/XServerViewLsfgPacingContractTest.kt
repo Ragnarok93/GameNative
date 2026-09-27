@@ -14,8 +14,9 @@ class XServerViewLsfgPacingContractTest {
             Files.readAllBytes(sourcePath("com/winlator/widget/XServerView.java")),
             Charsets.UTF_8,
         )
-        assertTrue(source.contains("this.frameRateLimit = Math.max(0, frameRateLimit);"))
-        assertTrue(source.contains("vkRenderer.setFpsLimit(this.frameRateLimit);"))
+        assertTrue(source.contains("this.frameRateLimit = Math.max(0, sourceFrameRateLimit);"))
+        assertTrue(source.contains("vkRenderer.setFpsLimit(Math.max(0, rendererFrameRateLimit));"))
+        assertTrue(source.contains("setFrameRateLimits(int sourceFrameRateLimit, int rendererFrameRateLimit)"))
         assertFalse(source.contains("LsfgRuntimeGate"))
         assertFalse(source.contains("localFrameRateLimit"))
         assertFalse(source.contains("lsfgPacingRequested"))

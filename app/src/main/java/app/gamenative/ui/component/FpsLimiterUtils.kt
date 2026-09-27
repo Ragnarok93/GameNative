@@ -1,5 +1,6 @@
 package app.gamenative.ui.component
 
+import com.winlator.renderer.VulkanRenderer
 import java.util.Locale
 
 internal fun parsePositiveFpsLimit(value: String): Int? = value.toIntOrNull()?.takeIf { it > 0 }
@@ -62,4 +63,66 @@ internal fun effectiveSourceFpsCap(requestedSourceCap: Int): Int =
 internal fun predictedLsfgOutputFps(sourceFpsCap: Int, lsfgMultiplier: Int): Int {
     if (sourceFpsCap <= 0) return 0
     return sourceFpsCap * lsfgMultiplier.coerceAtLeast(1)
+}
+
+
+/**
+ * Returns the Android presentation-layer frame-rate vote.
+ *
+ * Source pacing stays independent. Only strict FIFO + active LSFG needs the
+ * generated-output cadence advertised to SurfaceFlinger; Mailbox and LSFG-off
+ * preserve the legacy source-rate vote.
+ */
+internal fun presentationFrameRateVote(
+    sourceFpsCap: Int,
+    lsfgActive: Boolean,
+    strictFifo: Boolean,
+    adaptive: Boolean,
+    adaptiveTargetFps: Int,
+    lsfgMultiplier: Int,
+    maxRefreshRateHz: Int,
+): Int {
+    val source = effectiveSourceFpsCap(sourceFpsCap)
+    if (!lsfgActive || !strictFifo) return source
+
+    val displayCeiling = maxRefreshRateHz.coerceAtLeast(1)
+    val requestedOutput = if (adaptive) {
+        adaptiveTargetFps.takeIf { it > 0 } ?: displayCeiling
+    } else if (source > 0) {
+        (source.toLong() * lsfgMultiplier.coerceIn(2, 4).toLong())
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+    } else {
+        displayCeiling
+    }
+    return requestedOutput.coerceIn(1, displayCeiling)
+}
+
+/**
+ * Applies only the presentation-side LSFG hint. The renderer keeps the source
+ * cap separately and restores it automatically when this hint is cleared.
+ */
+internal fun applyLsfgPresentationFrameRateHint(
+    renderer: VulkanRenderer?,
+    sourceFpsCap: Int,
+    lsfgActive: Boolean,
+    strictFifo: Boolean,
+    adaptive: Boolean,
+    adaptiveTargetFps: Int,
+    lsfgMultiplier: Int,
+    maxRefreshRateHz: Int,
+): Int {
+    val vote = presentationFrameRateVote(
+        sourceFpsCap = sourceFpsCap,
+        lsfgActive = lsfgActive,
+        strictFifo = strictFifo,
+        adaptive = adaptive,
+        adaptiveTargetFps = adaptiveTargetFps,
+        lsfgMultiplier = lsfgMultiplier,
+        maxRefreshRateHz = maxRefreshRateHz,
+    )
+    renderer?.setLsfgPresentationFrameRateHint(
+        if (lsfgActive && strictFifo) vote else 0,
+    )
+    return vote
 }

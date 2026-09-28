@@ -311,7 +311,7 @@ class LsfgVkManagerTest {
         assertEquals(containerManifest.readText(), loaderManifest.readText())
         val runtimeVersion = loaderVersion.readText()
         assertEquals(
-            "gamenative-adaptive-73f37dcc80fe964f35409934284dc1b1e8c3cc22-r13",
+            "gamenative-adaptive-0659d5f41c2604b3994cc6acc5406ad1d135be56-r14",
             runtimeVersion,
         )
         val loaderLayerDir = loaderManifest.parentFile!!.absolutePath

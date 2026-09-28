@@ -1,7 +1,10 @@
 package app.gamenative.diagnostics
 
 import android.content.Context
+import android.hardware.display.DisplayManager
 import android.os.Build
+import android.os.PowerManager
+import android.view.Display
 import app.gamenative.CrashHandler
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
@@ -83,6 +86,9 @@ object LsfgDiagnosticExporter {
             normalized.contains("lsfg_event") ||
             normalized.contains("lsfg_flow") ||
             normalized.contains("lsfg_provenance") ||
+            normalized.contains("lsfg_wsi") ||
+            normalized.contains("lsfg_outcome") ||
+            normalized.contains("lsfg_system") ||
             normalized.contains("lsfg-vk:") ||
             normalized.contains("lsfgvkmanager") ||
             normalized.contains("vk_layer_ls_frame_generation") ||
@@ -174,6 +180,52 @@ object LsfgDiagnosticExporter {
                     appendLine("soc_manufacturer=${Build.SOC_MANUFACTURER}")
                     appendLine("soc_model=${Build.SOC_MODEL}")
                 }
+            }
+        }
+
+        section("DISPLAY / THERMAL") {
+            val powerManager = appContext.getSystemService(PowerManager::class.java)
+            val displayManager = appContext.getSystemService(DisplayManager::class.java)
+            val display = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)
+            buildString {
+                appendLine("power_save=\${powerManager?.isPowerSaveMode ?: false}")
+                if (Build.VERSION.SDK_INT >= 29) {
+                    appendLine("thermal_status=\${powerManager?.currentThermalStatus ?: -1}")
+                } else {
+                    appendLine("thermal_status=unavailable")
+                }
+                appendLine("display_valid=\${display?.isValid ?: false}")
+                if (display != null) {
+                    appendLine("display_refresh_hz=\${String.format(Locale.US, "%.3f", display.refreshRate)}")
+                    val mode = display.mode
+                    appendLine("display_mode=\${mode.physicalWidth}x\${mode.physicalHeight}@\${String.format(Locale.US, "%.3f", mode.refreshRate)}")
+                    appendLine("display_hdr=\${display.isHdr}")
+                    appendLine(
+                        "display_supported_modes=" + display.supportedModes.joinToString(";") {
+                            "\${it.physicalWidth}x\${it.physicalHeight}@\${String.format(Locale.US, "%.3f", it.refreshRate)}"
+                        },
+                    )
+                } else {
+                    appendLine("display_refresh_hz=unavailable")
+                    appendLine("display_mode=unavailable")
+                }
+            }
+        }
+
+        section("LSFG STRUCTURED TELEMETRY") {
+            val structured = uidLogcat.lineSequence()
+                .filter { line ->
+                    val normalized = line.lowercase(Locale.US)
+                    normalized.contains("lsfg_provenance") ||
+                        normalized.contains("lsfg_wsi") ||
+                        normalized.contains("lsfg_outcome") ||
+                        normalized.contains("lsfg_delivery") ||
+                        normalized.contains("lsfg_metrics")
+                }
+                .takeLastLines(NATIVE_EVENT_LOG_LINES)
+            structured.ifBlank {
+                warnings += "LSFG STRUCTURED TELEMETRY: no structured native records captured"
+                "unavailable: no structured LSFG telemetry captured"
             }
         }
 

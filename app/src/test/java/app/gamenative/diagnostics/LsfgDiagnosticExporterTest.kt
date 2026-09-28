@@ -1,5 +1,6 @@
 package app.gamenative.diagnostics
 
+import java.io.ByteArrayOutputStream
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
 import java.io.File
@@ -279,4 +280,14 @@ class LsfgDiagnosticExporterTest {
         assertTrue(!source.contains("rememberCoroutineScope"))
     }
 
+
+    @Test
+    fun writeReport_flushesNonEmptyUtf8Output() {
+        val output = ByteArrayOutputStream()
+        val bytes = LsfgDiagnosticExporter.writeReport("LSFG export\n", output)
+
+        assertEquals("LSFG export\n", output.toByteArray().toString(Charsets.UTF_8))
+        assertEquals(output.size().toLong(), bytes)
+        assertTrue(bytes > 0)
+    }
 }

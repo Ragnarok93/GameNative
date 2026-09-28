@@ -14,14 +14,25 @@ class XServerViewLsfgPacingContractTest {
             Files.readAllBytes(sourcePath("com/winlator/widget/XServerView.java")),
             Charsets.UTF_8,
         )
-        assertTrue(source.contains("this.frameRateLimit = Math.max(0, sourceFrameRateLimit);"))
-        assertTrue(source.contains("vkRenderer.setFpsLimit(Math.max(0, rendererFrameRateLimit));"))
-        assertTrue(source.contains("setFrameRateLimits(int sourceFrameRateLimit, int rendererFrameRateLimit)"))
+        assertTrue(source.contains("this.frameRateLimit = Math.max(0, frameRateLimit);"))
+        assertTrue(source.contains("vkRenderer.setFpsLimit(this.frameRateLimit);"))
+        assertFalse(source.contains("setFrameRateLimits(int sourceFrameRateLimit, int rendererFrameRateLimit)"))
         assertFalse(source.contains("LsfgRuntimeGate"))
         assertFalse(source.contains("localFrameRateLimit"))
         assertFalse(source.contains("lsfgPacingRequested"))
         assertFalse(source.contains("transitionLsfgFramePacing"))
         assertFalse(source.contains("refreshLsfgFramePacing"))
+    }
+
+    @Test
+    fun rendererDoesNotKeepSeparateLsfgSurfaceFrameRateHint() {
+        val source = String(
+            Files.readAllBytes(sourcePath("com/winlator/renderer/VulkanRenderer.java")),
+            Charsets.UTF_8,
+        )
+        assertFalse(source.contains("setLsfgPresentationFrameRateHint"))
+        assertFalse(source.contains("lsfgPresentationFrameRateHint"))
+        assertFalse(source.contains("applySourceOrLsfgFrameRateHint"))
     }
 
     @Test

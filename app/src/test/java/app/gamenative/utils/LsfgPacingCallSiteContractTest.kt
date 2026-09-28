@@ -24,11 +24,11 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(source.contains("var lsfgRuntimeMultiplier by rememberSaveable(container.id)"))
         assertTrue(limiter.contains("val sourceFrameCap = effectiveSourceFpsCap(limit)"))
         assertTrue(limiter.contains("val runtimeMultiplier = if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1"))
-        assertTrue(limiter.contains("applyLsfgPresentationFrameRateHint("))
-        assertTrue(limiter.contains("LsfgQuickMenuHelper.presentMode(container) == \"fifo\""))
         assertTrue(limiter.contains("val vulkanPresentLimit = if (lsfgActive) 0 else sourceFrameCap"))
-        assertTrue(limiter.contains("setFrameRateLimits(sourceFrameCap, vulkanPresentLimit)"))
+        assertTrue(limiter.contains("xServerView?.setFrameRateLimit(vulkanPresentLimit)"))
         assertTrue(limiter.contains("?.setFrameRateLimit(vulkanPresentLimit)"))
+        assertFalse(limiter.contains("applyLsfgPresentationFrameRateHint("))
+        assertFalse(limiter.contains("LsfgQuickMenuHelper.presentMode(container) == \"fifo\""))
         assertTrue(limiter.contains("ShmFramePacer.setFrameRateLimit(sourceFrameCap)"))
         assertTrue(limiter.contains("PowerManager.targetFps = sourceFrameCap"))
         assertTrue(limiter.contains("LsfgQuickMenuHelper.generationMode(container)"))
@@ -41,7 +41,7 @@ class LsfgPacingCallSiteContractTest {
     }
 
     @Test
-    fun quickMenuPresentModeChangeReappliesPresentationVoteWithoutChangingSourceCap() {
+    fun quickMenuPresentModeChangeDoesNotAddSurfaceControlPacing() {
         val source = String(
             Files.readAllBytes(sourcePath("app/gamenative/ui/component/QuickMenu.kt")),
             Charsets.UTF_8,
@@ -52,24 +52,22 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(source.contains("LsfgQuickMenuHelper.applyPresentMode("))
         assertTrue(source.contains("activeContainer,"))
         assertTrue(source.contains("mode,"))
-        assertTrue(source.contains("applyLsfgPresentationFrameRateHint("))
-        assertTrue(source.contains("sourceFpsCap = vulkanView?.frameRateLimit ?: 0"))
+        assertFalse(source.contains("applyLsfgPresentationFrameRateHint("))
         assertFalse(callback.contains("PresentExtension"))
         assertFalse(callback.contains("ShmFramePacer"))
     }
 
     @Test
-    fun adaptiveTargetChangesRefreshFifoPresentationVote() {
+    fun adaptiveTargetChangesDoNotTouchAndroidPresentationPacing() {
         val source = String(
             Files.readAllBytes(sourcePath("app/gamenative/ui/component/QuickMenu.kt")),
             Charsets.UTF_8,
         )
         val tab = source.substringAfter("private fun LsfgQuickMenuTab(")
 
-        assertTrue(tab.contains("fun reapplyPresentationHint()"))
         assertTrue(tab.contains("setAdaptiveTargetFps(it, next)"))
-        assertTrue(tab.contains("reapplyPresentationHint()"))
-        assertTrue(tab.contains("adaptiveTargetFps = next"))
+        assertFalse(tab.contains("fun reapplyPresentationHint()"))
+        assertFalse(tab.contains("applyLsfgPresentationFrameRateHint("))
     }
 
     @Test

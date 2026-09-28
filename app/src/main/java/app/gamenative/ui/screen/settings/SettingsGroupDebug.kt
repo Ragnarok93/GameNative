@@ -140,9 +140,19 @@ fun SettingsGroupDebug() {
         diagnosticsScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val report = LsfgDiagnosticExporter.buildReport(context)
+                    val report = runCatching {
+                        LsfgDiagnosticExporter.buildReport(context)
+                    }.getOrElse { error ->
+                        "===== LSFG EXPORT FAILURE =====\n" +
+                            "error=${error.javaClass.name}: ${error.message ?: "unknown"}\n"
+                    }
+                    val reportBytes = report.toByteArray(Charsets.UTF_8)
+                    require(reportBytes.isNotEmpty()) {
+                        "Generated an empty LSFG diagnostics report"
+                    }
                     context.contentResolver.openOutputStream(resultUri)?.use { outputStream ->
-                        outputStream.write(report.toByteArray(Charsets.UTF_8))
+                        outputStream.write(reportBytes)
+                        outputStream.flush()
                     } ?: error("Unable to open selected destination")
                 }
             }

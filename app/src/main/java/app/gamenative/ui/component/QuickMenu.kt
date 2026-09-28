@@ -1771,6 +1771,8 @@ private fun LsfgQuickMenuTab(
                     )
                 } else {
                     val presetDescription = when (adaptiveFlowPreset) {
+                        app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.AUTO ->
+                            R.string.lsfg_flow_preset_auto_desc
                         app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.QUALITY ->
                             R.string.lsfg_flow_preset_quality_desc
                         app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.BALANCED ->
@@ -1782,39 +1784,69 @@ private fun LsfgQuickMenuTab(
                         title = stringResource(R.string.lsfg_flow_preset),
                         subtitle = stringResource(presetDescription),
                     )
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        listOf(
-                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.LOW to
-                                R.string.lsfg_flow_preset_low,
-                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.BALANCED to
-                                R.string.lsfg_flow_preset_balanced,
-                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.QUALITY to
-                                R.string.lsfg_flow_preset_quality,
-                        ).forEach { (candidate, label) ->
-                            QuickMenuChoiceChip(
-                                text = stringResource(label),
-                                selected = adaptiveFlowPreset == candidate,
-                                accentColor = accentColor,
-                                onClick = {
-                                    adaptiveFlowPreset = candidate
-                                    container?.let {
-                                        app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveFlowPreset(
-                                            it,
-                                            candidate,
-                                        )
-                                    }
-                                },
-                                modifier = Modifier.weight(1f),
-                                singleLine = true,
-                            )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            listOf(
+                                app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.AUTO to
+                                    R.string.lsfg_flow_preset_auto,
+                                app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.QUALITY to
+                                    R.string.lsfg_flow_preset_quality,
+                            ).forEach { (candidate, label) ->
+                                QuickMenuChoiceChip(
+                                    text = stringResource(label),
+                                    selected = adaptiveFlowPreset == candidate,
+                                    accentColor = accentColor,
+                                    onClick = {
+                                        adaptiveFlowPreset = candidate
+                                        container?.let {
+                                            app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveFlowPreset(
+                                                it,
+                                                candidate,
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true,
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            listOf(
+                                app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.LOW to
+                                    R.string.lsfg_flow_preset_low,
+                                app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.BALANCED to
+                                    R.string.lsfg_flow_preset_balanced,
+                            ).forEach { (candidate, label) ->
+                                QuickMenuChoiceChip(
+                                    text = stringResource(label),
+                                    selected = adaptiveFlowPreset == candidate,
+                                    accentColor = accentColor,
+                                    onClick = {
+                                        adaptiveFlowPreset = candidate
+                                        container?.let {
+                                            app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveFlowPreset(
+                                                it,
+                                                candidate,
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true,
+                                )
+                            }
                         }
                     }
-                }
 
                 Spacer(modifier = Modifier.height(4.dp))
                 QuickMenuToggleRow(

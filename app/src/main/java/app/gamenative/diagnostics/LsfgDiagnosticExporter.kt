@@ -1,17 +1,31 @@
 package app.gamenative.diagnostics
 
 import android.content.Context
+import android.net.Uri
+import android.util.Log
+import android.hardware.display.DisplayManager
 import android.os.Build
+import android.os.PowerManager as AndroidPowerManager
+import android.view.Display
 import app.gamenative.CrashHandler
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
 import app.gamenative.powercontrol.metrics.PerformanceMetricsCollector
 import java.io.File
+import java.io.OutputStream
 import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Builds the single-file, best-effort LSFG diagnostic report exported from Debug settings.
@@ -21,12 +35,16 @@ import java.util.Locale
  * multiplier 2x/3x/4x and for the disabled-path baseline.
  */
 object LsfgDiagnosticExporter {
+    private const val EXPORT_TAG = "LsfgDiagnosticExporter"
+    private val exportScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private const val TEXT_TAIL_BYTES = 2L * 1024L * 1024L
     private const val NATIVE_EVENT_TAIL_BYTES = 4L * 1024L * 1024L
     private const val LOGCAT_LINES = 8_000
     private const val UID_LOGCAT_LINES = 20_000
     private const val PRESENTATION_LOG_LINES = 4_000
     private const val NATIVE_EVENT_LOG_LINES = 8_000
+    private const val UID_LOGCAT_TIMEOUT_MS = 4_000L
     private const val MAX_SCAN_DEPTH = 8
     private const val MAX_SCAN_NODES = 4_000
 
@@ -69,6 +87,65 @@ object LsfgDiagnosticExporter {
     fun defaultFileName(now: Date = Date()): String =
         "gamenative-lsfg-${SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(now)}.txt"
 
+    internal fun exportAsync(
+        context: Context,
+        uri: Uri,
+        onResult: (Result<Long>) -> Unit,
+    ) {
+        val appContext = context.applicationContext
+        exportScope.launch {
+            Log.i(EXPORT_TAG, "LSFG diagnostics export started")
+            val result = runCatching {
+                val preparedReport = File.createTempFile(
+                    "lsfg-diagnostics-",
+                    ".txt",
+                    appContext.cacheDir,
+                )
+                try {
+                    prepareReportFile(appContext, preparedReport)
+                    openOutputStream(appContext, uri).use { outputStream ->
+                        preparedReport.inputStream().use { inputStream ->
+                            val bytes = inputStream.copyTo(outputStream)
+                            outputStream.flush()
+                            check(bytes > 0L) {
+                                "Prepared LSFG diagnostics report copied zero bytes"
+                            }
+                            bytes
+                        }
+                    }
+                } finally {
+                    if (!preparedReport.delete()) {
+                        Log.w(EXPORT_TAG, "Unable to delete temporary LSFG diagnostics report")
+                    }
+                }
+            }
+            result.onSuccess { bytes ->
+                Log.i(EXPORT_TAG, "LSFG diagnostics export completed bytes=$bytes")
+            }.onFailure { error ->
+                Log.e(EXPORT_TAG, "LSFG diagnostics export failed", error)
+            }
+            withContext(Dispatchers.Main.immediate) {
+                onResult(result)
+            }
+        }
+    }
+
+    internal fun prepareReportFile(context: Context, destination: File): File {
+        val report = runCatching {
+            buildReport(context.applicationContext)
+        }.getOrElse { error ->
+            "===== LSFG EXPORT FAILURE =====\n" +
+                "error=${error.javaClass.name}: ${error.message ?: "unknown"}\n"
+        }
+        destination.parentFile?.mkdirs()
+        destination.outputStream().use { outputStream ->
+            writeReport(report, outputStream)
+        }
+        check(destination.isFile && destination.length() > 0L) {
+            "Prepared LSFG diagnostics report is empty"
+        }
+        return destination
+    }
     private val runtimeSessionPattern = Regex("""\bruntime_session_id=(\d+)\b""")
     private val configRevisionPattern = Regex("""\bconfig_revision=(\d+)\b""")
 
@@ -83,10 +160,44 @@ object LsfgDiagnosticExporter {
             normalized.contains("lsfg_event") ||
             normalized.contains("lsfg_flow") ||
             normalized.contains("lsfg_provenance") ||
+            normalized.contains("lsfg_wsi") ||
+            normalized.contains("lsfg_outcome") ||
+            normalized.contains("lsfg_system") ||
             normalized.contains("lsfg-vk:") ||
             normalized.contains("lsfgvkmanager") ||
             normalized.contains("vk_layer_ls_frame_generation") ||
             normalized.contains(" lsfg ")
+    }
+
+    internal data class NativeLogcatCapture(
+        val text: String,
+        val source: String,
+    )
+
+    internal fun selectNativeLogcat(
+        uidLogcat: String,
+        appLogcat: String,
+    ): NativeLogcatCapture {
+        val uidLines = uidLogcat.lineSequence()
+            .filter(::isNativeLsfgLogLine)
+            .toList()
+        val appLines = appLogcat.lineSequence()
+            .filter(::isNativeLsfgLogLine)
+            .toList()
+        val deduplicated = linkedSetOf<String>().apply {
+            addAll(uidLines)
+            addAll(appLines)
+        }
+        val source = when {
+            uidLines.isNotEmpty() && appLines.isNotEmpty() -> "uid+pid_logcat"
+            uidLines.isNotEmpty() -> "uid_logcat"
+            appLines.isNotEmpty() -> "pid_logcat_fallback"
+            else -> "none"
+        }
+        return NativeLogcatCapture(
+            text = deduplicated.joinToString("\n"),
+            source = source,
+        )
     }
 
     internal fun segmentNativeEvents(nativeLogcat: String): String {
@@ -136,6 +247,12 @@ object LsfgDiagnosticExporter {
             .filter { it.isNotBlank() }
             .joinToString("\n")
 
+        val nativeLogcat = selectNativeLogcat(uidLogcat, appLogcat)
+        if (nativeLogcat.source == "pid_logcat_fallback") {
+            warnings +=
+                "UID-filtered logcat had no native LSFG records; used app/PID logcat fallback"
+        }
+
         fun section(name: String, body: () -> String) {
             report.append("===== ").append(name).append(" =====\n")
             val text = try {
@@ -174,6 +291,51 @@ object LsfgDiagnosticExporter {
                     appendLine("soc_manufacturer=${Build.SOC_MANUFACTURER}")
                     appendLine("soc_model=${Build.SOC_MODEL}")
                 }
+            }
+        }
+
+        section("DISPLAY / THERMAL") {
+            val powerManager = appContext.getSystemService(AndroidPowerManager::class.java)
+            val displayManager = appContext.getSystemService(DisplayManager::class.java)
+            val display = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)
+            buildString {
+                appendLine("power_save=${powerManager?.isPowerSaveMode ?: false}")
+                if (Build.VERSION.SDK_INT >= 29) {
+                    appendLine("thermal_status=${powerManager?.currentThermalStatus ?: -1}")
+                } else {
+                    appendLine("thermal_status=unavailable")
+                }
+                appendLine("display_valid=${display?.isValid ?: false}")
+                if (display != null) {
+                    appendLine("display_refresh_hz=${String.format(Locale.US, "%.3f", display.refreshRate)}")
+                    val mode = display.mode
+                    appendLine("display_mode=${mode.physicalWidth}x${mode.physicalHeight}@${String.format(Locale.US, "%.3f", mode.refreshRate)}")
+                    appendLine("display_hdr=${display.isHdr}")
+                    appendLine(
+                        "display_supported_modes=" + display.supportedModes.joinToString(";") {
+                            "${it.physicalWidth}x${it.physicalHeight}@${String.format(Locale.US, "%.3f", it.refreshRate)}"
+                        },
+                    )
+                } else {
+                    appendLine("display_refresh_hz=unavailable")
+                    appendLine("display_mode=unavailable")
+                }
+            }
+        }
+        section("LSFG STRUCTURED TELEMETRY") {
+            val structured = nativeLogcat.text.lineSequence()
+                .filter { line ->
+                    val normalized = line.lowercase(Locale.US)
+                    normalized.contains("lsfg_provenance") ||
+                        normalized.contains("lsfg_wsi") ||
+                        normalized.contains("lsfg_outcome") ||
+                        normalized.contains("lsfg_delivery") ||
+                        normalized.contains("lsfg_metrics")
+                }
+                .takeLastLines(NATIVE_EVENT_LOG_LINES)
+            structured.ifBlank {
+                warnings += "LSFG STRUCTURED TELEMETRY: no structured native records captured"
+                "unavailable: no structured LSFG telemetry captured"
             }
         }
 
@@ -252,18 +414,17 @@ object LsfgDiagnosticExporter {
         }
 
         section("LSFG NATIVE EVENTS") {
-            val nativeLogcat = uidLogcat.lineSequence()
-                .filter(::isNativeLsfgLogLine)
+            val nativeEvents = nativeLogcat.text.lineSequence()
                 .takeLastLines(NATIVE_EVENT_LOG_LINES)
             when {
-                nativeLogcat.isNotBlank() ->
-                    "source=same_uid_logcat\n${segmentNativeEvents(nativeLogcat)}"
+                nativeEvents.isNotBlank() ->
+                    "source=${nativeLogcat.source}\n${segmentNativeEvents(nativeEvents)}"
                 artifacts.nativeDiagnostics?.isFile == true ->
                     labeledFile(artifacts.nativeDiagnostics, NATIVE_EVENT_TAIL_BYTES)
                 else -> {
                     warnings +=
-                        "LSFG native events unavailable: no same-UID LSFG logcat or diagnostics.log"
-                    "unavailable: no same-UID LSFG telemetry captured"
+                        "LSFG native events unavailable: no app/PID or UID LSFG logcat or diagnostics.log"
+                    "unavailable: no native LSFG telemetry captured"
                 }
             }
         }
@@ -575,7 +736,24 @@ object LsfgDiagnosticExporter {
         )
             .redirectErrorStream(true)
             .start()
-        return process.inputStream.bufferedReader().use { it.readText() }
+        val executor = Executors.newSingleThreadExecutor()
+        val output = executor.submit<String> {
+            process.inputStream.bufferedReader().use { it.readText() }
+        }
+        return try {
+            output.get(UID_LOGCAT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            ""
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            ""
+        } catch (_: Exception) {
+            ""
+        } finally {
+            process.destroy()
+            output.cancel(true)
+            executor.shutdownNow()
+        }
     }
 
     private fun labeledFileOrUnavailable(

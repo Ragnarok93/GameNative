@@ -192,6 +192,8 @@ class LsfgDiagnosticExporterTest {
             "09-26 I System.out: LSFG_METRICS runtime_session_id=9 config_revision=2",
             "09-26 I System.out: LSFG_EVENT runtime_session_id=9 config_revision=2",
             "09-26 I System.out: LSFG_FLOW runtime_session_id=9 config_revision=2",
+            "09-26 I System.out: LSFG_WSI runtime_session_id=9 swapchain_generation=4 actual_mode=MAILBOX",
+            "09-26 I System.out: LSFG_OUTCOME runtime_session_id=9 window_ms=1000 outcome_confidence=wsi_accepted_only",
             "09-26 I System.out: LSFG_PROVENANCE invoke name=vkQueuePresentKHR",
             "09-26 I System.out: lsfg-vk: init stage=swapchain-ready",
             "09-26 I LsfgVkManager: LSFG layer armed target=game.exe multiplier=2",

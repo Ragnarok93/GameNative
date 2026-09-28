@@ -235,4 +235,20 @@ class LsfgDiagnosticExporterTest {
         assertTrue(command.contains("--uid=10774"))
         assertTrue(command.none { it.startsWith("--pid") })
     }
+    @Test
+    fun prepareReportFile_writesNonEmptyReportBeforeDestinationSelection() {
+        val context = RuntimeEnvironment.getApplication()
+        val destination = File.createTempFile("lsfg-diagnostics-", ".txt", context.cacheDir)
+        try {
+            val prepared = LsfgDiagnosticExporter.prepareReportFile(context, destination)
+
+            assertEquals(destination.canonicalPath, prepared.canonicalPath)
+            assertTrue(prepared.isFile)
+            assertTrue(prepared.length() > 0L)
+            assertTrue(prepared.readText().startsWith("===== CAPTURE ====="))
+        } finally {
+            destination.delete()
+        }
+    }
+
 }

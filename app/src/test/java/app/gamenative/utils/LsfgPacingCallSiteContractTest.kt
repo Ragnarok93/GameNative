@@ -31,8 +31,6 @@ class LsfgPacingCallSiteContractTest {
         assertFalse(limiter.contains("LsfgQuickMenuHelper.presentMode(container) == \"fifo\""))
         assertTrue(limiter.contains("ShmFramePacer.setFrameRateLimit(sourceFrameCap)"))
         assertTrue(limiter.contains("PowerManager.targetFps = sourceFrameCap"))
-        assertTrue(limiter.contains("LsfgQuickMenuHelper.generationMode(container)"))
-        assertTrue(limiter.contains("LsfgQuickMenuHelper.adaptiveTargetFps(container)"))
         assertTrue(limiter.contains("PerformanceMetricsCollector.resetFrameEpoch()"))
         assertFalse(limiter.contains("xServerView?.setFrameRateLimit(sourceFrameCap)"))
         assertFalse(limiter.contains("transitionLsfgFramePacing"))

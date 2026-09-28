@@ -1,0 +1,87 @@
+name: R61 Debug Artifact Handoff
+
+on:
+  push:
+    branches:
+      - "build/r61-debug-handoff-20260927"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  split-verified-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified upgradeable debug artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            /repos/${{ github.repository }}/actions/artifacts/10946082333/zip \
+            > source/artifact.zip
+          unzip -q source/artifact.zip -d source/extracted
+          test -s source/extracted/GameNative-upgradeable-debug.apk
+          expected_sha="$(
+            awk '{print $1}' source/extracted/GameNative-upgradeable-debug.apk.sha256 |
+              head -n 1
+          )"
+          actual_sha="$(
+            sha256sum source/extracted/GameNative-upgradeable-debug.apk |
+              awk '{print $1}'
+          )"
+          test -n "$expected_sha"
+          [[ "$actual_sha" == "$expected_sha" ]]
+          echo "Verified APK SHA256: $actual_sha"
+
+      - name: Split APK for connector handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p handoff
+          cp source/extracted/build-metadata.txt handoff/
+          cp source/extracted/GameNative-upgradeable-debug.apk.sha256 handoff/
+          split -b 250M -d -a 2 \
+            source/extracted/GameNative-upgradeable-debug.apk \
+            handoff/GameNative-upgradeable-debug.apk.part-
+          test -s handoff/GameNative-upgradeable-debug.apk.part-00
+          test -s handoff/GameNative-upgradeable-debug.apk.part-01
+          test -s handoff/GameNative-upgradeable-debug.apk.part-02
+
+      - name: Upload APK part 00
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameNative-upgradeable-debug-part-00
+          path: handoff/GameNative-upgradeable-debug.apk.part-00
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Upload APK part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameNative-upgradeable-debug-part-01
+          path: handoff/GameNative-upgradeable-debug.apk.part-01
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Upload APK part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameNative-upgradeable-debug-part-02
+          path: handoff/GameNative-upgradeable-debug.apk.part-02
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Upload handoff metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameNative-upgradeable-debug-handoff-metadata
+          path: |
+            handoff/build-metadata.txt
+            handoff/GameNative-upgradeable-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 2

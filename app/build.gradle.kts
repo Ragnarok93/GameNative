@@ -19,6 +19,14 @@ val keystoreProperties: Properties? = if (keystorePropertiesFile.exists()) {
     }
 } else null
 
+val upgradeSafeDebugSigning =
+    (project.findProperty("upgradeSafeDebugSigning") as String?)
+        ?.equals("true", ignoreCase = true) == true
+val ciVersionCodeOverride =
+    (project.findProperty("ciVersionCode") as String?)?.toInt()
+val ciVersionNameOverride =
+    (project.findProperty("ciVersionName") as String?)?.takeIf { it.isNotBlank() }
+
 // Add PostHog API key and host as build-time variables
 val posthogApiKey: String = project.findProperty("POSTHOG_API_KEY") as String? ?: System.getenv("POSTHOG_API_KEY") ?: ""
 val posthogHost: String = project.findProperty("POSTHOG_HOST") as String? ?: System.getenv("POSTHOG_HOST") ?: "https://us.i.posthog.com"
@@ -62,6 +70,18 @@ android {
                 keyPassword = keystoreProperties["keyPassword"].toString()
             }
         }
+
+        // Dedicated CI/debug identity. This key is intentionally non-production
+        // and committed so every revision can be installed as an update over
+        // the previous workflow artifact without depending on runner-local keys.
+        create("upgradeDebug") {
+            storeFile = rootProject.file(
+                ".github/debug-signing/gamenative-upgrade-debug.jks",
+            )
+            storePassword = "android"
+            keyAlias = "gamenative-upgrade-debug"
+            keyPassword = "android"
+        }
     }
 
     defaultConfig {
@@ -73,8 +93,11 @@ android {
         buildConfigField("boolean", "XR_BUILD", "false")
         buildConfigField("boolean", "MODERN_XR", "false")
 
-        versionCode = 22
-        versionName = "1.2.0"
+        // CI may override debug metadata independently from the checked-in app
+        // release version. Android accepts updates only when package/signing
+        // identity is stable and the incoming versionCode is not lower.
+        versionCode = ciVersionCodeOverride ?: 22
+        versionName = ciVersionNameOverride ?: "1.2.0"
 
         buildConfigField("boolean", "GOLD", "false")
         fun secret(name: String, defaultValue: String = "") =
@@ -177,7 +200,12 @@ android {
             isDebuggable = true
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs.getByName("debug")
+            // Local builds keep the ordinary SDK debug key. CI opts into the
+            // repository-pinned non-production key so successive revision APKs
+            // retain one Android update identity.
+            signingConfig = signingConfigs.getByName(
+                if (upgradeSafeDebugSigning) "upgradeDebug" else "debug",
+            )
         }
         release {
             isMinifyEnabled = true

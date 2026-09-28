@@ -217,6 +217,43 @@ class FpsLimiterUtilsTest {
     }
 
     @Test
+    fun `LSFG Fixed presentation vote tracks generated output rather than source cap`() {
+        assertEquals(60, presentationFrameRateVote(30, true, true, false, 60, 2, 120))
+        assertEquals(90, presentationFrameRateVote(30, true, true, false, 60, 3, 120))
+        assertEquals(120, presentationFrameRateVote(30, true, true, false, 60, 4, 120))
+    }
+
+    @Test
+    fun `LSFG Adaptive presentation vote follows target fps`() {
+        assertEquals(60, presentationFrameRateVote(30, true, true, true, 60, 4, 120))
+        assertEquals(90, presentationFrameRateVote(30, true, true, true, 90, 4, 120))
+    }
+
+    @Test
+    fun `LSFG presentation vote is bounded by display refresh`() {
+        assertEquals(120, presentationFrameRateVote(60, true, true, false, 60, 4, 120))
+        assertEquals(120, presentationFrameRateVote(30, true, true, true, 165, 4, 120))
+    }
+
+    @Test
+    fun `unlimited Fixed LSFG votes the display ceiling without capping source`() {
+        assertEquals(0, effectiveSourceFpsCap(0))
+        assertEquals(120, presentationFrameRateVote(0, true, true, false, 60, 4, 120))
+    }
+
+    @Test
+    fun `Mailbox preserves legacy source-rate presentation vote`() {
+        assertEquals(30, presentationFrameRateVote(30, true, false, false, 60, 4, 120))
+        assertEquals(0, presentationFrameRateVote(0, true, false, false, 60, 4, 120))
+    }
+
+    @Test
+    fun `LSFG off preserves legacy surface vote semantics`() {
+        assertEquals(30, presentationFrameRateVote(30, false, true, false, 60, 1, 120))
+        assertEquals(0, presentationFrameRateVote(0, false, true, false, 60, 1, 120))
+    }
+
+    @Test
     fun `zero source cap remains explicitly unlimited`() {
         assertEquals(0, effectiveSourceFpsCap(0))
         assertEquals(0, predictedLsfgOutputFps(effectiveSourceFpsCap(0), 2))

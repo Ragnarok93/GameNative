@@ -119,6 +119,7 @@ import app.gamenative.ui.component.QuickMenu
 import app.gamenative.ui.component.QuickMenuAction
 import app.gamenative.ui.component.SteamInviteState
 import app.gamenative.ui.component.effectiveSourceFpsCap
+import app.gamenative.ui.component.applyLsfgPresentationFrameRateHint
 import app.gamenative.ui.component.parseBooleanExtra
 import app.gamenative.ui.component.parsePositiveFpsLimit
 import app.gamenative.ui.component.predictedLsfgOutputFps
@@ -230,8 +231,11 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.Arrays
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.name
 import kotlin.math.roundToInt
 import kotlin.text.lowercase
@@ -430,6 +434,8 @@ fun XServerScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
+    val adaptiveCapGeneration = remember { AtomicLong(0L) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val imm = remember(context) {
         context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
     }
@@ -735,6 +741,19 @@ fun XServerScreen(
         PowerManager.targetFps = sourceFrameCap
         PowerManager.frameSampleStride = runtimeMultiplier
 
+        applyLsfgPresentationFrameRateHint(
+            renderer = xServerView?.renderer as? VulkanRenderer,
+            sourceFpsCap = sourceFrameCap,
+            lsfgActive = lsfgActive,
+            strictFifo = lsfgActive && LsfgQuickMenuHelper.presentMode(container) == "fifo",
+            adaptive = lsfgActive &&
+                LsfgQuickMenuHelper.generationMode(container) ==
+                    LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,
+            adaptiveTargetFps = LsfgQuickMenuHelper.adaptiveTargetFps(container),
+            lsfgMultiplier = runtimeMultiplier,
+            maxRefreshRateHz = detectedMaxRefreshRateHz,
+        )
+
         val predictedOutput = predictedLsfgOutputFps(sourceFrameCap, runtimeMultiplier)
         val budgetKey = "$sourceFrameCap:$runtimeMultiplier:$detectedMaxRefreshRateHz:$runtimeConfigRevision"
         if (predictedOutput > detectedMaxRefreshRateHz && lastLoggedOutputBudget != budgetKey) {
@@ -857,14 +876,47 @@ fun XServerScreen(
         applyLsfgSettings()
     }
 
+    fun applyAdaptiveFpsCapOnMain(capFps: Int): Boolean {
+        if (!isLsfgAvailable) return false
+        val generation = adaptiveCapGeneration.incrementAndGet()
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            if (generation != adaptiveCapGeneration.get() || !isLsfgAvailable) return false
+            runtimeConfigRevision++
+            applyFpsLimiterToEngines(capFps)
+            return true
+        }
+
+        val applied = AtomicBoolean(false)
+        val completed = CountDownLatch(1)
+        mainHandler.post {
+            try {
+                if (generation == adaptiveCapGeneration.get() && isLsfgAvailable) {
+                    runtimeConfigRevision++
+                    applyFpsLimiterToEngines(capFps)
+                    applied.set(true)
+                }
+            } finally {
+                completed.countDown()
+            }
+        }
+        val completedInTime = try {
+            completed.await(750L, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!completedInTime) {
+            // Invalidate the queued command so a late main-thread callback
+            // cannot apply a cap after the controller has already moved on.
+            adaptiveCapGeneration.compareAndSet(generation, generation + 1L)
+            return false
+        }
+        return applied.get()
+    }
+
     LaunchedEffect(xServerView) {
         PowerManager.fpsCapApplier = applier@{ capFps: Int ->
-            if (!isLsfgAvailable) return@applier false
-            Handler(Looper.getMainLooper()).post {
-                runtimeConfigRevision++
-                applyFpsLimiterToEngines(capFps)
-            }
-            true
+            applyAdaptiveFpsCapOnMain(capFps)
         }
         val detectedMax = detectMaxRefreshRateHz(context, xServerView as? View)
         detectedMaxRefreshRateHz = detectedMax
@@ -873,6 +925,13 @@ fun XServerScreen(
             fpsLimiterTarget = clampedTarget
         }
         applyFpsLimiterToEngines(effectiveFpsLimit())
+    }
+
+    DisposableEffect(xServerView) {
+        onDispose {
+            adaptiveCapGeneration.incrementAndGet()
+            PowerManager.fpsCapApplier = null
+        }
     }
 
     fun restorePerformanceHudPosition() {

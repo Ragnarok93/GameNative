@@ -24,14 +24,49 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(source.contains("var lsfgRuntimeMultiplier by rememberSaveable(container.id)"))
         assertTrue(limiter.contains("val sourceFrameCap = effectiveSourceFpsCap(limit)"))
         assertTrue(limiter.contains("val runtimeMultiplier = if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1"))
+        assertTrue(limiter.contains("applyLsfgPresentationFrameRateHint("))
+        assertTrue(limiter.contains("LsfgQuickMenuHelper.presentMode(container) == \"fifo\""))
         assertTrue(limiter.contains("xServerView?.setFrameRateLimit(sourceFrameCap)"))
         assertTrue(limiter.contains("?.setFrameRateLimit(sourceFrameCap)"))
         assertTrue(limiter.contains("ShmFramePacer.setFrameRateLimit(sourceFrameCap)"))
+        assertTrue(limiter.contains("PowerManager.targetFps = sourceFrameCap"))
+        assertTrue(limiter.contains("LsfgQuickMenuHelper.generationMode(container)"))
+        assertTrue(limiter.contains("LsfgQuickMenuHelper.adaptiveTargetFps(container)"))
         assertTrue(limiter.contains("PerformanceMetricsCollector.resetFrameEpoch()"))
         assertFalse(limiter.contains("if (lsfgActive) 0 else limit"))
         assertFalse(limiter.contains("transitionLsfgFramePacing"))
         assertFalse(limiter.contains("transitionFramePacing"))
         assertFalse(limiter.contains("LsfgRuntimeGate"))
+    }
+
+    @Test
+    fun quickMenuPresentModeChangeReappliesPresentationVoteWithoutChangingSourceCap() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/component/QuickMenu.kt")),
+            Charsets.UTF_8,
+        )
+        val callback = source.substringAfter("onPresentModeChanged = { mode ->")
+            .substringBefore("},", missingDelimiterValue = source.substringAfter("onPresentModeChanged = { mode ->"))
+
+        assertTrue(source.contains("applyPresentMode(it, mode)"))
+        assertTrue(source.contains("applyLsfgPresentationFrameRateHint("))
+        assertTrue(source.contains("getFrameRateLimit()"))
+        assertFalse(callback.contains("PresentExtension"))
+        assertFalse(callback.contains("ShmFramePacer"))
+    }
+
+    @Test
+    fun adaptiveTargetChangesRefreshFifoPresentationVote() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/component/QuickMenu.kt")),
+            Charsets.UTF_8,
+        )
+        val tab = source.substringAfter("private fun LsfgQuickMenuTab(")
+
+        assertTrue(tab.contains("fun reapplyPresentationHint()"))
+        assertTrue(tab.contains("setAdaptiveTargetFps(it, next)"))
+        assertTrue(tab.contains("reapplyPresentationHint()"))
+        assertTrue(tab.contains("adaptiveTargetFps = next"))
     }
 
     @Test
@@ -110,6 +145,49 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(invalidator.contains("ShmFramePacer.resetTiming()"))
         assertFalse(invalidator.contains("applyLsfgSettings()"))
         assertFalse(invalidator.contains("scheduleLsfgRuntimeHandoff"))
+    }
+
+    @Test
+    fun adaptiveCapApplicationAcknowledgesMainThreadCompletion() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
+            Charsets.UTF_8,
+        )
+        val powerManager = String(
+            Files.readAllBytes(sourcePath("app/gamenative/powercontrol/PowerManager.kt")),
+            Charsets.UTF_8,
+        )
+
+        assertTrue(source.contains("CountDownLatch"))
+        assertTrue(source.contains("completed.await(750L, TimeUnit.MILLISECONDS)"))
+        assertTrue(source.contains("adaptiveCapGeneration.compareAndSet"))
+        assertTrue(powerManager.contains("completed.await(750L, TimeUnit.MILLISECONDS)"))
+        assertTrue(powerManager.contains("targetFps = limitFps"))
+        assertTrue(powerManager.contains("fpsCapGeneration"))
+        assertTrue(powerManager.contains("generation != fpsCapGeneration.get()"))
+        assertTrue(powerManager.contains("return applied.get()"))
+    }
+
+    @Test
+    fun metricsAndLoaderStateRejectStaleSessionsAndPartialRuntimePublication() {
+        val metrics = String(
+            Files.readAllBytes(sourcePath("app/gamenative/powercontrol/metrics/PerformanceMetricsCollector.kt")),
+            Charsets.UTF_8,
+        )
+        val manager = String(
+            Files.readAllBytes(sourcePath("app/gamenative/utils/LsfgVkManager.kt")),
+            Charsets.UTF_8,
+        )
+
+        assertTrue(metrics.contains("sessionGeneration"))
+        assertTrue(metrics.contains("isSessionCurrent(generation)"))
+        assertTrue(metrics.contains("activeSessionLogPath"))
+        assertTrue(manager.contains("runtimeInstallLock"))
+        assertTrue(manager.contains("copyFileAtomic"))
+        assertTrue(manager.contains("filesHaveSameContents(steamDll, dllFile)"))
+        assertTrue(manager.contains("expectedManifest"))
+        assertTrue(manager.contains("Publish the marker last"))
+        assertTrue(manager.contains("disableLayerForLaunch"))
     }
 
     private fun sourcePath(relative: String): Path {

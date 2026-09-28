@@ -49,6 +49,7 @@ import java.io.RandomAccessFile;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import app.gamenative.BuildConfig;
 import app.gamenative.PluviaApp;
@@ -351,9 +352,15 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         if (LsfgVkManager.isFrameGenerationRequested(container)) {
             LsfgVkManager.ensureRuntimeInstalled(environment.getContext(), container);
             LsfgVkManager.writeConfig(container);
-            LsfgVkManager.applyLaunchEnv(container, envVars);
+            final boolean protectedAdrenoPresentation =
+                    renderer != null
+                    && renderer.toLowerCase(Locale.ENGLISH).contains("adreno");
+            LsfgVkManager.applyLaunchEnv(
+                    container, envVars, protectedAdrenoPresentation);
         } else if (LsfgVkManager.isSupported(container)) {
-            LsfgVkManager.applyLaunchEnv(container, envVars);
+            // Keep the resident source-only path on the user's existing WSI
+            // policy. The Adreno FIFO override exists only while FG is active.
+            LsfgVkManager.applyLaunchEnv(container, envVars, false);
         }
 
         Log.d("BionicProgramLauncherComponent", "env vars are " + envVars.toString());

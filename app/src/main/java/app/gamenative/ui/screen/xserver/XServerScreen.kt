@@ -119,7 +119,6 @@ import app.gamenative.ui.component.QuickMenu
 import app.gamenative.ui.component.QuickMenuAction
 import app.gamenative.ui.component.SteamInviteState
 import app.gamenative.ui.component.effectiveSourceFpsCap
-import app.gamenative.ui.component.applyLsfgPresentationFrameRateHint
 import app.gamenative.ui.component.parseBooleanExtra
 import app.gamenative.ui.component.parsePositiveFpsLimit
 import app.gamenative.ui.component.predictedLsfgOutputFps
@@ -757,29 +756,14 @@ fun XServerScreen(
 
         val sourceFrameCap = effectiveSourceFpsCap(limit)
         val runtimeMultiplier = if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1
-        // Keep the source timeline capped, but do not feed that same cap into
-        // the renderer/PresentExtension while LSFG owns generated presentation.
         val vulkanPresentLimit = if (lsfgActive) 0 else sourceFrameCap
-        xServerView?.setFrameRateLimits(sourceFrameCap, vulkanPresentLimit)
+        xServerView?.setFrameRateLimit(vulkanPresentLimit)
         xServerView?.getxServer()
             ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
             ?.setFrameRateLimit(vulkanPresentLimit)
         ShmFramePacer.setFrameRateLimit(sourceFrameCap)
         PowerManager.targetFps = sourceFrameCap
         PowerManager.frameSampleStride = runtimeMultiplier
-
-        applyLsfgPresentationFrameRateHint(
-            renderer = xServerView?.renderer as? VulkanRenderer,
-            sourceFpsCap = sourceFrameCap,
-            lsfgActive = lsfgActive,
-            strictFifo = lsfgActive && LsfgQuickMenuHelper.presentMode(container) == "fifo",
-            adaptive = lsfgActive &&
-                LsfgQuickMenuHelper.generationMode(container) ==
-                    LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,
-            adaptiveTargetFps = LsfgQuickMenuHelper.adaptiveTargetFps(container),
-            lsfgMultiplier = runtimeMultiplier,
-            maxRefreshRateHz = detectedMaxRefreshRateHz,
-        )
 
         val predictedOutput = predictedLsfgOutputFps(sourceFrameCap, runtimeMultiplier)
         val budgetKey = "$sourceFrameCap:$runtimeMultiplier:$detectedMaxRefreshRateHz:$runtimeConfigRevision"
@@ -2243,7 +2227,7 @@ fun XServerScreen(
             val xServerView = xServerViewInstance.apply {
                 xServerView = this
                 val initialLimit = if (fpsLimiterEnabled) fpsLimiterTarget else 0
-                setFrameRateLimit(effectiveSourceFpsCap(initialLimit))
+                setFrameRateLimit(if (isLsfgGenerationActive) 0 else effectiveSourceFpsCap(initialLimit))
                 val renderer = this.renderer
                 if (!useGLRenderer && renderer is VulkanRenderer) {
                     val pm = container.rendererPresentMode.ifEmpty { "fifo" }

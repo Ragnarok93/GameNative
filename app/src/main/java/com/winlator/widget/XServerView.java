@@ -88,16 +88,9 @@ public class XServerView extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     public void setFrameRateLimit(int frameRateLimit) {
-        setFrameRateLimits(frameRateLimit, frameRateLimit);
-    }
-
-    @Override
-    public void setFrameRateLimits(int sourceFrameRateLimit, int rendererFrameRateLimit) {
-        // Preserve GameNative's source limiter as state while LSFG-generated
-        // output owns the Vulkan presentation cadence.
-        this.frameRateLimit = Math.max(0, sourceFrameRateLimit);
+        this.frameRateLimit = Math.max(0, frameRateLimit);
         if (renderer instanceof VulkanRenderer vkRenderer) {
-            vkRenderer.setFpsLimit(Math.max(0, rendererFrameRateLimit));
+            vkRenderer.setFpsLimit(this.frameRateLimit);
         }
     }
 

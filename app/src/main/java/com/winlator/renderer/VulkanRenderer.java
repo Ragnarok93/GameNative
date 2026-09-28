@@ -1303,9 +1303,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     public void setUnviewableWMClasses(String... classes) { this.unviewableWMClasses = classes; }
     private int fpsLimit = 0;
     private int refreshRateLimit = 60;
-    // Strict-FIFO LSFG presentation cadence. This is intentionally separate
-    // from fpsLimit, which remains the real/source frame-rate contract.
-    private int lsfgPresentationFrameRateHint = 0;
     private int     pendingPresentMode    = 2;
     private int     pendingFilterMode     = 0;
     private boolean pendingSwapRB         = false;
@@ -1322,26 +1319,15 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     public int getFpsLimit() { return fpsLimit; }
     public void setFpsLimit(int limit) {
         this.fpsLimit = Math.max(0, limit);
-        applySourceOrLsfgFrameRateHint();
-    }
-
-    public void setLsfgPresentationFrameRateHint(int limit) {
-        this.lsfgPresentationFrameRateHint = Math.max(0, limit);
-        applySourceOrLsfgFrameRateHint();
-    }
-
-    private void applySourceOrLsfgFrameRateHint() {
-        if (android.os.Build.VERSION.SDK_INT < 30 || scanoutGameSC == null) return;
-        float targetFps = lsfgPresentationFrameRateHint > 0
-            ? (float)lsfgPresentationFrameRateHint
-            : fpsLimit > 0
-                ? (float)fpsLimit
+        if (android.os.Build.VERSION.SDK_INT >= 30 && scanoutGameSC != null) {
+            float targetFps = this.fpsLimit > 0 ? (float)this.fpsLimit
                 : xServerView.getDisplay() != null
                     ? xServerView.getDisplay().getRefreshRate() : 60f;
-        new android.view.SurfaceControl.Transaction()
-            .setFrameRate(scanoutGameSC, targetFps,
-                android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
-            .apply();
+            new android.view.SurfaceControl.Transaction()
+                .setFrameRate(scanoutGameSC, targetFps,
+                    android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+                .apply();
+        }
     }
 
     public int getRefreshRateLimit() { return refreshRateLimit; }
@@ -1352,11 +1338,9 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     private void applyScanoutFrameRateHint() {
         if (android.os.Build.VERSION.SDK_INT < 30 || scanoutGameSC == null) return;
-        float targetFps = lsfgPresentationFrameRateHint > 0
-            ? (float)lsfgPresentationFrameRateHint
-            : refreshRateLimit > 0 ? (float)refreshRateLimit
-                : xServerView.getDisplay() != null
-                    ? xServerView.getDisplay().getRefreshRate() : 60f;
+        float targetFps = refreshRateLimit > 0 ? (float)refreshRateLimit
+            : xServerView.getDisplay() != null
+                ? xServerView.getDisplay().getRefreshRate() : 60f;
         new android.view.SurfaceControl.Transaction()
             .setFrameRate(scanoutGameSC, targetFps,
                 android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)

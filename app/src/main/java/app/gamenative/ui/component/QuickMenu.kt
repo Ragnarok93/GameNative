@@ -966,31 +966,6 @@ fun QuickMenu(
                                                             activeContainer,
                                                             mode,
                                                         )
-                                                        val view = app.gamenative.PluviaApp.xServerView
-                                                        val vulkanView =
-                                                            view as? com.winlator.widget.XServerView
-                                                        val displayMax = vulkanView?.display
-                                                            ?.supportedModes
-                                                            ?.maxOfOrNull { it.refreshRate }
-                                                            ?.roundToInt()
-                                                            ?.coerceAtLeast(1)
-                                                            ?: 60
-                                                        applyLsfgPresentationFrameRateHint(
-                                                            renderer = vulkanView?.renderer as? VulkanRenderer,
-                                                            sourceFpsCap = vulkanView?.frameRateLimit ?: 0,
-                                                            lsfgActive = lsfgMultiplier >= 2,
-                                                            strictFifo = mode == "fifo",
-                                                            adaptive =
-                                                                app.gamenative.utils.LsfgQuickMenuHelper
-                                                                    .generationMode(activeContainer) ==
-                                                                    app.gamenative.utils.LsfgQuickMenuHelper
-                                                                        .FrameGenerationMode.ADAPTIVE,
-                                                            adaptiveTargetFps =
-                                                                app.gamenative.utils.LsfgQuickMenuHelper
-                                                                    .adaptiveTargetFps(activeContainer),
-                                                            lsfgMultiplier = lsfgMultiplier.coerceIn(2, 4),
-                                                            maxRefreshRateHz = displayMax,
-                                                        )
                                                     }
                                                 },
                                                 scrollState = lsfgScrollState,
@@ -1836,28 +1811,6 @@ private fun LsfgQuickMenuTab(
     fun runtimeMultiplier(): Int =
         if (mode == app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE) 4 else fixedMultiplier
 
-    fun reapplyPresentationHint() {
-        val view = app.gamenative.PluviaApp.xServerView
-        val vulkanView = view as? com.winlator.widget.XServerView
-        val displayMax = vulkanView?.display
-            ?.supportedModes
-            ?.maxOfOrNull { it.refreshRate }
-            ?.roundToInt()
-            ?.coerceAtLeast(1)
-            ?: 60
-        applyLsfgPresentationFrameRateHint(
-            renderer = vulkanView?.renderer as? VulkanRenderer,
-            sourceFpsCap = vulkanView?.frameRateLimit ?: 0,
-            lsfgActive = frameGenerationEnabled,
-            strictFifo = presentMode == "fifo",
-            adaptive =
-                mode == app.gamenative.utils.LsfgQuickMenuHelper.FrameGenerationMode.ADAPTIVE,
-            adaptiveTargetFps = adaptiveTargetFps,
-            lsfgMultiplier = runtimeMultiplier(),
-            maxRefreshRateHz = displayMax,
-        )
-    }
-
     Column(
         modifier = modifier.verticalScroll(scrollState).focusGroup(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -1938,7 +1891,6 @@ private fun LsfgQuickMenuTab(
                     if (next != adaptiveTargetFps) {
                         adaptiveTargetFps = next
                         container?.let { app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveTargetFps(it, next) }
-                        reapplyPresentationHint()
                     }
                 },
                 onIncrease = {
@@ -1946,7 +1898,6 @@ private fun LsfgQuickMenuTab(
                     if (next != adaptiveTargetFps) {
                         adaptiveTargetFps = next
                         container?.let { app.gamenative.utils.LsfgQuickMenuHelper.setAdaptiveTargetFps(it, next) }
-                        reapplyPresentationHint()
                     }
                 },
                 accentColor = accentColor,

@@ -80,6 +80,7 @@ object LsfgVkManager {
     const val ADAPTIVE_FLOW_PRESET_QUALITY = "quality"
     const val ADAPTIVE_FLOW_PRESET_BALANCED = "balanced"
     const val ADAPTIVE_FLOW_PRESET_LOW = "low"
+    const val ADAPTIVE_FLOW_PRESET_AUTO = "auto"
     const val MIN_ADAPTIVE_TARGET_FPS = 30
     const val MAX_ADAPTIVE_TARGET_FPS = 120
     const val ADAPTIVE_TARGET_FPS_STEP = 5
@@ -229,6 +230,7 @@ object LsfgVkManager {
         when (preset.lowercase(Locale.US)) {
             ADAPTIVE_FLOW_PRESET_BALANCED -> ADAPTIVE_FLOW_PRESET_BALANCED
             ADAPTIVE_FLOW_PRESET_LOW -> ADAPTIVE_FLOW_PRESET_LOW
+            ADAPTIVE_FLOW_PRESET_AUTO -> ADAPTIVE_FLOW_PRESET_AUTO
             else -> ADAPTIVE_FLOW_PRESET_QUALITY
         }
 

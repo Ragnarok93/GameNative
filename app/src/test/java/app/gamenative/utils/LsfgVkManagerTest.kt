@@ -389,6 +389,22 @@ class LsfgVkManagerTest {
         assertTrue(text.contains("flow_scale = 0.65"))
         assertTrue(text.contains("adaptive_flow_scale = true"))
         assertTrue(text.contains("adaptive_flow_preset = \"balanced\""))
+
+        val autoText = method.invoke(
+            LsfgVkManager,
+            "/tmp/Lossless.dll",
+            "game.exe",
+            true,
+            3,
+            0.65f,
+            true,
+            "auto",
+            true,
+            false,
+            0,
+            "mailbox",
+        ) as String
+        assertTrue(autoText.contains("adaptive_flow_preset = \"auto\""))
     }
 
     @Test
@@ -400,6 +416,10 @@ class LsfgVkManagerTest {
         assertEquals(
             LsfgVkManager.ADAPTIVE_FLOW_PRESET_BALANCED,
             LsfgVkManager.sanitizeAdaptiveFlowPreset("BALANCED"),
+        )
+        assertEquals(
+            LsfgVkManager.ADAPTIVE_FLOW_PRESET_AUTO,
+            LsfgVkManager.sanitizeAdaptiveFlowPreset("AUTO"),
         )
     }
 

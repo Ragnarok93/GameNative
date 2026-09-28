@@ -14,6 +14,11 @@ import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class LsfgDiagnosticExporterTest {
+    private fun repoFile(path: String): File {
+        val candidates = listOf(File(path), File("../$path"), File("../../$path"))
+        return candidates.firstOrNull { it.isFile }
+            ?: error("Unable to locate $path from test working directory")
+    }
     private lateinit var imageRoot: File
     private lateinit var homeRoot: File
     private lateinit var metricsRoot: File
@@ -262,4 +267,16 @@ class LsfgDiagnosticExporterTest {
         assertTrue(command.contains("--uid=10774"))
         assertTrue(command.none { it.startsWith("--pid") })
     }
+    @Test
+    fun diagnosticExport_isNotBoundToSettingsCompositionLifetime() {
+        val source = repoFile(
+            "app/src/main/java/app/gamenative/ui/screen/settings/SettingsGroupDebug.kt",
+        ).readText()
+
+        assertTrue(source.contains("LsfgDiagnosticExporter.exportAsync"))
+        assertTrue(source.contains("context.applicationContext"))
+        assertTrue(!source.contains("diagnosticsScope.launch"))
+        assertTrue(!source.contains("rememberCoroutineScope"))
+    }
+
 }

@@ -213,6 +213,31 @@ class LsfgDiagnosticExporterTest {
     }
 
     @Test
+    fun nativeLogcatSelection_usesPidFallbackWhenUidHasNoNativeRecords() {
+        val selected = LsfgDiagnosticExporter.selectNativeLogcat(
+            uidLogcat = "09-28 I logcat: unrelated line",
+            appLogcat = "09-28 I System.out: lsfg-vk: LSFG_OUTCOME runtime_session_id=1",
+        )
+
+        assertEquals("pid_logcat_fallback", selected.source)
+        assertTrue(selected.text.contains("LSFG_OUTCOME"))
+    }
+
+    @Test
+    fun nativeLogcatSelection_mergesUidAndPidRecordsWithoutDuplicates() {
+        val shared = "09-28 I System.out: LSFG_WSI runtime_session_id=1"
+        val selected = LsfgDiagnosticExporter.selectNativeLogcat(
+            uidLogcat = "$shared\n09-28 I System.out: LSFG_OUTCOME runtime_session_id=1",
+            appLogcat = "$shared\n09-28 I System.out: lsfg-vk: delivery-metrics",
+        )
+
+        assertEquals("uid+pid_logcat", selected.source)
+        assertEquals(1, selected.text.lineSequence().count { it == shared })
+        assertTrue(selected.text.contains("LSFG_OUTCOME"))
+        assertTrue(selected.text.contains("delivery-metrics"))
+    }
+
+    @Test
     fun uidLogcatCommand_supportsFullTwentyThousandLineDiagnosticTail() {
         val command = LsfgDiagnosticExporter.uidLogcatCommand(
             lineCount = 20_000,

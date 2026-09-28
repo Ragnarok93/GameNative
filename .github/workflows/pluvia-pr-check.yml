@@ -2,7 +2,7 @@ name: Pull Request build check
 
 on:
   push:
-    branches: [ "feature/adaptive-unified-integration-20260920", "feature/apex-frame-generation", "fix/**" ]
+    branches: [ "feature/adaptive-unified-integration-20260920", "fix/**" ]
   pull_request:
     branches: [ "master" ]
     paths-ignore:
@@ -41,12 +41,6 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
 
-      - name: Prepare GameNative Apex native runtime
-        uses: ./.github/actions/prepare-apex-native
-
-      - name: Prepare GameNative Vulkan renderer
-        uses: ./.github/actions/prepare-vulkan-renderer
-
       - name: Inject credentials
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -70,20 +64,9 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Run frame-generation and FrameRating Legacy tests
+      - name: Run LSFG and FrameRating Legacy tests
         run: >-
           ./gradlew :app:testLegacyDebugUnitTest --no-daemon
-          --tests app.gamenative.framegen.FrameGenerationBackendTest
-          --tests app.gamenative.framegen.ApexVulkanTargetContractTest
-          --tests app.gamenative.framegen.ApexVulkanPresenterContractTest
-          --tests app.gamenative.framegen.ApexPresentationHandoffContractTest
-          --tests app.gamenative.framegen.ApexHudTelemetryContractTest
-          --tests app.gamenative.framegen.ApexPresentationTelemetryTest
-          --tests app.gamenative.framegen.ApexCadenceSchedulerTest
-          --tests app.gamenative.framegen.ApexPowerMetricsContractTest
-          --tests app.gamenative.framegen.ApexXclipseCompatibilityContractTest
-          --tests app.gamenative.framegen.ApexContainerSettingsContractTest
-          --tests app.gamenative.framegen.ApexQuickMenuContractTest
           --tests app.gamenative.diagnostics.LsfgDiagnosticExporterTest
           --tests app.gamenative.utils.LsfgVkManagerTest
           --tests app.gamenative.utils.LsfgQuickMenuHelperModeTest
@@ -111,11 +94,6 @@ jobs:
           expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
           unzip -p "$apk" 'lib/arm64-v8a/liblsfg-vk-layer.so' \
             | grep -aFq "$expected_native_commit"
-          unzip -p "$apk" 'lib/arm64-v8a/libgamenative_apex.so' \
-            | grep -aFq 'd3339806904fc5da0d8db64f4c8e5d77648975d9'
-          renderer=/tmp/gamenative-vulkan-renderer-from-apk.so
-          unzip -p "$apk" 'lib/arm64-v8a/libvulkan_renderer.so' > "$renderer"
-          strings "$renderer" | grep -Fq 'gamenative-apex-vulkan-target-v1'
           sha256sum "$apk" | tee /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256
           test -s "$apk"
           test -s /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256

@@ -3,7 +3,6 @@ package app.gamenative.powercontrol.metrics
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.view.Display
-import app.gamenative.framegen.ApexPresentationTelemetry
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
 import app.gamenative.utils.LsfgVkManager
@@ -182,31 +181,14 @@ object PerformanceMetricsCollector {
         val cpu = cpuSampler.sample()
         val gpu = gpuSampler.sample()
 
-        // FrameTimeRing is fed by X11/render hooks and can greatly overcount
-        // compositor callbacks while Apex owns presentation. During an active
-        // Apex session, power/governor telemetry must use the same admitted,
-        // de-duplicated guest-source clock as Apex itself.
-        val apexPresentation = ApexPresentationTelemetry.snapshot(now)
-        val apexFrameStats = if (apexPresentation.active) {
-            ApexPresentationTelemetry.sourceFrameStats(
-                nowNanos = now,
-                windowNanos = FRAME_WINDOW_MS * 1_000_000L,
-                slowThresholdNanos = slowFrameThresholdNs(),
-            )
-        } else {
-            null
-        }
-        val useApexSource =
-            apexPresentation.active && apexFrameStats != null && apexFrameStats.totalFrameCount >= 2
-
         val snapshot = MetricsSnapshot(
             timestampMs = System.currentTimeMillis(),
-            fps = if (useApexSource) apexFrameStats!!.fps else frameStats.fps,
-            frameTimeP50Ms = if (useApexSource) apexFrameStats!!.p50Ms else frameStats.p50Ms,
-            frameTimeP95Ms = if (useApexSource) apexFrameStats!!.p95Ms else frameStats.p95Ms,
-            frameTimeMaxMs = if (useApexSource) apexFrameStats!!.maxMs else frameStats.maxMs,
-            slowFrameCount = if (useApexSource) apexFrameStats!!.slowFrameCount else frameStats.slowFrameCount,
-            totalFrameCount = if (useApexSource) apexFrameStats!!.totalFrameCount else frameStats.totalFrameCount,
+            fps = frameStats.fps,
+            frameTimeP50Ms = frameStats.p50Ms,
+            frameTimeP95Ms = frameStats.p95Ms,
+            frameTimeMaxMs = frameStats.maxMs,
+            slowFrameCount = frameStats.slowFrameCount,
+            totalFrameCount = frameStats.totalFrameCount,
             cpuUsagePercent = cpu?.percent?.toFloat(),
             cpuUsageSource = cpu?.source ?: CpuUsageSource.UNAVAILABLE,
             gpuUsagePercent = gpu?.percent?.toFloat(),
@@ -217,23 +199,20 @@ object PerformanceMetricsCollector {
         if (!publish(snapshot, generation, frameGeneration)) return
         synchronized(lifecycleLock) {
             if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation()) return
-            if (!apexPresentation.active) {
-                LsfgVkManager.publishRuntimePressure(
-                    PowerManager.activeContainerRootDir(),
-                    snapshot,
-                )
-            }
+            LsfgVkManager.publishRuntimePressure(
+                PowerManager.activeContainerRootDir(),
+                snapshot,
+            )
             appendLog(snapshot)
 
             sampleCount++
             if (sampleCount % LOG_EVERY_N_SAMPLES == 0L) {
             Timber.tag(TAG).i(
-                "fps=%.1f p95=%.1fms slow=%d/%d source=%s cpu=%s%%(%s) gpu=%s%% cpuTemp=%s gpuTemp=%s",
+                "fps=%.1f p95=%.1fms slow=%d/%d cpu=%s%%(%s) gpu=%s%% cpuTemp=%s gpuTemp=%s",
                 snapshot.fps,
                 snapshot.frameTimeP95Ms,
                 snapshot.slowFrameCount,
                 snapshot.totalFrameCount,
-                if (useApexSource) "apex-source" else "frame-hook",
                 snapshot.cpuUsagePercent?.toInt()?.toString() ?: "-",
                 snapshot.cpuUsageSource.name,
                 snapshot.gpuUsagePercent?.toInt()?.toString() ?: "-",

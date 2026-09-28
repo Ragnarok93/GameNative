@@ -2,7 +2,6 @@
 #include <vulkan/vulkan.h>
 #include <list>
 #include <vulkan/vulkan_android.h>
-#include "../apex/apex_frame_target_ring.h"
 struct VkTable {
 
     PFN_vkCreateInstance CreateInstance;
@@ -88,8 +87,6 @@ struct VkTable {
     PFN_vkWaitForFences WaitForFences;
     PFN_vkResetFences ResetFences;
     PFN_vkGetFenceStatus GetFenceStatus;
-    PFN_vkGetSemaphoreFdKHR GetSemaphoreFdKHR;
-    PFN_vkImportSemaphoreFdKHR ImportSemaphoreFdKHR;
 
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID GetAndroidHardwareBufferPropertiesANDROID;
 };
@@ -134,25 +131,14 @@ public:
     int64_t enableXrTarget();
     void disableXrTarget();
     int64_t xrTargetExtentPacked();
-
-    bool enableApexTarget();
-    bool disableApexTarget();
-    int64_t dequeueApexFrame();
-    int64_t apexFrameBufferPtr(int64_t token);
-    int64_t apexFrameSourceTimestampNanos(int64_t token);
-    int takeApexFrameFenceFd(int64_t token);
-    bool releaseApexFrame(int64_t token, int consumerReleaseFenceFd);
-    int64_t apexTargetExtentPacked();
     VulkanRendererContext(ANativeWindow* window, int cWidth, int cHeight, void* adrenotoolsHandle = nullptr);
     ~VulkanRendererContext();
 
     void onSurfaceResized(int width, int height);
     void setTransform(float ox, float oy, float sx, float sy);
     void updatePointerPosition(short x, short y);
-    void updateWindowContent(int64_t id, void* pixels, short w, short h, short stride, int x, int y,
-                             uint64_t apexSourceTimestampNanos = 0);
-    void updateWindowContentAHB(int64_t id, AHardwareBuffer* ahb, short w, short h, int x, int y,
-                                uint64_t apexSourceTimestampNanos = 0);
+    void updateWindowContent(int64_t id, void* pixels, short w, short h, short stride, int x, int y);
+    void updateWindowContentAHB(int64_t id, AHardwareBuffer* ahb, short w, short h, int x, int y);
     void updateCursorImage(void* pixels, short w, short h, short hotX, short hotY);
     void setCursorVisible(bool visible);
     void setRenderList(const int64_t* ids, const int* xs, const int* ys, int count);
@@ -170,10 +156,6 @@ public:
     void scanoutSetCursorPos(short x, short y, short hotX, short hotY);
     std::atomic<bool> scanoutActive{false};
     std::atomic<bool> gameFrameDelivered{false};
-    // Monotonic acknowledgement used only for Apex -> normal-path ownership
-    // transitions. It advances after a successful normal swapchain present or
-    // game-buffer SurfaceControl apply; it never gates normal frame delivery.
-    std::atomic<uint64_t> normalPresentSerial{0};
     std::atomic<bool> surfaceDetached{false};
 
     void detachSurface();
@@ -344,43 +326,6 @@ private:
     bool createXrTargetResources(uint32_t w, uint32_t h);
     void destroyXrTargetResources();
 
-    static constexpr int APEX_TARGET_COUNT = 3;
-    struct ApexTargetSlot {
-        AHardwareBuffer* ahb = nullptr;
-        VkImage image = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-        VkImageView view = VK_NULL_HANDLE;
-        VkFramebuffer framebuffer = VK_NULL_HANDLE;
-        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-        VkFence producerFence = VK_NULL_HANDLE;
-        VkSemaphore producerReadySemaphore = VK_NULL_HANDLE;
-        VkSemaphore consumerDoneSemaphore = VK_NULL_HANDLE;
-        int producerFenceFd = -1;
-        int consumerReleaseFenceFd = -1;
-        uint64_t consumerSequence = 0;
-        uint64_t sourceTimestampNanos = 0;
-        bool producerPending = false;
-        bool producerSemaphoreUsable = true;
-    };
-    ApexTargetSlot apexTargets[APEX_TARGET_COUNT]{};
-    gamenative::apex::FrameTargetRing apexTargetRing{APEX_TARGET_COUNT};
-    VkRenderPass apexRp = VK_NULL_HANDLE;
-    VkExtent2D apexExt{0,0};
-    std::atomic<bool> apexTargetActive{false};
-    // A consumer release only schedules another capture when a real renderer
-    // update previously lost the race for a free Apex target slot. Without
-    // this distinction every release feeds back into another identical source
-    // capture and turns the ring into a self-running 120 Hz loop.
-    std::atomic<bool> apexProducerBacklogged{false};
-    std::atomic<uint64_t> apexSourceTimestampNanos{0};
-    uint64_t apexLastDequeuedSourceTimestampNanos = 0;
-    bool externalSemaphoreFdSupported = false;
-    std::mutex apexTargetMutex;
-    bool createApexTargetResources(uint32_t w, uint32_t h);
-    void destroyApexTargetResources();
-    bool recreateApexProducerSemaphore(ApexTargetSlot& slot);
-    void renderApexFrame();
-
     VkRenderPass          renderPass  = VK_NULL_HANDLE;
     VkDescriptorSetLayout dsLayout    = VK_NULL_HANDLE;
     VkPipelineLayout      pipeLayout  = VK_NULL_HANDLE;
@@ -443,7 +388,7 @@ private:
         VkBuffer cursorUpload, bool hasCursorUpload,
         float ox, float oy, float sx, float sy, float cw, float ch,
         short ptrX, short ptrY, short curHotX, short curHotY,
-        short curW, short curH, bool curVis, int apexSlot = -1);
+        short curW, short curH, bool curVis);
     void renderLoop();
     void renderFrame();
 

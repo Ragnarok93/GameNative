@@ -3,7 +3,6 @@ package com.winlator.renderer;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.os.Build;
 import android.view.Surface;
 import android.widget.Toast;
 
@@ -69,23 +68,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private boolean xRenderingPausedForScanout = false;
     private volatile VulkanXrFrameBridge xrFrameBridge = null;
     private volatile long xrTargetAhbPtr = 0;
-    private volatile boolean apexFrameTargetActive = false;
-    private volatile app.gamenative.framegen.ApexVulkanPresenter apexPresenter = null;
-    // Apex must distinguish guest/source presents from compositor redraws (cursor,
-    // transforms, SurfaceControl churn). Direct PresentExtension updates are the
-    // authoritative source clock; generic updates are only a fallback when no
-    // direct present has been observed recently.
-    private final java.util.concurrent.atomic.AtomicLong apexSourceTimestampNanos =
-        new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicLong apexPresentationTransition =
-        new java.util.concurrent.atomic.AtomicLong(0);
-    private static final long APEX_HANDOFF_POLL_MS = 8L;
-    private static final long APEX_HANDOFF_WARN_MS = 2000L;
-    private volatile long lastApexDirectPresentNanos = 0L;
-    private static final long APEX_DIRECT_SOURCE_GRACE_NS = 250_000_000L;
-    private android.view.SurfaceControl apexGameSurfaceControl = null;
-    private android.view.Surface apexGameSurface = null;
-    private volatile float apexPresentationRefreshRate = 0.0f;
 
     /** See VulkanXrFrameBridge's kdoc — null except for the Meta Quest immersive path. */
     public void setVulkanXrFrameBridge(VulkanXrFrameBridge xrFrameBridge) {
@@ -152,9 +134,9 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeResize(long handle, int width, int height);
     private native void nativeDestroy(long handle);
     private native void nativeUpdateWindowContent(long handle, long id, java.nio.ByteBuffer pixels,
-        short width, short height, short stride, int x, int y, long apexSourceTimestampNanos);
+        short width, short height, short stride, int x, int y);
     private native void nativeUpdateWindowContentAHB(long handle, long id, long ahbPtr,
-        short width, short height, int x, int y, long apexSourceTimestampNanos);
+        short width, short height, int x, int y);
     private native void nativeSetTransform(long handle, float ox, float oy, float sx, float sy);
     private native void nativeSetPointerPos(long handle, short x, short y);
     private native void nativeSetCursorVisible(long handle, boolean visible);
@@ -172,7 +154,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeScanoutSetCursorPos(long handle, short x, short y, short hotX, short hotY);
     private native boolean nativeIsScanoutActive(long handle);
     private native boolean nativeIsGameFrameDelivered(long handle);
-    private native long nativeGetNormalPresentSerial(long handle);
     private native void nativeSetScanoutWindow(long handle, android.view.Surface game, android.view.Surface cursor);
     private native void nativeScanoutSetDst(long handle, int x, int y, int w, int h);
     private native void nativeSetVerboseLog(long handle, boolean v);
@@ -185,419 +166,11 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native long nativeEnableXrTarget(long handle);
     private native void nativeDisableXrTarget(long handle);
     private native long nativeGetXrTargetExtent(long handle);
-    private native boolean nativeEnableApexTarget(long handle);
-    private native boolean nativeDisableApexTarget(long handle);
-    private native long nativeDequeueApexFrame(long handle);
-    private native long nativeGetApexFrameBuffer(long handle, long token);
-    private native long nativeGetApexFrameSourceTimestampNanos(long handle, long token);
-    private native int nativeTakeApexFrameFenceFd(long handle, long token);
-    private native boolean nativeReleaseApexFrame(long handle, long token, int consumerReleaseFenceFd);
-    private native long nativeGetApexTargetExtent(long handle);
 
     private static volatile boolean gpuImageChecked = false;
 
     private long did(Drawable d) {
         return drawableIds.computeIfAbsent(d, k -> ID_GEN.getAndIncrement());
-    }
-
-    private long markApexSourceFrame(boolean directPresent) {
-        if (!apexFrameTargetActive) return 0L;
-        final long now = System.nanoTime();
-        if (directPresent) {
-            lastApexDirectPresentNanos = now;
-        } else if (lastApexDirectPresentNanos != 0L &&
-            now - lastApexDirectPresentNanos < APEX_DIRECT_SOURCE_GRACE_NS) {
-            // Auxiliary redraws retain the authoritative producer timestamp.
-            return apexSourceTimestampNanos.get();
-        }
-
-        // One monotonic value is both source identity and source cadence.
-        return apexSourceTimestampNanos.updateAndGet(
-            previous -> Math.max(now, previous + 1L)
-        );
-    }
-
-    public static final class ApexFrame {
-        public final long token;
-        public final long hardwareBufferPtr;
-        public final int acquireFenceFd;
-        public final int width;
-        public final int height;
-        public final long sourceTimestampNanos;
-
-        private ApexFrame(
-            long token,
-            long hardwareBufferPtr,
-            int acquireFenceFd,
-            int width,
-            int height,
-            long sourceTimestampNanos
-        ) {
-            this.token = token;
-            this.hardwareBufferPtr = hardwareBufferPtr;
-            this.acquireFenceFd = acquireFenceFd;
-            this.width = width;
-            this.height = height;
-            this.sourceTimestampNanos = sourceTimestampNanos;
-        }
-    }
-
-    /**
-     * Dormant bridge used by the upcoming Apex GLES presenter. Enabling it forces
-     * Vulkan composition and disables direct SurfaceControl scanout while active.
-     */
-    public boolean setApexFrameTargetEnabled(boolean enabled) {
-        if (enabled == apexFrameTargetActive) return true;
-        if (enabled && xrFrameBridge != null) return false;
-
-        final long transition = apexPresentationTransition.incrementAndGet();
-        boolean previousRequirement = effectsRequireCompositor;
-        if (enabled) {
-            apexSourceTimestampNanos.set(0L);
-            lastApexDirectPresentNanos = 0L;
-            apexFrameTargetActive = true;
-            effectsRequireCompositor = computeEffectsRequireCompositor();
-            if (nativeMode && !previousRequirement && effectsRequireCompositor) tearDownScanout();
-
-            synchronized (lock) {
-                if (nativeHandle != 0 && !nativeEnableApexTarget(nativeHandle)) {
-                    apexFrameTargetActive = false;
-                    effectsRequireCompositor = computeEffectsRequireCompositor();
-                    if (nativeMode && !effectsRequireCompositor) establishScanout();
-                    return false;
-                }
-            }
-            xServerView.post(this::establishApexPresenterSurface);
-            xServerView.queueEvent(this::updateScene);
-            return true;
-        }
-
-        // Transactional disable:
-        // 1) stop Apex consumption/generation but leave the last child buffer
-        //    visibly latched;
-        // 2) retire the native offscreen target;
-        // 3) re-arm and force the ordinary presentation path;
-        // 4) release the Apex child layer only after a normal present is observed.
-        retireApexPresenter();
-        final long baselineNormalPresent;
-        synchronized (lock) {
-            baselineNormalPresent = nativeHandle != 0
-                ? nativeGetNormalPresentSerial(nativeHandle)
-                : 0L;
-            if (nativeHandle != 0 && !nativeDisableApexTarget(nativeHandle)) {
-                // Native target is still active. Restart the presenter on the
-                // retained SurfaceControl so the failed transition is reversible.
-                xServerView.post(this::establishApexPresenterSurface);
-                return false;
-            }
-        }
-
-        apexFrameTargetActive = false;
-        apexSourceTimestampNanos.set(0L);
-        lastApexDirectPresentNanos = 0L;
-        effectsRequireCompositor = computeEffectsRequireCompositor();
-        if (nativeMode && previousRequirement && !effectsRequireCompositor) {
-            establishScanout();
-        }
-
-        xServerView.queueEvent(this::updateScene);
-        awaitNormalPresentationBeforeApexRelease(
-            transition,
-            baselineNormalPresent,
-            android.os.SystemClock.uptimeMillis()
-        );
-        return true;
-    }
-
-    private void establishApexPresenterSurface() {
-        if (!apexFrameTargetActive || apexPresenter != null || nativeHandle == 0) return;
-        try {
-            if (apexGameSurfaceControl == null || apexGameSurface == null) {
-                android.view.SurfaceControl parent = xServerView.getSurfaceControl();
-                apexGameSurfaceControl = new android.view.SurfaceControl.Builder()
-                    .setParent(parent)
-                    .setName("gamenative_apex_presenter")
-                    .setOpaque(true)
-                    .build();
-                apexGameSurface = new android.view.Surface(apexGameSurfaceControl);
-            }
-            final int apexTargetWidth = getApexTargetWidth();
-            final int apexTargetHeight = getApexTargetHeight();
-            android.view.SurfaceControl.Transaction apexTransaction =
-                new android.view.SurfaceControl.Transaction()
-                    .setLayer(apexGameSurfaceControl, 3)
-                    .setVisibility(apexGameSurfaceControl, true);
-            if (apexTargetWidth > 0 && apexTargetHeight > 0 &&
-                surfaceWidth > 0 && surfaceHeight > 0) {
-                apexTransaction.setScale(
-                    apexGameSurfaceControl,
-                    (float) surfaceWidth / (float) apexTargetWidth,
-                    (float) surfaceHeight / (float) apexTargetHeight
-                );
-                android.util.Log.i(
-                    "VulkanRenderer",
-                    "Apex presenter layer: buffer=" + apexTargetWidth + "x" +
-                        apexTargetHeight + " display=" + surfaceWidth + "x" +
-                        surfaceHeight
-                );
-            }
-            float apexActiveRefreshRate = 0.0f;
-            float apexMaxRefreshRate = 0.0f;
-            float apexRequestedRefreshRate = 0.0f;
-            boolean apexFrameRateApplied = false;
-            try {
-                android.view.Display apexDisplay = xServerView.getDisplay();
-                if (apexDisplay != null) {
-                    apexActiveRefreshRate = apexDisplay.getRefreshRate();
-                    apexMaxRefreshRate = apexActiveRefreshRate;
-                    android.view.Display.Mode activeMode = apexDisplay.getMode();
-                    if (activeMode != null) {
-                        for (android.view.Display.Mode mode : apexDisplay.getSupportedModes()) {
-                            if (mode.getPhysicalWidth() == activeMode.getPhysicalWidth() &&
-                                mode.getPhysicalHeight() == activeMode.getPhysicalHeight()) {
-                                apexMaxRefreshRate = Math.max(
-                                    apexMaxRefreshRate,
-                                    mode.getRefreshRate()
-                                );
-                            }
-                        }
-                    }
-                    apexRequestedRefreshRate = apexMaxRefreshRate;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                        apexRequestedRefreshRate > 0.0f) {
-                        apexTransaction.setFrameRate(
-                            apexGameSurfaceControl,
-                            apexRequestedRefreshRate,
-                            Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
-                        );
-                        apexFrameRateApplied = true;
-                    }
-                }
-            } catch (Throwable frameRateError) {
-                android.util.Log.w(
-                    "VulkanRenderer",
-                    "Apex presenter frame-rate request failed; continuing without a layer vote",
-                    frameRateError
-                );
-            }
-            apexPresentationRefreshRate =
-                apexRequestedRefreshRate > 1.0f
-                    ? apexRequestedRefreshRate
-                    : apexActiveRefreshRate;
-            android.util.Log.i(
-                "VulkanRenderer",
-                "Apex presenter frame-rate request: active=" + apexActiveRefreshRate +
-                    " max=" + apexMaxRefreshRate +
-                    " requested=" + apexRequestedRefreshRate +
-                    " applied=" + apexFrameRateApplied +
-                    " sdk=" + Build.VERSION.SDK_INT
-            );
-            apexTransaction.apply();
-            app.gamenative.framegen.ApexVulkanPresenter presenter =
-                new app.gamenative.framegen.ApexVulkanPresenter(this, apexGameSurface);
-            apexPresenter = presenter;
-            presenter.start();
-        } catch (Throwable t) {
-            android.util.Log.e("VulkanRenderer", "Failed to establish Apex presenter surface", t);
-            releaseApexPresenterSurface();
-            onApexPresenterFailure();
-        }
-    }
-
-    public float getApexPresentationRefreshRate() {
-        return apexPresentationRefreshRate;
-    }
-
-    /** Stops the Apex consumer but intentionally keeps its last child layer latched. */
-    private void retireApexPresenter() {
-        app.gamenative.framegen.ApexVulkanPresenter presenter = apexPresenter;
-        apexPresenter = null;
-        if (presenter != null) presenter.stop();
-    }
-
-    /** Releases only the retained Apex child layer after the normal path is visible. */
-    private void releaseApexPresenterLayer() {
-        apexPresentationRefreshRate = 0.0f;
-        if (apexGameSurface != null) {
-            apexGameSurface.release();
-            apexGameSurface = null;
-        }
-        if (apexGameSurfaceControl != null) {
-            apexGameSurfaceControl.release();
-            apexGameSurfaceControl = null;
-        }
-    }
-
-    private void releaseApexPresenterSurface() {
-        apexPresentationTransition.incrementAndGet();
-        retireApexPresenter();
-        releaseApexPresenterLayer();
-    }
-
-    private void awaitNormalPresentationBeforeApexRelease(
-        long transition,
-        long baselineNormalPresent,
-        long startedAtMs
-    ) {
-        xServerView.postDelayed(new Runnable() {
-            private boolean warned = false;
-
-            @Override
-            public void run() {
-                if (transition != apexPresentationTransition.get() || apexFrameTargetActive) {
-                    return;
-                }
-
-                final long serial;
-                synchronized (lock) {
-                    serial = nativeHandle != 0
-                        ? nativeGetNormalPresentSerial(nativeHandle)
-                        : baselineNormalPresent + 1L;
-                }
-
-                if (serial > baselineNormalPresent) {
-                    hideApexPresenterLayerAfterNormalPresentation(
-                        transition,
-                        baselineNormalPresent,
-                        serial
-                    );
-                    return;
-                }
-
-                long elapsed = android.os.SystemClock.uptimeMillis() - startedAtMs;
-                if (!warned && elapsed >= APEX_HANDOFF_WARN_MS) {
-                    warned = true;
-                    android.util.Log.w(
-                        "VulkanRenderer",
-                        "Apex disable waiting for first normal presentation; retaining last Apex layer"
-                    );
-                }
-                xServerView.postDelayed(this, APEX_HANDOFF_POLL_MS);
-            }
-        }, 0L);
-    }
-
-    private void hideApexPresenterLayerAfterNormalPresentation(
-        long transition,
-        long baselineNormalPresent,
-        long confirmedNormalPresent
-    ) {
-        final android.view.SurfaceControl layer = apexGameSurfaceControl;
-        if (layer == null) {
-            android.util.Log.i(
-                "VulkanRenderer",
-                "Apex disable handoff complete: normal presentation serial " +
-                    baselineNormalPresent + " -> " + confirmedNormalPresent +
-                    "; presenter layer already absent"
-            );
-            releaseApexPresenterLayer();
-            return;
-        }
-
-        try {
-            // normalPresentSerial only proves the normal producer submitted work.
-            // The Apex child is opaque and sits above that producer, so explicitly
-            // hide it before releasing our local SurfaceControl references.
-            new android.view.SurfaceControl.Transaction()
-                .setVisibility(layer, false)
-                .apply();
-        } catch (Throwable t) {
-            android.util.Log.e(
-                "VulkanRenderer",
-                "Failed to hide Apex presenter layer during disable handoff",
-                t
-            );
-            releaseApexPresenterLayer();
-            return;
-        }
-
-        final Runnable releaseAfterHide = () -> {
-            if (transition != apexPresentationTransition.get() || apexFrameTargetActive) {
-                return;
-            }
-            if (apexGameSurfaceControl != layer) {
-                return;
-            }
-
-            android.util.Log.i(
-                "VulkanRenderer",
-                "Apex disable handoff complete: normal presentation serial " +
-                    baselineNormalPresent + " -> " + confirmedNormalPresent +
-                    "; Apex presenter layer hidden"
-            );
-            releaseApexPresenterLayer();
-        };
-
-        // Let SurfaceFlinger consume the hide transaction before dropping the
-        // final Java handles. The delayed callback is only a fallback for cases
-        // where the view is temporarily not producing animation callbacks.
-        xServerView.postOnAnimation(releaseAfterHide);
-        xServerView.postDelayed(releaseAfterHide, 100L);
-    }
-
-    public void onApexPresenterFailure() {
-        xServerView.post(() -> {
-            if (!apexFrameTargetActive) return;
-            android.util.Log.w("VulkanRenderer", "Apex presenter rejected runtime; restoring source presentation");
-            setApexFrameTargetEnabled(false);
-        });
-    }
-
-    public int getApexTargetWidth() {
-        synchronized (lock) {
-            if (nativeHandle == 0) return 0;
-            long extent = nativeGetApexTargetExtent(nativeHandle);
-            return (int) (extent >>> 32);
-        }
-    }
-
-    public int getApexTargetHeight() {
-        synchronized (lock) {
-            if (nativeHandle == 0) return 0;
-            long extent = nativeGetApexTargetExtent(nativeHandle);
-            return (int) (extent & 0xFFFFFFFFL);
-        }
-    }
-
-    public ApexFrame pollApexFrame() {
-        synchronized (lock) {
-            if (!apexFrameTargetActive || nativeHandle == 0) return null;
-            long token = nativeDequeueApexFrame(nativeHandle);
-            if (token == 0) return null;
-            long buffer = nativeGetApexFrameBuffer(nativeHandle, token);
-            if (buffer == 0) {
-                nativeReleaseApexFrame(nativeHandle, token, -1);
-                return null;
-            }
-            long sourceTimestampNanos =
-                nativeGetApexFrameSourceTimestampNanos(nativeHandle, token);
-            if (sourceTimestampNanos <= 0L) {
-                nativeReleaseApexFrame(nativeHandle, token, -1);
-                return null;
-            }
-            int acquireFenceFd = nativeTakeApexFrameFenceFd(nativeHandle, token);
-            long extent = nativeGetApexTargetExtent(nativeHandle);
-            return new ApexFrame(
-                token,
-                buffer,
-                acquireFenceFd,
-                (int)(extent >>> 32),
-                (int)(extent & 0xFFFFFFFFL),
-                sourceTimestampNanos
-            );
-        }
-    }
-
-    public boolean releaseApexFrame(ApexFrame frame, int consumerReleaseFenceFd) {
-        if (frame == null) return false;
-        synchronized (lock) {
-            if (nativeHandle == 0) return false;
-            return nativeReleaseApexFrame(
-                nativeHandle,
-                frame.token,
-                consumerReleaseFenceFd
-            );
-        }
     }
 
     public void queueSceneUpdate() {
@@ -641,12 +214,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         pendingEffectMask, pendingBrightness, pendingContrast, pendingGamma);
                     updateTransform();
                     nativeSetCursorVisible(nativeHandle, cursorVisible);
-                    if (apexFrameTargetActive && !nativeEnableApexTarget(nativeHandle)) {
-                        apexFrameTargetActive = false;
-                        effectsRequireCompositor = computeEffectsRequireCompositor();
-                    } else if (apexFrameTargetActive) {
-                        xServerView.post(this::establishApexPresenterSurface);
-                    }
                     if (nativeMode && !effectsRequireCompositor) {
                         xServerView.post(() -> {
                             releaseScanoutSurfaces();
@@ -708,23 +275,12 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 // Recreate the XR scene target at the new extent and republish the
                 // replacement buffer; a no-op (same pointer back) when the size is unchanged.
                 if (xrFrameBridge != null) enableXrTargetLocked();
-                if (apexFrameTargetActive) {
-                    releaseApexPresenterSurface();
-                    if (!nativeEnableApexTarget(nativeHandle)) {
-                        apexFrameTargetActive = false;
-                        effectsRequireCompositor = computeEffectsRequireCompositor();
-                    } else {
-                        xServerView.post(this::establishApexPresenterSurface);
-                    }
-                }
             }
         }
     }
 
     public void onSurfaceDestroyed() {
         initComplete = false;
-        apexPresentationTransition.incrementAndGet();
-        releaseApexPresenterSurface();
         if (initExecutor != null) {
             initExecutor.shutdownNow();
             try { initExecutor.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS); }
@@ -926,7 +482,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         if (nativeHandle == 0 || pixmap == null) return;
         Drawable targetDrawable = window.getContent();
         long targetId = did(targetDrawable);
-        final long sourceTimestampNanos = markApexSourceFrame(true);
         int rx = window.getRootX() + xOff;
         int ry = window.getRootY() + yOff;
         synchronized (pixmap.renderLock) {
@@ -950,7 +505,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                             return;
                         }
                         nativeUpdateWindowContentAHB(nativeHandle, targetId, ahbPtr,
-                            pixmap.width, pixmap.height, rx, ry, sourceTimestampNanos);
+                            pixmap.width, pixmap.height, rx, ry);
                     }
                     return;
                 }
@@ -958,7 +513,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 if (vd != null) {
                     short s = g.getStride() > 0 ? g.getStride() : pixmap.width;
                     nativeUpdateWindowContent(nativeHandle, targetId, vd,
-                        pixmap.width, pixmap.height, s, rx, ry, sourceTimestampNanos);
+                        pixmap.width, pixmap.height, s, rx, ry);
                     return;
                 }
             }
@@ -966,7 +521,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             if (buf == null) return;
             short stride = (short)(buf.capacity() / (pixmap.height * 4));
             nativeUpdateWindowContent(nativeHandle, targetId, buf,
-                pixmap.width, pixmap.height, stride, rx, ry, sourceTimestampNanos);
+                pixmap.width, pixmap.height, stride, rx, ry);
         }
     }
 
@@ -986,7 +541,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         int rx = window.getRootX();
         int ry = window.getRootY();
         long drawableId = did(drawable);
-        final long sourceTimestampNanos = markApexSourceFrame(false);
 
         synchronized (drawable.renderLock) {
             if (drawable.getTexture() instanceof GPUImage) {
@@ -1007,7 +561,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         }
                     } else if (!scanoutNow) {
                         nativeUpdateWindowContentAHB(handle, drawableId, ahbPtr,
-                            drawable.width, drawable.height, rx, ry, sourceTimestampNanos);
+                            drawable.width, drawable.height, rx, ry);
                     }
                     return;
                 }
@@ -1015,7 +569,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 if (vd != null) {
                     short s = g.getStride() > 0 ? g.getStride() : drawable.width;
                     nativeUpdateWindowContent(handle, drawableId, vd,
-                        drawable.width, drawable.height, s, rx, ry, sourceTimestampNanos);
+                        drawable.width, drawable.height, s, rx, ry);
                     return;
                 }
             }
@@ -1023,7 +577,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             if (buf == null) return;
             short stride = (short)(buf.capacity() / (drawable.height * 4));
             nativeUpdateWindowContent(handle, drawableId, buf,
-                drawable.width, drawable.height, stride, rx, ry, sourceTimestampNanos);
+                drawable.width, drawable.height, stride, rx, ry);
         }
     }
 
@@ -1246,7 +800,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     // take visible effect when content is routed through the textured-quad path.
     private boolean computeEffectsRequireCompositor() {
         return pendingEffectId != EFFECT_NONE
-            || apexFrameTargetActive
             || pendingEffectMask != 0
             || pendingBrightness != 0.0f
             || pendingContrast != 0.0f

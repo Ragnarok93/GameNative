@@ -6,7 +6,6 @@ import app.gamenative.BuildConfig
 import app.gamenative.PrefManager
 import app.gamenative.data.GameSource
 import app.gamenative.enums.Marker
-import app.gamenative.framegen.ApexFrameGenerationManager
 import app.gamenative.service.SteamService
 import app.gamenative.service.amazon.AmazonService
 import app.gamenative.service.epic.EpicService
@@ -365,11 +364,7 @@ object ContainerUtils {
             sharpnessEffect = container.getExtra("sharpnessEffect", "None"),
             sharpnessLevel = container.getExtra("sharpnessLevel", "100").toIntOrNull() ?: 100,
             sharpnessDenoise = container.getExtra("sharpnessDenoise", "100").toIntOrNull() ?: 100,
-            // Frame generation backends
-            apexFrameGenerationEnabled = container.getExtra(
-                ApexFrameGenerationManager.EXTRA_ARMED,
-                "false",
-            ).toBoolean(),
+            // LSFG Vulkan frame generation
             lsfgEnabled = container.getExtra(LsfgVkManager.EXTRA_ARMED, "false").toBoolean(),
         )
     }
@@ -554,11 +549,7 @@ object ContainerUtils {
         container.putExtra("sharpnessEffect", containerData.sharpnessEffect)
         container.putExtra("sharpnessLevel", containerData.sharpnessLevel.toString())
         container.putExtra("sharpnessDenoise", containerData.sharpnessDenoise.toString())
-        // Frame generation backends
-        container.putExtra(
-            ApexFrameGenerationManager.EXTRA_ARMED,
-            containerData.apexFrameGenerationEnabled.toString(),
-        )
+        // LSFG Vulkan frame generation
         container.putExtra(LsfgVkManager.EXTRA_ARMED, containerData.lsfgEnabled.toString())
         try {
             container.language = containerData.language

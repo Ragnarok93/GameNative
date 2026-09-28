@@ -1,10 +1,6 @@
 #include <jni.h>
 #include <android/native_window_jni.h>
 #include <dlfcn.h>
-
-extern "C" __attribute__((used, visibility("default")))
-const char gamenative_apex_vulkan_target_version[] =
-    "gamenative-apex-vulkan-target-v1";
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cstdlib>
@@ -88,24 +84,20 @@ Java_com_winlator_renderer_VulkanRenderer_nativeDestroy(JNIEnv*, jobject, jlong 
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContent(
-    JNIEnv* env, jobject, jlong handle, jlong id, jobject buf, jshort w, jshort h, jshort stride, jint x, jint y,
-    jlong sourceTimestampNanos)
+    JNIEnv* env, jobject, jlong handle, jlong id, jobject buf, jshort w, jshort h, jshort stride, jint x, jint y)
 {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
     if (!r||!buf) return;
     void* px=env->GetDirectBufferAddress(buf);
     if (px && env->GetDirectBufferCapacity(buf)>=(jlong)w*h*4)
-        r->updateWindowContent(id,px,w,h,stride,x,y,static_cast<uint64_t>(sourceTimestampNanos));
+        r->updateWindowContent(id,px,w,h,stride,x,y);
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContentAHB(
-    JNIEnv*, jobject, jlong handle, jlong id, jlong ahbPtr, jshort w, jshort h, jint x, jint y,
-    jlong sourceTimestampNanos)
+    JNIEnv*, jobject, jlong handle, jlong id, jlong ahbPtr, jshort w, jshort h, jint x, jint y)
 {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
-    if (r&&ahbPtr) r->updateWindowContentAHB(
-        id,reinterpret_cast<AHardwareBuffer*>(ahbPtr),w,h,x,y,
-        static_cast<uint64_t>(sourceTimestampNanos));
+    if (r&&ahbPtr) r->updateWindowContentAHB(id,reinterpret_cast<AHardwareBuffer*>(ahbPtr),w,h,x,y);
 }
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeEnableXrTarget(JNIEnv*, jobject, jlong handle) {
@@ -121,53 +113,6 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeGetXrTargetExtent(JNIEnv*, jobject, jlong handle) {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
     return r ? (jlong)r->xrTargetExtentPacked() : 0;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeEnableApexTarget(JNIEnv*, jobject, jlong handle) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r && r->enableApexTarget() ? JNI_TRUE : JNI_FALSE;
-}
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeDisableApexTarget(JNIEnv*, jobject, jlong handle) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r && r->disableApexTarget() ? JNI_TRUE : JNI_FALSE;
-}
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeDequeueApexFrame(JNIEnv*, jobject, jlong handle) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r ? static_cast<jlong>(r->dequeueApexFrame()) : 0;
-}
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeGetApexFrameBuffer(
-    JNIEnv*, jobject, jlong handle, jlong token) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r ? static_cast<jlong>(r->apexFrameBufferPtr(token)) : 0;
-}
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeGetApexFrameSourceTimestampNanos(
-    JNIEnv*, jobject, jlong handle, jlong token) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r
-        ? static_cast<jlong>(r->apexFrameSourceTimestampNanos(token))
-        : 0;
-}
-extern "C" JNIEXPORT jint JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeTakeApexFrameFenceFd(
-    JNIEnv*, jobject, jlong handle, jlong token) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r ? static_cast<jint>(r->takeApexFrameFenceFd(token)) : -1;
-}
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeReleaseApexFrame(
-    JNIEnv*, jobject, jlong handle, jlong token, jint consumerReleaseFenceFd) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r && r->releaseApexFrame(token, consumerReleaseFenceFd) ? JNI_TRUE : JNI_FALSE;
-}
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeGetApexTargetExtent(JNIEnv*, jobject, jlong handle) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r ? static_cast<jlong>(r->apexTargetExtentPacked()) : 0;
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetTransform(
@@ -299,14 +244,6 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeIsGameFrameDelivered(JNIEnv*, jobject, jlong handle) {
     auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
     return r ? (jboolean)r->gameFrameDelivered.load() : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_winlator_renderer_VulkanRenderer_nativeGetNormalPresentSerial(JNIEnv*, jobject, jlong handle) {
-    auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r ? static_cast<jlong>(
-        r->normalPresentSerial.load(std::memory_order_acquire)
-    ) : 0;
 }
 
 extern "C" JNIEXPORT void JNICALL

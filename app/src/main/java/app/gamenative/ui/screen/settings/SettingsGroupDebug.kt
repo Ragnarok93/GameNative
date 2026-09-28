@@ -12,7 +12,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -36,7 +35,6 @@ import app.gamenative.ui.util.SnackbarManager
 import app.gamenative.ui.theme.settingsTileColorsAlt
 import com.winlator.PrefManager as WinlatorPrefManager
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlinx.serialization.decodeFromString
@@ -48,7 +46,6 @@ import app.gamenative.ui.component.dialog.WineDebugChannelsDialog
 @Composable
 fun SettingsGroupDebug() {
     val context = LocalContext.current
-    val diagnosticsScope = rememberCoroutineScope()
     val isPreview = LocalInspectionMode.current
     if (!isPreview) {
         PrefManager.init(context)
@@ -137,17 +134,12 @@ fun SettingsGroupDebug() {
         contract = ActivityResultContracts.CreateDocument("text/plain"),
     ) { resultUri ->
         resultUri ?: return@rememberLauncherForActivityResult
-        diagnosticsScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val report = LsfgDiagnosticExporter.buildReport(context)
-                    context.contentResolver.openOutputStream(resultUri)?.use { outputStream ->
-                        outputStream.write(report.toByteArray(Charsets.UTF_8))
-                    } ?: error("Unable to open selected destination")
-                }
-            }
-            result.onSuccess {
-                SnackbarManager.show("LSFG diagnostics exported")
+        LsfgDiagnosticExporter.exportAsync(
+            context = context.applicationContext,
+            uri = resultUri,
+        ) { result ->
+            result.onSuccess { bytes ->
+                SnackbarManager.show("LSFG diagnostics exported ($bytes bytes)")
             }.onFailure {
                 SnackbarManager.show("Failed to export LSFG diagnostics: ${it.message ?: it.javaClass.simpleName}")
             }

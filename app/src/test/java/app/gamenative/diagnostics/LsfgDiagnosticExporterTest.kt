@@ -187,7 +187,7 @@ class LsfgDiagnosticExporterTest {
 
 
     @Test
-    fun nativeLsfgLogFilter_keepsAllRuntimePrefixesAndRejectsApexNoise() {
+    fun nativeLsfgLogFilter_keepsAllRuntimePrefixesAndRejectsUnrelatedNoise() {
         val accepted = listOf(
             "09-26 I System.out: LSFG_METRICS runtime_session_id=9 config_revision=2",
             "09-26 I System.out: LSFG_EVENT runtime_session_id=9 config_revision=2",
@@ -205,7 +205,7 @@ class LsfgDiagnosticExporterTest {
 
         assertTrue(
             !LsfgDiagnosticExporter.isNativeLsfgLogLine(
-                "09-26 I ApexPresenter: display cadence mode=adaptive target=90",
+                "09-26 I RenderThread: unrelated compositor diagnostic",
             ),
         )
     }

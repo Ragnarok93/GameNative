@@ -1,6 +1,8 @@
 package app.gamenative.diagnostics
 
 import android.content.Context
+import android.net.Uri
+import android.util.Log
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.PowerManager as AndroidPowerManager
@@ -10,6 +12,7 @@ import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
 import app.gamenative.powercontrol.metrics.PerformanceMetricsCollector
 import java.io.File
+import java.io.OutputStream
 import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
@@ -18,6 +21,11 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Builds the single-file, best-effort LSFG diagnostic report exported from Debug settings.
@@ -27,6 +35,9 @@ import java.util.concurrent.TimeoutException
  * multiplier 2x/3x/4x and for the disabled-path baseline.
  */
 object LsfgDiagnosticExporter {
+    private const val EXPORT_TAG = "LsfgDiagnosticExporter"
+    private val exportScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private const val TEXT_TAIL_BYTES = 2L * 1024L * 1024L
     private const val NATIVE_EVENT_TAIL_BYTES = 4L * 1024L * 1024L
     private const val LOGCAT_LINES = 8_000
@@ -76,6 +87,53 @@ object LsfgDiagnosticExporter {
     fun defaultFileName(now: Date = Date()): String =
         "gamenative-lsfg-${SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(now)}.txt"
 
+    internal fun exportAsync(
+        context: Context,
+        uri: Uri,
+        onResult: (Result<Long>) -> Unit,
+    ) {
+        val appContext = context.applicationContext
+        exportScope.launch {
+            Log.i(EXPORT_TAG, "LSFG diagnostics export started")
+            val result = runCatching {
+                val report = runCatching {
+                    buildReport(appContext)
+                }.getOrElse { error ->
+                    "===== LSFG EXPORT FAILURE =====\n" +
+                        "error=${error.javaClass.name}: ${error.message ?: "unknown"}\n"
+                }
+                openOutputStream(appContext, uri).use { outputStream ->
+                    writeReport(report, outputStream)
+                }
+            }
+            result.onSuccess { bytes ->
+                Log.i(EXPORT_TAG, "LSFG diagnostics export completed bytes=$bytes")
+            }.onFailure { error ->
+                Log.e(EXPORT_TAG, "LSFG diagnostics export failed", error)
+            }
+            withContext(Dispatchers.Main.immediate) {
+                onResult(result)
+            }
+        }
+    }
+
+    internal fun writeReport(report: String, outputStream: OutputStream): Long {
+        val bytes = report.toByteArray(Charsets.UTF_8)
+        require(bytes.isNotEmpty()) {
+            "Generated an empty LSFG diagnostics report"
+        }
+        outputStream.write(bytes)
+        outputStream.flush()
+        return bytes.size.toLong()
+    }
+
+    private fun openOutputStream(context: Context, uri: Uri): OutputStream {
+        val resolver = context.contentResolver
+        return runCatching {
+            resolver.openOutputStream(uri, "rwt")
+        }.getOrNull() ?: resolver.openOutputStream(uri)
+            ?: error("Unable to open selected destination")
+    }
     private val runtimeSessionPattern = Regex("""\bruntime_session_id=(\d+)\b""")
     private val configRevisionPattern = Regex("""\bconfig_revision=(\d+)\b""")
 

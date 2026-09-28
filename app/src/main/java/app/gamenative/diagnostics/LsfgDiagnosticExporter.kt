@@ -3,7 +3,7 @@ package app.gamenative.diagnostics
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Build
-import android.os.PowerManager
+import android.os.PowerManager as AndroidPowerManager
 import android.view.Display
 import app.gamenative.CrashHandler
 import app.gamenative.powercontrol.PowerBaselineScripts
@@ -184,25 +184,25 @@ object LsfgDiagnosticExporter {
         }
 
         section("DISPLAY / THERMAL") {
-            val powerManager = appContext.getSystemService(PowerManager::class.java)
+            val powerManager = appContext.getSystemService(AndroidPowerManager::class.java)
             val displayManager = appContext.getSystemService(DisplayManager::class.java)
             val display = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)
             buildString {
-                appendLine("power_save=\${powerManager?.isPowerSaveMode ?: false}")
+                appendLine("power_save=${powerManager?.isPowerSaveMode ?: false}")
                 if (Build.VERSION.SDK_INT >= 29) {
-                    appendLine("thermal_status=\${powerManager?.currentThermalStatus ?: -1}")
+                    appendLine("thermal_status=${powerManager?.currentThermalStatus ?: -1}")
                 } else {
                     appendLine("thermal_status=unavailable")
                 }
-                appendLine("display_valid=\${display?.isValid ?: false}")
+                appendLine("display_valid=${display?.isValid ?: false}")
                 if (display != null) {
-                    appendLine("display_refresh_hz=\${String.format(Locale.US, "%.3f", display.refreshRate)}")
+                    appendLine("display_refresh_hz=${String.format(Locale.US, "%.3f", display.refreshRate)}")
                     val mode = display.mode
-                    appendLine("display_mode=\${mode.physicalWidth}x\${mode.physicalHeight}@\${String.format(Locale.US, "%.3f", mode.refreshRate)}")
-                    appendLine("display_hdr=\${display.isHdr}")
+                    appendLine("display_mode=${mode.physicalWidth}x${mode.physicalHeight}@${String.format(Locale.US, "%.3f", mode.refreshRate)}")
+                    appendLine("display_hdr=${display.isHdr}")
                     appendLine(
                         "display_supported_modes=" + display.supportedModes.joinToString(";") {
-                            "\${it.physicalWidth}x\${it.physicalHeight}@\${String.format(Locale.US, "%.3f", it.refreshRate)}"
+                            "${it.physicalWidth}x${it.physicalHeight}@${String.format(Locale.US, "%.3f", it.refreshRate)}"
                         },
                     )
                 } else {
@@ -211,7 +211,6 @@ object LsfgDiagnosticExporter {
                 }
             }
         }
-
         section("LSFG STRUCTURED TELEMETRY") {
             val structured = uidLogcat.lineSequence()
                 .filter { line ->

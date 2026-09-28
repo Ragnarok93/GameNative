@@ -30,6 +30,7 @@ class LsfgQuickMenuHelperModeTest {
                 LsfgQuickMenuHelper.AdaptiveFlowPreset.QUALITY,
                 LsfgQuickMenuHelper.AdaptiveFlowPreset.BALANCED,
                 LsfgQuickMenuHelper.AdaptiveFlowPreset.LOW,
+                LsfgQuickMenuHelper.AdaptiveFlowPreset.AUTO,
             ),
             LsfgQuickMenuHelper.AdaptiveFlowPreset.values().toSet(),
         )

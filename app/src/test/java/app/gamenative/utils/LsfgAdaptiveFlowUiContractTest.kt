@@ -27,6 +27,7 @@ class LsfgAdaptiveFlowUiContractTest {
             "AdaptiveFlowPreset.QUALITY",
             "AdaptiveFlowPreset.BALANCED",
             "AdaptiveFlowPreset.LOW",
+            "AdaptiveFlowPreset.AUTO",
             "setFlowScaleMode",
             "setAdaptiveFlowPreset",
         ).forEach { token ->
@@ -95,7 +96,7 @@ class LsfgAdaptiveFlowUiContractTest {
     }
 
     @Test
-    fun adaptiveFlowPresetOrderIsLowBalancedQuality() {
+    fun adaptiveFlowPresetOrderIsAutoQualityLowBalanced() {
         val quickMenu = repoFile(
             "app/src/main/java/app/gamenative/ui/component/QuickMenu.kt",
         ).readText()
@@ -104,23 +105,29 @@ class LsfgAdaptiveFlowUiContractTest {
             quickMenu.indexOf("private fun ImmersiveQuickMenuTab("),
         )
 
-        val presetRow = lsfgTab.substring(
-            lsfgTab.indexOf(
-                "listOf(\n                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.",
-            ),
-            lsfgTab.indexOf(
-                ").forEach { (candidate, label) ->",
-                lsfgTab.indexOf(
-                    "listOf(\n                            app.gamenative.utils.LsfgQuickMenuHelper.AdaptiveFlowPreset.",
-                ),
-            ),
+        val presetBlockStart = lsfgTab.indexOf("val presetDescription")
+        val presetBlockEnd = lsfgTab.indexOf(
+            "Spacer(modifier = Modifier.height(4.dp))",
+            presetBlockStart,
         )
-        val low = presetRow.indexOf("AdaptiveFlowPreset.LOW")
-        val balanced = presetRow.indexOf("AdaptiveFlowPreset.BALANCED")
-        val quality = presetRow.indexOf("AdaptiveFlowPreset.QUALITY")
-        assertTrue("Low must be the left preset", low >= 0)
-        assertTrue("Balanced must remain in the middle", balanced > low)
-        assertTrue("Quality must be the right preset", quality > balanced)
+        assertTrue(
+            "Adaptive Flow preset 2x2 block must exist",
+            presetBlockStart >= 0 && presetBlockEnd > presetBlockStart,
+        )
+        val presetBlock = lsfgTab.substring(presetBlockStart, presetBlockEnd)
+        val auto = presetBlock.indexOf("AdaptiveFlowPreset.AUTO to")
+        val quality = presetBlock.indexOf("AdaptiveFlowPreset.QUALITY to")
+        val low = presetBlock.indexOf("AdaptiveFlowPreset.LOW to")
+        val balanced = presetBlock.indexOf("AdaptiveFlowPreset.BALANCED to")
+
+        assertTrue("Auto must be present", auto >= 0)
+        assertTrue("Quality must be present", quality >= 0)
+        assertTrue("Low must be present", low >= 0)
+        assertTrue("Balanced must be present", balanced >= 0)
+        assertTrue("top row must be Auto then Quality", auto < quality)
+        assertTrue("bottom row must be Low then Balanced", low < balanced)
+        assertTrue("top row must precede bottom row", quality < low)
+        assertTrue("presets must use a two-row column", presetBlock.contains("Column("))
     }
 
     @Test
@@ -133,8 +140,13 @@ class LsfgAdaptiveFlowUiContractTest {
             "Target 1.00 · minimum 0.70",
             "Target 0.80 · minimum 0.55",
             "Target 0.55 · minimum 0.25",
+            "Target 1.00 · minimum 0.25",
         ).forEach { token ->
             assertTrue("Adaptive Flow preset copy is missing $token", strings.contains(token))
         }
+        assertTrue(
+            "Auto copy must explain sustainable full-range selection",
+            strings.contains("highest sustainable"),
+        )
     }
 }

@@ -146,6 +146,24 @@ object LsfgDiagnosticExporter {
         }
         return destination
     }
+
+    internal fun writeReport(report: String, outputStream: OutputStream): Long {
+        val bytes = report.toByteArray(Charsets.UTF_8)
+        require(bytes.isNotEmpty()) {
+            "Generated an empty LSFG diagnostics report"
+        }
+        outputStream.write(bytes)
+        outputStream.flush()
+        return bytes.size.toLong()
+    }
+
+    private fun openOutputStream(context: Context, uri: Uri): OutputStream {
+        val resolver = context.contentResolver
+        return runCatching {
+            resolver.openOutputStream(uri, "rwt")
+        }.getOrNull() ?: resolver.openOutputStream(uri)
+            ?: error("Unable to open selected destination")
+    }
     private val runtimeSessionPattern = Regex("""\bruntime_session_id=(\d+)\b""")
     private val configRevisionPattern = Regex("""\bconfig_revision=(\d+)\b""")
 

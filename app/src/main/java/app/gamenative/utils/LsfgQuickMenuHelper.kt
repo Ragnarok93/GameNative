@@ -16,7 +16,7 @@ object LsfgQuickMenuHelper {
     )
     enum class FrameGenerationMode { FIXED, ADAPTIVE }
     enum class FlowScaleMode { FIXED, ADAPTIVE }
-    enum class AdaptiveFlowPreset { QUALITY, BALANCED, LOW }
+    enum class AdaptiveFlowPreset { QUALITY, BALANCED, LOW, AUTO }
 
     data class Settings(
         val multiplier: Int,
@@ -52,6 +52,7 @@ object LsfgQuickMenuHelper {
         when (LsfgVkManager.adaptiveFlowPreset(container)) {
             LsfgVkManager.ADAPTIVE_FLOW_PRESET_BALANCED -> AdaptiveFlowPreset.BALANCED
             LsfgVkManager.ADAPTIVE_FLOW_PRESET_LOW -> AdaptiveFlowPreset.LOW
+            LsfgVkManager.ADAPTIVE_FLOW_PRESET_AUTO -> AdaptiveFlowPreset.AUTO
             else -> AdaptiveFlowPreset.QUALITY
         }
 
@@ -75,6 +76,7 @@ object LsfgQuickMenuHelper {
             AdaptiveFlowPreset.QUALITY -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_QUALITY
             AdaptiveFlowPreset.BALANCED -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_BALANCED
             AdaptiveFlowPreset.LOW -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_LOW
+            AdaptiveFlowPreset.AUTO -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_AUTO
         }
         container.putExtra(LsfgVkManager.EXTRA_ADAPTIVE_FLOW_PRESET, serialized)
         container.saveData()

@@ -231,6 +231,7 @@ object LsfgVkManager {
         when (preset.lowercase(Locale.US)) {
             ADAPTIVE_FLOW_PRESET_BALANCED -> ADAPTIVE_FLOW_PRESET_BALANCED
             ADAPTIVE_FLOW_PRESET_LOW -> ADAPTIVE_FLOW_PRESET_LOW
+            ADAPTIVE_FLOW_PRESET_AUTO -> ADAPTIVE_FLOW_PRESET_AUTO
             else -> ADAPTIVE_FLOW_PRESET_QUALITY
         }
 

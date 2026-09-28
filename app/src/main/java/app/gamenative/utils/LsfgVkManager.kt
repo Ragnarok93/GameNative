@@ -80,6 +80,7 @@ object LsfgVkManager {
     const val ADAPTIVE_FLOW_PRESET_QUALITY = "quality"
     const val ADAPTIVE_FLOW_PRESET_BALANCED = "balanced"
     const val ADAPTIVE_FLOW_PRESET_LOW = "low"
+    const val ADAPTIVE_FLOW_PRESET_AUTO = "auto"
     const val MIN_ADAPTIVE_TARGET_FPS = 30
     const val MAX_ADAPTIVE_TARGET_FPS = 120
     const val ADAPTIVE_TARGET_FPS_STEP = 5
@@ -108,7 +109,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-adaptive-73f37dcc80fe964f35409934284dc1b1e8c3cc22-r13"
+        "gamenative-adaptive-0659d5f41c2604b3994cc6acc5406ad1d135be56-r14"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"

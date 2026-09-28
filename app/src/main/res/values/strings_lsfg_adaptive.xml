@@ -17,7 +17,9 @@
     <string name="lsfg_flow_preset_quality">Quality</string>
     <string name="lsfg_flow_preset_balanced">Balanced</string>
     <string name="lsfg_flow_preset_low">Low</string>
+    <string name="lsfg_flow_preset_auto">Auto</string>
     <string name="lsfg_flow_preset_quality_desc">Target 1.00 · minimum 0.70. Keeps maximum optical-flow detail when headroom is available.</string>
     <string name="lsfg_flow_preset_balanced_desc">Target 0.80 · minimum 0.55. Balances optical-flow detail with GPU headroom.</string>
     <string name="lsfg_flow_preset_low_desc">Target 0.55 · minimum 0.25. Prioritizes LSFG throughput under heavier GPU load.</string>
+    <string name="lsfg_flow_preset_auto_desc">Target 1.00 · minimum 0.25. Automatically seeks the highest sustainable Flow Scale across the full range while meeting the requested output target.</string>
 </resources>

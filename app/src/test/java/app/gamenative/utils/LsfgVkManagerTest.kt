@@ -462,6 +462,14 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun adaptiveFlowPresetSanitizerAcceptsAuto() {
+        assertEquals(
+            LsfgVkManager.ADAPTIVE_FLOW_PRESET_AUTO,
+            LsfgVkManager.sanitizeAdaptiveFlowPreset("AUTO"),
+        )
+    }
+
+    @Test
     fun applyLaunchEnv_clearsOnlyLsfgEnvironmentWhenDisabled() {
         val container = container(armed = false)
         val envVars = EnvVars().apply {

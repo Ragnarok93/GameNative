@@ -109,7 +109,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-xclipse-fifo-off-bypass-8090558e328cd666a6c50bd31e2dcfe937bdf287-r65"
+        "gamenative-xclipse-fifo-off-bypass-464d7b2cb2bb01c9e7edb7ccab138348087fcce2-r65"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -281,7 +281,7 @@ object LsfgVkManager {
         val text = buildString {
             appendLine("timestamp_ms=${snapshot.timestampMs}")
             appendLine("gpu_usage_percent=${String.format(Locale.US, "%.1f", gpu)}")
-            appendLine("output_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
+            appendLine("source_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
             appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
             appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
         }

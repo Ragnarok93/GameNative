@@ -124,7 +124,8 @@ class LsfgVkManagerTest {
         ).readText()
         assertTrue(pressure.contains("timestamp_ms=123456"))
         assertTrue(pressure.contains("gpu_usage_percent=99.0"))
-        assertTrue(pressure.contains("output_fps=57.50"))
+        assertTrue(pressure.contains("source_fps=57.50"))
+        assertFalse(pressure.contains("output_fps="))
         assertTrue(pressure.contains("frame_time_p95_ms=24.00"))
         assertTrue(pressure.contains("slow_frame_ratio=0.1500"))
 

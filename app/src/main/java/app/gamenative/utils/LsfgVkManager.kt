@@ -109,7 +109,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-xclipse-fifo-off-bypass-e2da63fc2a97a926298724617cd521b15f73912c-r71"
+        "gamenative-xclipse-fifo-off-bypass-bc2abc0f37048ff8258861c3fe8d8922c000096e-r72"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"

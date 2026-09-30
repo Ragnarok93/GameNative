@@ -69,6 +69,6 @@ class VulkanRendererAhbCacheContractTest {
         )
         val path: Path = candidates.firstOrNull { Files.isRegularFile(it) }
             ?: error("Unable to locate Vulkan renderer source: $name")
-        return Files.readString(path)
+        return String(Files.readAllBytes(path), Charsets.UTF_8)
     }
 }

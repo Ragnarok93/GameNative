@@ -111,7 +111,11 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(handoff.contains("isLsfgGenerationActive = active"))
         assertTrue(handoff.contains("applyFpsLimiterToEngines(effectiveFpsLimit())"))
         assertTrue(multiplier.contains("val previousRequested = isLsfgRequested"))
+        assertTrue(multiplier.contains("if (previousRequested && !nextRequested)"))
+        assertTrue(multiplier.contains("setLsfgPresentationFrameRateHint(0)"))
+        assertTrue(multiplier.contains("resident bypass pending"))
         assertTrue(multiplier.contains("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"))
+        assertFalse(multiplier.contains("SOURCE_ONLY_RESIDENT ="))
         assertFalse(applier.contains("!isLsfgGenerationActive"))
         assertTrue(applier.contains("applyFpsLimiterToEngines(capFps)"))
     }

@@ -201,9 +201,17 @@ object LsfgVkManager {
         val degraded: Boolean,
         val multiplier: Int,
         val fresh: Boolean,
+        val framegenSupportKnown: Boolean = false,
+        val framegenSupported: Boolean = false,
+        val vulkanPath: String? = null,
+        val spirvTarget: String? = null,
+        val synchronizationPath: String? = null,
+        val ahbMode: String? = null,
+        val rejectionReason: String? = null,
     ) {
         val readyForGeneration: Boolean
-            get() = fresh && resident && generationReady && multiplier >= 2 && !degraded
+            get() = fresh && resident && generationReady && multiplier >= 2 && !degraded &&
+                (!framegenSupportKnown || framegenSupported)
 
         val readyForSourceOnly: Boolean
             get() = fresh && resident && sourceOnly && !generationReady && !degraded
@@ -281,6 +289,9 @@ object LsfgVkManager {
         val text = buildString {
             appendLine("timestamp_ms=${snapshot.timestampMs}")
             appendLine("gpu_usage_percent=${String.format(Locale.US, "%.1f", gpu)}")
+            snapshot.thermalStatus?.takeIf { it in 0..6 }?.let {
+                appendLine("thermal_status=$it")
+            }
             appendLine("source_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
             appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
             appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
@@ -390,17 +401,23 @@ object LsfgVkManager {
             val sourceOnly = values["source_only"] == "1"
             val generationReady = values["generation_ready"] == "1"
             val resident = values["resident"] == "1" || values["active"] == "1" || sourceOnly
-            val status = when (values["state"]) {
-                "source_only" -> RuntimeStatus.SOURCE_ONLY
-                "generating" -> RuntimeStatus.GENERATING
-                "degraded" -> RuntimeStatus.DEGRADED
-                "pass_through" -> RuntimeStatus.PASS_THROUGH
-                else -> when {
-                    degraded -> RuntimeStatus.DEGRADED
-                    generationReady -> RuntimeStatus.GENERATING
-                    sourceOnly -> RuntimeStatus.SOURCE_ONLY
-                    resident -> RuntimeStatus.PASS_THROUGH
-                    else -> RuntimeStatus.UNKNOWN
+            val framegenSupportKnown = values["framegen_support_known"] == "1"
+            val framegenSupported = values["framegen_supported"] == "1"
+            val unsupported = framegenSupportKnown && !framegenSupported
+            val status = if (degraded || unsupported) {
+                RuntimeStatus.DEGRADED
+            } else {
+                when (values["state"]) {
+                    "source_only" -> RuntimeStatus.SOURCE_ONLY
+                    "generating" -> RuntimeStatus.GENERATING
+                    "degraded" -> RuntimeStatus.DEGRADED
+                    "pass_through" -> RuntimeStatus.PASS_THROUGH
+                    else -> when {
+                        generationReady -> RuntimeStatus.GENERATING
+                        sourceOnly -> RuntimeStatus.SOURCE_ONLY
+                        resident -> RuntimeStatus.PASS_THROUGH
+                        else -> RuntimeStatus.UNKNOWN
+                    }
                 }
             }
             RuntimeState(
@@ -413,6 +430,13 @@ object LsfgVkManager {
                 degraded = degraded,
                 multiplier = values["multiplier"]?.toIntOrNull() ?: 0,
                 fresh = true,
+                framegenSupportKnown = framegenSupportKnown,
+                framegenSupported = framegenSupported,
+                vulkanPath = values["framegen_vulkan_path"]?.takeIf { it.isNotBlank() },
+                spirvTarget = values["framegen_spirv_target"]?.takeIf { it.isNotBlank() },
+                synchronizationPath = values["framegen_sync_path"]?.takeIf { it.isNotBlank() },
+                ahbMode = values["framegen_ahb_mode"]?.takeIf { it.isNotBlank() },
+                rejectionReason = values["framegen_rejection_reason"]?.takeIf { it.isNotBlank() },
             )
         }.getOrElse {
             unknownRuntimeState(fresh = false)

@@ -114,6 +114,7 @@ class LsfgVkManagerTest {
             gpuUsagePercent = 99f,
             cpuTempC = 60,
             gpuTempC = 58,
+            thermalStatus = 4,
         )
 
         assertTrue(LsfgVkManager.publishRuntimePressure(rootDir, snapshot))
@@ -124,6 +125,7 @@ class LsfgVkManagerTest {
         ).readText()
         assertTrue(pressure.contains("timestamp_ms=123456"))
         assertTrue(pressure.contains("gpu_usage_percent=99.0"))
+        assertTrue(pressure.contains("thermal_status=4"))
         assertTrue(pressure.contains("source_fps=57.50"))
         assertFalse(pressure.contains("output_fps="))
         assertTrue(pressure.contains("frame_time_p95_ms=24.00"))
@@ -586,4 +588,40 @@ class LsfgVkManagerTest {
             .thenReturn("0")
         return container
     }
+    @Test
+    fun readRuntimeState_rejectsGeneratingStateWhenNativeSupportVerdictFailed() {
+        val container = container(armed = true, multiplier = "2")
+        File(rootDir, ".config/lsfg-vk/stats.txt").apply {
+            parentFile?.mkdirs()
+            writeText(
+                """
+                state=generating
+                active=1
+                generation_ready=1
+                resident=1
+                source_only=0
+                generation_initialized=0
+                generated_presented=0
+                degraded=0
+                multiplier=2
+                framegen_support_known=1
+                framegen_supported=0
+                framegen_vulkan_path=vulkan-1.1-extensions
+                framegen_spirv_target=0x10400
+                framegen_sync_path=legacy-pipeline-barrier
+                framegen_ahb_mode=unsupported
+                framegen_rejection_reason=no supported directional AHardwareBuffer transport
+                """.trimIndent(),
+            )
+        }
+
+        val state = LsfgVkManager.readRuntimeState(container)
+        assertEquals(LsfgVkManager.RuntimeStatus.DEGRADED, state.status)
+        assertTrue(state.framegenSupportKnown)
+        assertFalse(state.framegenSupported)
+        assertFalse(state.readyForGeneration)
+        assertEquals("vulkan-1.1-extensions", state.vulkanPath)
+        assertTrue(state.rejectionReason?.contains("AHardwareBuffer") == true)
+    }
+
 }

@@ -109,7 +109,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-adaptive-flow-fast-response-fc62003641e80882efaebbbf68611d9a8c6d8ed8-r79"
+        "gamenative-adaptive-flow-fast-response-7a177309fc6f6dceaf864309e7b303d4b5e62957-r80"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -550,6 +550,47 @@ object LsfgVkManager {
         }
 
         return success
+    }
+
+    /**
+     * Atomically prepare an LSFG-enabled launch. A cold install, config publish,
+     * loader-HOME synchronization and layer activation must all succeed before
+     * Wine starts with LSFG armed. Any failure explicitly disables the layer
+     * for this process so the game can still launch natively.
+     */
+    @JvmStatic
+    fun prepareLaunch(
+        context: Context,
+        container: Container,
+        envVars: EnvVars,
+        protectedAdrenoPresentation: Boolean,
+    ): Boolean = synchronized(runtimeInstallLock) {
+        if (!isSupported(container) || !isFrameGenerationRequested(container)) {
+            disableLayerForLaunch(container, envVars)
+            return@synchronized false
+        }
+
+        if (!ensureRuntimeInstalledLocked(context, container)) {
+            disableLayerForLaunch(container, envVars)
+            Timber.tag(TAG).e("LSFG launch preparation failed: runtime install")
+            return@synchronized false
+        }
+
+        if (!writeConfig(container)) {
+            disableLayerForLaunch(container, envVars)
+            Timber.tag(TAG).e("LSFG launch preparation failed: config publish")
+            return@synchronized false
+        }
+
+        val armed = applyLaunchEnvLocked(container, envVars)
+        if (!armed) {
+            disableLayerForLaunch(container, envVars)
+            Timber.tag(TAG).e("LSFG launch preparation failed: loader activation")
+            return@synchronized false
+        }
+
+        Timber.tag(TAG).i("LSFG launch preparation complete")
+        true
     }
 
     @JvmStatic

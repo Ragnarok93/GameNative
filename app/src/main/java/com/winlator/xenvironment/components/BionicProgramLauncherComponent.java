@@ -350,13 +350,19 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         }
 
         if (LsfgVkManager.isFrameGenerationRequested(container)) {
-            LsfgVkManager.ensureRuntimeInstalled(environment.getContext(), container);
-            LsfgVkManager.writeConfig(container);
             final boolean protectedAdrenoPresentation =
                     renderer != null
                     && renderer.toLowerCase(Locale.ENGLISH).contains("adreno");
-            LsfgVkManager.applyLaunchEnv(
-                    container, envVars, protectedAdrenoPresentation);
+            final boolean lsfgPrepared = LsfgVkManager.prepareLaunch(
+                    environment.getContext(),
+                    container,
+                    envVars,
+                    protectedAdrenoPresentation);
+            if (!lsfgPrepared) {
+                Log.w(
+                        "BionicProgramLauncherComponent",
+                        "LSFG cold-launch preparation failed; continuing with native Vulkan launch");
+            }
         } else if (LsfgVkManager.isSupported(container)) {
             // Keep the resident source-only path on the user's existing WSI
             // policy. The Adreno FIFO override exists only while FG is active.

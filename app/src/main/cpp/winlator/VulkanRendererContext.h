@@ -110,6 +110,10 @@ struct VkTable {
 #include <condition_variable>
 
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+// A generated/composited window normally rotates through only a small AHB set.
+// Keep enough history for reuse without letting a long session consume the
+// renderer's fixed descriptor pool indefinitely.
+static constexpr uint32_t MAX_AHB_IMPORTS_PER_WINDOW = 12;
 
 struct WindowPushConstants {
     float ndcX0, ndcY0, ndcX1, ndcY1;
@@ -200,6 +204,12 @@ private:
         AHardwareBuffer*     ahb            = nullptr;
     };
 
+    struct RetiredAhbImport {
+        AHardwareBuffer* ahb = nullptr;
+        WinTex texture{};
+        uint64_t retireAfterSubmissionSerial = 0;
+    };
+
     struct RenderEntry { int64_t id; int x, y; };
     struct DrawEntry {
         VkImage         img            = VK_NULL_HANDLE;
@@ -232,6 +242,9 @@ private:
 
     std::unordered_map<AHardwareBuffer*, WinTex>              ahbImportCache;
     std::unordered_map<int64_t, std::vector<AHardwareBuffer*>> windowAhbs;
+    std::unordered_map<AHardwareBuffer*, uint32_t>             ahbWindowRefCounts;
+    std::vector<RetiredAhbImport>                              retiredAhbImports;
+    std::atomic<uint64_t>                                      renderSubmissionSerial{0};
 
     std::vector<WinTex>    deleteQueue;
     std::vector<RenderEntry> renderList;
@@ -373,6 +386,10 @@ private:
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);
+    void  retireAhbImport(AHardwareBuffer* ahb);
+    void  releaseWindowAhbReference(AHardwareBuffer* ahb);
+    void  evictWindowAhbImports(int64_t id, AHardwareBuffer* keepAhb);
+    void  reclaimRetiredAhbImports();
     void  cleanupAllAHBCache();
     void  flushDeleteQueue();
     void  destroyWinTex(WinTex& wt);

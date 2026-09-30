@@ -30,6 +30,9 @@ VulkanRendererContext::~VulkanRendererContext() {
     vk_.DeviceWaitIdle(device);
     for (auto& [id, wt] : texMap) destroyWinTex(wt);
     texMap.clear();
+    // The device is idle, so both active and deferred AHB imports are safe to
+    // destroy before their descriptor pool goes away.
+    cleanupAllAHBCache();
     
     for (auto& wt : deleteQueue) {
         if (wt.ds   != VK_NULL_HANDLE) vk_.FreeDescriptorSets(device, winTexPool, 1, &wt.ds);
@@ -1059,6 +1062,9 @@ ok=true;}catch(...){}
     {
         std::lock_guard<std::mutex> lk(renderMutex);
 
+        // currentFrame's fence has been observed complete above. Imports that
+        // have survived a full in-flight-frame rotation can now be reclaimed.
+        reclaimRetiredAhbImports();
 
         if (!deleteQueue.empty()) {
             for (auto& wt:deleteQueue) {
@@ -1130,6 +1136,7 @@ ok=true;}catch(...){}
         vk_.CreateFence(device,&fi,nullptr,&inFlightFences[currentFrame]);
         return;
     }
+    renderSubmissionSerial.fetch_add(1, std::memory_order_release);
     if (!toXr) {
         VkSwapchainKHR scs[]={swapchain};
         VkPresentInfoKHR pi{}; pi.sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1252,29 +1259,113 @@ void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, s
     needsRender.store(true); dirtyCV.notify_one();
 }
 
+void VulkanRendererContext::retireAhbImport(AHardwareBuffer* ahb) {
+    auto cit = ahbImportCache.find(ahb);
+    if (cit == ahbImportCache.end()) return;
+
+    RetiredAhbImport retired{};
+    retired.ahb = ahb;
+    retired.texture = cit->second;
+    // The import may still be referenced by a command buffer assembled before
+    // eviction. Keep it alive across every renderer frame slot plus one extra
+    // submission before reclaiming its descriptor/image ownership.
+    retired.retireAfterSubmissionSerial =
+        renderSubmissionSerial + MAX_FRAMES_IN_FLIGHT + 1;
+    retiredAhbImports.push_back(retired);
+    ahbImportCache.erase(cit);
+}
+
+void VulkanRendererContext::releaseWindowAhbReference(AHardwareBuffer* ahb) {
+    auto ref = ahbWindowRefCounts.find(ahb);
+    if (ref == ahbWindowRefCounts.end()) return;
+    if (ref->second > 1) {
+        --ref->second;
+        return;
+    }
+    ahbWindowRefCounts.erase(ref);
+    retireAhbImport(ahb);
+}
+
+void VulkanRendererContext::evictWindowAhbImports(int64_t id, AHardwareBuffer* keepAhb) {
+    auto wit = windowAhbs.find(id);
+    if (wit == windowAhbs.end()) return;
+    auto& history = wit->second;
+
+    while (history.size() > MAX_AHB_IMPORTS_PER_WINDOW) {
+        auto evictIt = std::find_if(
+            history.begin(), history.end(),
+            [keepAhb](AHardwareBuffer* candidate) { return candidate != keepAhb; });
+        if (evictIt == history.end()) break;
+
+        AHardwareBuffer* evicted = *evictIt;
+        history.erase(evictIt);
+        releaseWindowAhbReference(evicted);
+        RLOG("AHB cache evict id=%" PRId64 " ahb=%p active=%zu retired=%zu serial=%" PRIu64,
+            id, (void*)evicted, ahbImportCache.size(), retiredAhbImports.size(),
+            renderSubmissionSerial.load(std::memory_order_acquire));
+    }
+}
+
+void VulkanRendererContext::reclaimRetiredAhbImports() {
+    const uint64_t completedSerial =
+        renderSubmissionSerial.load(std::memory_order_acquire);
+    auto it = retiredAhbImports.begin();
+    while (it != retiredAhbImports.end()) {
+        if (completedSerial < it->retireAfterSubmissionSerial) {
+            ++it;
+            continue;
+        }
+
+        auto& retired = *it;
+        if (retired.texture.ds != VK_NULL_HANDLE)
+            vk_.FreeDescriptorSets(device, winTexPool, 1, &retired.texture.ds);
+        if (retired.texture.view != VK_NULL_HANDLE)
+            vk_.DestroyImageView(device, retired.texture.view, nullptr);
+        if (retired.texture.img != VK_NULL_HANDLE)
+            vk_.DestroyImage(device, retired.texture.img, nullptr);
+        if (retired.texture.mem != VK_NULL_HANDLE)
+            vk_.FreeMemory(device, retired.texture.mem, nullptr);
+        if (retired.texture.stg != VK_NULL_HANDLE) {
+            vk_.DestroyBuffer(device, retired.texture.stg, nullptr);
+            vk_.FreeMemory(device, retired.texture.stgMem, nullptr);
+        }
+        AHardwareBuffer_release(retired.ahb);
+        it = retiredAhbImports.erase(it);
+    }
+}
+
 void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* ahb, short, short, int, int) {
     if (!ahb) return;
     std::lock_guard<std::mutex> lk(renderMutex);
-
-
-
-
 
     auto cit = ahbImportCache.find(ahb);
     if (cit == ahbImportCache.end()) {
         WinTex tmp{};
         if (!importAHBToWinTex(tmp, ahb)) {
-            RLOG_E("updateWindowContentAHB: import failed for id=%" PRId64, id);
+            RLOG_E("updateWindowContentAHB: import failed for id=%" PRId64
+                   " active=%zu retired=%zu serial=%" PRIu64,
+                id, ahbImportCache.size(), retiredAhbImports.size(),
+                renderSubmissionSerial.load(std::memory_order_acquire));
             return;
         }
         AHardwareBuffer_acquire(ahb);
         ahbImportCache[ahb] = tmp;
-        windowAhbs[id].push_back(ahb);
         cit = ahbImportCache.find(ahb);
-        RLOG("updateWindowContentAHB: imported new AHB %p for id=%" PRId64 " (%dx%d)",
-            (void*)ahb, id, tmp.w, tmp.h);
+        RLOG("updateWindowContentAHB: imported new AHB %p for id=%" PRId64
+             " (%dx%d) active=%zu retired=%zu",
+            (void*)ahb, id, tmp.w, tmp.h,
+            ahbImportCache.size(), retiredAhbImports.size());
     }
 
+    auto& history = windowAhbs[id];
+    auto historyIt = std::find(history.begin(), history.end(), ahb);
+    if (historyIt == history.end()) {
+        history.push_back(ahb);
+        ++ahbWindowRefCounts[ahb];
+    } else if (historyIt + 1 != history.end()) {
+        history.erase(historyIt);
+        history.push_back(ahb);
+    }
 
     WinTex& src = cit->second;
     WinTex& wt  = texMap[id];
@@ -1291,6 +1382,10 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
         wt.needsTransition  = true;
         src.needsTransition = false;
     }
+
+    // The current AHB is moved to the back above, so eviction never retires
+    // the texture this window is about to draw.
+    evictWindowAhbImports(id, ahb);
     needsRender.store(true); dirtyCV.notify_one();
 }
 
@@ -1304,8 +1399,6 @@ void VulkanRendererContext::setRenderList(const int64_t* ids, const int* xs, con
 void VulkanRendererContext::removeWindow(int64_t id) {
     std::lock_guard<std::mutex> lk(renderMutex);
 
-
-
     auto it = texMap.find(id);
     if (it != texMap.end()) {
         if (!it->second.isAHB) destroyWinTex(it->second);
@@ -1313,19 +1406,10 @@ void VulkanRendererContext::removeWindow(int64_t id) {
         texMap.erase(it);
     }
 
-
     auto wit = windowAhbs.find(id);
     if (wit != windowAhbs.end()) {
-        for (AHardwareBuffer* ahb : wit->second) {
-            auto cit = ahbImportCache.find(ahb);
-            if (cit != ahbImportCache.end()) {
-                WinTex deferred = cit->second;
-                deferred.isAHB  = false;
-                deleteQueue.push_back(deferred);
-                AHardwareBuffer_release(ahb);
-                ahbImportCache.erase(cit);
-            }
-        }
+        for (AHardwareBuffer* ahb : wit->second)
+            releaseWindowAhbReference(ahb);
         windowAhbs.erase(wit);
     }
 
@@ -1340,9 +1424,31 @@ void VulkanRendererContext::cleanupAllAHBCache() {
         if (wt.view != VK_NULL_HANDLE) vk_.DestroyImageView(device, wt.view, nullptr);
         if (wt.img  != VK_NULL_HANDLE) vk_.DestroyImage(device, wt.img, nullptr);
         if (wt.mem  != VK_NULL_HANDLE) vk_.FreeMemory(device, wt.mem, nullptr);
+        if (wt.stg  != VK_NULL_HANDLE) {
+            vk_.DestroyBuffer(device, wt.stg, nullptr);
+            vk_.FreeMemory(device, wt.stgMem, nullptr);
+        }
         AHardwareBuffer_release(ahb);
     }
     ahbImportCache.clear();
+
+    for (auto& retired : retiredAhbImports) {
+        if (retired.texture.ds != VK_NULL_HANDLE)
+            vk_.FreeDescriptorSets(device, winTexPool, 1, &retired.texture.ds);
+        if (retired.texture.view != VK_NULL_HANDLE)
+            vk_.DestroyImageView(device, retired.texture.view, nullptr);
+        if (retired.texture.img != VK_NULL_HANDLE)
+            vk_.DestroyImage(device, retired.texture.img, nullptr);
+        if (retired.texture.mem != VK_NULL_HANDLE)
+            vk_.FreeMemory(device, retired.texture.mem, nullptr);
+        if (retired.texture.stg != VK_NULL_HANDLE) {
+            vk_.DestroyBuffer(device, retired.texture.stg, nullptr);
+            vk_.FreeMemory(device, retired.texture.stgMem, nullptr);
+        }
+        AHardwareBuffer_release(retired.ahb);
+    }
+    retiredAhbImports.clear();
+    ahbWindowRefCounts.clear();
     windowAhbs.clear();
 }
 

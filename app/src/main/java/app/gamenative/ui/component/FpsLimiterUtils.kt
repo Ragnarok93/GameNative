@@ -70,9 +70,9 @@ internal fun predictedLsfgOutputFps(sourceFpsCap: Int, lsfgMultiplier: Int): Int
 /**
  * Returns the Android presentation-layer frame-rate vote.
  *
- * Source pacing stays independent. Only strict FIFO + active LSFG needs the
- * generated-output cadence advertised to SurfaceFlinger; Mailbox and LSFG-off
- * preserve the legacy source-rate vote.
+ * Source pacing stays independent. Both LSFG present modes need the generated
+ * output cadence advertised to SurfaceFlinger. Voting the source cap in Mailbox
+ * can select a lower display cadence even when LSFG presents more frames.
  */
 internal fun presentationFrameRateVote(
     sourceFpsCap: Int,
@@ -84,7 +84,7 @@ internal fun presentationFrameRateVote(
     maxRefreshRateHz: Int,
 ): Int {
     val source = effectiveSourceFpsCap(sourceFpsCap)
-    if (!lsfgActive || !strictFifo) return source
+    if (!lsfgActive) return source
 
     val displayCeiling = maxRefreshRateHz.coerceAtLeast(1)
     val requestedOutput = if (adaptive) {
@@ -101,7 +101,7 @@ internal fun presentationFrameRateVote(
 
 /**
  * Applies only the presentation-side LSFG hint. The renderer keeps the source
- * cap separately and restores it automatically when this hint is cleared.
+ * cap separately and restores it automatically when LSFG is disabled.
  */
 internal fun applyLsfgPresentationFrameRateHint(
     renderer: VulkanRenderer?,
@@ -123,7 +123,7 @@ internal fun applyLsfgPresentationFrameRateHint(
         maxRefreshRateHz = maxRefreshRateHz,
     )
     renderer?.setLsfgPresentationFrameRateHint(
-        if (lsfgActive && strictFifo) vote else 0,
+        if (lsfgActive) vote else 0,
     )
     Timber.i(
         "LSFG presentation pacing: source_cap=%d fifo=%b adaptive=%b adaptive_target=%d multiplier=%d presentation_vote=%d display_refresh=%d",

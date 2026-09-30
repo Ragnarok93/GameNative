@@ -111,7 +111,11 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(handoff.contains("isLsfgGenerationActive = active"))
         assertTrue(handoff.contains("applyFpsLimiterToEngines(effectiveFpsLimit())"))
         assertTrue(multiplier.contains("val previousRequested = isLsfgRequested"))
+        assertTrue(multiplier.contains("if (previousRequested && !nextRequested)"))
+        assertTrue(multiplier.contains("setLsfgPresentationFrameRateHint(0)"))
+        assertTrue(multiplier.contains("resident bypass pending"))
         assertTrue(multiplier.contains("scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)"))
+        assertFalse(multiplier.contains("SOURCE_ONLY_RESIDENT ="))
         assertFalse(applier.contains("!isLsfgGenerationActive"))
         assertTrue(applier.contains("applyFpsLimiterToEngines(capFps)"))
     }
@@ -188,6 +192,39 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(manager.contains("expectedManifest"))
         assertTrue(manager.contains("Publish the marker last"))
         assertTrue(manager.contains("disableLayerForLaunch"))
+    }
+
+
+    @Test
+    fun bionicLaunchPreparesLsfgTransactionallyBeforeProcessExec() {
+        val launcher = String(
+            Files.readAllBytes(
+                sourcePath("com/winlator/xenvironment/components/BionicProgramLauncherComponent.java"),
+            ),
+            Charsets.UTF_8,
+        )
+        val manager = String(
+            Files.readAllBytes(sourcePath("app/gamenative/utils/LsfgVkManager.kt")),
+            Charsets.UTF_8,
+        )
+
+        val launchBlock = launcher.substringAfter(
+            "if (LsfgVkManager.isFrameGenerationRequested(container))",
+        ).substringBefore("} else if (LsfgVkManager.isSupported(container))")
+
+        assertTrue(launchBlock.contains("LsfgVkManager.prepareLaunch("))
+        assertFalse(launchBlock.contains("LsfgVkManager.ensureRuntimeInstalled("))
+        assertFalse(launchBlock.contains("LsfgVkManager.writeConfig("))
+        assertFalse(launchBlock.contains("LsfgVkManager.applyLaunchEnv("))
+        assertTrue(launchBlock.contains("continuing with native Vulkan launch"))
+
+        val prepare = manager.substringAfter("fun prepareLaunch(")
+            .substringBefore("@JvmStatic\n    fun writeConfig")
+        assertTrue(prepare.contains("ensureRuntimeInstalledLocked(context, container)"))
+        assertTrue(prepare.contains("writeConfig(container)"))
+        assertTrue(prepare.contains("applyLaunchEnvLocked(container, envVars)"))
+        assertTrue(prepare.contains("disableLayerForLaunch(container, envVars)"))
+        assertTrue(prepare.contains("LSFG launch preparation complete"))
     }
 
     private fun sourcePath(relative: String): Path {

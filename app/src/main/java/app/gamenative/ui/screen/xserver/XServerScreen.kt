@@ -854,6 +854,17 @@ fun XServerScreen(
         lsfgMultiplier = nextMultiplier
         applyLsfgSettings()
         if (previousRequested != nextRequested) {
+            if (previousRequested && !nextRequested) {
+                // Keep the proven resident native-present bypass. Clear only
+                // the generated-output SurfaceFlinger vote immediately so FIFO
+                // Off cannot spend the handoff dwell at the old LSFG cadence.
+                // The native context/swapchain stays resident for hot re-enable.
+                (xServerView?.renderer as? VulkanRenderer)
+                    ?.setLsfgPresentationFrameRateHint(0)
+                Timber.i(
+                    "LSFG off handoff: cleared generated presentation hint; resident bypass pending",
+                )
+            }
             scheduleLsfgRuntimeHandoff(nextRequested, nextMultiplier)
         } else if (nextRequested) {
             lsfgRuntimeMultiplier = nextMultiplier.coerceIn(2, 4)

@@ -80,6 +80,7 @@ object LsfgVkManager {
     const val ADAPTIVE_FLOW_PRESET_QUALITY = "quality"
     const val ADAPTIVE_FLOW_PRESET_BALANCED = "balanced"
     const val ADAPTIVE_FLOW_PRESET_LOW = "low"
+    const val ADAPTIVE_FLOW_PRESET_AUTO = "auto"
     const val MIN_ADAPTIVE_TARGET_FPS = 30
     const val MAX_ADAPTIVE_TARGET_FPS = 120
     const val ADAPTIVE_TARGET_FPS_STEP = 5
@@ -108,7 +109,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-xclipse-fifo-off-bypass-dcbe5678b1bc57e4c872f2aec42341a7101a83f5-r63"
+        "gamenative-adaptive-flow-target-hold-b951875f6c74dc5b29e978c3ab0946a90e500521-r81"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -229,6 +230,7 @@ object LsfgVkManager {
         when (preset.lowercase(Locale.US)) {
             ADAPTIVE_FLOW_PRESET_BALANCED -> ADAPTIVE_FLOW_PRESET_BALANCED
             ADAPTIVE_FLOW_PRESET_LOW -> ADAPTIVE_FLOW_PRESET_LOW
+            ADAPTIVE_FLOW_PRESET_AUTO -> ADAPTIVE_FLOW_PRESET_AUTO
             else -> ADAPTIVE_FLOW_PRESET_QUALITY
         }
 
@@ -279,7 +281,7 @@ object LsfgVkManager {
         val text = buildString {
             appendLine("timestamp_ms=${snapshot.timestampMs}")
             appendLine("gpu_usage_percent=${String.format(Locale.US, "%.1f", gpu)}")
-            appendLine("output_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
+            appendLine("source_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
             appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
             appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
         }
@@ -548,6 +550,47 @@ object LsfgVkManager {
         }
 
         return success
+    }
+
+    /**
+     * Atomically prepare an LSFG-enabled launch. A cold install, config publish,
+     * loader-HOME synchronization and layer activation must all succeed before
+     * Wine starts with LSFG armed. Any failure explicitly disables the layer
+     * for this process so the game can still launch natively.
+     */
+    @JvmStatic
+    fun prepareLaunch(
+        context: Context,
+        container: Container,
+        envVars: EnvVars,
+        protectedAdrenoPresentation: Boolean,
+    ): Boolean = synchronized(runtimeInstallLock) {
+        if (!isSupported(container) || !isFrameGenerationRequested(container)) {
+            disableLayerForLaunch(container, envVars)
+            return@synchronized false
+        }
+
+        if (!ensureRuntimeInstalledLocked(context, container)) {
+            disableLayerForLaunch(container, envVars)
+            Timber.tag(TAG).e("LSFG launch preparation failed: runtime install")
+            return@synchronized false
+        }
+
+        if (!writeConfig(container)) {
+            disableLayerForLaunch(container, envVars)
+            Timber.tag(TAG).e("LSFG launch preparation failed: config publish")
+            return@synchronized false
+        }
+
+        val armed = applyLaunchEnvLocked(container, envVars)
+        if (!armed) {
+            disableLayerForLaunch(container, envVars)
+            Timber.tag(TAG).e("LSFG launch preparation failed: loader activation")
+            return@synchronized false
+        }
+
+        Timber.tag(TAG).i("LSFG launch preparation complete")
+        true
     }
 
     @JvmStatic

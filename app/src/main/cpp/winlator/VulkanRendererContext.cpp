@@ -55,9 +55,15 @@ const char* provenanceKindName(uint8_t kind) {
 }
 } // namespace
 
-VulkanRendererContext::VulkanRendererContext(ANativeWindow* win, int cW, int cH, void* aHandle)
+VulkanRendererContext::VulkanRendererContext(
+        ANativeWindow* win,
+        int cW,
+        int cH,
+        void* aHandle,
+        std::string provenanceSocketPath)
     : window(win), surfaceWidth(cW), surfaceHeight(cH), containerWidth(cW), containerHeight(cH),
-      adrenotoolsHandle(aHandle)
+      adrenotoolsHandle(aHandle),
+      lsfgProvenanceSocketPath(std::move(provenanceSocketPath))
 {
     createInstance(); createSurface(); pickPhysicalDevice(); createLogicalDevice();
     createSwapchain(); createRenderPass(); createDSLayout();
@@ -1652,22 +1658,63 @@ void VulkanRendererContext::completeObservedFence(VkFence fence) {
 
 void VulkanRendererContext::initLsfgProvenanceSocket() {
     if (lsfgProvenanceSocket >= 0) return;
-    const int fd = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0) return;
+    if (lsfgProvenanceSocketPath.empty()) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "provenance-socket-bind-failed reason=empty-path");
+        return;
+    }
+
+    if (lsfgProvenanceSocketPath.size() >= sizeof(sockaddr_un{}.sun_path)) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "provenance-socket-bind-failed reason=path-too-long length=%zu path=%s",
+            lsfgProvenanceSocketPath.size(),
+            lsfgProvenanceSocketPath.c_str());
+        return;
+    }
+
+    const int fd = ::socket(
+        AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "provenance-socket-bind-failed reason=socket errno=%d path=%s",
+            errno, lsfgProvenanceSocketPath.c_str());
+        return;
+    }
+
+    // A killed prior process can leave only the filesystem name behind.
+    // Removing that stale name is metadata cleanup, not per-frame file I/O.
+    ::unlink(lsfgProvenanceSocketPath.c_str());
 
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
-    address.sun_path[0] = '\0';
-    constexpr std::size_t nameLength = sizeof(LSFG_PROVENANCE_SOCKET) - 1;
-    static_assert(nameLength + 1 <= sizeof(address.sun_path));
-    std::memcpy(address.sun_path + 1, LSFG_PROVENANCE_SOCKET, nameLength);
+    std::memcpy(
+        address.sun_path,
+        lsfgProvenanceSocketPath.c_str(),
+        lsfgProvenanceSocketPath.size() + 1);
     const socklen_t addressLength = static_cast<socklen_t>(
-        offsetof(sockaddr_un, sun_path) + 1 + nameLength);
-    if (::bind(fd, reinterpret_cast<const sockaddr*>(&address), addressLength) != 0) {
+        offsetof(sockaddr_un, sun_path)
+        + lsfgProvenanceSocketPath.size() + 1);
+    if (::bind(
+            fd,
+            reinterpret_cast<const sockaddr*>(&address),
+            addressLength) != 0) {
+        const int bindError = errno;
         ::close(fd);
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "provenance-socket-bind-failed reason=bind errno=%d path=%s",
+            bindError, lsfgProvenanceSocketPath.c_str());
         return;
     }
+
     lsfgProvenanceSocket = fd;
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+        "provenance-socket-bind-ok path=%s",
+        lsfgProvenanceSocketPath.c_str());
 }
 
 void VulkanRendererContext::closeLsfgProvenanceSocket() {
@@ -1675,6 +1722,19 @@ void VulkanRendererContext::closeLsfgProvenanceSocket() {
         ::close(lsfgProvenanceSocket);
         lsfgProvenanceSocket = -1;
     }
+    if (!lsfgProvenanceSocketPath.empty())
+        ::unlink(lsfgProvenanceSocketPath.c_str());
+
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        "LSFG_HOST_DISPLAY",
+        "provenance_rx_total=%" PRIu64
+        " provenance_match_total=%" PRIu64
+        " provenance_miss_total=%" PRIu64,
+        provenanceRxTotal_,
+        provenanceMatchTotal_,
+        provenanceMissTotal_);
+
     pendingLsfgProvenance.clear();
     lsfgSwapchainImageAhbs.clear();
 }
@@ -1695,6 +1755,32 @@ void VulkanRendererContext::drainLsfgProvenance() {
                 || packet.version != kLsfgFrameProvenanceVersion
                 || packet.deliveryId == 0) {
             continue;
+        }
+
+        ++provenanceRxTotal_;
+        if (!provenanceFirstPacketLogged_) {
+            provenanceFirstPacketLogged_ = true;
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                "LSFG_HOST_DISPLAY",
+                "provenance-first-packet delivery_id=%" PRIu64
+                " swapchain_image=%u kind=%s",
+                packet.deliveryId,
+                packet.swapchainImageIndex,
+                provenanceKindName(packet.kind));
+        }
+        if (provenanceRxTotal_ == 1 || provenanceRxTotal_ % 120 == 0) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                "LSFG_HOST_DISPLAY",
+                "provenance_rx_total=%" PRIu64
+                " provenance_match_total=%" PRIu64
+                " provenance_miss_total=%" PRIu64
+                " pending=%zu",
+                provenanceRxTotal_,
+                provenanceMatchTotal_,
+                provenanceMissTotal_,
+                pendingLsfgProvenance.size());
         }
 
         LsfgFrameProvenance provenance{};
@@ -1736,7 +1822,11 @@ void VulkanRendererContext::bindLsfgProvenance(
         AHardwareBuffer* ahb, WinTex& texture) {
     drainLsfgProvenance();
     texture.frameProvenance = {};
-    if (!ahb || pendingLsfgProvenance.empty()) return;
+    if (!ahb || pendingLsfgProvenance.empty()) {
+        if (ahb)
+            ++provenanceMissTotal_;
+        return;
+    }
 
     const uint64_t identity = ahbIdentity(ahb);
     auto selected = pendingLsfgProvenance.end();
@@ -1767,7 +1857,10 @@ void VulkanRendererContext::bindLsfgProvenance(
         }
     }
 
-    if (selected == pendingLsfgProvenance.end()) return;
+    if (selected == pendingLsfgProvenance.end()) {
+        ++provenanceMissTotal_;
+        return;
+    }
 
     while (pendingLsfgProvenance.begin() != selected) {
         HostDisplayConfirmation superseded{};
@@ -1779,6 +1872,20 @@ void VulkanRendererContext::bindLsfgProvenance(
 
     texture.frameProvenance = pendingLsfgProvenance.front();
     pendingLsfgProvenance.pop_front();
+    ++provenanceMatchTotal_;
+    if (provenanceMatchTotal_ == 1 || provenanceMatchTotal_ % 120 == 0) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            "LSFG_HOST_DISPLAY",
+            "provenance_rx_total=%" PRIu64
+            " provenance_match_total=%" PRIu64
+            " provenance_miss_total=%" PRIu64
+            " matched_delivery_id=%" PRIu64,
+            provenanceRxTotal_,
+            provenanceMatchTotal_,
+            provenanceMissTotal_,
+            texture.frameProvenance.deliveryId);
+    }
 }
 
 void VulkanRendererContext::emitHostDisplayConfirmation(

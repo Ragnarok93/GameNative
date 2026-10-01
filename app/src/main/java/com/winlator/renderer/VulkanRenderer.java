@@ -19,7 +19,9 @@ import com.winlator.xserver.WindowAttributes;
 import com.winlator.xserver.WindowManager;
 import com.winlator.xserver.XLock;
 import com.winlator.xserver.XServer;
+import com.winlator.xenvironment.ImageFs;
 
+import java.io.File;
 import java.util.ArrayList;
 
 public class VulkanRenderer implements WindowManager.OnWindowModificationListener,
@@ -130,7 +132,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         } catch (Exception e) { return null; }
     }
 
-    private native long nativeInit(Surface surface, int screenWidth, int screenHeight, String driverPath, String libraryName, String nativeLibDir);
+    private native long nativeInit(Surface surface, int screenWidth, int screenHeight, String driverPath, String libraryName, String nativeLibDir, String provenanceSocketPath);
     private native void nativeResize(long handle, int width, int height);
     private native void nativeDestroy(long handle);
     private native void nativeUpdateWindowContent(long handle, long id, java.nio.ByteBuffer pixels,
@@ -205,7 +207,19 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         return;
                     }
                 }
-                nativeHandle = nativeInit(surface, xServer.screenInfo.width, xServer.screenInfo.height, driverPath, driverLibraryName, nativeLibDir);
+                Context context = xServerView.getContext();
+                File provenanceDir = new File(ImageFs.find(context).getRootDir(), "tmp");
+                provenanceDir.mkdirs();
+                String provenanceSocketPath =
+                    new File(provenanceDir, "lsfg-provenance-v1.sock").getAbsolutePath();
+                nativeHandle = nativeInit(
+                    surface,
+                    xServer.screenInfo.width,
+                    xServer.screenInfo.height,
+                    driverPath,
+                    driverLibraryName,
+                    nativeLibDir,
+                    provenanceSocketPath);
                 if (nativeHandle != 0) {
                     nativeSetPresentMode(nativeHandle, pendingPresentMode);
                     nativeSetFilterMode(nativeHandle, pendingFilterMode);

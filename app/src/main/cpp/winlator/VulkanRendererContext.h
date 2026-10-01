@@ -214,7 +214,12 @@ public:
     int64_t enableXrTarget();
     void disableXrTarget();
     int64_t xrTargetExtentPacked();
-    VulkanRendererContext(ANativeWindow* window, int cWidth, int cHeight, void* adrenotoolsHandle = nullptr);
+    VulkanRendererContext(
+        ANativeWindow* window,
+        int cWidth,
+        int cHeight,
+        void* adrenotoolsHandle = nullptr,
+        std::string provenanceSocketPath = {});
     ~VulkanRendererContext();
 
     void onSurfaceResized(int width, int height);
@@ -341,6 +346,11 @@ private:
     std::deque<HostDisplayConfirmation> pendingHostDisplayConfirmations;
 
     int lsfgProvenanceSocket = -1;
+    std::string lsfgProvenanceSocketPath;
+    uint64_t provenanceRxTotal_ = 0;
+    uint64_t provenanceMatchTotal_ = 0;
+    uint64_t provenanceMissTotal_ = 0;
+    bool provenanceFirstPacketLogged_ = false;
     std::deque<LsfgFrameProvenance> pendingLsfgProvenance;
     std::unordered_map<uint32_t, uint64_t> lsfgSwapchainImageAhbs;
 

@@ -182,6 +182,9 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
         envVars.put("HOME", imageFs.home_path);
         envVars.put("USER", ImageFs.USER);
         envVars.put("TMPDIR", imageFs.getRootDir().getPath() + "/tmp");
+        envVars.put(
+                "LSFG_PROVENANCE_SOCKET_PATH",
+                new File(rootDir, "tmp/lsfg-provenance-v1.sock").getAbsolutePath());
         new File(imageFs.home_path + "/.wine/drive_c" + imageFs.getRootDir().getPath() + "/tmp").mkdirs();
         envVars.put("DISPLAY", ":0");
 

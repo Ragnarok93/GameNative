@@ -69,6 +69,15 @@ object LsfgQuickMenuHelper {
         }
 
     fun setFlowScaleMode(container: Container, mode: FlowScaleMode) {
+        val previousFlowMode = flowScaleMode(container)
+        val preservedGenerationMode = generationMode(container)
+        Timber.i(
+            "LSFG setting change key=flowScaleMode previous=%s next=%s preservedGenerationMode=%s multiplier=%d",
+            previousFlowMode,
+            mode,
+            preservedGenerationMode,
+            LsfgVkManager.multiplier(container),
+        )
         container.putExtra(
             LsfgVkManager.EXTRA_FLOW_SCALE_MODE,
             if (mode == FlowScaleMode.ADAPTIVE) {
@@ -100,6 +109,14 @@ object LsfgQuickMenuHelper {
     }
 
     fun setGenerationMode(container: Container, mode: FrameGenerationMode) {
+        val previousGenerationMode = generationMode(container)
+        Timber.i(
+            "LSFG setting change key=generationMode previous=%s next=%s flowScaleMode=%s multiplier=%d",
+            previousGenerationMode,
+            mode,
+            flowScaleMode(container),
+            LsfgVkManager.multiplier(container),
+        )
         container.putExtra(
             LsfgVkManager.EXTRA_FRAMEGEN_MODE,
             if (mode == FrameGenerationMode.ADAPTIVE) LsfgVkManager.MODE_ADAPTIVE else LsfgVkManager.MODE_FIXED,

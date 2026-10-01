@@ -55,6 +55,28 @@ class VulkanRendererDisplayConfirmationContractTest {
         assertTrue(implementation.contains("swapchainImageIndex"))
     }
 
+
+    @Test
+    fun provenanceTransportUsesSharedFilesystemSocketAndReportsLifecycle() {
+        val renderer = source("VulkanRendererContext.cpp")
+        val jni = source("vulkan_jni.cpp")
+        val javaRenderer = repoSource("app/src/main/java/com/winlator/renderer/VulkanRenderer.java")
+        val bionic = repoSource("app/src/main/java/com/winlator/xenvironment/components/BionicProgramLauncherComponent.java")
+        val glibc = repoSource("app/src/main/java/com/winlator/xenvironment/components/GlibcProgramLauncherComponent.java")
+
+        assertTrue(javaRenderer.contains("lsfg-provenance-v1.sock"))
+        assertTrue(javaRenderer.contains("ImageFs.find"))
+        assertTrue(jni.contains("jProvenanceSocketPath"))
+        assertTrue(renderer.contains("provenance-socket-bind-ok"))
+        assertTrue(renderer.contains("provenance-socket-bind-failed"))
+        assertTrue(renderer.contains("provenance_rx_total="))
+        assertTrue(renderer.contains("provenance_match_total="))
+        assertTrue(renderer.contains("provenance_miss_total="))
+        assertTrue(renderer.contains("unlink("))
+        assertTrue(bionic.contains("LSFG_PROVENANCE_SOCKET_PATH"))
+        assertTrue(glibc.contains("LSFG_PROVENANCE_SOCKET_PATH"))
+    }
+
     @Test
     fun telemetrySeparatesPhysicalConfirmationFromWsiAcceptance() {
         val implementation = source("VulkanRendererContext.cpp")
@@ -75,5 +97,12 @@ class VulkanRendererDisplayConfirmationContractTest {
         val path: Path = candidates.firstOrNull { Files.isRegularFile(it) }
             ?: error("Unable to locate Vulkan renderer source: $name")
         return String(Files.readAllBytes(path), Charsets.UTF_8)
+    }
+
+    private fun repoSource(path: String): String {
+        val candidates = listOf(Paths.get(path), Paths.get("..").resolve(path))
+        val source: Path = candidates.firstOrNull { Files.isRegularFile(it) }
+            ?: error("Unable to locate repository source: $path")
+        return String(Files.readAllBytes(source), Charsets.UTF_8)
     }
 }

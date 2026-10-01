@@ -75,7 +75,7 @@ VulkanRendererContext::~VulkanRendererContext() {
     if (adrenotoolsHandle) { dlclose(adrenotoolsHandle); adrenotoolsHandle = nullptr; }
 }
 
-void VulkanRendererContext::loadInstanceDispatch() {void VulkanRendererContext::loadInstanceDispatch() {
+void VulkanRendererContext::loadInstanceDispatch() {
     auto i = [&](const char* name) { return gipa ? gipa(instance, name) : nullptr; };
 #define LOAD_I2(fn) vk_.fn = (PFN_vk##fn)i("vk"#fn)
     LOAD_I2(DestroyInstance);
@@ -658,7 +658,7 @@ void VulkanRendererContext::destroyWinTex(WinTex& wt) {
     wt={};
 }
 
-void VulkanRendererContext::ensureCursorTex(short w, short h) {void VulkanRendererContext::ensureCursorTex(short w, short h) {
+void VulkanRendererContext::ensureCursorTex(short w, short h) {
     if (cursorImg!=VK_NULL_HANDLE && cursorTexW==w && cursorTexH==h) return;
     cleanupCursorTex();
     VkImageCreateInfo ii{}; ii.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; ii.imageType=VK_IMAGE_TYPE_2D;
@@ -1002,7 +1002,7 @@ void VulkanRendererContext::flushDeleteQueue() {
     reclaimRetiredWindowTextures();
 }
 
-void VulkanRendererContext::renderFrame() {void VulkanRendererContext::renderFrame() {
+void VulkanRendererContext::renderFrame() {
     std::shared_lock<std::shared_mutex> frameLock(frameMutex);
 
     needsRender.store(false,std::memory_order_relaxed);
@@ -1568,7 +1568,7 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     needsRender.store(true); dirtyCV.notify_one();
 }
 
-void VulkanRendererContext::setRenderList(const int64_t* ids, const int* xs, const int* ys, int count) {void VulkanRendererContext::setRenderList(const int64_t* ids, const int* xs, const int* ys, int count) {
+void VulkanRendererContext::setRenderList(const int64_t* ids, const int* xs, const int* ys, int count) {
     std::lock_guard<std::mutex> lk(renderMutex);
     renderList.resize(count);
     for (int i=0;i<count;i++) renderList[i]={ids[i],xs[i],ys[i]};
@@ -1627,7 +1627,7 @@ void VulkanRendererContext::cleanupAllAHBCache() {
 }
 
 
-void VulkanRendererContext::dumpRendererInfo() {void VulkanRendererContext::dumpRendererInfo() {
+void VulkanRendererContext::dumpRendererInfo() {
     VkPhysicalDeviceProperties props{};
     vk_.GetPhysicalDeviceProperties(physicalDevice,&props);
     __android_log_print(ANDROID_LOG_DEBUG,WLOG_TAG,

@@ -17,4 +17,5 @@ data class MetricsSnapshot(
     val gpuUsagePercent: Float?,
     val cpuTempC: Int?,
     val gpuTempC: Int?,
+    val thermalStatus: Int? = null,
 )

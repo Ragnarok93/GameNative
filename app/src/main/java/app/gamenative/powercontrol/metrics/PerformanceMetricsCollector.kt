@@ -2,6 +2,7 @@ package app.gamenative.powercontrol.metrics
 
 import android.content.Context
 import android.hardware.display.DisplayManager
+import android.os.Build
 import android.view.Display
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
@@ -47,6 +48,7 @@ object PerformanceMetricsCollector {
     private val sessionLog = JsonlSessionLog(TAG, "metrics-", MAX_LOG_BYTES, MAX_SESSION_FILES)
     private var sampleCount = 0L
     private var displayRefreshRate = DEFAULT_REFRESH_RATE
+    private var thermalManager: android.os.PowerManager? = null
 
     /** The exact log belonging to the currently running collector session. */
     @Volatile
@@ -72,6 +74,8 @@ object PerformanceMetricsCollector {
             val appContext = context.applicationContext
             val generation = sessionGeneration.incrementAndGet()
             displayRefreshRate = readDisplayRefreshRate(appContext)
+            thermalManager =
+                appContext.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
             cpuSampler.reset()
             gpuSampler.reset()
             sampleCount = 0L
@@ -125,6 +129,7 @@ object PerformanceMetricsCollector {
             PowerManager.currentFps = 0f
             PowerManager.currentCpuUsage = 0f
             PowerManager.currentGpuUsage = 0f
+            thermalManager = null
             Timber.tag(TAG).i("Collector stopped after %d samples", sampleCount)
         }
     }
@@ -194,6 +199,7 @@ object PerformanceMetricsCollector {
             gpuUsagePercent = gpu?.percent?.toFloat(),
             cpuTempC = SystemMetricsSources.readTemperatureC(SystemMetricsSources.cpuTempPaths()),
             gpuTempC = SystemMetricsSources.readTemperatureC(SystemMetricsSources.gpuTempPaths()),
+            thermalStatus = readThermalStatus(),
         )
 
         if (!publish(snapshot, generation, frameGeneration)) return
@@ -246,6 +252,13 @@ object PerformanceMetricsCollector {
         val referenceFps = if (targetFps > 0) targetFps.toFloat() else displayRefreshRate
         if (referenceFps <= 0f) return 0L
         return (SLOW_FRAME_FACTOR * 1_000_000_000.0 / referenceFps).toLong()
+    }
+
+    private fun readThermalStatus(): Int? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        return runCatching {
+            thermalManager?.currentThermalStatus?.takeIf { it in 0..6 }
+        }.getOrNull()
     }
 
     private fun readDisplayRefreshRate(context: Context): Float {

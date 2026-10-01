@@ -103,6 +103,8 @@ struct VkTable {
 #include <android/native_window.h>
 #include <vector>
 #include <unordered_map>
+#include <array>
+#include <cstddef>
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -110,6 +112,56 @@ struct VkTable {
 #include <condition_variable>
 
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+// A generated/composited window normally rotates through only a small AHB set.
+// Keep enough history for reuse without letting a long session consume the
+// renderer's descriptor budget indefinitely.
+static constexpr uint32_t MAX_AHB_IMPORTS_PER_WINDOW = 12;
+// AHB descriptors live in their own bounded pool. Active and retired imports
+// both consume this budget until a fence proves the last GPU use completed.
+static constexpr uint32_t MAX_AHB_IMPORTS_TOTAL = 128;
+
+struct AhbImportBudget {
+    static bool canAllocate(std::size_t active, std::size_t retired) noexcept {
+        return active <= MAX_AHB_IMPORTS_TOTAL
+            && retired <= MAX_AHB_IMPORTS_TOTAL
+            && active + retired < MAX_AHB_IMPORTS_TOTAL;
+    }
+};
+
+struct RendererSubmissionTimeline {
+    std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> frameSubmissionSerial{};
+    std::atomic<uint64_t> submittedSubmissionSerial{0};
+    std::atomic<uint64_t> completedSubmissionSerial{0};
+
+    uint64_t nextSubmissionSerial() const noexcept {
+        return submittedSubmissionSerial.load(std::memory_order_acquire) + 1;
+    }
+
+    void submitFrame(uint32_t frameIndex, uint64_t serial) noexcept {
+        if (frameIndex >= MAX_FRAMES_IN_FLIGHT) return;
+        frameSubmissionSerial[frameIndex] = serial;
+        submittedSubmissionSerial.store(serial, std::memory_order_release);
+    }
+
+    void completeFrame(uint32_t frameIndex) noexcept {
+        if (frameIndex >= MAX_FRAMES_IN_FLIGHT) return;
+        const uint64_t serial = frameSubmissionSerial[frameIndex];
+        if (serial == 0) return;
+        uint64_t completed =
+            completedSubmissionSerial.load(std::memory_order_acquire);
+        while (completed < serial
+                && !completedSubmissionSerial.compare_exchange_weak(
+                    completed, serial,
+                    std::memory_order_release,
+                    std::memory_order_acquire)) {}
+        frameSubmissionSerial[frameIndex] = 0;
+    }
+
+    void completeAllFrames() noexcept {
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+            completeFrame(i);
+    }
+};
 
 struct WindowPushConstants {
     float ndcX0, ndcY0, ndcX1, ndcY1;
@@ -198,13 +250,29 @@ private:
         bool                 isAHB          = false;
         bool                 needsTransition = false;
         AHardwareBuffer*     ahb            = nullptr;
+        VkDescriptorPool     descriptorPool = VK_NULL_HANDLE;
+        uint64_t             lastUseSubmissionSerial = 0;
+    };
+
+    struct RetiredAhbImport {
+        AHardwareBuffer* ahb = nullptr;
+        WinTex texture{};
+        uint64_t lastUseSubmissionSerial = 0;
+        uint64_t retireAfterSubmissionSerial = 0;
+    };
+
+    struct RetiredWindowTexture {
+        WinTex texture{};
+        uint64_t lastUseSubmissionSerial = 0;
     };
 
     struct RenderEntry { int64_t id; int x, y; };
     struct DrawEntry {
+        int64_t         ownerId        = 0;
         VkImage         img            = VK_NULL_HANDLE;
         VkDescriptorSet ds             = VK_NULL_HANDLE;
         VkBuffer        upload         = VK_NULL_HANDLE;
+        AHardwareBuffer* ahb           = nullptr;
         int             x=0, y=0, w=0, h=0;
         bool            needsTransition = false;
         bool            isAHB          = false;
@@ -232,8 +300,12 @@ private:
 
     std::unordered_map<AHardwareBuffer*, WinTex>              ahbImportCache;
     std::unordered_map<int64_t, std::vector<AHardwareBuffer*>> windowAhbs;
+    std::unordered_map<AHardwareBuffer*, uint32_t>             ahbWindowRefCounts;
+    std::vector<RetiredAhbImport>                              retiredAhbImports;
+    std::vector<RetiredWindowTexture>                          retiredWindowTextures;
+    RendererSubmissionTimeline                                 submissionTimeline{};
+    std::atomic<uint64_t>                                      renderSubmissionSerial{0};
 
-    std::vector<WinTex>    deleteQueue;
     std::vector<RenderEntry> renderList;
 
     std::vector<DrawEntry>             frameDraws;
@@ -343,6 +415,7 @@ private:
 
     VkSampler        sampler    = VK_NULL_HANDLE;
     VkDescriptorPool winTexPool = VK_NULL_HANDLE;
+    VkDescriptorPool ahbTexPool = VK_NULL_HANDLE;
 
     std::atomic<bool> needsRender{false};
     std::thread       renderThread;
@@ -365,6 +438,7 @@ private:
     void createCmdPool();
     void createSampler();
     void createWinTexPool();
+    void createAhbTexPool();
     void createCursorPipeline();
     void createCursorDS();
     void createCmdBufs();
@@ -373,6 +447,14 @@ private:
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);
+    void  retireAhbImport(AHardwareBuffer* ahb);
+    void  releaseWindowAhbReference(AHardwareBuffer* ahb);
+    void  releaseWindowAhbImports(int64_t id);
+    void  evictWindowAhbImports(int64_t id, AHardwareBuffer* keepAhb);
+    void  reclaimRetiredAhbImports();
+    void  reclaimRetiredWindowTextures();
+    void  markDrawResourcesSubmitted(uint64_t submissionSerial);
+    void  completeObservedFence(VkFence fence);
     void  cleanupAllAHBCache();
     void  flushDeleteQueue();
     void  destroyWinTex(WinTex& wt);

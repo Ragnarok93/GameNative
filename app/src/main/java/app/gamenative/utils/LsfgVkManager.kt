@@ -80,6 +80,7 @@ object LsfgVkManager {
     const val ADAPTIVE_FLOW_PRESET_QUALITY = "quality"
     const val ADAPTIVE_FLOW_PRESET_BALANCED = "balanced"
     const val ADAPTIVE_FLOW_PRESET_LOW = "low"
+    const val ADAPTIVE_FLOW_PRESET_AUTO = "auto"
     const val MIN_ADAPTIVE_TARGET_FPS = 30
     const val MAX_ADAPTIVE_TARGET_FPS = 120
     const val ADAPTIVE_TARGET_FPS_STEP = 5
@@ -108,7 +109,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-xclipse-fifo-off-bypass-dcbe5678b1bc57e4c872f2aec42341a7101a83f5-r63"
+        "gamenative-bannerlator-engine-c0e1103550c61c9893a17aa2ecccb197d91b9db5-r10"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -200,9 +201,17 @@ object LsfgVkManager {
         val degraded: Boolean,
         val multiplier: Int,
         val fresh: Boolean,
+        val framegenSupportKnown: Boolean = false,
+        val framegenSupported: Boolean = false,
+        val vulkanPath: String? = null,
+        val spirvTarget: String? = null,
+        val synchronizationPath: String? = null,
+        val ahbMode: String? = null,
+        val rejectionReason: String? = null,
     ) {
         val readyForGeneration: Boolean
-            get() = fresh && resident && generationReady && multiplier >= 2 && !degraded
+            get() = fresh && resident && generationReady && multiplier >= 2 && !degraded &&
+                (!framegenSupportKnown || framegenSupported)
 
         val readyForSourceOnly: Boolean
             get() = fresh && resident && sourceOnly && !generationReady && !degraded
@@ -229,6 +238,7 @@ object LsfgVkManager {
         when (preset.lowercase(Locale.US)) {
             ADAPTIVE_FLOW_PRESET_BALANCED -> ADAPTIVE_FLOW_PRESET_BALANCED
             ADAPTIVE_FLOW_PRESET_LOW -> ADAPTIVE_FLOW_PRESET_LOW
+            ADAPTIVE_FLOW_PRESET_AUTO -> ADAPTIVE_FLOW_PRESET_AUTO
             else -> ADAPTIVE_FLOW_PRESET_QUALITY
         }
 
@@ -279,7 +289,10 @@ object LsfgVkManager {
         val text = buildString {
             appendLine("timestamp_ms=${snapshot.timestampMs}")
             appendLine("gpu_usage_percent=${String.format(Locale.US, "%.1f", gpu)}")
-            appendLine("output_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
+            snapshot.thermalStatus?.takeIf { it in 0..6 }?.let {
+                appendLine("thermal_status=$it")
+            }
+            appendLine("source_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
             appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
             appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
         }
@@ -388,17 +401,23 @@ object LsfgVkManager {
             val sourceOnly = values["source_only"] == "1"
             val generationReady = values["generation_ready"] == "1"
             val resident = values["resident"] == "1" || values["active"] == "1" || sourceOnly
-            val status = when (values["state"]) {
-                "source_only" -> RuntimeStatus.SOURCE_ONLY
-                "generating" -> RuntimeStatus.GENERATING
-                "degraded" -> RuntimeStatus.DEGRADED
-                "pass_through" -> RuntimeStatus.PASS_THROUGH
-                else -> when {
-                    degraded -> RuntimeStatus.DEGRADED
-                    generationReady -> RuntimeStatus.GENERATING
-                    sourceOnly -> RuntimeStatus.SOURCE_ONLY
-                    resident -> RuntimeStatus.PASS_THROUGH
-                    else -> RuntimeStatus.UNKNOWN
+            val framegenSupportKnown = values["framegen_support_known"] == "1"
+            val framegenSupported = values["framegen_supported"] == "1"
+            val unsupported = framegenSupportKnown && !framegenSupported
+            val status = if (degraded || unsupported) {
+                RuntimeStatus.DEGRADED
+            } else {
+                when (values["state"]) {
+                    "source_only" -> RuntimeStatus.SOURCE_ONLY
+                    "generating" -> RuntimeStatus.GENERATING
+                    "degraded" -> RuntimeStatus.DEGRADED
+                    "pass_through" -> RuntimeStatus.PASS_THROUGH
+                    else -> when {
+                        generationReady -> RuntimeStatus.GENERATING
+                        sourceOnly -> RuntimeStatus.SOURCE_ONLY
+                        resident -> RuntimeStatus.PASS_THROUGH
+                        else -> RuntimeStatus.UNKNOWN
+                    }
                 }
             }
             RuntimeState(
@@ -411,6 +430,13 @@ object LsfgVkManager {
                 degraded = degraded,
                 multiplier = values["multiplier"]?.toIntOrNull() ?: 0,
                 fresh = true,
+                framegenSupportKnown = framegenSupportKnown,
+                framegenSupported = framegenSupported,
+                vulkanPath = values["framegen_vulkan_path"]?.takeIf { it.isNotBlank() },
+                spirvTarget = values["framegen_spirv_target"]?.takeIf { it.isNotBlank() },
+                synchronizationPath = values["framegen_sync_path"]?.takeIf { it.isNotBlank() },
+                ahbMode = values["framegen_ahb_mode"]?.takeIf { it.isNotBlank() },
+                rejectionReason = values["framegen_rejection_reason"]?.takeIf { it.isNotBlank() },
             )
         }.getOrElse {
             unknownRuntimeState(fresh = false)
@@ -1037,6 +1063,35 @@ object LsfgVkManager {
      * In Adaptive mode fps_limit is the requested output target only.
      */
     @JvmStatic
+    fun updateConfigAtRuntime(
+        container: Container,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        performanceMode: Boolean,
+    ): Boolean {
+        val adaptiveFramegen =
+            enabled && multiplier >= 2 && generationMode(container) == MODE_ADAPTIVE
+        return updateConfigAtRuntime(
+            container = container,
+            enabled = enabled,
+            multiplier = multiplier,
+            flowScale = flowScale,
+            performanceMode = performanceMode,
+            adaptiveFramegen = adaptiveFramegen,
+            fpsLimit = if (adaptiveFramegen) adaptiveTargetFps(container) else 0,
+            adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+            adaptiveFlowPreset = adaptiveFlowPreset(container),
+            presentMode = presentMode(container),
+        )
+    }
+
+    /**
+     * Publish one coherent LSFG runtime snapshot. Callers that already captured
+     * Quick Menu state must use this overload so a debounced Flow update cannot
+     * reread a newer/older frame-generation mode and silently change modes.
+     */
+    @JvmStatic
     @Synchronized
     fun updateConfigAtRuntime(
         container: Container,
@@ -1044,6 +1099,11 @@ object LsfgVkManager {
         multiplier: Int,
         flowScale: Float,
         performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        presentMode: String,
     ): Boolean {
         if (!isSupported(container)) return false
 
@@ -1058,26 +1118,49 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val frameGenActive = enabled && multiplier >= 2 &&
                 dllPath != null && processExecutable != null
-            val adaptive = frameGenActive && generationMode(container) == MODE_ADAPTIVE
-            val effectiveMultiplier = if (adaptive) 4 else multiplier.coerceIn(2, 4)
-            val effectiveFpsLimit = if (adaptive) adaptiveTargetFps(container) else 0
+            val effectiveAdaptiveFramegen = frameGenActive && adaptiveFramegen
+            val effectiveAdaptiveFlowScale = frameGenActive && adaptiveFlowScale
+            val effectiveMultiplier = if (effectiveAdaptiveFramegen) {
+                4
+            } else {
+                multiplier.coerceIn(2, 4)
+            }
+            val effectiveFpsLimit = if (effectiveAdaptiveFramegen) {
+                sanitizeAdaptiveTargetFps(fpsLimit)
+            } else {
+                0
+            }
+            val effectivePresentMode =
+                presentMode.takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
+            val effectiveAdaptiveFlowPreset =
+                sanitizeAdaptiveFlowPreset(adaptiveFlowPreset)
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) effectiveMultiplier else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
-                adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
-                adaptiveFlowPreset = adaptiveFlowPreset(container),
+                adaptiveFlowScale = effectiveAdaptiveFlowScale,
+                adaptiveFlowPreset = effectiveAdaptiveFlowPreset,
                 performanceMode = performanceMode,
-                adaptiveFramegen = adaptive,
+                adaptiveFramegen = effectiveAdaptiveFramegen,
                 fpsLimit = effectiveFpsLimit,
-                presentMode = presentMode(container),
+                presentMode = effectivePresentMode,
             )
 
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
-                Timber.tag(TAG).i("LSFG configuration hot-reloaded")
+                Timber.tag(TAG).i(
+                    "LSFG runtime config published enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s",
+                    frameGenActive,
+                    if (frameGenActive) effectiveMultiplier else 1,
+                    effectiveAdaptiveFramegen,
+                    effectiveFpsLimit,
+                    effectiveAdaptiveFlowScale,
+                    effectiveAdaptiveFlowPreset,
+                    flowScale.coerceIn(0.25f, 1.0f),
+                    effectivePresentMode,
+                )
             }
             ok
         } catch (t: Throwable) {

@@ -1,9 +1,63 @@
 package app.gamenative.utils
 
+import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LsfgQuickMenuHelperModeTest {
+    private fun repoFile(path: String): File {
+        val candidates = listOf(File(path), File("../$path"), File("../../$path"))
+        return candidates.firstOrNull { it.isFile }
+            ?: error("Unable to locate $path from test working directory")
+    }
+
+    @Test
+    fun runtimePublicationSnapshotsFramegenAndFlowModesTogether() {
+        val helper = repoFile(
+            "app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt",
+        ).readText()
+        val manager = repoFile(
+            "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt",
+        ).readText()
+
+        assertTrue(
+            "Runtime publication must snapshot generation + Flow mode before debounce",
+            helper.contains("RuntimeConfigSnapshot") &&
+                helper.contains("generationMode = generationMode(container)") &&
+                helper.contains("flowScaleMode = flowScaleMode(container)"),
+        )
+        assertTrue(
+            "Published runtime config must use the captured generation mode",
+            helper.contains("snapshot.generationMode"),
+        )
+        assertTrue(
+            "Published runtime config must use the captured Flow mode",
+            helper.contains("snapshot.flowScaleMode"),
+        )
+        assertTrue(
+            "Native config writer must accept explicit framegen/Flow mode values instead of rereading mutable container state",
+            manager.contains("adaptiveFramegen: Boolean") &&
+                manager.contains("adaptiveFlowScale: Boolean"),
+        )
+    }
+
+    @Test
+    fun suspendedQuickMenuDoesNotTimeoutLsfgRuntimeHandoff() {
+        val xServer = repoFile(
+            "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt",
+        ).readText()
+        val start = xServer.indexOf("fun scheduleLsfgRuntimeHandoff(")
+        val end = xServer.indexOf("fun applyFpsLimiterEnabled(", start)
+        val handoff = xServer.substring(start, end)
+
+        assertTrue(
+            "Runtime acknowledgement timeout must pause while the guest is suspended by Quick Menu",
+            handoff.contains("PluviaApp.isOverlayPaused") &&
+                handoff.contains("activePollingElapsedMs"),
+        )
+    }
+
     @Test
     fun disabledMultiplierIsSeparateFromPersistedGenerationMode() {
         assertEquals(0, LsfgQuickMenuHelper.sanitizeMultiplier(0))
@@ -30,6 +84,7 @@ class LsfgQuickMenuHelperModeTest {
                 LsfgQuickMenuHelper.AdaptiveFlowPreset.QUALITY,
                 LsfgQuickMenuHelper.AdaptiveFlowPreset.BALANCED,
                 LsfgQuickMenuHelper.AdaptiveFlowPreset.LOW,
+                LsfgQuickMenuHelper.AdaptiveFlowPreset.AUTO,
             ),
             LsfgQuickMenuHelper.AdaptiveFlowPreset.values().toSet(),
         )

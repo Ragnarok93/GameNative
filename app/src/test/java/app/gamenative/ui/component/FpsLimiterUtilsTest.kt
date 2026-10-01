@@ -242,9 +242,17 @@ class FpsLimiterUtilsTest {
     }
 
     @Test
-    fun `Mailbox preserves legacy source-rate presentation vote`() {
-        assertEquals(30, presentationFrameRateVote(30, true, false, false, 60, 4, 120))
-        assertEquals(0, presentationFrameRateVote(0, true, false, false, 60, 4, 120))
+    fun `Mailbox votes for Fixed generated output without changing the source cap`() {
+        assertEquals(60, effectiveSourceFpsCap(60))
+        assertEquals(120, presentationFrameRateVote(60, true, false, false, 60, 3, 120))
+        assertEquals(120, presentationFrameRateVote(60, true, false, false, 60, 4, 120))
+        assertEquals(90, presentationFrameRateVote(30, true, false, false, 60, 3, 120))
+        assertEquals(120, presentationFrameRateVote(0, true, false, false, 60, 4, 120))
+    }
+
+    @Test
+    fun `Mailbox Adaptive presentation vote follows its output target`() {
+        assertEquals(90, presentationFrameRateVote(60, true, false, true, 90, 4, 120))
     }
 
     @Test

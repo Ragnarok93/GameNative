@@ -453,6 +453,69 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun explicitRuntimeSnapshotKeepsAdaptiveFramegenWhenContainerModeIsStale() {
+        val container = container(armed = true, multiplier = "4")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAMEGEN_MODE, LsfgVkManager.MODE_FIXED))
+            .thenReturn(LsfgVkManager.MODE_FIXED)
+        File(rootDir, ".config/lsfg-vk/conf.toml").apply {
+            parentFile?.mkdirs()
+            writeText("version = 1\n")
+        }
+
+        assertTrue(
+            LsfgVkManager.updateConfigAtRuntime(
+                container = container,
+                enabled = true,
+                multiplier = 4,
+                flowScale = 0.50f,
+                performanceMode = true,
+                adaptiveFramegen = true,
+                fpsLimit = 60,
+                adaptiveFlowScale = true,
+                adaptiveFlowPreset = LsfgVkManager.ADAPTIVE_FLOW_PRESET_AUTO,
+                presentMode = "mailbox",
+            ),
+        )
+
+        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
+        assertTrue(text.contains("multiplier = 4"))
+        assertTrue(text.contains("adaptive_framegen = true"))
+        assertTrue(text.contains("fps_limit = 60"))
+        assertTrue(text.contains("adaptive_flow_scale = true"))
+        assertTrue(text.contains("adaptive_flow_preset = \"auto\""))
+    }
+
+    @Test
+    fun explicitRuntimeSnapshotKeepsFixedMultiplierIndependentFromAdaptiveFlow() {
+        val container = container(armed = true, multiplier = "2")
+        File(rootDir, ".config/lsfg-vk/conf.toml").apply {
+            parentFile?.mkdirs()
+            writeText("version = 1\n")
+        }
+
+        assertTrue(
+            LsfgVkManager.updateConfigAtRuntime(
+                container = container,
+                enabled = true,
+                multiplier = 2,
+                flowScale = 0.50f,
+                performanceMode = true,
+                adaptiveFramegen = false,
+                fpsLimit = 0,
+                adaptiveFlowScale = true,
+                adaptiveFlowPreset = LsfgVkManager.ADAPTIVE_FLOW_PRESET_AUTO,
+                presentMode = "mailbox",
+            ),
+        )
+
+        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
+        assertTrue(text.contains("multiplier = 2"))
+        assertTrue(text.contains("adaptive_framegen = false"))
+        assertTrue(text.contains("fps_limit = 0"))
+        assertTrue(text.contains("adaptive_flow_scale = true"))
+    }
+
+    @Test
     fun adaptiveFlowPresetSanitizerFallsBackToQuality() {
         assertEquals(
             LsfgVkManager.ADAPTIVE_FLOW_PRESET_QUALITY,

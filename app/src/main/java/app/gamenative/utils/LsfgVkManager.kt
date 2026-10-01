@@ -1063,6 +1063,35 @@ object LsfgVkManager {
      * In Adaptive mode fps_limit is the requested output target only.
      */
     @JvmStatic
+    fun updateConfigAtRuntime(
+        container: Container,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        performanceMode: Boolean,
+    ): Boolean {
+        val adaptiveFramegen =
+            enabled && multiplier >= 2 && generationMode(container) == MODE_ADAPTIVE
+        return updateConfigAtRuntime(
+            container = container,
+            enabled = enabled,
+            multiplier = multiplier,
+            flowScale = flowScale,
+            performanceMode = performanceMode,
+            adaptiveFramegen = adaptiveFramegen,
+            fpsLimit = if (adaptiveFramegen) adaptiveTargetFps(container) else 0,
+            adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+            adaptiveFlowPreset = adaptiveFlowPreset(container),
+            presentMode = presentMode(container),
+        )
+    }
+
+    /**
+     * Publish one coherent LSFG runtime snapshot. Callers that already captured
+     * Quick Menu state must use this overload so a debounced Flow update cannot
+     * reread a newer/older frame-generation mode and silently change modes.
+     */
+    @JvmStatic
     @Synchronized
     fun updateConfigAtRuntime(
         container: Container,
@@ -1070,6 +1099,11 @@ object LsfgVkManager {
         multiplier: Int,
         flowScale: Float,
         performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        presentMode: String,
     ): Boolean {
         if (!isSupported(container)) return false
 
@@ -1084,26 +1118,49 @@ object LsfgVkManager {
             val processExecutable = targetExecutable(container)
             val frameGenActive = enabled && multiplier >= 2 &&
                 dllPath != null && processExecutable != null
-            val adaptive = frameGenActive && generationMode(container) == MODE_ADAPTIVE
-            val effectiveMultiplier = if (adaptive) 4 else multiplier.coerceIn(2, 4)
-            val effectiveFpsLimit = if (adaptive) adaptiveTargetFps(container) else 0
+            val effectiveAdaptiveFramegen = frameGenActive && adaptiveFramegen
+            val effectiveAdaptiveFlowScale = frameGenActive && adaptiveFlowScale
+            val effectiveMultiplier = if (effectiveAdaptiveFramegen) {
+                4
+            } else {
+                multiplier.coerceIn(2, 4)
+            }
+            val effectiveFpsLimit = if (effectiveAdaptiveFramegen) {
+                sanitizeAdaptiveTargetFps(fpsLimit)
+            } else {
+                0
+            }
+            val effectivePresentMode =
+                presentMode.takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
+            val effectiveAdaptiveFlowPreset =
+                sanitizeAdaptiveFlowPreset(adaptiveFlowPreset)
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,
                 enabled = frameGenActive,
                 multiplier = if (frameGenActive) effectiveMultiplier else 1,
                 flowScale = flowScale.coerceIn(0.25f, 1.0f),
-                adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
-                adaptiveFlowPreset = adaptiveFlowPreset(container),
+                adaptiveFlowScale = effectiveAdaptiveFlowScale,
+                adaptiveFlowPreset = effectiveAdaptiveFlowPreset,
                 performanceMode = performanceMode,
-                adaptiveFramegen = adaptive,
+                adaptiveFramegen = effectiveAdaptiveFramegen,
                 fpsLimit = effectiveFpsLimit,
-                presentMode = presentMode(container),
+                presentMode = effectivePresentMode,
             )
 
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
-                Timber.tag(TAG).i("LSFG configuration hot-reloaded")
+                Timber.tag(TAG).i(
+                    "LSFG runtime config published enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s",
+                    frameGenActive,
+                    if (frameGenActive) effectiveMultiplier else 1,
+                    effectiveAdaptiveFramegen,
+                    effectiveFpsLimit,
+                    effectiveAdaptiveFlowScale,
+                    effectiveAdaptiveFlowPreset,
+                    flowScale.coerceIn(0.25f, 1.0f),
+                    effectivePresentMode,
+                )
             }
             ok
         } catch (t: Throwable) {

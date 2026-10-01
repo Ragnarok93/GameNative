@@ -9,6 +9,7 @@ struct VkTable {
     PFN_vkDestroyInstance DestroyInstance;
     PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties;
+    PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2;
     PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR GetPhysicalDeviceSurfaceCapabilitiesKHR;
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR GetPhysicalDeviceSurfaceFormatsKHR;
@@ -28,6 +29,8 @@ struct VkTable {
     PFN_vkGetSwapchainImagesKHR GetSwapchainImagesKHR;
     PFN_vkAcquireNextImageKHR AcquireNextImageKHR;
     PFN_vkQueuePresentKHR QueuePresentKHR;
+    PFN_vkGetPastPresentationTimingGOOGLE GetPastPresentationTimingGOOGLE;
+    PFN_vkWaitForPresentKHR WaitForPresentKHR;
     PFN_vkQueueSubmit QueueSubmit;
     PFN_vkCreateRenderPass CreateRenderPass;
     PFN_vkDestroyRenderPass DestroyRenderPass;
@@ -102,7 +105,9 @@ struct VkTable {
 #include <android/hardware_buffer.h>
 #include <android/native_window.h>
 #include <vector>
+#include <deque>
 #include <unordered_map>
+#include <unordered_set>
 #include <array>
 #include <cstddef>
 #include <thread>
@@ -161,6 +166,32 @@ struct RendererSubmissionTimeline {
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
             completeFrame(i);
     }
+};
+
+enum class HostDisplayConfirmationBackend : uint8_t {
+    WsiAccepted = 0,
+    PresentWait = 1,
+    GoogleDisplayTiming = 2,
+};
+
+struct LsfgFrameProvenance {
+    bool valid = false;
+    uint64_t runtimeSessionId = 0;
+    uint64_t deliveryId = 0;
+    uint64_t sourceIndex = 0;
+    uint64_t batchId = 0;
+    uint32_t swapchainImageIndex = 0;
+    uint32_t interpolationCount = 0;
+    uint8_t interpolationIndex = 0;
+    uint8_t kind = 0; // 0=source, 1=generated
+};
+
+struct HostDisplayConfirmation {
+    uint64_t hostPresentId = 0;
+    uint32_t googlePresentId = 0;
+    HostDisplayConfirmationBackend backend =
+        HostDisplayConfirmationBackend::WsiAccepted;
+    std::vector<LsfgFrameProvenance> frameProvenance;
 };
 
 struct WindowPushConstants {
@@ -252,6 +283,7 @@ private:
         AHardwareBuffer*     ahb            = nullptr;
         VkDescriptorPool     descriptorPool = VK_NULL_HANDLE;
         uint64_t             lastUseSubmissionSerial = 0;
+        LsfgFrameProvenance  frameProvenance{};
     };
 
     struct RetiredAhbImport {
@@ -276,6 +308,7 @@ private:
         int             x=0, y=0, w=0, h=0;
         bool            needsTransition = false;
         bool            isAHB          = false;
+        LsfgFrameProvenance frameProvenance{};
     };
 
     ANativeWindow* window;
@@ -295,6 +328,21 @@ private:
     VkPresentModeKHR requestedPresentMode = VK_PRESENT_MODE_FIFO_KHR;
     uint32_t graphicsQueueFamilyIndex = 0;
     std::vector<VkPresentModeKHR> availablePresentModes;
+
+    // Host-output confirmation remains telemetry-only. It never changes
+    // render pacing or waits the render thread.
+    bool hostGoogleDisplayTimingEnabled = false;
+    bool hostPresentWaitEnabled = false;
+    uint64_t hostPresentId_ = 1;
+    uint32_t hostGooglePresentId_ = 1;
+    uint64_t hostWsiAccepted_ = 0;
+    uint64_t hostDisplayConfirmed_ = 0;
+    uint64_t hostDisplayUnknown_ = 0;
+    std::deque<HostDisplayConfirmation> pendingHostDisplayConfirmations;
+
+    int lsfgProvenanceSocket = -1;
+    std::deque<LsfgFrameProvenance> pendingLsfgProvenance;
+    std::unordered_map<uint32_t, uint64_t> lsfgSwapchainImageAhbs;
 
     std::unordered_map<int64_t, WinTex>         texMap;
 
@@ -444,6 +492,24 @@ private:
     void createCmdBufs();
     void createSyncObjects();
     void cleanupSwapchain();
+
+    void initLsfgProvenanceSocket();
+    void closeLsfgProvenanceSocket();
+    void drainLsfgProvenance();
+    void bindLsfgProvenance(AHardwareBuffer* ahb, WinTex& texture);
+    uint64_t ahbIdentity(AHardwareBuffer* ahb) const;
+    void pollHostDisplayConfirmations();
+    void recordHostPresent(
+        uint64_t hostPresentId,
+        uint32_t googlePresentId,
+        HostDisplayConfirmationBackend backend,
+        const std::vector<LsfgFrameProvenance>& frameProvenance);
+    void emitHostDisplayConfirmation(
+        const HostDisplayConfirmation& confirmation,
+        bool confirmed,
+        bool unknown,
+        const char* reason);
+    void flushHostDisplayConfirmationsUnknown(const char* reason);
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);

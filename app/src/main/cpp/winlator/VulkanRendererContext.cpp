@@ -7,8 +7,53 @@
 #include <algorithm>
 #include <inttypes.h>
 #include <dlfcn.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstddef>
+#include <chrono>
+#include <unordered_set>
 #include "window_vert.h"
 #include "window_frag.h"
+
+namespace {
+constexpr char LSFG_PROVENANCE_SOCKET[] = "gamenative-lsfg-provenance-v1";
+constexpr uint32_t kLsfgFrameProvenanceMagic = 0x4c534650U; // "LSFP"
+constexpr uint16_t kLsfgFrameProvenanceVersion = 1;
+constexpr std::size_t kMaxPendingLsfgProvenance = 512;
+constexpr std::size_t kMaxPendingHostConfirmations = 256;
+
+struct LsfgFrameProvenancePacket {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t kind;
+    uint8_t interpolationIndex;
+    uint32_t interpolationCount;
+    uint32_t swapchainImageIndex;
+    uint64_t runtimeSessionId;
+    uint64_t deliveryId;
+    uint64_t sourceIndex;
+    uint64_t batchId;
+};
+static_assert(sizeof(LsfgFrameProvenancePacket) == 48);
+
+const char* hostDisplayBackendName(HostDisplayConfirmationBackend backend) {
+    switch (backend) {
+        case HostDisplayConfirmationBackend::GoogleDisplayTiming:
+            return "google-display-timing";
+        case HostDisplayConfirmationBackend::PresentWait:
+            return "khr-present-wait";
+        case HostDisplayConfirmationBackend::WsiAccepted:
+            return "wsi-accepted";
+    }
+    return "wsi-accepted";
+}
+
+const char* provenanceKindName(uint8_t kind) {
+    return kind == 1 ? "generated" : "source";
+}
+} // namespace
 
 VulkanRendererContext::VulkanRendererContext(ANativeWindow* win, int cW, int cH, void* aHandle)
     : window(win), surfaceWidth(cW), surfaceHeight(cH), containerWidth(cW), containerHeight(cH),
@@ -19,6 +64,7 @@ VulkanRendererContext::VulkanRendererContext(ANativeWindow* win, int cW, int cH,
     createPipeline(true, pipeline);
     createFramebuffers(); createCmdPool(); createSampler();
     createWinTexPool(); createAhbTexPool(); createCursorDS(); createCmdBufs(); createSyncObjects();
+    initLsfgProvenanceSocket();
     isRunning = true;
     renderThread = std::thread(&VulkanRendererContext::renderLoop, this);
 }
@@ -29,6 +75,8 @@ VulkanRendererContext::~VulkanRendererContext() {
     std::lock_guard<std::mutex> lk(renderMutex);
     vk_.DeviceWaitIdle(device);
     submissionTimeline.completeAllFrames();
+    flushHostDisplayConfirmationsUnknown("renderer-destroy");
+    closeLsfgProvenanceSocket();
 
     for (auto& [id, wt] : texMap) {
         if (wt.isAHB) wt = {};
@@ -81,6 +129,7 @@ void VulkanRendererContext::loadInstanceDispatch() {
     LOAD_I2(DestroyInstance);
     LOAD_I2(EnumeratePhysicalDevices);
     LOAD_I2(GetPhysicalDeviceProperties);
+    LOAD_I2(GetPhysicalDeviceFeatures2);
     LOAD_I2(GetPhysicalDeviceMemoryProperties);
     LOAD_I2(GetPhysicalDeviceSurfaceCapabilitiesKHR);
     LOAD_I2(GetPhysicalDeviceSurfaceFormatsKHR);
@@ -106,6 +155,8 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(GetSwapchainImagesKHR);
     LOAD_D2(AcquireNextImageKHR);
     LOAD_D2(QueuePresentKHR);
+    LOAD_D2(GetPastPresentationTimingGOOGLE);
+    LOAD_D2(WaitForPresentKHR);
     LOAD_D2(QueueSubmit);
     LOAD_D2(CreateRenderPass);
     LOAD_D2(DestroyRenderPass);
@@ -228,6 +279,9 @@ void VulkanRendererContext::createLogicalDevice() {
     VkDeviceQueueCreateInfo qi{}; qi.sType=VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     qi.queueFamilyIndex=graphicsQueueFamilyIndex; qi.queueCount=1; qi.pQueuePriorities=&p;
 
+    bool googleDisplayTimingExtension = false;
+    bool presentIdExtension = false;
+    bool presentWaitExtension = false;
     PFN_vkEnumerateDeviceExtensionProperties enumDevExts =
         (PFN_vkEnumerateDeviceExtensionProperties)gipa(instance, "vkEnumerateDeviceExtensionProperties");
     { uint32_t n=0; if(enumDevExts) enumDevExts(physicalDevice,nullptr,&n,nullptr);
@@ -236,18 +290,71 @@ void VulkanRendererContext::createLogicalDevice() {
       for (auto& e:av) {
           if (strcmp(e.extensionName,"VK_EXT_filter_cubic")==0
            || strcmp(e.extensionName,"VK_IMG_filter_cubic")==0) cubicSupported=true;
+          if (strcmp(e.extensionName, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)==0)
+              googleDisplayTimingExtension = true;
+          if (strcmp(e.extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME)==0)
+              presentIdExtension = true;
+          if (strcmp(e.extensionName, VK_KHR_PRESENT_WAIT_EXTENSION_NAME)==0)
+              presentWaitExtension = true;
       } }
+
+    VkPhysicalDevicePresentIdFeaturesKHR presentIdFeatures{};
+    presentIdFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+    VkPhysicalDevicePresentWaitFeaturesKHR presentWaitFeatures{};
+    presentWaitFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+    VkPhysicalDeviceFeatures2 features2{};
+    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    void* featureChain = nullptr;
+    if (presentIdExtension) {
+        presentIdFeatures.pNext = featureChain;
+        featureChain = &presentIdFeatures;
+    }
+    if (presentWaitExtension) {
+        presentWaitFeatures.pNext = featureChain;
+        featureChain = &presentWaitFeatures;
+    }
+    features2.pNext = featureChain;
+    if (featureChain && vk_.GetPhysicalDeviceFeatures2)
+        vk_.GetPhysicalDeviceFeatures2(physicalDevice, &features2);
+
+    hostGoogleDisplayTimingEnabled = googleDisplayTimingExtension;
+    hostPresentWaitEnabled =
+        presentIdExtension && presentWaitExtension
+        && presentIdFeatures.presentId == VK_TRUE
+        && presentWaitFeatures.presentWait == VK_TRUE;
+
     std::vector<const char*> extList = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME
     };
     if (cubicSupported) extList.push_back("VK_EXT_filter_cubic");
+    if (hostGoogleDisplayTimingEnabled)
+        extList.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+    if (hostPresentWaitEnabled) {
+        extList.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        extList.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+    }
+
+    VkPhysicalDevicePresentIdFeaturesKHR enabledPresentId{};
+    enabledPresentId.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+    enabledPresentId.presentId = hostPresentWaitEnabled ? VK_TRUE : VK_FALSE;
+    VkPhysicalDevicePresentWaitFeaturesKHR enabledPresentWait{};
+    enabledPresentWait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+    enabledPresentWait.presentWait = hostPresentWaitEnabled ? VK_TRUE : VK_FALSE;
+    if (hostPresentWaitEnabled)
+        enabledPresentWait.pNext = &enabledPresentId;
+
     VkDeviceCreateInfo ci{}; ci.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     ci.pQueueCreateInfos=&qi; ci.queueCreateInfoCount=1;
     ci.enabledExtensionCount=(uint32_t)extList.size(); ci.ppEnabledExtensionNames=extList.data();
+    ci.pNext = hostPresentWaitEnabled ? &enabledPresentWait : nullptr;
     if (vk_.CreateDevice(physicalDevice,&ci,nullptr,&device)!=VK_SUCCESS) throw std::runtime_error("device");
     vk_.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)gipa(instance, "vkGetDeviceProcAddr");
     loadDeviceDispatch();
+    if (!vk_.GetPastPresentationTimingGOOGLE)
+        hostGoogleDisplayTimingEnabled = false;
+    if (!vk_.WaitForPresentKHR)
+        hostPresentWaitEnabled = false;
     vk_.GetDeviceQueue(device,graphicsQueueFamilyIndex,0,&graphicsQueue);
 
     vk_.GetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -255,6 +362,10 @@ void VulkanRendererContext::createLogicalDevice() {
     VkPhysicalDeviceProperties props{};
     vk_.GetPhysicalDeviceProperties(physicalDevice, &props);
     maxAnisotropy = props.limits.maxSamplerAnisotropy;
+    __android_log_print(ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+        "capability google_display_timing=%d present_wait=%d",
+        hostGoogleDisplayTimingEnabled ? 1 : 0,
+        hostPresentWaitEnabled ? 1 : 0);
 }
 
 void VulkanRendererContext::createSwapchain() {
@@ -465,6 +576,7 @@ void VulkanRendererContext::createSyncObjects() {
 }
 
 void VulkanRendererContext::cleanupSwapchain() {
+    flushHostDisplayConfirmationsUnknown("swapchain-recreate");
     for (auto fb:swapchainFBs) vk_.DestroyFramebuffer(device,fb,nullptr); swapchainFBs.clear();
     for (auto iv:swapchainViews) vk_.DestroyImageView(device,iv,nullptr); swapchainViews.clear();
     if (!cmdBufs.empty()){vk_.FreeCommandBuffers(device,cmdPool,(uint32_t)cmdBufs.size(),cmdBufs.data());cmdBufs.clear();}
@@ -1131,6 +1243,7 @@ ok=true;}catch(...){}
             de.x=re.x; de.y=re.y; de.w=wt.w; de.h=wt.h;
             de.isAHB=wt.isAHB;
             de.ahb=wt.ahb;
+            de.frameProvenance=wt.frameProvenance;
             if (wt.needsTransition) { de.needsTransition=true; wt.needsTransition=false; }
             if (wt.dirty && !wt.isAHB && wt.stg!=VK_NULL_HANDLE) {
                 de.upload=wt.stg;
@@ -1184,10 +1297,67 @@ ok=true;}catch(...){}
         markDrawResourcesSubmitted(submissionSerial);
     }
     if (!toXr) {
+        pollHostDisplayConfirmations();
+
+        std::vector<LsfgFrameProvenance> frameProvenance;
+        std::unordered_set<uint64_t> seenDeliveries;
+        for (const auto& draw : frameDraws) {
+            if (!draw.frameProvenance.valid || draw.frameProvenance.deliveryId == 0)
+                continue;
+            if (seenDeliveries.insert(draw.frameProvenance.deliveryId).second)
+                frameProvenance.push_back(draw.frameProvenance);
+        }
+
+        uint64_t hostPresentId = hostPresentId_++;
+        if (hostPresentId == 0) {
+            hostPresentId = 1;
+            hostPresentId_ = 2;
+        }
+        uint32_t googlePresentId = hostGooglePresentId_++;
+        if (googlePresentId == 0) {
+            googlePresentId = 1;
+            hostGooglePresentId_ = 2;
+        }
+
+        VkPresentIdKHR presentIdInfo{};
+        presentIdInfo.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+        presentIdInfo.swapchainCount = 1;
+        presentIdInfo.pPresentIds = &hostPresentId;
+
+        VkPresentTimeGOOGLE googlePresentTime{};
+        googlePresentTime.presentID = googlePresentId;
+        googlePresentTime.desiredPresentTime = 0;
+        VkPresentTimesInfoGOOGLE googlePresentTimes{};
+        googlePresentTimes.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE;
+        googlePresentTimes.swapchainCount = 1;
+        googlePresentTimes.pTimes = &googlePresentTime;
+
+        const void* presentNext = nullptr;
+        HostDisplayConfirmationBackend confirmationBackend =
+            HostDisplayConfirmationBackend::WsiAccepted;
+        if (hostPresentWaitEnabled && vk_.WaitForPresentKHR) {
+            presentIdInfo.pNext = presentNext;
+            presentNext = &presentIdInfo;
+            confirmationBackend = HostDisplayConfirmationBackend::PresentWait;
+        }
+        if (hostGoogleDisplayTimingEnabled && vk_.GetPastPresentationTimingGOOGLE) {
+            googlePresentTimes.pNext = presentNext;
+            presentNext = &googlePresentTimes;
+            confirmationBackend =
+                HostDisplayConfirmationBackend::GoogleDisplayTiming;
+        }
+
         VkSwapchainKHR scs[]={swapchain};
         VkPresentInfoKHR pi{}; pi.sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        pi.pNext=presentNext;
         pi.waitSemaphoreCount=1; pi.pWaitSemaphores=sSem; pi.swapchainCount=1; pi.pSwapchains=scs; pi.pImageIndices=&imgIdx;
         res=vk_.QueuePresentKHR(graphicsQueue,&pi);
+        if (res==VK_SUCCESS || res==VK_SUBOPTIMAL_KHR) {
+            recordHostPresent(
+                hostPresentId, googlePresentId,
+                confirmationBackend, frameProvenance);
+            pollHostDisplayConfirmations();
+        }
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR) fbResized.store(true);
     } else {
         // The XR session samples xrAhb from its own GL context with no fence handoff;
@@ -1480,6 +1650,266 @@ void VulkanRendererContext::completeObservedFence(VkFence fence) {
     }
 }
 
+void VulkanRendererContext::initLsfgProvenanceSocket() {
+    if (lsfgProvenanceSocket >= 0) return;
+    const int fd = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0) return;
+
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    address.sun_path[0] = '\0';
+    constexpr std::size_t nameLength = sizeof(LSFG_PROVENANCE_SOCKET) - 1;
+    static_assert(nameLength + 1 <= sizeof(address.sun_path));
+    std::memcpy(address.sun_path + 1, LSFG_PROVENANCE_SOCKET, nameLength);
+    const socklen_t addressLength = static_cast<socklen_t>(
+        offsetof(sockaddr_un, sun_path) + 1 + nameLength);
+    if (::bind(fd, reinterpret_cast<const sockaddr*>(&address), addressLength) != 0) {
+        ::close(fd);
+        return;
+    }
+    lsfgProvenanceSocket = fd;
+}
+
+void VulkanRendererContext::closeLsfgProvenanceSocket() {
+    if (lsfgProvenanceSocket >= 0) {
+        ::close(lsfgProvenanceSocket);
+        lsfgProvenanceSocket = -1;
+    }
+    pendingLsfgProvenance.clear();
+    lsfgSwapchainImageAhbs.clear();
+}
+
+void VulkanRendererContext::drainLsfgProvenance() {
+    if (lsfgProvenanceSocket < 0) return;
+    for (;;) {
+        LsfgFrameProvenancePacket packet{};
+        const ssize_t received = ::recvfrom(
+            lsfgProvenanceSocket, &packet, sizeof(packet), MSG_DONTWAIT,
+            nullptr, nullptr);
+        if (received < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            return;
+        }
+        if (received != static_cast<ssize_t>(sizeof(packet))
+                || packet.magic != kLsfgFrameProvenanceMagic
+                || packet.version != kLsfgFrameProvenanceVersion
+                || packet.deliveryId == 0) {
+            continue;
+        }
+
+        LsfgFrameProvenance provenance{};
+        provenance.valid = true;
+        provenance.runtimeSessionId = packet.runtimeSessionId;
+        provenance.deliveryId = packet.deliveryId;
+        provenance.sourceIndex = packet.sourceIndex;
+        provenance.batchId = packet.batchId;
+        provenance.swapchainImageIndex = packet.swapchainImageIndex;
+        provenance.interpolationCount = packet.interpolationCount;
+        provenance.interpolationIndex = packet.interpolationIndex;
+        provenance.kind = packet.kind;
+        pendingLsfgProvenance.push_back(provenance);
+        while (pendingLsfgProvenance.size() > kMaxPendingLsfgProvenance) {
+            HostDisplayConfirmation dropped{};
+            dropped.frameProvenance.push_back(pendingLsfgProvenance.front());
+            emitHostDisplayConfirmation(
+                dropped, false, true, "provenance-queue-overflow");
+            pendingLsfgProvenance.pop_front();
+        }
+    }
+}
+
+uint64_t VulkanRendererContext::ahbIdentity(AHardwareBuffer* ahb) const {
+    if (!ahb) return 0;
+    using GetAhbId = int (*)(const AHardwareBuffer*, uint64_t*);
+    static GetAhbId getAhbId = []() -> GetAhbId {
+        void* lib = dlopen("libandroid.so", RTLD_NOW | RTLD_NOLOAD);
+        if (!lib) lib = dlopen("libandroid.so", RTLD_NOW);
+        return lib ? reinterpret_cast<GetAhbId>(dlsym(lib, "AHardwareBuffer_getId")) : nullptr;
+    }();
+    uint64_t id = 0;
+    if (getAhbId && getAhbId(ahb, &id) == 0 && id != 0)
+        return id;
+    return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ahb));
+}
+
+void VulkanRendererContext::bindLsfgProvenance(
+        AHardwareBuffer* ahb, WinTex& texture) {
+    drainLsfgProvenance();
+    texture.frameProvenance = {};
+    if (!ahb || pendingLsfgProvenance.empty()) return;
+
+    const uint64_t identity = ahbIdentity(ahb);
+    auto selected = pendingLsfgProvenance.end();
+
+    // Once an image-index/AHB relationship is learned it is authoritative for
+    // that guest swapchain lifetime. This avoids binding a coalesced old event
+    // to a newer image that happens to arrive first.
+    for (auto it = pendingLsfgProvenance.begin();
+            it != pendingLsfgProvenance.end(); ++it) {
+        const auto mapped = lsfgSwapchainImageAhbs.find(it->swapchainImageIndex);
+        if (mapped != lsfgSwapchainImageAhbs.end() && mapped->second == identity) {
+            selected = it;
+            break;
+        }
+    }
+
+    // Bootstrap the mapping from the ordered present/update stream. The bridge
+    // is observability only: uncertainty becomes UNKNOWN, never a pacing action.
+    if (selected == pendingLsfgProvenance.end()) {
+        for (auto it = pendingLsfgProvenance.begin();
+                it != pendingLsfgProvenance.end(); ++it) {
+            if (lsfgSwapchainImageAhbs.find(it->swapchainImageIndex)
+                    == lsfgSwapchainImageAhbs.end()) {
+                lsfgSwapchainImageAhbs[it->swapchainImageIndex] = identity;
+                selected = it;
+                break;
+            }
+        }
+    }
+
+    if (selected == pendingLsfgProvenance.end()) return;
+
+    while (pendingLsfgProvenance.begin() != selected) {
+        HostDisplayConfirmation superseded{};
+        superseded.frameProvenance.push_back(pendingLsfgProvenance.front());
+        emitHostDisplayConfirmation(
+            superseded, false, true, "superseded-before-host-import");
+        pendingLsfgProvenance.pop_front();
+    }
+
+    texture.frameProvenance = pendingLsfgProvenance.front();
+    pendingLsfgProvenance.pop_front();
+}
+
+void VulkanRendererContext::emitHostDisplayConfirmation(
+        const HostDisplayConfirmation& confirmation,
+        bool confirmed,
+        bool unknown,
+        const char* reason) {
+    if (confirmation.frameProvenance.empty()) return;
+    for (const auto& provenance : confirmation.frameProvenance) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            "LSFG_HOST_DISPLAY",
+            "host_present_id=%" PRIu64 " host_wsi_accepted=%d "
+            "host_display_confirmed=%d host_display_unknown=%d "
+            "confirmation_backend=%s delivery_id=%" PRIu64
+            " kind=%s source_index=%" PRIu64 " swapchain_image=%u "
+            "interpolation_index=%u interpolation_count=%u reason=%s",
+            confirmation.hostPresentId,
+            confirmation.hostPresentId != 0 ? 1 : 0,
+            confirmed ? 1 : 0,
+            unknown ? 1 : 0,
+            hostDisplayBackendName(confirmation.backend),
+            provenance.deliveryId,
+            provenanceKindName(provenance.kind),
+            provenance.sourceIndex,
+            provenance.swapchainImageIndex,
+            static_cast<unsigned>(provenance.interpolationIndex),
+            provenance.interpolationCount,
+            reason ? reason : "none");
+    }
+}
+
+void VulkanRendererContext::recordHostPresent(
+        uint64_t hostPresentId,
+        uint32_t googlePresentId,
+        HostDisplayConfirmationBackend backend,
+        const std::vector<LsfgFrameProvenance>& frameProvenance) {
+    if (frameProvenance.empty()) return;
+    HostDisplayConfirmation confirmation{};
+    confirmation.hostPresentId = hostPresentId;
+    confirmation.googlePresentId = googlePresentId;
+    confirmation.backend = backend;
+    confirmation.frameProvenance = frameProvenance;
+    ++hostWsiAccepted_;
+
+    if (backend == HostDisplayConfirmationBackend::WsiAccepted) {
+        ++hostDisplayUnknown_;
+        emitHostDisplayConfirmation(
+            confirmation, false, true, "wsi-accepted-only");
+        return;
+    }
+
+    pendingHostDisplayConfirmations.push_back(std::move(confirmation));
+    while (pendingHostDisplayConfirmations.size() > kMaxPendingHostConfirmations) {
+        ++hostDisplayUnknown_;
+        emitHostDisplayConfirmation(
+            pendingHostDisplayConfirmations.front(),
+            false, true, "confirmation-queue-overflow");
+        pendingHostDisplayConfirmations.pop_front();
+    }
+}
+
+void VulkanRendererContext::pollHostDisplayConfirmations() {
+    if (pendingHostDisplayConfirmations.empty() || swapchain == VK_NULL_HANDLE)
+        return;
+
+    if (hostGoogleDisplayTimingEnabled && vk_.GetPastPresentationTimingGOOGLE) {
+        uint32_t count = 0;
+        VkResult query = vk_.GetPastPresentationTimingGOOGLE(
+            device, swapchain, &count, nullptr);
+        if (query == VK_SUCCESS && count > 0) {
+            std::vector<VkPastPresentationTimingGOOGLE> timings(count);
+            query = vk_.GetPastPresentationTimingGOOGLE(
+                device, swapchain, &count, timings.data());
+            if (query == VK_SUCCESS) {
+                for (uint32_t i = 0; i < count; ++i) {
+                    const auto& timing = timings[i];
+                    auto it = std::find_if(
+                        pendingHostDisplayConfirmations.begin(),
+                        pendingHostDisplayConfirmations.end(),
+                        [&](const HostDisplayConfirmation& pending) {
+                            return pending.backend
+                                    == HostDisplayConfirmationBackend::GoogleDisplayTiming
+                                && pending.googlePresentId == timing.presentID;
+                        });
+                    if (it == pendingHostDisplayConfirmations.end()) continue;
+                    const bool confirmed = timing.actualPresentTime != 0;
+                    if (confirmed) ++hostDisplayConfirmed_;
+                    else ++hostDisplayUnknown_;
+                    emitHostDisplayConfirmation(
+                        *it, confirmed, !confirmed,
+                        confirmed ? "actual-present-time" : "no-actual-present-time");
+                    pendingHostDisplayConfirmations.erase(it);
+                }
+            }
+        }
+    }
+
+    if (hostPresentWaitEnabled && vk_.WaitForPresentKHR) {
+        for (auto it = pendingHostDisplayConfirmations.begin();
+                it != pendingHostDisplayConfirmations.end();) {
+            if (it->backend != HostDisplayConfirmationBackend::PresentWait) {
+                ++it;
+                continue;
+            }
+            const VkResult waitResult = vk_.WaitForPresentKHR(
+                device, swapchain, it->hostPresentId, 0);
+            if (waitResult == VK_TIMEOUT || waitResult == VK_NOT_READY) {
+                ++it;
+                continue;
+            }
+            const bool confirmed = waitResult == VK_SUCCESS;
+            if (confirmed) ++hostDisplayConfirmed_;
+            else ++hostDisplayUnknown_;
+            emitHostDisplayConfirmation(
+                *it, confirmed, !confirmed,
+                confirmed ? "present-wait-complete" : "present-wait-error");
+            it = pendingHostDisplayConfirmations.erase(it);
+        }
+    }
+}
+
+void VulkanRendererContext::flushHostDisplayConfirmationsUnknown(
+        const char* reason) {
+    for (const auto& pending : pendingHostDisplayConfirmations) {
+        ++hostDisplayUnknown_;
+        emitHostDisplayConfirmation(pending, false, true, reason);
+    }
+    pendingHostDisplayConfirmations.clear();
+}
+
 void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* ahb, short, short, int, int) {
     if (!ahb) return;
     std::lock_guard<std::mutex> lk(renderMutex);
@@ -1544,6 +1974,7 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     }
 
     WinTex& src = cit->second;
+    bindLsfgProvenance(ahb, src);
     WinTex& wt  = texMap[id];
     if (!wt.isAHB && (wt.img != VK_NULL_HANDLE || wt.stg != VK_NULL_HANDLE))
         destroyWinTex(wt);
@@ -1556,6 +1987,7 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     wt.ahb  = ahb;
     wt.descriptorPool = ahbTexPool;
     wt.lastUseSubmissionSerial = src.lastUseSubmissionSerial;
+    wt.frameProvenance = src.frameProvenance;
     wt.w    = src.w;
     wt.h    = src.h;
 

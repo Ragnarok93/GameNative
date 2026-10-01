@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Display
@@ -798,9 +799,40 @@ fun XServerScreen(
         val generation = ++lsfgRuntimeTransitionGeneration
         lsfgRuntimeMode = if (active) LsfgRuntimeMode.TURNING_ON else LsfgRuntimeMode.TURNING_OFF
         scope.launch {
-            val startedAt = System.currentTimeMillis()
+            var activePollingElapsedMs = 0L
             var observed = false
-            while (System.currentTimeMillis() - startedAt < LSFG_RUNTIME_HANDOFF_TIMEOUT_MS) {
+            var suspensionLogged = false
+            while (activePollingElapsedMs < LSFG_RUNTIME_HANDOFF_TIMEOUT_MS) {
+                if (generation != lsfgRuntimeTransitionGeneration) return@launch
+
+                // Quick Menu normally SIGSTOPs the guest. The native LSFG layer
+                // cannot consume conf.toml or publish fresh stats while stopped,
+                // so wall-clock timeout here would manufacture a DEGRADED state.
+                if (PluviaApp.isOverlayPaused) {
+                    if (!suspensionLogged) {
+                        Timber.i(
+                            "LSFG runtime handoff waiting for guest resume: generation=%d active=%b multiplier=%d",
+                            generation,
+                            active,
+                            multiplier,
+                        )
+                        suspensionLogged = true
+                    }
+                    delay(LSFG_RUNTIME_HANDOFF_POLL_MS)
+                    continue
+                }
+
+                if (suspensionLogged) {
+                    Timber.i(
+                        "LSFG runtime handoff polling resumed: generation=%d active=%b elapsed_active_ms=%d",
+                        generation,
+                        active,
+                        activePollingElapsedMs,
+                    )
+                    suspensionLogged = false
+                }
+
+                val pollStartedAt = SystemClock.elapsedRealtime()
                 val runtimeState = withContext(Dispatchers.IO) {
                     LsfgVkManager.readRuntimeState(container)
                 }
@@ -809,16 +841,28 @@ fun XServerScreen(
                 } else {
                     runtimeState.readyForSourceOnly
                 }
+                activePollingElapsedMs +=
+                    (SystemClock.elapsedRealtime() - pollStartedAt).coerceAtLeast(0L)
                 if (observed) break
+
                 delay(LSFG_RUNTIME_HANDOFF_POLL_MS)
+                activePollingElapsedMs += LSFG_RUNTIME_HANDOFF_POLL_MS
             }
-            val remainingSettleMs = LSFG_RUNTIME_HANDOFF_DELAY_MS - (System.currentTimeMillis() - startedAt)
+
+            val remainingSettleMs =
+                LSFG_RUNTIME_HANDOFF_DELAY_MS - activePollingElapsedMs
             if (remainingSettleMs > 0L) delay(remainingSettleMs)
             if (generation != lsfgRuntimeTransitionGeneration) return@launch
             if (active && !observed) {
                 isLsfgGenerationActive = false
                 lsfgRuntimeMultiplier = 1
                 lsfgRuntimeMode = LsfgRuntimeMode.DEGRADED
+                Timber.w(
+                    "LSFG runtime handoff timed out after %d active ms: generation=%d multiplier=%d",
+                    activePollingElapsedMs,
+                    generation,
+                    multiplier,
+                )
                 applyFpsLimiterToEngines(effectiveFpsLimit())
                 return@launch
             }

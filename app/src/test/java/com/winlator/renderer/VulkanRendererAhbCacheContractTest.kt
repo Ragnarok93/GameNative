@@ -41,7 +41,7 @@ class VulkanRendererAhbCacheContractTest {
         assertTrue(
             "descriptor sets must be returned during deferred AHB retirement",
             implementation.contains(
-                "vk_.FreeDescriptorSets(device, winTexPool, 1, &retired.texture.ds)"
+                "vk_.FreeDescriptorSets(device, ahbTexPool, 1, &retired.texture.ds)"
             ),
         )
         assertTrue(

@@ -78,6 +78,22 @@ class VulkanRendererDisplayConfirmationContractTest {
     }
 
     @Test
+    fun provenanceEpochChangeFlushesOldSwapchainMappings() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("contextEpoch"))
+        assertTrue(header.contains("activeProvenanceContextEpoch_"))
+        assertTrue(implementation.contains("provenance-epoch-reset"))
+        assertTrue(implementation.contains("lsfgSwapchainImageAhbs.clear()"))
+        assertTrue(implementation.contains("pendingLsfgProvenance.clear()"))
+        assertTrue(implementation.contains("host_wsi_accepted_total="))
+        assertTrue(implementation.contains("host_display_confirmed_total="))
+        assertTrue(implementation.contains("host_display_unknown_total="))
+        assertTrue(implementation.contains("display_delivery_ratio="))
+    }
+
+    @Test
     fun telemetrySeparatesPhysicalConfirmationFromWsiAcceptance() {
         val implementation = source("VulkanRendererContext.cpp")
 

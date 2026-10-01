@@ -3,6 +3,7 @@ package app.gamenative.utils
 import com.winlator.container.Container
 import java.util.Locale
 import java.util.concurrent.Executors
+import timber.log.Timber
 
 /** Quick Menu LSFG state persistence and runtime publication. */
 object LsfgQuickMenuHelper {
@@ -22,6 +23,17 @@ object LsfgQuickMenuHelper {
         val multiplier: Int,
         val flowScale: Float,
         val performanceMode: Boolean,
+    )
+
+    internal data class RuntimeConfigSnapshot(
+        val multiplier: Int,
+        val flowScale: Float,
+        val performanceMode: Boolean,
+        val generationMode: FrameGenerationMode,
+        val adaptiveTargetFps: Int,
+        val flowScaleMode: FlowScaleMode,
+        val adaptiveFlowPreset: AdaptiveFlowPreset,
+        val presentMode: String,
     )
 
     fun isAvailable(container: Container): Boolean {
@@ -135,26 +147,71 @@ object LsfgQuickMenuHelper {
         scheduleRuntimeConfig(container)
     }
 
+    private fun snapshotRuntimeConfig(
+        container: Container,
+        settings: Settings = readSettings(container),
+    ): RuntimeConfigSnapshot = RuntimeConfigSnapshot(
+        multiplier = sanitizeMultiplier(settings.multiplier),
+        flowScale = sanitizeFlowScale(settings.flowScale),
+        performanceMode = settings.performanceMode,
+        generationMode = generationMode(container),
+        adaptiveTargetFps = adaptiveTargetFps(container),
+        flowScaleMode = flowScaleMode(container),
+        adaptiveFlowPreset = adaptiveFlowPreset(container),
+        presentMode = presentMode(container),
+    )
+
     private fun scheduleRuntimeConfig(container: Container) {
+        // Capture every coupled LSFG mode before entering the debounce queue.
+        // A Flow-only update must not reread framegen mode later and vice versa.
+        val snapshot = snapshotRuntimeConfig(container)
         runtimeConfigDebouncer.submit {
-            publishRuntimeConfig(container, readSettings(container))
+            publishRuntimeConfig(container, snapshot)
         }
     }
 
-    private fun publishRuntimeConfig(container: Container, settings: Settings) {
-        val enabled = sanitizeMultiplier(settings.multiplier) >= 2
-        val adaptive = enabled && generationMode(container) == FrameGenerationMode.ADAPTIVE
+    private fun publishRuntimeConfig(
+        container: Container,
+        snapshot: RuntimeConfigSnapshot,
+    ) {
+        val enabled = snapshot.multiplier >= 2
+        val adaptive =
+            enabled && snapshot.generationMode == FrameGenerationMode.ADAPTIVE
         val effectiveMultiplier = when {
             !enabled -> 2
             adaptive -> 4
-            else -> sanitizeMultiplier(settings.multiplier).coerceIn(2, 4)
+            else -> snapshot.multiplier.coerceIn(2, 4)
         }
-        LsfgVkManager.updateConfigAtRuntime(
-            container,
-            enabled,
+        val adaptiveFlow =
+            enabled && snapshot.flowScaleMode == FlowScaleMode.ADAPTIVE
+        val serializedFlowPreset = when (snapshot.adaptiveFlowPreset) {
+            AdaptiveFlowPreset.QUALITY -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_QUALITY
+            AdaptiveFlowPreset.BALANCED -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_BALANCED
+            AdaptiveFlowPreset.LOW -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_LOW
+            AdaptiveFlowPreset.AUTO -> LsfgVkManager.ADAPTIVE_FLOW_PRESET_AUTO
+        }
+
+        Timber.i(
+            "LSFG runtime snapshot generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
+            snapshot.generationMode,
             effectiveMultiplier,
-            sanitizeFlowScale(settings.flowScale),
-            settings.performanceMode,
+            snapshot.adaptiveTargetFps,
+            snapshot.flowScaleMode,
+            snapshot.adaptiveFlowPreset,
+            snapshot.flowScale,
+            enabled,
+        )
+        LsfgVkManager.updateConfigAtRuntime(
+            container = container,
+            enabled = enabled,
+            multiplier = effectiveMultiplier,
+            flowScale = snapshot.flowScale,
+            performanceMode = snapshot.performanceMode,
+            adaptiveFramegen = adaptive,
+            fpsLimit = if (adaptive) snapshot.adaptiveTargetFps else 0,
+            adaptiveFlowScale = adaptiveFlow,
+            adaptiveFlowPreset = serializedFlowPreset,
+            presentMode = snapshot.presentMode,
         )
     }
 }

@@ -49,10 +49,8 @@ class VulkanRendererAhbCacheContractTest {
             implementation.contains("AHardwareBuffer_release(retired.ahb)"),
         )
         assertTrue(
-            "a retired AHB must survive at least the in-flight frame window",
-            implementation.contains(
-                "renderSubmissionSerial + MAX_FRAMES_IN_FLIGHT"
-            ),
+            "AHB imports must carry the serial of their last successful use",
+            header.contains("lastUseSubmissionSerial"),
         )
         assertFalse(
             "raising the fixed descriptor-pool ceiling is not a lifetime fix",
@@ -60,6 +58,49 @@ class VulkanRendererAhbCacheContractTest {
                 "VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 512}"
             ),
         )
+    }
+
+    @Test
+    fun retirementWaitsForObservedFenceCompletion() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("RendererSubmissionTimeline"))
+        assertTrue(header.contains("completedSubmissionSerial"))
+        assertTrue(implementation.contains("submissionTimeline.completeFrame"))
+        assertTrue(implementation.contains("reclaimRetiredAhbImports"))
+        assertFalse(implementation.contains("renderSubmissionSerial + MAX_FRAMES_IN_FLIGHT"))
+    }
+
+    @Test
+    fun importsUseGlobalCapacityThatIncludesRetiredResources() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("MAX_AHB_IMPORTS_TOTAL"))
+        assertTrue(implementation.contains("AhbImportBudget::canAllocate"))
+        assertTrue(implementation.contains("createAhbTexPool"))
+        assertTrue(implementation.contains("descriptorPool=ahbTexPool"))
+        assertTrue(implementation.contains("ahbImportCache.size(), retiredAhbImports.size()"))
+    }
+
+    @Test
+    fun ordinaryTexturesWaitForTheirLastUseBeforeDeletion() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("RetiredWindowTexture"))
+        assertTrue(header.contains("lastUseSubmissionSerial"))
+        assertTrue(implementation.contains("reclaimRetiredWindowTextures"))
+    }
+
+    @Test
+    fun transitionsBetweenCpuAndAhbBuffersReleasePreviousOwnership() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("releaseWindowAhbImports(id)"))
+        assertTrue(implementation.contains("updateWindowContentAHB"))
+        assertTrue(implementation.contains("destroyWinTex(wt)"))
     }
 
     private fun source(name: String): String {

@@ -120,6 +120,7 @@ static constexpr uint32_t BASE_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
 static constexpr uint64_t SMOOTH_PRESENT_STALL_NS = 8'000'000ULL;
+static constexpr uint32_t SMOOTH_PRESENT_STALL_STRIKES = 2;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -377,6 +378,7 @@ private:
     std::atomic<uint64_t> frameQueuePresentSamples_{0};
     std::atomic<uint32_t> frameQueueMaxGpuOutstanding_{0};
     std::atomic<bool> frameQueueSmoothRuntimeSuppressed_{false};
+    std::atomic<uint32_t> frameQueueSmoothPressureStrikes_{0};
     mutable std::atomic<bool> frameQueueSmoothFifoFallback_{false};
     std::atomic<uint64_t> frameQueueTelemetryEpoch_{0};
 

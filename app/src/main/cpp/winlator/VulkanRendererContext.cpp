@@ -658,6 +658,7 @@ void VulkanRendererContext::resetFrameQueueTelemetry() {
     frameQueuePresentNsTotal_.store(0, std::memory_order_relaxed);
     frameQueuePresentSamples_.store(0, std::memory_order_relaxed);
     frameQueueMaxGpuOutstanding_.store(0, std::memory_order_relaxed);
+    frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
     frameQueueTelemetryEpoch_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -732,19 +733,43 @@ void VulkanRendererContext::enforceFrameQueueSubmissionBudget(uint32_t target) {
 void VulkanRendererContext::updateSmoothQueuePressure(uint64_t presentNs) {
     if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
             || lsfgFrameQueueTarget_.load(std::memory_order_acquire) != 2
-            || requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR
-            || frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire))
+            || requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR) {
+        frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
+        return;
+    }
+    if (frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire))
         return;
 
-    if (presentNs >= SMOOTH_PRESENT_STALL_NS) {
-        frameQueueSmoothRuntimeSuppressed_.store(true, std::memory_order_release);
-        __android_log_print(
-            ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
-            "event=smooth-runtime-fallback reason=present-stall "
-            "present_ms=%.3f threshold_ms=%.3f effective_target=1",
-            static_cast<double>(presentNs) / 1000000.0,
-            static_cast<double>(SMOOTH_PRESENT_STALL_NS) / 1000000.0);
+    if (presentNs < SMOOTH_PRESENT_STALL_NS) {
+        frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
+        return;
     }
+
+    const uint32_t pressureStrikes =
+        frameQueueSmoothPressureStrikes_.fetch_add(
+            1, std::memory_order_relaxed) + 1;
+    if (pressureStrikes < SMOOTH_PRESENT_STALL_STRIKES) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+            "event=smooth-pressure-strike reason=present-stall "
+            "present_ms=%.3f threshold_ms=%.3f pressure_strikes=%u required=%u",
+            static_cast<double>(presentNs) / 1000000.0,
+            static_cast<double>(SMOOTH_PRESENT_STALL_NS) / 1000000.0,
+            pressureStrikes,
+            SMOOTH_PRESENT_STALL_STRIKES);
+        return;
+    }
+
+    frameQueueSmoothRuntimeSuppressed_.store(true, std::memory_order_release);
+    __android_log_print(
+        ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
+        "event=smooth-runtime-fallback reason=present-stall "
+        "present_ms=%.3f threshold_ms=%.3f pressure_strikes=%u "
+        "required=%u effective_target=1",
+        static_cast<double>(presentNs) / 1000000.0,
+        static_cast<double>(SMOOTH_PRESENT_STALL_NS) / 1000000.0,
+        pressureStrikes,
+        SMOOTH_PRESENT_STALL_STRIKES);
 }
 
 void VulkanRendererContext::drainFrameQueueSubmissions(const char* reason) {
@@ -2099,6 +2124,19 @@ void VulkanRendererContext::closeLsfgProvenanceSocket() {
                     gLsfgProvenanceSocketOwner->provenanceSocketOwnerGeneration_);
             }
         }
+
+        if (gLsfgProvenanceSocketContexts.empty()) {
+            gLsfgProvenanceSocketOwner = nullptr;
+            if (gLsfgProvenanceSocketFd >= 0) {
+                ::close(gLsfgProvenanceSocketFd);
+                gLsfgProvenanceSocketFd = -1;
+                ++gLsfgProvenanceSocketOwnerGeneration;
+                __android_log_print(
+                    ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+                    "provenance-socket-release reason=no-renderers generation=%" PRIu64,
+                    gLsfgProvenanceSocketOwnerGeneration);
+            }
+        }
         lsfgProvenanceSocket = -1;
     }
 
@@ -2721,6 +2759,7 @@ void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {
         (int)mode, (int)supported, (int)target);
     if (requestedPresentMode==target) { RLOG("setPresentMode: already set, skipping"); return; }
     frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);
+    frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
     frameQueueSmoothFifoFallback_.store(false, std::memory_order_release);
     requestedPresentMode=target;
     fbResized.store(true); dirtyCV.notify_one();

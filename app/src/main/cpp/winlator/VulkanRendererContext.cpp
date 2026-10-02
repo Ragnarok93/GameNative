@@ -641,9 +641,10 @@ uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
     frameQueueSmoothFifoFallback_.store(
         requested == 2 && fifoPresent, std::memory_order_release);
 
+    if (requested == 2 && fifoPresent)
+        return 1;
     if (requested == 2
-            && (fifoPresent
-                || frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)))
+            && frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire))
         return 1;
 
     return requested;

@@ -117,6 +117,7 @@ VulkanRendererContext::~VulkanRendererContext() {
 
     destroyXrTargetResources();
     cleanupSwapchain(); cleanupCursorTex();
+    destroyRetiredQueuedPresentSemaphores();
 
     vk_.DestroySampler(device, sampler, nullptr);
     if (ahbTexPool != VK_NULL_HANDLE)
@@ -588,6 +589,41 @@ void VulkanRendererContext::createSyncObjects() {
             vk_.CreateSemaphore(device,&si,nullptr,&renderDoneSems[i])!=VK_SUCCESS||
             vk_.CreateFence(device,&fi,nullptr,&inFlightFences[i])!=VK_SUCCESS) throw std::runtime_error("sync");
     }
+    createQueuedPresentSemaphores();
+}
+
+void VulkanRendererContext::createQueuedPresentSemaphores() {
+    if (!queuedRenderDoneSems_.empty() || swapchainImages.empty())
+        return;
+    VkSemaphoreCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    queuedRenderDoneSems_.resize(swapchainImages.size(), VK_NULL_HANDLE);
+    for (auto& semaphore : queuedRenderDoneSems_) {
+        if (vk_.CreateSemaphore(device, &info, nullptr, &semaphore) != VK_SUCCESS) {
+            for (auto created : queuedRenderDoneSems_) {
+                if (created != VK_NULL_HANDLE)
+                    vk_.DestroySemaphore(device, created, nullptr);
+            }
+            queuedRenderDoneSems_.clear();
+            throw std::runtime_error("queued-present-sync");
+        }
+    }
+}
+
+void VulkanRendererContext::retireQueuedPresentSemaphores() {
+    for (auto semaphore : queuedRenderDoneSems_) {
+        if (semaphore != VK_NULL_HANDLE)
+            retiredQueuedRenderDoneSems_.push_back(semaphore);
+    }
+    queuedRenderDoneSems_.clear();
+}
+
+void VulkanRendererContext::destroyRetiredQueuedPresentSemaphores() {
+    for (auto semaphore : retiredQueuedRenderDoneSems_) {
+        if (semaphore != VK_NULL_HANDLE)
+            vk_.DestroySemaphore(device, semaphore, nullptr);
+    }
+    retiredQueuedRenderDoneSems_.clear();
 }
 
 uint32_t VulkanRendererContext::activeFrameSlotCount() const {
@@ -689,16 +725,13 @@ VkResult VulkanRendererContext::presentHostFrame(
     return result;
 }
 
-VkResult VulkanRendererContext::enqueueHostPresent(PendingHostPresent present) {
-    // Serialize a mode transition with the decision to enqueue. Disabling the
-    // feature drains all older queued frames before a newer immediate frame can
-    // overtake them.
-    std::lock_guard<std::mutex> configLock(frameQueueConfigMutex_);
+VkResult VulkanRendererContext::enqueueHostPresent(
+        PendingHostPresent present, bool buffered) {
     const uint32_t frameQueueTarget =
-        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+        buffered
             ? std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
             : 0;
-    if (frameQueueTarget == 0)
+    if (!buffered || frameQueueTarget == 0)
         return presentHostFrame(present);
 
     {
@@ -789,6 +822,7 @@ void VulkanRendererContext::stopHostPresentThread() {
 
 void VulkanRendererContext::cleanupSwapchain() {
     flushHostPresentQueue();
+    retireQueuedPresentSemaphores();
     flushHostDisplayConfirmationsUnknown("swapchain-recreate");
     for (auto fb:swapchainFBs) vk_.DestroyFramebuffer(device,fb,nullptr); swapchainFBs.clear();
     for (auto iv:swapchainViews) vk_.DestroyImageView(device,iv,nullptr); swapchainViews.clear();
@@ -1361,13 +1395,12 @@ void VulkanRendererContext::renderFrame() {
         }
         cleanupSwapchain();
         bool ok=false;
-        try{createSwapchain();createFramebuffers();createCmdBufs();imgInFlight.assign(swapchainImages.size(),VK_NULL_HANDLE);
+        try{createSwapchain();createFramebuffers();createCmdBufs();createQueuedPresentSemaphores();imgInFlight.assign(swapchainImages.size(),VK_NULL_HANDLE);
 ok=true;}catch(...){}
         if (ok) fbResized.store(false);
         return;
     }
 
-    waitForHostPresentCapacity();
     const uint32_t activeSlots = activeFrameSlotCount();
     if (currentFrame >= activeSlots)
         currentFrame = 0;
@@ -1495,7 +1528,29 @@ ok=true;}catch(...){}
         curUpload,hasCurUpload,
         ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis);
 
-    VkSemaphore wSem[]={imgAvailSems[currentFrame]}, sSem[]={renderDoneSems[currentFrame]};
+    std::unique_lock<std::mutex> frameQueueConfigLock(frameQueueConfigMutex_);
+    const uint32_t frameQueueTarget =
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+            ? std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
+            : 0;
+    const bool bufferedHostPresent = !toXr && frameQueueTarget > 0;
+    if (bufferedHostPresent)
+        waitForHostPresentCapacity();
+
+    VkSemaphore wSem[]={imgAvailSems[currentFrame]};
+    VkSemaphore signalSemaphore = renderDoneSems[currentFrame];
+    if (bufferedHostPresent) {
+        if (imgIdx >= queuedRenderDoneSems_.size()
+                || queuedRenderDoneSems_[imgIdx] == VK_NULL_HANDLE) {
+            frameQueueConfigLock.unlock();
+            fbResized.store(true, std::memory_order_release);
+            return;
+        }
+        // The swapchain image was just reacquired, which proves WSI has
+        // consumed the previous present wait associated with this image.
+        signalSemaphore = queuedRenderDoneSems_[imgIdx];
+    }
+    VkSemaphore sSem[]={signalSemaphore};
     VkPipelineStageFlags wStage[]={VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     VkSubmitInfo si{}; si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
     if (!toXr) {
@@ -1516,6 +1571,7 @@ ok=true;}catch(...){}
         vk_.DestroyFence(device,inFlightFences[currentFrame],nullptr);
         VkFenceCreateInfo fi{}; fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; fi.flags=VK_FENCE_CREATE_SIGNALED_BIT;
         vk_.CreateFence(device,&fi,nullptr,&inFlightFences[currentFrame]);
+        frameQueueConfigLock.unlock();
         return;
     }
     submissionTimeline.submitFrame(currentFrame, submissionSerial);
@@ -1556,15 +1612,17 @@ ok=true;}catch(...){}
             .frameSlot = currentFrame,
             .imageIndex = imgIdx,
             .swapchain = swapchain,
-            .waitSemaphore = renderDoneSems[currentFrame],
+            .waitSemaphore = signalSemaphore,
             .hostPresentId = hostPresentId,
             .googlePresentId = googlePresentId,
             .backend = confirmationBackend,
             .frameProvenance = std::move(frameProvenance),
-        });
+        }, bufferedHostPresent);
+        frameQueueConfigLock.unlock();
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR)
             fbResized.store(true);
     } else {
+        frameQueueConfigLock.unlock();
         // The XR session samples xrAhb from its own GL context with no fence handoff;
         // blocking here means the buffer is fully written whenever this thread is idle,
         // leaving only the active write window unsynchronized (a tear, not stale data).
@@ -1591,6 +1649,7 @@ void VulkanRendererContext::detachSurface() {
     vk_.DeviceWaitIdle(device);
     submissionTimeline.completeAllFrames();
     cleanupSwapchain();
+    destroyRetiredQueuedPresentSemaphores();
     if (surface != VK_NULL_HANDLE) {
         vk_.DestroySurfaceKHR(instance, surface, nullptr);
         surface = VK_NULL_HANDLE;
@@ -1618,6 +1677,7 @@ bool VulkanRendererContext::reattachSurface(ANativeWindow* newWindow) {
             createSwapchain();
             createFramebuffers();
             createCmdBufs();
+            createQueuedPresentSemaphores();
             imgInFlight.assign(swapchainImages.size(), VK_NULL_HANDLE);
         } catch (...) {
             __android_log_print(ANDROID_LOG_ERROR, "Winlator_Renderer", "reattachSurface: swapchain recreate failed");

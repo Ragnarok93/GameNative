@@ -502,6 +502,11 @@ private:
 
     std::vector<VkSemaphore> imgAvailSems;
     std::vector<VkSemaphore> renderDoneSems;
+    // Buffered-present semaphores are indexed by swapchain image. Reacquiring
+    // an image is the WSI retirement proof for the previous wait on that
+    // image, so these are never recycled from a CPU render fence.
+    std::vector<VkSemaphore> queuedRenderDoneSems_;
+    std::vector<VkSemaphore> retiredQueuedRenderDoneSems_;
     std::vector<VkFence>     inFlightFences;
     std::vector<VkFence>     imgInFlight;
     uint32_t                 currentFrame = 0;
@@ -536,6 +541,9 @@ private:
     void createCursorDS();
     void createCmdBufs();
     void createSyncObjects();
+    void createQueuedPresentSemaphores();
+    void retireQueuedPresentSemaphores();
+    void destroyRetiredQueuedPresentSemaphores();
     void cleanupSwapchain();
 
     void initLsfgProvenanceSocket();
@@ -558,7 +566,7 @@ private:
     uint32_t activeFrameSlotCount() const;
     void waitForHostPresentCapacity();
     void waitForFramePresentSubmission(uint32_t frameSlot);
-    VkResult enqueueHostPresent(PendingHostPresent present);
+    VkResult enqueueHostPresent(PendingHostPresent present, bool buffered);
     VkResult presentHostFrame(const PendingHostPresent& present);
     void hostPresentLoop();
     void flushHostPresentQueue();

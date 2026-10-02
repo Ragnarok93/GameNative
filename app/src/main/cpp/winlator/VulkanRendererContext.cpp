@@ -633,10 +633,22 @@ void VulkanRendererContext::destroyRetiredFrameQueuePresentSemaphores() {
 }
 
 uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
-    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
+    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire)) {
+        frameQueueSmoothFifoFallback_.store(false, std::memory_order_release);
         return 0;
+    }
     const uint32_t requested =
         std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
+    const bool fifoPresent = requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR;
+    frameQueueSmoothFifoFallback_.store(
+        requested == 2 && fifoPresent, std::memory_order_release);
+
+    // The captured S20+ FIFO path showed 42-47 ms vkQueuePresentKHR stalls at
+    // Smooth depth. FIFO already provides its own WSI backpressure, so a third
+    // compositor slot adds latency/pressure without creating useful headroom.
+    if (requested == 2 && fifoPresent)
+        return 1;
+
     const bool hasPresentationRetirement =
         (hostPresentWaitEnabled && vk_.WaitForPresentKHR)
         || (hostGoogleDisplayTimingEnabled && vk_.GetPastPresentationTimingGOOGLE);
@@ -647,6 +659,20 @@ uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
                 || frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)))
         return 1;
     return requested;
+}
+
+void VulkanRendererContext::resetFrameQueueTelemetry() {
+    frameQueuePresentedTotal_.store(0, std::memory_order_relaxed);
+    frameQueueRetirementWaitTotal_.store(0, std::memory_order_relaxed);
+    frameQueueRetirementWaitNsTotal_.store(0, std::memory_order_relaxed);
+    frameQueueAcquireNsTotal_.store(0, std::memory_order_relaxed);
+    frameQueuePresentNsTotal_.store(0, std::memory_order_relaxed);
+    frameQueuePresentSamples_.store(0, std::memory_order_relaxed);
+    frameQueueMaxGpuOutstanding_.store(0, std::memory_order_relaxed);
+    frameQueuePresentRetirementWaitTotal_.store(0, std::memory_order_relaxed);
+    frameQueuePresentRetirementWaitNsTotal_.store(0, std::memory_order_relaxed);
+    frameQueuePresentRetirementTimeoutTotal_.store(0, std::memory_order_relaxed);
+    frameQueueTelemetryEpoch_.fetch_add(1, std::memory_order_relaxed);
 }
 
 uint32_t VulkanRendererContext::activeFrameSlotCount() const {
@@ -1017,17 +1043,21 @@ VkResult VulkanRendererContext::presentHostFrame(
                 : (requestedTarget == 0 ? "unbuffered"
                 : (requestedTarget == 1 ? "balanced" : "smooth"));
             const char* fallbackReason = !smoothFallback ? "none"
-                : (frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)
-                    ? "present-retirement-timeout"
-                    : "present-retirement-unavailable");
+                : (frameQueueSmoothFifoFallback_.load(std::memory_order_acquire)
+                    ? "fifo-present-blocking"
+                    : (frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)
+                        ? "present-retirement-timeout"
+                        : "present-retirement-unavailable"));
             __android_log_print(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-                "event=present enabled=%d requested_target=%u effective_target=%u "
+                "event=present telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
                 "mode=%s smooth_fallback=%d fallback_reason=%s active_slots=%u "
                 "gpu_outstanding=%u max_gpu_outstanding=%u acquire_ms=%.3f "
                 "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f "
                 "present_retirement_waits=%llu present_retirement_wait_ms=%.3f "
                 "present_pending=%zu presented=%llu",
+                static_cast<unsigned long long>(
+                    frameQueueTelemetryEpoch_.load(std::memory_order_relaxed)),
                 enabled ? 1 : 0,
                 requestedTarget,
                 effectiveTarget,
@@ -2862,7 +2892,9 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
     drainFrameQueueSubmissions("config-transition");
     drainFrameQueuePresentations("config-transition");
 
+    resetFrameQueueTelemetry();
     frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);
+    frameQueueSmoothFifoFallback_.store(false, std::memory_order_release);
     lsfgFrameQueueTarget_.store(target, std::memory_order_release);
     lsfgFrameQueueEnabled_.store(enabled, std::memory_order_release);
     currentFrame = 0;
@@ -2875,17 +2907,21 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
         : (target == 0 ? "unbuffered"
         : (target == 1 ? "balanced" : "smooth"));
     const char* fallbackReason = !smoothFallback ? "none"
-        : (frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)
-            ? "present-retirement-timeout"
-            : "present-retirement-unavailable");
+        : (frameQueueSmoothFifoFallback_.load(std::memory_order_acquire)
+            ? "fifo-present-blocking"
+            : (frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)
+                ? "present-retirement-timeout"
+                : "present-retirement-unavailable"));
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-        "event=config enabled=%d requested_target=%u effective_target=%u "
+        "event=config telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
         "mode=%s smooth_fallback=%d fallback_reason=%s active_slots=%u "
         "gpu_outstanding=%u max_gpu_outstanding=%u retirement_waits=%llu "
         "retirement_wait_ms=%.3f present_retirement_waits=%llu "
         "present_retirement_wait_ms=%.3f present_retirement_timeouts=%llu "
         "presented=%llu",
+        static_cast<unsigned long long>(
+            frameQueueTelemetryEpoch_.load(std::memory_order_relaxed)),
         enabled ? 1 : 0,
         target,
         effectiveTarget,

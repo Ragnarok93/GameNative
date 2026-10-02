@@ -386,6 +386,8 @@ private:
     std::atomic<uint64_t> frameQueuePresentRetirementWaitNsTotal_{0};
     std::atomic<uint64_t> frameQueuePresentRetirementTimeoutTotal_{0};
     std::atomic<bool> frameQueueSmoothRuntimeSuppressed_{false};
+    mutable std::atomic<bool> frameQueueSmoothFifoFallback_{false};
+    std::atomic<uint64_t> frameQueueTelemetryEpoch_{0};
     std::deque<FrameQueuePendingPresentation> frameQueuePendingPresentations_;
 
     int lsfgProvenanceSocket = -1;
@@ -573,6 +575,7 @@ private:
         const char* reason);
     void flushHostDisplayConfirmationsUnknown(const char* reason);
     uint32_t effectiveFrameQueueTarget() const;
+    void resetFrameQueueTelemetry();
     uint32_t activeFrameSlotCount() const;
     uint32_t countOutstandingFrameSubmissions(bool observeCompleted);
     void enforceFrameQueueSubmissionBudget(uint32_t target);

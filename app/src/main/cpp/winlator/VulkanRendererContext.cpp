@@ -76,8 +76,6 @@ VulkanRendererContext::VulkanRendererContext(
     createFramebuffers(); createCmdPool(); createSampler();
     createWinTexPool(); createAhbTexPool(); createCursorDS(); createCmdBufs(); createSyncObjects();
     initLsfgProvenanceSocket();
-    hostPresentThreadRunning_.store(true, std::memory_order_release);
-    hostPresentThread_ = std::thread(&VulkanRendererContext::hostPresentLoop, this);
     isRunning = true;
     renderThread = std::thread(&VulkanRendererContext::renderLoop, this);
 }
@@ -85,8 +83,6 @@ VulkanRendererContext::VulkanRendererContext(
 VulkanRendererContext::~VulkanRendererContext() {
     isRunning = false; dirtyCV.notify_all();
     if (renderThread.joinable()) renderThread.join();
-    flushHostPresentQueue();
-    stopHostPresentThread();
     std::lock_guard<std::mutex> lk(renderMutex);
     vk_.DeviceWaitIdle(device);
     submissionTimeline.completeAllFrames();
@@ -117,7 +113,7 @@ VulkanRendererContext::~VulkanRendererContext() {
 
     destroyXrTargetResources();
     cleanupSwapchain(); cleanupCursorTex();
-    destroyRetiredQueuedPresentSemaphores();
+    destroyRetiredFrameQueuePresentSemaphores();
 
     vk_.DestroySampler(device, sampler, nullptr);
     if (ahbTexPool != VK_NULL_HANDLE)
@@ -589,41 +585,41 @@ void VulkanRendererContext::createSyncObjects() {
             vk_.CreateSemaphore(device,&si,nullptr,&renderDoneSems[i])!=VK_SUCCESS||
             vk_.CreateFence(device,&fi,nullptr,&inFlightFences[i])!=VK_SUCCESS) throw std::runtime_error("sync");
     }
-    createQueuedPresentSemaphores();
+    createFrameQueuePresentSemaphores();
 }
 
-void VulkanRendererContext::createQueuedPresentSemaphores() {
-    if (!queuedRenderDoneSems_.empty() || swapchainImages.empty())
+void VulkanRendererContext::createFrameQueuePresentSemaphores() {
+    if (!frameQueuePresentSems_.empty() || swapchainImages.empty())
         return;
     VkSemaphoreCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    queuedRenderDoneSems_.resize(swapchainImages.size(), VK_NULL_HANDLE);
-    for (auto& semaphore : queuedRenderDoneSems_) {
+    frameQueuePresentSems_.resize(swapchainImages.size(), VK_NULL_HANDLE);
+    for (auto& semaphore : frameQueuePresentSems_) {
         if (vk_.CreateSemaphore(device, &info, nullptr, &semaphore) != VK_SUCCESS) {
-            for (auto created : queuedRenderDoneSems_) {
+            for (auto created : frameQueuePresentSems_) {
                 if (created != VK_NULL_HANDLE)
                     vk_.DestroySemaphore(device, created, nullptr);
             }
-            queuedRenderDoneSems_.clear();
-            throw std::runtime_error("queued-present-sync");
+            frameQueuePresentSems_.clear();
+            throw std::runtime_error("frame-queue-present-sync");
         }
     }
 }
 
-void VulkanRendererContext::retireQueuedPresentSemaphores() {
-    for (auto semaphore : queuedRenderDoneSems_) {
+void VulkanRendererContext::retireFrameQueuePresentSemaphores() {
+    for (auto semaphore : frameQueuePresentSems_) {
         if (semaphore != VK_NULL_HANDLE)
-            retiredQueuedRenderDoneSems_.push_back(semaphore);
+            retiredFrameQueuePresentSems_.push_back(semaphore);
     }
-    queuedRenderDoneSems_.clear();
+    frameQueuePresentSems_.clear();
 }
 
-void VulkanRendererContext::destroyRetiredQueuedPresentSemaphores() {
-    for (auto semaphore : retiredQueuedRenderDoneSems_) {
+void VulkanRendererContext::destroyRetiredFrameQueuePresentSemaphores() {
+    for (auto semaphore : retiredFrameQueuePresentSems_) {
         if (semaphore != VK_NULL_HANDLE)
             vk_.DestroySemaphore(device, semaphore, nullptr);
     }
-    retiredQueuedRenderDoneSems_.clear();
+    retiredFrameQueuePresentSems_.clear();
 }
 
 uint32_t VulkanRendererContext::activeFrameSlotCount() const {
@@ -631,38 +627,101 @@ uint32_t VulkanRendererContext::activeFrameSlotCount() const {
         return BASE_FRAMES_IN_FLIGHT;
     const uint32_t target =
         std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
-    return target >= 2 ? MAX_FRAMES_IN_FLIGHT : BASE_FRAMES_IN_FLIGHT;
+    return target + 1U;
 }
 
-void VulkanRendererContext::waitForHostPresentCapacity() {
-    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
-        return;
-    const uint32_t frameQueueTarget =
-        std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
-    if (frameQueueTarget == 0)
-        return;
-
-    const std::size_t maxOutstanding =
-        std::min<std::size_t>(
-            MAX_FRAMES_IN_FLIGHT,
-            static_cast<std::size_t>(frameQueueTarget) + 1U);
-    std::unique_lock<std::mutex> lock(hostPresentMutex_);
-    if (hostPresentQueue_.size() + hostPresentActive_ >= maxOutstanding)
-        frameQueueBackpressureTotal_.fetch_add(1, std::memory_order_relaxed);
-    hostPresentCapacityCv_.wait(lock, [this, maxOutstanding] {
-        return !hostPresentThreadRunning_.load(std::memory_order_acquire)
-            || hostPresentQueue_.size() + hostPresentActive_ < maxOutstanding;
-    });
+uint32_t VulkanRendererContext::countOutstandingFrameSubmissions(bool observeCompleted) {
+    uint32_t outstanding = 0;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (submissionTimeline.frameSubmissionSerial[i] == 0)
+            continue;
+        if (observeCompleted && vk_.GetFenceStatus
+                && vk_.GetFenceStatus(device, inFlightFences[i]) == VK_SUCCESS) {
+            completeObservedFence(inFlightFences[i]);
+            continue;
+        }
+        ++outstanding;
+    }
+    return outstanding;
 }
 
-void VulkanRendererContext::waitForFramePresentSubmission(uint32_t frameSlot) {
-    if (frameSlot >= MAX_FRAMES_IN_FLIGHT)
+void VulkanRendererContext::enforceFrameQueueSubmissionBudget(uint32_t target) {
+    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire) || target == 0)
         return;
-    std::unique_lock<std::mutex> lock(hostPresentMutex_);
-    hostPresentCapacityCv_.wait(lock, [this, frameSlot] {
-        return !hostPresentThreadRunning_.load(std::memory_order_acquire)
-            || !framePresentPending_[frameSlot];
-    });
+
+    uint32_t outstanding = countOutstandingFrameSubmissions(true);
+    uint32_t observedMax = frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed);
+    while (observedMax < outstanding
+            && !frameQueueMaxGpuOutstanding_.compare_exchange_weak(
+                observedMax, outstanding, std::memory_order_relaxed)) {}
+
+    if (outstanding < MAX_BUFFERED_GPU_SUBMISSIONS)
+        return;
+
+    uint32_t oldestSlot = MAX_FRAMES_IN_FLIGHT;
+    uint64_t oldestSerial = UINT64_MAX;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        const uint64_t serial = submissionTimeline.frameSubmissionSerial[i];
+        if (serial != 0 && serial < oldestSerial) {
+            oldestSerial = serial;
+            oldestSlot = i;
+        }
+    }
+    if (oldestSlot >= MAX_FRAMES_IN_FLIGHT)
+        return;
+
+    const auto waitStart = std::chrono::steady_clock::now();
+    const VkResult waitResult = vk_.WaitForFences(
+        device, 1, &inFlightFences[oldestSlot], VK_TRUE, UINT64_MAX);
+    const uint64_t waitNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - waitStart).count());
+    frameQueueRetirementWaitTotal_.fetch_add(1, std::memory_order_relaxed);
+    frameQueueRetirementWaitNsTotal_.fetch_add(waitNs, std::memory_order_relaxed);
+    if (waitResult == VK_SUCCESS)
+        completeObservedFence(inFlightFences[oldestSlot]);
+
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+        "event=retirement-wait target=%u slot=%u serial=%llu wait_ms=%.3f result=%d",
+        target,
+        oldestSlot,
+        static_cast<unsigned long long>(oldestSerial),
+        static_cast<double>(waitNs) / 1000000.0,
+        static_cast<int>(waitResult));
+}
+
+void VulkanRendererContext::drainFrameQueueSubmissions(const char* reason) {
+    uint32_t waited = 0;
+    uint64_t waitNsTotal = 0;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (submissionTimeline.frameSubmissionSerial[i] == 0)
+            continue;
+        VkResult status = vk_.GetFenceStatus
+            ? vk_.GetFenceStatus(device, inFlightFences[i])
+            : VK_NOT_READY;
+        if (status != VK_SUCCESS) {
+            const auto waitStart = std::chrono::steady_clock::now();
+            status = vk_.WaitForFences(
+                device, 1, &inFlightFences[i], VK_TRUE, UINT64_MAX);
+            const uint64_t waitNs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - waitStart).count());
+            waitNsTotal += waitNs;
+            ++waited;
+            frameQueueRetirementWaitTotal_.fetch_add(1, std::memory_order_relaxed);
+            frameQueueRetirementWaitNsTotal_.fetch_add(waitNs, std::memory_order_relaxed);
+        }
+        if (status == VK_SUCCESS)
+            completeObservedFence(inFlightFences[i]);
+    }
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+        "event=transition-drain reason=%s waited=%u retirement_wait_ms=%.3f outstanding_after=%u",
+        reason ? reason : "unknown",
+        waited,
+        static_cast<double>(waitNsTotal) / 1000000.0,
+        countOutstandingFrameSubmissions(true));
 }
 
 VkResult VulkanRendererContext::presentHostFrame(
@@ -702,127 +761,74 @@ VkResult VulkanRendererContext::presentHostFrame(
     pi.pSwapchains = scs;
     pi.pImageIndices = &present.imageIndex;
 
+    const auto presentStart = std::chrono::steady_clock::now();
     VkResult result = VK_SUCCESS;
     {
-        // Vulkan requires externally synchronized host access to a VkQueue.
-        // The render thread may continue preparing/submitting later composites
-        // while this presenter drains, but queue API calls never overlap.
         std::lock_guard<std::mutex> queueLock(graphicsQueueMutex_);
         result = vk_.QueuePresentKHR(graphicsQueue, &pi);
     }
+    const uint64_t presentNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - presentStart).count());
+
+    frameQueueAcquireNsTotal_.fetch_add(present.acquireNs, std::memory_order_relaxed);
+    frameQueuePresentNsTotal_.fetch_add(presentNs, std::memory_order_relaxed);
+    const uint64_t sample =
+        frameQueuePresentSamples_.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint32_t observedMax = frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed);
+    while (observedMax < present.gpuOutstanding
+            && !frameQueueMaxGpuOutstanding_.compare_exchange_weak(
+                observedMax, present.gpuOutstanding, std::memory_order_relaxed)) {}
 
     if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
-        frameQueuePresentedTotal_.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t presented =
+            frameQueuePresentedTotal_.fetch_add(1, std::memory_order_relaxed) + 1;
         recordHostPresent(
             present.hostPresentId,
             present.googlePresentId,
             present.backend,
             present.frameProvenance);
         pollHostDisplayConfirmations();
+
+        if (sample <= 8 || sample % 120 == 0) {
+            const bool enabled =
+                lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
+            const uint32_t target = enabled
+                ? std::min<uint32_t>(
+                    2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
+                : 0;
+            const char* mode = !enabled ? "off"
+                : (target == 0 ? "unbuffered"
+                : (target == 1 ? "balanced" : "smooth"));
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+                "event=present enabled=%d target=%u mode=%s active_slots=%u "
+                "gpu_outstanding=%u max_gpu_outstanding=%u acquire_ms=%.3f "
+                "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f "
+                "presented=%llu",
+                enabled ? 1 : 0,
+                target,
+                mode,
+                activeFrameSlotCount(),
+                present.gpuOutstanding,
+                frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
+                static_cast<double>(present.acquireNs) / 1000000.0,
+                static_cast<double>(presentNs) / 1000000.0,
+                static_cast<unsigned long long>(
+                    frameQueueRetirementWaitTotal_.load(std::memory_order_relaxed)),
+                static_cast<double>(
+                    frameQueueRetirementWaitNsTotal_.load(std::memory_order_relaxed))
+                    / 1000000.0,
+                static_cast<unsigned long long>(presented));
+        }
     }
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
         fbResized.store(true, std::memory_order_release);
     return result;
 }
 
-VkResult VulkanRendererContext::enqueueHostPresent(
-        PendingHostPresent present, bool buffered) {
-    const uint32_t frameQueueTarget =
-        buffered
-            ? std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
-            : 0;
-    if (!buffered || frameQueueTarget == 0)
-        return presentHostFrame(present);
-
-    {
-        std::lock_guard<std::mutex> lock(hostPresentMutex_);
-        if (present.frameSlot < MAX_FRAMES_IN_FLIGHT)
-            framePresentPending_[present.frameSlot] = true;
-        hostPresentQueue_.push_back(std::move(present));
-        const uint64_t enqueued =
-            frameQueueEnqueuedTotal_.fetch_add(1, std::memory_order_relaxed) + 1;
-        const uint32_t depth =
-            static_cast<uint32_t>(hostPresentQueue_.size() + hostPresentActive_);
-        uint32_t highWater =
-            frameQueueHighWatermark_.load(std::memory_order_relaxed);
-        while (highWater < depth
-                && !frameQueueHighWatermark_.compare_exchange_weak(
-                    highWater, depth, std::memory_order_relaxed)) {}
-        if (enqueued <= 8 || enqueued % 120 == 0) {
-            __android_log_print(
-                ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-                "event=enqueue enabled=1 target=%u queue_depth=%zu active=%zu "
-                "high_watermark=%u enqueued=%llu presented=%llu backpressure=%llu",
-                frameQueueTarget,
-                hostPresentQueue_.size(),
-                hostPresentActive_,
-                frameQueueHighWatermark_.load(std::memory_order_relaxed),
-                static_cast<unsigned long long>(enqueued),
-                static_cast<unsigned long long>(
-                    frameQueuePresentedTotal_.load(std::memory_order_relaxed)),
-                static_cast<unsigned long long>(
-                    frameQueueBackpressureTotal_.load(std::memory_order_relaxed)));
-        }
-    }
-    hostPresentCv_.notify_one();
-    return VK_SUCCESS;
-}
-
-void VulkanRendererContext::hostPresentLoop() {
-    for (;;) {
-        PendingHostPresent present{};
-        {
-            std::unique_lock<std::mutex> lock(hostPresentMutex_);
-            hostPresentCv_.wait(lock, [this] {
-                return !hostPresentQueue_.empty()
-                    || !hostPresentThreadRunning_.load(std::memory_order_acquire);
-            });
-            if (hostPresentQueue_.empty()
-                    && !hostPresentThreadRunning_.load(std::memory_order_acquire))
-                break;
-            if (hostPresentQueue_.empty())
-                continue;
-            present = std::move(hostPresentQueue_.front());
-            hostPresentQueue_.pop_front();
-            ++hostPresentActive_;
-        }
-
-        presentHostFrame(present);
-
-        {
-            std::lock_guard<std::mutex> lock(hostPresentMutex_);
-            if (present.frameSlot < MAX_FRAMES_IN_FLIGHT)
-                framePresentPending_[present.frameSlot] = false;
-            if (hostPresentActive_ > 0)
-                --hostPresentActive_;
-        }
-        hostPresentCapacityCv_.notify_all();
-    }
-    hostPresentCapacityCv_.notify_all();
-}
-
-void VulkanRendererContext::flushHostPresentQueue() {
-    if (!hostPresentThread_.joinable())
-        return;
-    std::unique_lock<std::mutex> lock(hostPresentMutex_);
-    hostPresentCv_.notify_all();
-    hostPresentCapacityCv_.wait(lock, [this] {
-        return hostPresentQueue_.empty() && hostPresentActive_ == 0;
-    });
-}
-
-void VulkanRendererContext::stopHostPresentThread() {
-    if (!hostPresentThread_.joinable())
-        return;
-    hostPresentThreadRunning_.store(false, std::memory_order_release);
-    hostPresentCv_.notify_all();
-    hostPresentCapacityCv_.notify_all();
-    hostPresentThread_.join();
-}
-
 void VulkanRendererContext::cleanupSwapchain() {
-    flushHostPresentQueue();
-    retireQueuedPresentSemaphores();
+    retireFrameQueuePresentSemaphores();
     flushHostDisplayConfirmationsUnknown("swapchain-recreate");
     for (auto fb:swapchainFBs) vk_.DestroyFramebuffer(device,fb,nullptr); swapchainFBs.clear();
     for (auto iv:swapchainViews) vk_.DestroyImageView(device,iv,nullptr); swapchainViews.clear();
@@ -1395,7 +1401,7 @@ void VulkanRendererContext::renderFrame() {
         }
         cleanupSwapchain();
         bool ok=false;
-        try{createSwapchain();createFramebuffers();createCmdBufs();createQueuedPresentSemaphores();imgInFlight.assign(swapchainImages.size(),VK_NULL_HANDLE);
+        try{createSwapchain();createFramebuffers();createCmdBufs();createFrameQueuePresentSemaphores();imgInFlight.assign(swapchainImages.size(),VK_NULL_HANDLE);
 ok=true;}catch(...){}
         if (ok) fbResized.store(false);
         return;
@@ -1404,7 +1410,6 @@ ok=true;}catch(...){}
     const uint32_t activeSlots = activeFrameSlotCount();
     if (currentFrame >= activeSlots)
         currentFrame = 0;
-    waitForFramePresentSubmission(currentFrame);
     if (currentFrame >= cmdBufs.size() || cmdBufs[currentFrame] == VK_NULL_HANDLE) return;
     bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
     bool currentFenceWaited = false;
@@ -1435,10 +1440,24 @@ ok=true;}catch(...){}
     }
     if (!currentFenceComplete) return;
 
+    const bool frameQueueEnabled =
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
+    const uint32_t frameQueueTarget = frameQueueEnabled
+        ? std::min<uint32_t>(
+            2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
+        : 0;
+    if (!toXr)
+        enforceFrameQueueSubmissionBudget(frameQueueTarget);
+
     uint32_t imgIdx = 0;
+    uint64_t acquireNs = 0;
     VkResult res = VK_SUCCESS;
     if (!toXr) {
+        const auto acquireStart = std::chrono::steady_clock::now();
         res=vk_.AcquireNextImageKHR(device,swapchain,UINT64_MAX,imgAvailSems[currentFrame],VK_NULL_HANDLE,&imgIdx);
+        acquireNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - acquireStart).count());
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR){fbResized.store(true);return;}
         if (res!=VK_SUCCESS&&res!=VK_SUBOPTIMAL_KHR) return;
         if (imgIdx >= swapchainFBs.size() || imgIdx >= swapchainImages.size()) {
@@ -1528,27 +1547,15 @@ ok=true;}catch(...){}
         curUpload,hasCurUpload,
         ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis);
 
-    std::unique_lock<std::mutex> frameQueueConfigLock(frameQueueConfigMutex_);
-    const uint32_t frameQueueTarget =
-        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
-            ? std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
-            : 0;
-    const bool bufferedHostPresent = !toXr && frameQueueTarget > 0;
-    if (bufferedHostPresent)
-        waitForHostPresentCapacity();
-
     VkSemaphore wSem[]={imgAvailSems[currentFrame]};
     VkSemaphore signalSemaphore = renderDoneSems[currentFrame];
-    if (bufferedHostPresent) {
-        if (imgIdx >= queuedRenderDoneSems_.size()
-                || queuedRenderDoneSems_[imgIdx] == VK_NULL_HANDLE) {
-            frameQueueConfigLock.unlock();
+    if (!toXr && frameQueueEnabled) {
+        if (imgIdx >= frameQueuePresentSems_.size()
+                || frameQueuePresentSems_[imgIdx] == VK_NULL_HANDLE) {
             fbResized.store(true, std::memory_order_release);
             return;
         }
-        // The swapchain image was just reacquired, which proves WSI has
-        // consumed the previous present wait associated with this image.
-        signalSemaphore = queuedRenderDoneSems_[imgIdx];
+        signalSemaphore = frameQueuePresentSems_[imgIdx];
     }
     VkSemaphore sSem[]={signalSemaphore};
     VkPipelineStageFlags wStage[]={VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -1571,7 +1578,6 @@ ok=true;}catch(...){}
         vk_.DestroyFence(device,inFlightFences[currentFrame],nullptr);
         VkFenceCreateInfo fi{}; fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; fi.flags=VK_FENCE_CREATE_SIGNALED_BIT;
         vk_.CreateFence(device,&fi,nullptr,&inFlightFences[currentFrame]);
-        frameQueueConfigLock.unlock();
         return;
     }
     submissionTimeline.submitFrame(currentFrame, submissionSerial);
@@ -1608,7 +1614,9 @@ ok=true;}catch(...){}
         if (hostGoogleDisplayTimingEnabled && vk_.GetPastPresentationTimingGOOGLE)
             confirmationBackend = HostDisplayConfirmationBackend::GoogleDisplayTiming;
 
-        res = enqueueHostPresent(PendingHostPresent{
+        const uint32_t gpuOutstanding =
+            countOutstandingFrameSubmissions(true);
+        res = presentHostFrame(PendingHostPresent{
             .frameSlot = currentFrame,
             .imageIndex = imgIdx,
             .swapchain = swapchain,
@@ -1617,12 +1625,12 @@ ok=true;}catch(...){}
             .googlePresentId = googlePresentId,
             .backend = confirmationBackend,
             .frameProvenance = std::move(frameProvenance),
-        }, bufferedHostPresent);
-        frameQueueConfigLock.unlock();
+            .acquireNs = acquireNs,
+            .gpuOutstanding = gpuOutstanding,
+        });
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR)
             fbResized.store(true);
     } else {
-        frameQueueConfigLock.unlock();
         // The XR session samples xrAhb from its own GL context with no fence handoff;
         // blocking here means the buffer is fully written whenever this thread is idle,
         // leaving only the active write window unsynchronized (a tear, not stale data).
@@ -1645,11 +1653,10 @@ void VulkanRendererContext::detachSurface() {
 
     { std::unique_lock<std::shared_mutex> frameLock(frameMutex); }
 
-    flushHostPresentQueue();
     vk_.DeviceWaitIdle(device);
     submissionTimeline.completeAllFrames();
     cleanupSwapchain();
-    destroyRetiredQueuedPresentSemaphores();
+    destroyRetiredFrameQueuePresentSemaphores();
     if (surface != VK_NULL_HANDLE) {
         vk_.DestroySurfaceKHR(instance, surface, nullptr);
         surface = VK_NULL_HANDLE;
@@ -1677,7 +1684,7 @@ bool VulkanRendererContext::reattachSurface(ANativeWindow* newWindow) {
             createSwapchain();
             createFramebuffers();
             createCmdBufs();
-            createQueuedPresentSemaphores();
+            createFrameQueuePresentSemaphores();
             imgInFlight.assign(swapchainImages.size(), VK_NULL_HANDLE);
         } catch (...) {
             __android_log_print(ANDROID_LOG_ERROR, "Winlator_Renderer", "reattachSurface: swapchain recreate failed");
@@ -1918,45 +1925,27 @@ void VulkanRendererContext::completeObservedFence(VkFence fence) {
 
 void VulkanRendererContext::initLsfgProvenanceSocket() {
     if (lsfgProvenanceSocket >= 0) return;
-    if (lsfgProvenanceSocketPath.empty()) {
-        __android_log_print(
-            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
-            "provenance-socket-bind-failed reason=empty-path");
-        return;
-    }
-
-    if (lsfgProvenanceSocketPath.size() >= sizeof(sockaddr_un{}.sun_path)) {
-        __android_log_print(
-            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
-            "provenance-socket-bind-failed reason=path-too-long length=%zu path=%s",
-            lsfgProvenanceSocketPath.size(),
-            lsfgProvenanceSocketPath.c_str());
-        return;
-    }
 
     const int fd = ::socket(
         AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         __android_log_print(
             ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
-            "provenance-socket-bind-failed reason=socket errno=%d path=%s",
-            errno, lsfgProvenanceSocketPath.c_str());
+            "provenance-socket-bind-failed reason=socket errno=%d mode=abstract name=%s",
+            errno, LSFG_PROVENANCE_SOCKET);
         return;
     }
 
-    // A killed prior process can leave only the filesystem name behind.
-    // Removing that stale name is metadata cleanup, not per-frame file I/O.
-    ::unlink(lsfgProvenanceSocketPath.c_str());
-
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
-    std::memcpy(
-        address.sun_path,
-        lsfgProvenanceSocketPath.c_str(),
-        lsfgProvenanceSocketPath.size() + 1);
+    address.sun_path[0] = '\0';
+    constexpr std::size_t socketNameLength =
+        sizeof(LSFG_PROVENANCE_SOCKET) - 1;
+    static_assert(socketNameLength + 1 <= sizeof(address.sun_path));
+    std::memcpy(address.sun_path + 1, LSFG_PROVENANCE_SOCKET, socketNameLength);
     const socklen_t addressLength = static_cast<socklen_t>(
-        offsetof(sockaddr_un, sun_path)
-        + lsfgProvenanceSocketPath.size() + 1);
+        offsetof(sockaddr_un, sun_path) + 1 + socketNameLength);
+
     if (::bind(
             fd,
             reinterpret_cast<const sockaddr*>(&address),
@@ -1965,16 +1954,16 @@ void VulkanRendererContext::initLsfgProvenanceSocket() {
         ::close(fd);
         __android_log_print(
             ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
-            "provenance-socket-bind-failed reason=bind errno=%d path=%s",
-            bindError, lsfgProvenanceSocketPath.c_str());
+            "provenance-socket-bind-failed reason=bind errno=%d mode=abstract name=%s",
+            bindError, LSFG_PROVENANCE_SOCKET);
         return;
     }
 
     lsfgProvenanceSocket = fd;
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
-        "provenance-socket-bind-ok path=%s",
-        lsfgProvenanceSocketPath.c_str());
+        "provenance-socket-bind-ok mode=abstract name=%s",
+        LSFG_PROVENANCE_SOCKET);
 }
 
 void VulkanRendererContext::closeLsfgProvenanceSocket() {
@@ -1982,9 +1971,6 @@ void VulkanRendererContext::closeLsfgProvenanceSocket() {
         ::close(lsfgProvenanceSocket);
         lsfgProvenanceSocket = -1;
     }
-    if (!lsfgProvenanceSocketPath.empty())
-        ::unlink(lsfgProvenanceSocketPath.c_str());
-
     __android_log_print(
         ANDROID_LOG_INFO,
         "LSFG_HOST_DISPLAY",
@@ -2535,7 +2521,7 @@ void VulkanRendererContext::setEffect(int effectId, float sharpness, int effectM
 
 void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
     target = std::min<uint32_t>(2, target);
-    std::lock_guard<std::mutex> configLock(frameQueueConfigMutex_);
+    std::unique_lock<std::shared_mutex> frameLock(frameMutex);
 
     const bool previousEnabled =
         lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
@@ -2544,32 +2530,35 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
     if (previousEnabled == enabled && previousTarget == target)
         return;
 
-    // A target transition is an explicit temporal boundary. Drain older final
-    // presents before publishing the new depth so frames cannot overtake.
-    if (previousEnabled && previousTarget > 0)
-        flushHostPresentQueue();
+    // Configuration changes are explicit recovery boundaries. Drain only the
+    // renderer's submitted frame fences; never idle the whole device/queue.
+    drainFrameQueueSubmissions("config-transition");
 
     lsfgFrameQueueTarget_.store(target, std::memory_order_release);
     lsfgFrameQueueEnabled_.store(enabled, std::memory_order_release);
-    hostPresentCapacityCv_.notify_all();
+    currentFrame = 0;
 
-    const char* mode =
-        target == 0 ? "unbuffered" : (target == 1 ? "balanced" : "smooth");
+    const char* mode = !enabled ? "off"
+        : (target == 0 ? "unbuffered"
+        : (target == 1 ? "balanced" : "smooth"));
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
         "event=config enabled=%d target=%u mode=%s active_slots=%u "
-        "enqueued=%llu presented=%llu backpressure=%llu high_watermark=%u",
+        "gpu_outstanding=%u max_gpu_outstanding=%u retirement_waits=%llu "
+        "retirement_wait_ms=%.3f presented=%llu",
         enabled ? 1 : 0,
         target,
         mode,
         activeFrameSlotCount(),
+        countOutstandingFrameSubmissions(true),
+        frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
         static_cast<unsigned long long>(
-            frameQueueEnqueuedTotal_.load(std::memory_order_relaxed)),
+            frameQueueRetirementWaitTotal_.load(std::memory_order_relaxed)),
+        static_cast<double>(
+            frameQueueRetirementWaitNsTotal_.load(std::memory_order_relaxed))
+            / 1000000.0,
         static_cast<unsigned long long>(
-            frameQueuePresentedTotal_.load(std::memory_order_relaxed)),
-        static_cast<unsigned long long>(
-            frameQueueBackpressureTotal_.load(std::memory_order_relaxed)),
-        frameQueueHighWatermark_.load(std::memory_order_relaxed));
+            frameQueuePresentedTotal_.load(std::memory_order_relaxed)));
 }
 
 void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {

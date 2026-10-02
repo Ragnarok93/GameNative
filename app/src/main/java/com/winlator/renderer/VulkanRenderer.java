@@ -208,11 +208,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         return;
                     }
                 }
-                Context context = xServerView.getContext();
-                File provenanceDir = new File(ImageFs.find(context).getRootDir(), "tmp");
-                provenanceDir.mkdirs();
-                String provenanceSocketPath =
-                    new File(provenanceDir, "lsfg-provenance-v1.sock").getAbsolutePath();
                 nativeHandle = nativeInit(
                     surface,
                     xServer.screenInfo.width,
@@ -220,7 +215,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     driverPath,
                     driverLibraryName,
                     nativeLibDir,
-                    provenanceSocketPath);
+                    "");
                 if (nativeHandle != 0) {
                     nativeSetPresentMode(nativeHandle, pendingPresentMode);
                     nativeSetLsfgFrameQueue(

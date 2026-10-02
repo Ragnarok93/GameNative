@@ -1636,6 +1636,51 @@ private fun PerformanceHudQuickMenuTab(
 }
 
 @Composable
+private fun LsfgFrameQueueTargetControls(
+    selected: app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget,
+    accentColor: Color,
+    onSelected: (app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget) -> Unit,
+) {
+    val target = app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        QuickMenuChoiceChip(
+            text = stringResource(R.string.lsfg_frame_queue_unbuffered),
+            selected = selected == target.UNBUFFERED,
+            accentColor = accentColor,
+            onClick = { onSelected(target.UNBUFFERED) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = false,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            QuickMenuChoiceChip(
+                text = stringResource(R.string.lsfg_frame_queue_balanced),
+                selected = selected == target.BALANCED,
+                accentColor = accentColor,
+                onClick = { onSelected(target.BALANCED) },
+                modifier = Modifier.weight(1f),
+                singleLine = false,
+            )
+            QuickMenuChoiceChip(
+                text = stringResource(R.string.lsfg_frame_queue_smooth),
+                selected = selected == target.SMOOTH,
+                accentColor = accentColor,
+                onClick = { onSelected(target.SMOOTH) },
+                modifier = Modifier.weight(1f),
+                singleLine = false,
+            )
+        }
+    }
+}
+
+@Composable
 private fun LsfgQuickMenuTab(
     container: com.winlator.container.Container?,
     multiplier: Int,
@@ -1972,30 +2017,11 @@ private fun LsfgQuickMenuTab(
                             title = stringResource(R.string.lsfg_frame_queue_target),
                             subtitle = stringResource(R.string.lsfg_frame_queue_target_desc),
                         )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            listOf(
-                                app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED to
-                                    R.string.lsfg_frame_queue_unbuffered,
-                                app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.BALANCED to
-                                    R.string.lsfg_frame_queue_balanced,
-                                app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.SMOOTH to
-                                    R.string.lsfg_frame_queue_smooth,
-                            ).forEach { (candidate, label) ->
-                                QuickMenuChoiceChip(
-                                    text = stringResource(label),
-                                    selected = frameQueueTarget == candidate,
-                                    accentColor = accentColor,
-                                    onClick = { onFrameQueueTargetChanged(candidate) },
-                                    modifier = Modifier.weight(1f),
-                                    singleLine = true,
-                                )
-                            }
-                        }
+                        LsfgFrameQueueTargetControls(
+                            selected = frameQueueTarget,
+                            accentColor = accentColor,
+                            onSelected = onFrameQueueTargetChanged,
+                        )
                     }
                 }
 

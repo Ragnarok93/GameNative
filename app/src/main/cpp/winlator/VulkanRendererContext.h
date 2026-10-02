@@ -118,6 +118,7 @@ struct VkTable {
 
 static constexpr uint32_t BASE_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -194,6 +195,8 @@ struct HostDisplayConfirmation {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
+    uint64_t acquireNs = 0;
+    uint32_t gpuOutstanding = 0;
 };
 
 struct PendingHostPresent {
@@ -360,24 +363,18 @@ private:
     uint64_t hostDisplayUnknown_ = 0;
     std::deque<HostDisplayConfirmation> pendingHostDisplayConfirmations;
 
-    // Eden-style buffering lives only at GameNative's final Vulkan presenter.
-    // OFF/Unbuffered retains the original immediate vkQueuePresentKHR path.
+    // Frame Queue is retirement-aware final-compositor buffering. Presentation
+    // stays on the render thread and WSI remains the natural pacing boundary.
     std::atomic<bool> lsfgFrameQueueEnabled_{false};
     std::atomic<uint32_t> lsfgFrameQueueTarget_{0};
-    std::thread hostPresentThread_;
-    std::atomic<bool> hostPresentThreadRunning_{false};
-    std::mutex frameQueueConfigMutex_;
-    std::mutex hostPresentMutex_;
-    std::condition_variable hostPresentCv_;
-    std::condition_variable hostPresentCapacityCv_;
-    std::deque<PendingHostPresent> hostPresentQueue_;
-    std::size_t hostPresentActive_{0};
-    std::array<bool, MAX_FRAMES_IN_FLIGHT> framePresentPending_{};
     std::mutex graphicsQueueMutex_;
-    std::atomic<uint64_t> frameQueueEnqueuedTotal_{0};
     std::atomic<uint64_t> frameQueuePresentedTotal_{0};
-    std::atomic<uint64_t> frameQueueBackpressureTotal_{0};
-    std::atomic<uint32_t> frameQueueHighWatermark_{0};
+    std::atomic<uint64_t> frameQueueRetirementWaitTotal_{0};
+    std::atomic<uint64_t> frameQueueRetirementWaitNsTotal_{0};
+    std::atomic<uint64_t> frameQueueAcquireNsTotal_{0};
+    std::atomic<uint64_t> frameQueuePresentNsTotal_{0};
+    std::atomic<uint64_t> frameQueuePresentSamples_{0};
+    std::atomic<uint32_t> frameQueueMaxGpuOutstanding_{0};
 
     int lsfgProvenanceSocket = -1;
     std::string lsfgProvenanceSocketPath;
@@ -502,11 +499,10 @@ private:
 
     std::vector<VkSemaphore> imgAvailSems;
     std::vector<VkSemaphore> renderDoneSems;
-    // Buffered-present semaphores are indexed by swapchain image. Reacquiring
-    // an image is the WSI retirement proof for the previous wait on that
-    // image, so these are never recycled from a CPU render fence.
-    std::vector<VkSemaphore> queuedRenderDoneSems_;
-    std::vector<VkSemaphore> retiredQueuedRenderDoneSems_;
+    // Frame-queue present semaphores are indexed by swapchain image.
+    // Reacquiring an image proves WSI consumed its previous wait.
+    std::vector<VkSemaphore> frameQueuePresentSems_;
+    std::vector<VkSemaphore> retiredFrameQueuePresentSems_;
     std::vector<VkFence>     inFlightFences;
     std::vector<VkFence>     imgInFlight;
     uint32_t                 currentFrame = 0;
@@ -541,9 +537,9 @@ private:
     void createCursorDS();
     void createCmdBufs();
     void createSyncObjects();
-    void createQueuedPresentSemaphores();
-    void retireQueuedPresentSemaphores();
-    void destroyRetiredQueuedPresentSemaphores();
+    void createFrameQueuePresentSemaphores();
+    void retireFrameQueuePresentSemaphores();
+    void destroyRetiredFrameQueuePresentSemaphores();
     void cleanupSwapchain();
 
     void initLsfgProvenanceSocket();
@@ -564,13 +560,10 @@ private:
         const char* reason);
     void flushHostDisplayConfirmationsUnknown(const char* reason);
     uint32_t activeFrameSlotCount() const;
-    void waitForHostPresentCapacity();
-    void waitForFramePresentSubmission(uint32_t frameSlot);
-    VkResult enqueueHostPresent(PendingHostPresent present, bool buffered);
+    uint32_t countOutstandingFrameSubmissions(bool observeCompleted);
+    void enforceFrameQueueSubmissionBudget(uint32_t target);
+    void drainFrameQueueSubmissions(const char* reason);
     VkResult presentHostFrame(const PendingHostPresent& present);
-    void hostPresentLoop();
-    void flushHostPresentQueue();
-    void stopHostPresentThread();
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);

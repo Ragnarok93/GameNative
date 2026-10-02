@@ -251,9 +251,6 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         envVars.put("HOME", imageFs.home_path);
         envVars.put("USER", ImageFs.USER);
         envVars.put("TMPDIR", rootDir.getPath() + "/usr/tmp");
-        envVars.put(
-                "LSFG_PROVENANCE_SOCKET_PATH",
-                new File(rootDir, "tmp/lsfg-provenance-v1.sock").getAbsolutePath());
         new File(imageFs.home_path + "/.wine/drive_c" + rootDir.getPath() + "/usr/tmp").mkdirs();
         envVars.put("DISPLAY", ":0");
 

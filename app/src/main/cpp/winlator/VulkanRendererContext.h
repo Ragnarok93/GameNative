@@ -119,6 +119,7 @@ struct VkTable {
 static constexpr uint32_t BASE_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
+static constexpr uint64_t SMOOTH_PRESENT_STALL_NS = 8'000'000ULL;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -195,13 +196,6 @@ struct HostDisplayConfirmation {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
-};
-
-struct FrameQueuePendingPresentation {
-    uint64_t hostPresentId = 0;
-    uint32_t googlePresentId = 0;
-    HostDisplayConfirmationBackend backend =
-        HostDisplayConfirmationBackend::WsiAccepted;
 };
 
 struct PendingHostPresent {
@@ -382,13 +376,9 @@ private:
     std::atomic<uint64_t> frameQueuePresentNsTotal_{0};
     std::atomic<uint64_t> frameQueuePresentSamples_{0};
     std::atomic<uint32_t> frameQueueMaxGpuOutstanding_{0};
-    std::atomic<uint64_t> frameQueuePresentRetirementWaitTotal_{0};
-    std::atomic<uint64_t> frameQueuePresentRetirementWaitNsTotal_{0};
-    std::atomic<uint64_t> frameQueuePresentRetirementTimeoutTotal_{0};
     std::atomic<bool> frameQueueSmoothRuntimeSuppressed_{false};
     mutable std::atomic<bool> frameQueueSmoothFifoFallback_{false};
     std::atomic<uint64_t> frameQueueTelemetryEpoch_{0};
-    std::deque<FrameQueuePendingPresentation> frameQueuePendingPresentations_;
 
     int lsfgProvenanceSocket = -1;
     std::string lsfgProvenanceSocketPath;
@@ -579,8 +569,7 @@ private:
     uint32_t activeFrameSlotCount() const;
     uint32_t countOutstandingFrameSubmissions(bool observeCompleted);
     void enforceFrameQueueSubmissionBudget(uint32_t target);
-    void enforceFrameQueuePresentationBudget(uint32_t target);
-    void drainFrameQueuePresentations(const char* reason);
+    void updateSmoothQueuePressure(uint64_t presentNs);
     void drainFrameQueueSubmissions(const char* reason);
     VkResult presentHostFrame(const PendingHostPresent& present);
 

@@ -149,7 +149,7 @@ class LsfgFrameQueueContractTest {
         assertTrue(header.contains("SMOOTH_PRESENT_STALL_NS"))
         assertTrue(header.contains("frameQueueSmoothRuntimeSuppressed_"))
         assertTrue(implementation.contains("updateSmoothQueuePressure"))
-        assertTrue(implementation.contains("presentNs >= SMOOTH_PRESENT_STALL_NS"))
+        assertTrue(implementation.contains("presentNs < SMOOTH_PRESENT_STALL_NS"))
         assertTrue(implementation.contains("event=smooth-runtime-fallback reason=present-stall"))
         assertFalse(implementation.contains("enforceFrameQueuePresentationBudget"))
         assertFalse(implementation.contains("drainFrameQueuePresentations"))

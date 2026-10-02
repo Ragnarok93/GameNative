@@ -279,6 +279,16 @@ Java_com_winlator_renderer_VulkanRenderer_nativeSetPresentMode(JNIEnv*, jobject,
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeSetLsfgFrameQueue(
+        JNIEnv*, jobject, jlong handle, jboolean enabled, jint target) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle)) {
+        const uint32_t boundedTarget =
+            target < 0 ? 0U : static_cast<uint32_t>(target > 2 ? 2 : target);
+        renderer->setLsfgFrameQueue(enabled == JNI_TRUE, boundedTarget);
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetEffect(
     JNIEnv*, jobject, jlong handle, jint effectId, jfloat sharpness,
     jint effectMask, jfloat brightness, jfloat contrast, jfloat gamma) {

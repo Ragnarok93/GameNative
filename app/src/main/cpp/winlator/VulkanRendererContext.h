@@ -116,7 +116,8 @@ struct VkTable {
 #include <shared_mutex>
 #include <condition_variable>
 
-static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+static constexpr uint32_t BASE_FRAMES_IN_FLIGHT = 2;
+static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -188,6 +189,18 @@ struct LsfgFrameProvenance {
 };
 
 struct HostDisplayConfirmation {
+    uint64_t hostPresentId = 0;
+    uint32_t googlePresentId = 0;
+    HostDisplayConfirmationBackend backend =
+        HostDisplayConfirmationBackend::WsiAccepted;
+    std::vector<LsfgFrameProvenance> frameProvenance;
+};
+
+struct PendingHostPresent {
+    uint32_t frameSlot = 0;
+    uint32_t imageIndex = 0;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    VkSemaphore waitSemaphore = VK_NULL_HANDLE;
     uint64_t hostPresentId = 0;
     uint32_t googlePresentId = 0;
     HostDisplayConfirmationBackend backend =
@@ -269,6 +282,7 @@ public:
     void setSwapRB(bool enabled);
     void setEffect(int effectId, float sharpness, int effectMask, float brightness, float contrast, float gamma);
     void setPresentMode(VkPresentModeKHR mode);
+    void setLsfgFrameQueue(bool enabled, uint32_t target);
     std::vector<int> getSupportedPresentModes() const;
 
 private:
@@ -345,6 +359,25 @@ private:
     uint64_t hostDisplayConfirmed_ = 0;
     uint64_t hostDisplayUnknown_ = 0;
     std::deque<HostDisplayConfirmation> pendingHostDisplayConfirmations;
+
+    // Eden-style buffering lives only at GameNative's final Vulkan presenter.
+    // OFF/Unbuffered retains the original immediate vkQueuePresentKHR path.
+    std::atomic<bool> lsfgFrameQueueEnabled_{false};
+    std::atomic<uint32_t> lsfgFrameQueueTarget_{0};
+    std::thread hostPresentThread_;
+    std::atomic<bool> hostPresentThreadRunning_{false};
+    std::mutex frameQueueConfigMutex_;
+    std::mutex hostPresentMutex_;
+    std::condition_variable hostPresentCv_;
+    std::condition_variable hostPresentCapacityCv_;
+    std::deque<PendingHostPresent> hostPresentQueue_;
+    std::size_t hostPresentActive_{0};
+    std::array<bool, MAX_FRAMES_IN_FLIGHT> framePresentPending_{};
+    std::mutex graphicsQueueMutex_;
+    uint64_t frameQueueEnqueuedTotal_{0};
+    uint64_t frameQueuePresentedTotal_{0};
+    uint64_t frameQueueBackpressureTotal_{0};
+    uint32_t frameQueueHighWatermark_{0};
 
     int lsfgProvenanceSocket = -1;
     std::string lsfgProvenanceSocketPath;
@@ -522,6 +555,14 @@ private:
         bool unknown,
         const char* reason);
     void flushHostDisplayConfirmationsUnknown(const char* reason);
+    uint32_t activeFrameSlotCount() const;
+    void waitForHostPresentCapacity();
+    void waitForFramePresentSubmission(uint32_t frameSlot);
+    VkResult enqueueHostPresent(PendingHostPresent present);
+    VkResult presentHostFrame(const PendingHostPresent& present);
+    void hostPresentLoop();
+    void flushHostPresentQueue();
+    void stopHostPresentThread();
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);

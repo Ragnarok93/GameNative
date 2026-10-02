@@ -163,6 +163,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetFilterMode(long handle, int mode);
     private native void nativeSetSwapRB(long handle, boolean enabled);
     private native void nativeSetPresentMode(long handle, int mode);
+    private native void nativeSetLsfgFrameQueue(long handle, boolean enabled, int target);
     private native void nativeSetEffect(long handle, int effectId, float sharpness,
         int effectMask, float brightness, float contrast, float gamma);
     private native long nativeEnableXrTarget(long handle);
@@ -222,6 +223,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     provenanceSocketPath);
                 if (nativeHandle != 0) {
                     nativeSetPresentMode(nativeHandle, pendingPresentMode);
+                    nativeSetLsfgFrameQueue(
+                        nativeHandle,
+                        pendingLsfgFrameQueueEnabled,
+                        pendingLsfgFrameQueueTarget);
                     nativeSetFilterMode(nativeHandle, pendingFilterMode);
                     nativeSetSwapRB(nativeHandle, pendingSwapRB);
                     nativeSetEffect(nativeHandle, pendingEffectId, pendingSharpness,
@@ -841,6 +846,19 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         synchronized (lock) { if (nativeHandle != 0) nativeSetPresentMode(nativeHandle, mode); }
     }
 
+    public void setLsfgFrameQueue(boolean enabled, int target) {
+        pendingLsfgFrameQueueEnabled = enabled;
+        pendingLsfgFrameQueueTarget = Math.max(0, Math.min(2, target));
+        synchronized (lock) {
+            if (nativeHandle != 0) {
+                nativeSetLsfgFrameQueue(
+                    nativeHandle,
+                    pendingLsfgFrameQueueEnabled,
+                    pendingLsfgFrameQueueTarget);
+            }
+        }
+    }
+
     private FrameRating hudRef = null;
 
     @Override
@@ -874,6 +892,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     // from fpsLimit, which remains the real/source frame-rate contract.
     private int lsfgPresentationFrameRateHint = 0;
     private int     pendingPresentMode    = 2;
+    private boolean pendingLsfgFrameQueueEnabled = false;
+    private int     pendingLsfgFrameQueueTarget = 0;
     private int     pendingFilterMode     = 0;
     private boolean pendingSwapRB         = false;
     private int     pendingEffectId       = EFFECT_NONE;

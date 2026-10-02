@@ -195,8 +195,6 @@ struct HostDisplayConfirmation {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
-    uint64_t acquireNs = 0;
-    uint32_t gpuOutstanding = 0;
 };
 
 struct PendingHostPresent {
@@ -209,6 +207,8 @@ struct PendingHostPresent {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
+    uint64_t acquireNs = 0;
+    uint32_t gpuOutstanding = 0;
 };
 
 struct WindowPushConstants {

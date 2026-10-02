@@ -647,6 +647,20 @@ class LsfgVkManagerTest {
             .thenReturn(armed.toString())
         whenever(container.getExtra(LsfgVkManager.EXTRA_MULTIPLIER, "2"))
             .thenReturn(multiplier)
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAMEGEN_MODE, LsfgVkManager.MODE_FIXED))
+            .thenReturn(LsfgVkManager.MODE_FIXED)
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FIXED_MULTIPLIER, "2"))
+            .thenReturn("2")
+        whenever(
+            container.getExtra(
+                LsfgVkManager.EXTRA_ADAPTIVE_TARGET_FPS,
+                LsfgVkManager.DEFAULT_ADAPTIVE_TARGET_FPS.toString(),
+            ),
+        ).thenReturn(LsfgVkManager.DEFAULT_ADAPTIVE_TARGET_FPS.toString())
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_ENABLED, "false"))
+            .thenReturn("false")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_TARGET, "0"))
+            .thenReturn("0")
         whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80"))
             .thenReturn("0.80")
         whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE_MODE, LsfgVkManager.FLOW_MODE_FIXED))

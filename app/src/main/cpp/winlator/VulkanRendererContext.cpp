@@ -27,6 +27,13 @@ constexpr uint32_t kLsfgFrameProvenanceMagic = 0x4c534650U; // "LSFP"
 constexpr uint16_t kLsfgFrameProvenanceVersion = 1;
 constexpr std::size_t kMaxPendingLsfgProvenance = 512;
 constexpr std::size_t kMaxPendingHostConfirmations = 256;
+constexpr int kLsfgProvenanceReceiveBufferBytes = 1024 * 1024;
+
+std::mutex gLsfgProvenanceSocketOwnerMutex;
+int gLsfgProvenanceSocketFd = -1;
+VulkanRendererContext* gLsfgProvenanceSocketOwner = nullptr;
+std::vector<VulkanRendererContext*> gLsfgProvenanceSocketContexts;
+uint64_t gLsfgProvenanceSocketOwnerGeneration = 0;
 
 struct LsfgFrameProvenancePacket {
     uint32_t magic;
@@ -622,11 +629,22 @@ void VulkanRendererContext::destroyRetiredFrameQueuePresentSemaphores() {
     retiredFrameQueuePresentSems_.clear();
 }
 
+uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
+    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
+        return 0;
+    const uint32_t requested =
+        std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
+    // A three-slot Smooth queue needs an explicit presentation-retirement
+    // primitive. GPU fences alone do not bound WSI/compositor backlog.
+    if (requested == 2 && !hostPresentWaitEnabled)
+        return 1;
+    return requested;
+}
+
 uint32_t VulkanRendererContext::activeFrameSlotCount() const {
     if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
         return BASE_FRAMES_IN_FLIGHT;
-    const uint32_t target =
-        std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
+    const uint32_t target = effectiveFrameQueueTarget();
     return target + 1U;
 }
 
@@ -689,6 +707,81 @@ void VulkanRendererContext::enforceFrameQueueSubmissionBudget(uint32_t target) {
         static_cast<unsigned long long>(oldestSerial),
         static_cast<double>(waitNs) / 1000000.0,
         static_cast<int>(waitResult));
+}
+
+void VulkanRendererContext::enforceFrameQueuePresentationBudget(uint32_t target) {
+    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+            || target < 2
+            || !hostPresentWaitEnabled
+            || !vk_.WaitForPresentKHR
+            || swapchain == VK_NULL_HANDLE)
+        return;
+
+    while (frameQueuePendingPresentIds_.size() >= target) {
+        const uint64_t presentId = frameQueuePendingPresentIds_.front();
+        const auto waitStart = std::chrono::steady_clock::now();
+        const VkResult waitResult = vk_.WaitForPresentKHR(
+            device, swapchain, presentId, UINT64_MAX);
+        const uint64_t waitNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - waitStart).count());
+        frameQueuePresentRetirementWaitTotal_.fetch_add(1, std::memory_order_relaxed);
+        frameQueuePresentRetirementWaitNsTotal_.fetch_add(waitNs, std::memory_order_relaxed);
+
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+            "event=present-retirement-wait target=%u present_id=%" PRIu64
+            " wait_ms=%.3f result=%d",
+            target,
+            presentId,
+            static_cast<double>(waitNs) / 1000000.0,
+            static_cast<int>(waitResult));
+
+        if (waitResult == VK_SUCCESS) {
+            frameQueuePendingPresentIds_.pop_front();
+            continue;
+        }
+
+        // A failed retirement primitive must never turn into an unbounded loop.
+        frameQueuePendingPresentIds_.clear();
+        break;
+    }
+}
+
+void VulkanRendererContext::drainFrameQueuePresentations(const char* reason) {
+    if (frameQueuePendingPresentIds_.empty())
+        return;
+
+    uint32_t waited = 0;
+    uint64_t waitNsTotal = 0;
+    if (hostPresentWaitEnabled && vk_.WaitForPresentKHR
+            && swapchain != VK_NULL_HANDLE) {
+        while (!frameQueuePendingPresentIds_.empty()) {
+            const uint64_t presentId = frameQueuePendingPresentIds_.front();
+            const auto waitStart = std::chrono::steady_clock::now();
+            const VkResult waitResult = vk_.WaitForPresentKHR(
+                device, swapchain, presentId, UINT64_MAX);
+            const uint64_t waitNs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - waitStart).count());
+            waitNsTotal += waitNs;
+            ++waited;
+            frameQueuePresentRetirementWaitTotal_.fetch_add(1, std::memory_order_relaxed);
+            frameQueuePresentRetirementWaitNsTotal_.fetch_add(waitNs, std::memory_order_relaxed);
+            frameQueuePendingPresentIds_.pop_front();
+            if (waitResult != VK_SUCCESS)
+                break;
+        }
+    }
+    frameQueuePendingPresentIds_.clear();
+
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+        "event=present-transition-drain reason=%s waited=%u "
+        "present_retirement_wait_ms=%.3f",
+        reason ? reason : "unknown",
+        waited,
+        static_cast<double>(waitNsTotal) / 1000000.0);
 }
 
 void VulkanRendererContext::drainFrameQueueSubmissions(const char* reason) {
@@ -788,27 +881,45 @@ VkResult VulkanRendererContext::presentHostFrame(
             present.googlePresentId,
             present.backend,
             present.frameProvenance);
+        if (lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+                && effectiveFrameQueueTarget() >= 2
+                && hostPresentWaitEnabled
+                && vk_.WaitForPresentKHR
+                && present.hostPresentId != 0) {
+            frameQueuePendingPresentIds_.push_back(present.hostPresentId);
+        }
         pollHostDisplayConfirmations();
 
         if (sample <= 8 || sample % 120 == 0) {
             const bool enabled =
                 lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
-            const uint32_t target = enabled
+            const uint32_t requestedTarget = enabled
                 ? std::min<uint32_t>(
                     2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
                 : 0;
+            const uint32_t effectiveTarget =
+                enabled ? effectiveFrameQueueTarget() : 0;
+            const bool smoothFallback =
+                enabled && requestedTarget == 2 && effectiveTarget < 2;
             const char* mode = !enabled ? "off"
-                : (target == 0 ? "unbuffered"
-                : (target == 1 ? "balanced" : "smooth"));
+                : (requestedTarget == 0 ? "unbuffered"
+                : (requestedTarget == 1 ? "balanced" : "smooth"));
+            const char* fallbackReason = smoothFallback
+                ? "present-wait-unavailable" : "none";
             __android_log_print(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-                "event=present enabled=%d target=%u mode=%s active_slots=%u "
+                "event=present enabled=%d requested_target=%u effective_target=%u "
+                "mode=%s smooth_fallback=%d fallback_reason=%s active_slots=%u "
                 "gpu_outstanding=%u max_gpu_outstanding=%u acquire_ms=%.3f "
                 "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f "
-                "presented=%llu",
+                "present_retirement_waits=%llu present_retirement_wait_ms=%.3f "
+                "present_pending=%zu presented=%llu",
                 enabled ? 1 : 0,
-                target,
+                requestedTarget,
+                effectiveTarget,
                 mode,
+                smoothFallback ? 1 : 0,
+                fallbackReason,
                 activeFrameSlotCount(),
                 present.gpuOutstanding,
                 frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
@@ -819,6 +930,12 @@ VkResult VulkanRendererContext::presentHostFrame(
                 static_cast<double>(
                     frameQueueRetirementWaitNsTotal_.load(std::memory_order_relaxed))
                     / 1000000.0,
+                static_cast<unsigned long long>(
+                    frameQueuePresentRetirementWaitTotal_.load(std::memory_order_relaxed)),
+                static_cast<double>(
+                    frameQueuePresentRetirementWaitNsTotal_.load(std::memory_order_relaxed))
+                    / 1000000.0,
+                frameQueuePendingPresentIds_.size(),
                 static_cast<unsigned long long>(presented));
         }
     }
@@ -828,6 +945,7 @@ VkResult VulkanRendererContext::presentHostFrame(
 }
 
 void VulkanRendererContext::cleanupSwapchain() {
+    drainFrameQueuePresentations("swapchain-recreate");
     retireFrameQueuePresentSemaphores();
     flushHostDisplayConfirmationsUnknown("swapchain-recreate");
     for (auto fb:swapchainFBs) vk_.DestroyFramebuffer(device,fb,nullptr); swapchainFBs.clear();
@@ -1374,6 +1492,7 @@ void VulkanRendererContext::flushDeleteQueue() {
 void VulkanRendererContext::renderFrame() {
     std::shared_lock<std::shared_mutex> frameLock(frameMutex);
 
+    drainLsfgProvenance();
     needsRender.store(false,std::memory_order_relaxed);
     cursorMoved.store(false,std::memory_order_relaxed);
 
@@ -1443,11 +1562,11 @@ ok=true;}catch(...){}
     const bool frameQueueEnabled =
         lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
     const uint32_t frameQueueTarget = frameQueueEnabled
-        ? std::min<uint32_t>(
-            2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
-        : 0;
-    if (!toXr)
+        ? effectiveFrameQueueTarget() : 0;
+    if (!toXr) {
+        enforceFrameQueuePresentationBudget(frameQueueTarget);
         enforceFrameQueueSubmissionBudget(frameQueueTarget);
+    }
 
     uint32_t imgIdx = 0;
     uint64_t acquireNs = 0;
@@ -1924,53 +2043,113 @@ void VulkanRendererContext::completeObservedFence(VkFence fence) {
 }
 
 void VulkanRendererContext::initLsfgProvenanceSocket() {
-    if (lsfgProvenanceSocket >= 0) return;
+    std::lock_guard<std::mutex> ownerLock(gLsfgProvenanceSocketOwnerMutex);
 
-    const int fd = ::socket(
-        AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
+    if (gLsfgProvenanceSocketFd < 0) {
+        const int fd = ::socket(
+            AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (fd < 0) {
+            __android_log_print(
+                ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                "provenance-socket-bind-failed reason=socket errno=%d mode=abstract name=%s",
+                errno, LSFG_PROVENANCE_SOCKET);
+            return;
+        }
+
+        const int receiveBufferBytes = kLsfgProvenanceReceiveBufferBytes;
+        if (::setsockopt(
+                fd, SOL_SOCKET, SO_RCVBUF,
+                &receiveBufferBytes, sizeof(receiveBufferBytes)) != 0) {
+            __android_log_print(
+                ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                "provenance-socket-buffer-warning errno=%d requested=%d",
+                errno, receiveBufferBytes);
+        }
+
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        address.sun_path[0] = '\0';
+        constexpr std::size_t socketNameLength =
+            sizeof(LSFG_PROVENANCE_SOCKET) - 1;
+        static_assert(socketNameLength + 1 <= sizeof(address.sun_path));
+        std::memcpy(address.sun_path + 1, LSFG_PROVENANCE_SOCKET, socketNameLength);
+        const socklen_t addressLength = static_cast<socklen_t>(
+            offsetof(sockaddr_un, sun_path) + 1 + socketNameLength);
+
+        if (::bind(
+                fd,
+                reinterpret_cast<const sockaddr*>(&address),
+                addressLength) != 0) {
+            const int bindError = errno;
+            ::close(fd);
+            __android_log_print(
+                ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                "provenance-socket-bind-failed reason=bind errno=%d mode=abstract name=%s",
+                bindError, LSFG_PROVENANCE_SOCKET);
+            return;
+        }
+
+        gLsfgProvenanceSocketFd = fd;
         __android_log_print(
-            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
-            "provenance-socket-bind-failed reason=socket errno=%d mode=abstract name=%s",
-            errno, LSFG_PROVENANCE_SOCKET);
-        return;
+            ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+            "provenance-socket-bind-ok mode=abstract name=%s rcvbuf_requested=%d",
+            LSFG_PROVENANCE_SOCKET, receiveBufferBytes);
     }
 
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    address.sun_path[0] = '\0';
-    constexpr std::size_t socketNameLength =
-        sizeof(LSFG_PROVENANCE_SOCKET) - 1;
-    static_assert(socketNameLength + 1 <= sizeof(address.sun_path));
-    std::memcpy(address.sun_path + 1, LSFG_PROVENANCE_SOCKET, socketNameLength);
-    const socklen_t addressLength = static_cast<socklen_t>(
-        offsetof(sockaddr_un, sun_path) + 1 + socketNameLength);
+    auto existing = std::find(
+        gLsfgProvenanceSocketContexts.begin(),
+        gLsfgProvenanceSocketContexts.end(),
+        this);
+    if (existing == gLsfgProvenanceSocketContexts.end())
+        gLsfgProvenanceSocketContexts.push_back(this);
 
-    if (::bind(
-            fd,
-            reinterpret_cast<const sockaddr*>(&address),
-            addressLength) != 0) {
-        const int bindError = errno;
-        ::close(fd);
+    VulkanRendererContext* previousOwner = gLsfgProvenanceSocketOwner;
+    const uint64_t previousGeneration = previousOwner
+        ? previousOwner->provenanceSocketOwnerGeneration_ : 0;
+    if (previousOwner && previousOwner != this)
+        previousOwner->lsfgProvenanceSocket = -1;
+
+    gLsfgProvenanceSocketOwner = this;
+    lsfgProvenanceSocket = gLsfgProvenanceSocketFd;
+    provenanceSocketOwnerGeneration_ = ++gLsfgProvenanceSocketOwnerGeneration;
+
+    if (previousOwner && previousOwner != this) {
         __android_log_print(
-            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
-            "provenance-socket-bind-failed reason=bind errno=%d mode=abstract name=%s",
-            bindError, LSFG_PROVENANCE_SOCKET);
-        return;
+            ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+            "provenance-socket-owner-transfer previous_generation=%" PRIu64
+            " current_generation=%" PRIu64 " reason=new-renderer",
+            previousGeneration, provenanceSocketOwnerGeneration_);
     }
-
-    lsfgProvenanceSocket = fd;
-    __android_log_print(
-        ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
-        "provenance-socket-bind-ok mode=abstract name=%s",
-        LSFG_PROVENANCE_SOCKET);
 }
 
 void VulkanRendererContext::closeLsfgProvenanceSocket() {
-    if (lsfgProvenanceSocket >= 0) {
-        ::close(lsfgProvenanceSocket);
+    {
+        std::lock_guard<std::mutex> ownerLock(gLsfgProvenanceSocketOwnerMutex);
+        auto existing = std::find(
+            gLsfgProvenanceSocketContexts.begin(),
+            gLsfgProvenanceSocketContexts.end(),
+            this);
+        if (existing != gLsfgProvenanceSocketContexts.end())
+            gLsfgProvenanceSocketContexts.erase(existing);
+
+        if (gLsfgProvenanceSocketOwner == this) {
+            gLsfgProvenanceSocketOwner = gLsfgProvenanceSocketContexts.empty()
+                ? nullptr : gLsfgProvenanceSocketContexts.back();
+            if (gLsfgProvenanceSocketOwner) {
+                gLsfgProvenanceSocketOwner->lsfgProvenanceSocket =
+                    gLsfgProvenanceSocketFd;
+                gLsfgProvenanceSocketOwner->provenanceSocketOwnerGeneration_ =
+                    ++gLsfgProvenanceSocketOwnerGeneration;
+                __android_log_print(
+                    ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+                    "provenance-socket-owner-transfer current_generation=%" PRIu64
+                    " reason=owner-close",
+                    gLsfgProvenanceSocketOwner->provenanceSocketOwnerGeneration_);
+            }
+        }
         lsfgProvenanceSocket = -1;
     }
+
     __android_log_print(
         ANDROID_LOG_INFO,
         "LSFG_HOST_DISPLAY",
@@ -1986,7 +2165,11 @@ void VulkanRendererContext::closeLsfgProvenanceSocket() {
 }
 
 void VulkanRendererContext::drainLsfgProvenance() {
-    if (lsfgProvenanceSocket < 0) return;
+    std::lock_guard<std::mutex> ownerLock(gLsfgProvenanceSocketOwnerMutex);
+    if (gLsfgProvenanceSocketOwner != this
+            || gLsfgProvenanceSocketFd < 0)
+        return;
+    lsfgProvenanceSocket = gLsfgProvenanceSocketFd;
     for (;;) {
         LsfgFrameProvenancePacket packet{};
         const ssize_t received = ::recvfrom(
@@ -2530,25 +2713,38 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
     if (previousEnabled == enabled && previousTarget == target)
         return;
 
-    // Configuration changes are explicit recovery boundaries. Drain only the
-    // renderer's submitted frame fences; never idle the whole device/queue.
+    // Configuration changes are explicit recovery boundaries. Drain the
+    // compositor GPU work and, where supported, presentation retirement.
+    // Never idle the whole device/queue.
     drainFrameQueueSubmissions("config-transition");
+    drainFrameQueuePresentations("config-transition");
 
     lsfgFrameQueueTarget_.store(target, std::memory_order_release);
     lsfgFrameQueueEnabled_.store(enabled, std::memory_order_release);
     currentFrame = 0;
 
+    const uint32_t effectiveTarget =
+        enabled ? effectiveFrameQueueTarget() : 0;
+    const bool smoothFallback =
+        enabled && target == 2 && effectiveTarget < 2;
     const char* mode = !enabled ? "off"
         : (target == 0 ? "unbuffered"
         : (target == 1 ? "balanced" : "smooth"));
+    const char* fallbackReason = smoothFallback
+        ? "present-wait-unavailable" : "none";
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-        "event=config enabled=%d target=%u mode=%s active_slots=%u "
+        "event=config enabled=%d requested_target=%u effective_target=%u "
+        "mode=%s smooth_fallback=%d fallback_reason=%s active_slots=%u "
         "gpu_outstanding=%u max_gpu_outstanding=%u retirement_waits=%llu "
-        "retirement_wait_ms=%.3f presented=%llu",
+        "retirement_wait_ms=%.3f present_retirement_waits=%llu "
+        "present_retirement_wait_ms=%.3f presented=%llu",
         enabled ? 1 : 0,
         target,
+        effectiveTarget,
         mode,
+        smoothFallback ? 1 : 0,
+        fallbackReason,
         activeFrameSlotCount(),
         countOutstandingFrameSubmissions(true),
         frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
@@ -2556,6 +2752,11 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
             frameQueueRetirementWaitTotal_.load(std::memory_order_relaxed)),
         static_cast<double>(
             frameQueueRetirementWaitNsTotal_.load(std::memory_order_relaxed))
+            / 1000000.0,
+        static_cast<unsigned long long>(
+            frameQueuePresentRetirementWaitTotal_.load(std::memory_order_relaxed)),
+        static_cast<double>(
+            frameQueuePresentRetirementWaitNsTotal_.load(std::memory_order_relaxed))
             / 1000000.0,
         static_cast<unsigned long long>(
             frameQueuePresentedTotal_.load(std::memory_order_relaxed)));

@@ -375,6 +375,9 @@ private:
     std::atomic<uint64_t> frameQueuePresentNsTotal_{0};
     std::atomic<uint64_t> frameQueuePresentSamples_{0};
     std::atomic<uint32_t> frameQueueMaxGpuOutstanding_{0};
+    std::atomic<uint64_t> frameQueuePresentRetirementWaitTotal_{0};
+    std::atomic<uint64_t> frameQueuePresentRetirementWaitNsTotal_{0};
+    std::deque<uint64_t> frameQueuePendingPresentIds_;
 
     int lsfgProvenanceSocket = -1;
     std::string lsfgProvenanceSocketPath;
@@ -382,6 +385,7 @@ private:
     uint64_t provenanceMatchTotal_ = 0;
     uint64_t provenanceMissTotal_ = 0;
     uint64_t activeProvenanceContextEpoch_ = 0;
+    uint64_t provenanceSocketOwnerGeneration_ = 0;
     bool provenanceFirstPacketLogged_ = false;
     std::deque<LsfgFrameProvenance> pendingLsfgProvenance;
     std::unordered_map<uint32_t, uint64_t> lsfgSwapchainImageAhbs;
@@ -559,9 +563,12 @@ private:
         bool unknown,
         const char* reason);
     void flushHostDisplayConfirmationsUnknown(const char* reason);
+    uint32_t effectiveFrameQueueTarget() const;
     uint32_t activeFrameSlotCount() const;
     uint32_t countOutstandingFrameSubmissions(bool observeCompleted);
     void enforceFrameQueueSubmissionBudget(uint32_t target);
+    void enforceFrameQueuePresentationBudget(uint32_t target);
+    void drainFrameQueuePresentations(const char* reason);
     void drainFrameQueueSubmissions(const char* reason);
     VkResult presentHostFrame(const PendingHostPresent& present);
 

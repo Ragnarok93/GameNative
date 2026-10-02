@@ -161,6 +161,31 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun smoothNeverUsesThreeSlotsWithFifoBecauseQueuePresentCanBecomeTheThrottle() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR"))
+        assertTrue(implementation.contains("frameQueueSmoothFifoFallback_"))
+        assertTrue(implementation.contains("fifo-present-blocking"))
+        assertTrue(implementation.contains("if (requested == 2 && fifoPresent)"))
+        assertTrue(implementation.contains("return 1;"))
+    }
+
+    @Test
+    fun frameQueueModeChangesResetPressureTelemetryForCleanABIntervals() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("frameQueueTelemetryEpoch_"))
+        assertTrue(implementation.contains("resetFrameQueueTelemetry"))
+        assertTrue(implementation.contains("frameQueueMaxGpuOutstanding_.store(0"))
+        assertTrue(implementation.contains("frameQueueRetirementWaitTotal_.store(0"))
+        assertTrue(implementation.contains("frameQueuePresentRetirementWaitTotal_.store(0"))
+        assertTrue(implementation.contains("frameQueuePresentSamples_.store(0"))
+        assertTrue(implementation.contains("telemetry_epoch="))
+    }
+
+    @Test
     fun trueSmoothUsesPresentWaitAsTheRetirementBoundary() {
         val header = source("VulkanRendererContext.h")
         val implementation = source("VulkanRendererContext.cpp")

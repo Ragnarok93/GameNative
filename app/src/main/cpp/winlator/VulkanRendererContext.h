@@ -197,6 +197,13 @@ struct HostDisplayConfirmation {
     std::vector<LsfgFrameProvenance> frameProvenance;
 };
 
+struct FrameQueuePendingPresentation {
+    uint64_t hostPresentId = 0;
+    uint32_t googlePresentId = 0;
+    HostDisplayConfirmationBackend backend =
+        HostDisplayConfirmationBackend::WsiAccepted;
+};
+
 struct PendingHostPresent {
     uint32_t frameSlot = 0;
     uint32_t imageIndex = 0;
@@ -377,7 +384,9 @@ private:
     std::atomic<uint32_t> frameQueueMaxGpuOutstanding_{0};
     std::atomic<uint64_t> frameQueuePresentRetirementWaitTotal_{0};
     std::atomic<uint64_t> frameQueuePresentRetirementWaitNsTotal_{0};
-    std::deque<uint64_t> frameQueuePendingPresentIds_;
+    std::atomic<uint64_t> frameQueuePresentRetirementTimeoutTotal_{0};
+    std::atomic<bool> frameQueueSmoothRuntimeSuppressed_{false};
+    std::deque<FrameQueuePendingPresentation> frameQueuePendingPresentations_;
 
     int lsfgProvenanceSocket = -1;
     std::string lsfgProvenanceSocketPath;

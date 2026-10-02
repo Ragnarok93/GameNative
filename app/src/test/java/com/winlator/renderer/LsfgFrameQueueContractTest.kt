@@ -132,12 +132,15 @@ class LsfgFrameQueueContractTest {
 
         assertTrue(header.contains("effectiveFrameQueueTarget"))
         assertTrue(implementation.contains("uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const"))
-        assertTrue(implementation.contains("requested == 2 && !hostPresentWaitEnabled"))
+        assertTrue(implementation.contains("hasPresentationRetirement"))
+        assertTrue(implementation.contains("hostPresentWaitEnabled"))
+        assertTrue(implementation.contains("hostGoogleDisplayTimingEnabled"))
+        assertTrue(implementation.contains("frameQueueSmoothRuntimeSuppressed_"))
         assertTrue(implementation.contains("return 1;"))
         assertTrue(implementation.contains("requested_target="))
         assertTrue(implementation.contains("effective_target="))
         assertTrue(implementation.contains("smooth_fallback="))
-        assertTrue(implementation.contains("present-wait-unavailable"))
+        assertTrue(implementation.contains("present-retirement-unavailable"))
     }
 
     @Test

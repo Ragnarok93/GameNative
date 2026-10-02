@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <chrono>
+#include <thread>
 #include <unordered_set>
 #include "window_vert.h"
 #include "window_frag.h"
@@ -28,6 +29,8 @@ constexpr uint16_t kLsfgFrameProvenanceVersion = 1;
 constexpr std::size_t kMaxPendingLsfgProvenance = 512;
 constexpr std::size_t kMaxPendingHostConfirmations = 256;
 constexpr int kLsfgProvenanceReceiveBufferBytes = 1024 * 1024;
+constexpr uint64_t kFrameQueuePresentRetirementTimeoutNs = 100000000ULL;
+constexpr auto kFrameQueueGooglePollInterval = std::chrono::microseconds(250);
 
 std::mutex gLsfgProvenanceSocketOwnerMutex;
 int gLsfgProvenanceSocketFd = -1;
@@ -634,9 +637,14 @@ uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
         return 0;
     const uint32_t requested =
         std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
-    // A three-slot Smooth queue needs an explicit presentation-retirement
-    // primitive. GPU fences alone do not bound WSI/compositor backlog.
-    if (requested == 2 && !hostPresentWaitEnabled)
+    const bool hasPresentationRetirement =
+        (hostPresentWaitEnabled && vk_.WaitForPresentKHR)
+        || (hostGoogleDisplayTimingEnabled && vk_.GetPastPresentationTimingGOOGLE);
+    // A three-slot Smooth queue needs a real WSI/presentation retirement
+    // primitive. GPU fences alone do not bound compositor backlog.
+    if (requested == 2
+            && (!hasPresentationRetirement
+                || frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)))
         return 1;
     return requested;
 }
@@ -712,75 +720,167 @@ void VulkanRendererContext::enforceFrameQueueSubmissionBudget(uint32_t target) {
 void VulkanRendererContext::enforceFrameQueuePresentationBudget(uint32_t target) {
     if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
             || target < 2
-            || !hostPresentWaitEnabled
-            || !vk_.WaitForPresentKHR
             || swapchain == VK_NULL_HANDLE)
         return;
 
-    while (frameQueuePendingPresentIds_.size() >= target) {
-        const uint64_t presentId = frameQueuePendingPresentIds_.front();
+    while (frameQueuePendingPresentations_.size() >= target) {
+        const FrameQueuePendingPresentation pending =
+            frameQueuePendingPresentations_.front();
         const auto waitStart = std::chrono::steady_clock::now();
-        const VkResult waitResult = vk_.WaitForPresentKHR(
-            device, swapchain, presentId, UINT64_MAX);
+        bool retired = false;
+        VkResult waitResult = VK_SUCCESS;
+
+        if (pending.backend == HostDisplayConfirmationBackend::PresentWait
+                && hostPresentWaitEnabled && vk_.WaitForPresentKHR) {
+            waitResult = vk_.WaitForPresentKHR(
+                device,
+                swapchain,
+                pending.hostPresentId,
+                kFrameQueuePresentRetirementTimeoutNs);
+            retired = waitResult == VK_SUCCESS;
+            if (retired) {
+                frameQueuePendingPresentations_.pop_front();
+                __android_log_print(
+                    ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+                    "event=present-retirement-khr present_id=%" PRIu64,
+                    pending.hostPresentId);
+            }
+        } else if (pending.backend == HostDisplayConfirmationBackend::GoogleDisplayTiming
+                && hostGoogleDisplayTimingEnabled
+                && vk_.GetPastPresentationTimingGOOGLE) {
+            const auto deadline = waitStart
+                + std::chrono::nanoseconds(kFrameQueuePresentRetirementTimeoutNs);
+            while (std::chrono::steady_clock::now() < deadline) {
+                pollHostDisplayConfirmations();
+                retired = std::none_of(
+                    frameQueuePendingPresentations_.begin(),
+                    frameQueuePendingPresentations_.end(),
+                    [&](const FrameQueuePendingPresentation& candidate) {
+                        return candidate.backend
+                                == HostDisplayConfirmationBackend::GoogleDisplayTiming
+                            && candidate.googlePresentId == pending.googlePresentId;
+                    });
+                if (retired)
+                    break;
+                std::this_thread::sleep_for(kFrameQueueGooglePollInterval);
+            }
+            waitResult = retired ? VK_SUCCESS : VK_TIMEOUT;
+        } else {
+            waitResult = VK_ERROR_FEATURE_NOT_PRESENT;
+        }
+
         const uint64_t waitNs = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - waitStart).count());
         frameQueuePresentRetirementWaitTotal_.fetch_add(1, std::memory_order_relaxed);
         frameQueuePresentRetirementWaitNsTotal_.fetch_add(waitNs, std::memory_order_relaxed);
 
-        __android_log_print(
-            ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-            "event=present-retirement-wait target=%u present_id=%" PRIu64
-            " wait_ms=%.3f result=%d",
-            target,
-            presentId,
-            static_cast<double>(waitNs) / 1000000.0,
-            static_cast<int>(waitResult));
-
-        if (waitResult == VK_SUCCESS) {
-            frameQueuePendingPresentIds_.pop_front();
+        if (retired) {
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+                "event=present-retirement-wait target=%u backend=%s "
+                "wait_ms=%.3f result=%d",
+                target,
+                hostDisplayBackendName(pending.backend),
+                static_cast<double>(waitNs) / 1000000.0,
+                static_cast<int>(waitResult));
             continue;
         }
 
-        // A failed retirement primitive must never turn into an unbounded loop.
-        frameQueuePendingPresentIds_.clear();
+        frameQueuePresentRetirementTimeoutTotal_.fetch_add(
+            1, std::memory_order_relaxed);
+        frameQueueSmoothRuntimeSuppressed_.store(
+            true, std::memory_order_release);
+        frameQueuePendingPresentations_.clear();
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
+            "event=smooth-runtime-fallback reason=present-retirement-timeout "
+            "backend=%s wait_ms=%.3f result=%d effective_target=1",
+            hostDisplayBackendName(pending.backend),
+            static_cast<double>(waitNs) / 1000000.0,
+            static_cast<int>(waitResult));
         break;
     }
 }
 
 void VulkanRendererContext::drainFrameQueuePresentations(const char* reason) {
-    if (frameQueuePendingPresentIds_.empty())
+    if (frameQueuePendingPresentations_.empty())
         return;
 
     uint32_t waited = 0;
     uint64_t waitNsTotal = 0;
-    if (hostPresentWaitEnabled && vk_.WaitForPresentKHR
-            && swapchain != VK_NULL_HANDLE) {
-        while (!frameQueuePendingPresentIds_.empty()) {
-            const uint64_t presentId = frameQueuePendingPresentIds_.front();
-            const auto waitStart = std::chrono::steady_clock::now();
-            const VkResult waitResult = vk_.WaitForPresentKHR(
-                device, swapchain, presentId, UINT64_MAX);
-            const uint64_t waitNs = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - waitStart).count());
-            waitNsTotal += waitNs;
-            ++waited;
-            frameQueuePresentRetirementWaitTotal_.fetch_add(1, std::memory_order_relaxed);
-            frameQueuePresentRetirementWaitNsTotal_.fetch_add(waitNs, std::memory_order_relaxed);
-            frameQueuePendingPresentIds_.pop_front();
-            if (waitResult != VK_SUCCESS)
-                break;
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::nanoseconds(kFrameQueuePresentRetirementTimeoutNs);
+
+    while (!frameQueuePendingPresentations_.empty()
+            && std::chrono::steady_clock::now() < deadline) {
+        const FrameQueuePendingPresentation pending =
+            frameQueuePendingPresentations_.front();
+        const auto waitStart = std::chrono::steady_clock::now();
+        bool retired = false;
+
+        if (pending.backend == HostDisplayConfirmationBackend::PresentWait
+                && hostPresentWaitEnabled && vk_.WaitForPresentKHR) {
+            const uint64_t remainingNs = static_cast<uint64_t>(
+                std::max<int64_t>(
+                    0,
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        deadline - std::chrono::steady_clock::now()).count()));
+            const VkResult result = vk_.WaitForPresentKHR(
+                device, swapchain, pending.hostPresentId, remainingNs);
+            retired = result == VK_SUCCESS;
+            if (retired)
+                frameQueuePendingPresentations_.pop_front();
+        } else if (pending.backend == HostDisplayConfirmationBackend::GoogleDisplayTiming
+                && hostGoogleDisplayTimingEnabled
+                && vk_.GetPastPresentationTimingGOOGLE) {
+            pollHostDisplayConfirmations();
+            retired = std::none_of(
+                frameQueuePendingPresentations_.begin(),
+                frameQueuePendingPresentations_.end(),
+                [&](const FrameQueuePendingPresentation& candidate) {
+                    return candidate.backend
+                            == HostDisplayConfirmationBackend::GoogleDisplayTiming
+                        && candidate.googlePresentId == pending.googlePresentId;
+                });
+            if (!retired)
+                std::this_thread::sleep_for(kFrameQueueGooglePollInterval);
+        } else {
+            break;
         }
+
+        const uint64_t waitNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - waitStart).count());
+        waitNsTotal += waitNs;
+        if (retired)
+            ++waited;
     }
-    frameQueuePendingPresentIds_.clear();
+
+    const std::size_t remaining = frameQueuePendingPresentations_.size();
+    if (remaining != 0) {
+        frameQueuePresentRetirementTimeoutTotal_.fetch_add(
+            1, std::memory_order_relaxed);
+        frameQueueSmoothRuntimeSuppressed_.store(
+            true, std::memory_order_release);
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
+            "event=smooth-runtime-fallback reason=present-retirement-timeout "
+            "backend=transition remaining=%zu effective_target=1",
+            remaining);
+    }
+    frameQueuePendingPresentations_.clear();
+    frameQueuePresentRetirementWaitTotal_.fetch_add(waited, std::memory_order_relaxed);
+    frameQueuePresentRetirementWaitNsTotal_.fetch_add(
+        waitNsTotal, std::memory_order_relaxed);
 
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-        "event=present-transition-drain reason=%s waited=%u "
+        "event=present-transition-drain reason=%s waited=%u remaining=%zu "
         "present_retirement_wait_ms=%.3f",
         reason ? reason : "unknown",
         waited,
+        remaining,
         static_cast<double>(waitNsTotal) / 1000000.0);
 }
 
@@ -882,11 +982,23 @@ VkResult VulkanRendererContext::presentHostFrame(
             present.backend,
             present.frameProvenance);
         if (lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
-                && effectiveFrameQueueTarget() >= 2
-                && hostPresentWaitEnabled
-                && vk_.WaitForPresentKHR
-                && present.hostPresentId != 0) {
-            frameQueuePendingPresentIds_.push_back(present.hostPresentId);
+                && effectiveFrameQueueTarget() >= 2) {
+            FrameQueuePendingPresentation retirement{};
+            if (hostPresentWaitEnabled
+                    && vk_.WaitForPresentKHR
+                    && present.hostPresentId != 0) {
+                retirement.hostPresentId = present.hostPresentId;
+                retirement.googlePresentId = present.googlePresentId;
+                retirement.backend = HostDisplayConfirmationBackend::PresentWait;
+                frameQueuePendingPresentations_.push_back(retirement);
+            } else if (hostGoogleDisplayTimingEnabled
+                    && vk_.GetPastPresentationTimingGOOGLE
+                    && present.googlePresentId != 0) {
+                retirement.hostPresentId = present.hostPresentId;
+                retirement.googlePresentId = present.googlePresentId;
+                retirement.backend = HostDisplayConfirmationBackend::GoogleDisplayTiming;
+                frameQueuePendingPresentations_.push_back(retirement);
+            }
         }
         pollHostDisplayConfirmations();
 
@@ -904,8 +1016,10 @@ VkResult VulkanRendererContext::presentHostFrame(
             const char* mode = !enabled ? "off"
                 : (requestedTarget == 0 ? "unbuffered"
                 : (requestedTarget == 1 ? "balanced" : "smooth"));
-            const char* fallbackReason = smoothFallback
-                ? "present-wait-unavailable" : "none";
+            const char* fallbackReason = !smoothFallback ? "none"
+                : (frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)
+                    ? "present-retirement-timeout"
+                    : "present-retirement-unavailable");
             __android_log_print(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
                 "event=present enabled=%d requested_target=%u effective_target=%u "
@@ -935,7 +1049,7 @@ VkResult VulkanRendererContext::presentHostFrame(
                 static_cast<double>(
                     frameQueuePresentRetirementWaitNsTotal_.load(std::memory_order_relaxed))
                     / 1000000.0,
-                frameQueuePendingPresentIds_.size(),
+                frameQueuePendingPresentations_.size(),
                 static_cast<unsigned long long>(presented));
         }
     }
@@ -2413,7 +2527,16 @@ void VulkanRendererContext::recordHostPresent(
 }
 
 void VulkanRendererContext::pollHostDisplayConfirmations() {
-    if (pendingHostDisplayConfirmations.empty() || swapchain == VK_NULL_HANDLE)
+    if (swapchain == VK_NULL_HANDLE)
+        return;
+
+    const bool frameQueueNeedsGoogleTiming = std::any_of(
+        frameQueuePendingPresentations_.begin(),
+        frameQueuePendingPresentations_.end(),
+        [](const FrameQueuePendingPresentation& pending) {
+            return pending.backend == HostDisplayConfirmationBackend::GoogleDisplayTiming;
+        });
+    if (pendingHostDisplayConfirmations.empty() && !frameQueueNeedsGoogleTiming)
         return;
 
     if (hostGoogleDisplayTimingEnabled && vk_.GetPastPresentationTimingGOOGLE) {
@@ -2427,6 +2550,26 @@ void VulkanRendererContext::pollHostDisplayConfirmations() {
             if (query == VK_SUCCESS) {
                 for (uint32_t i = 0; i < count; ++i) {
                     const auto& timing = timings[i];
+                    const bool actuallyPresented = timing.actualPresentTime != 0;
+
+                    if (actuallyPresented) {
+                        auto queueIt = std::find_if(
+                            frameQueuePendingPresentations_.begin(),
+                            frameQueuePendingPresentations_.end(),
+                            [&](const FrameQueuePendingPresentation& pending) {
+                                return pending.backend
+                                        == HostDisplayConfirmationBackend::GoogleDisplayTiming
+                                    && pending.googlePresentId == timing.presentID;
+                            });
+                        if (queueIt != frameQueuePendingPresentations_.end()) {
+                            __android_log_print(
+                                ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+                                "event=present-retirement-google google_present_id=%u",
+                                timing.presentID);
+                            frameQueuePendingPresentations_.erase(queueIt);
+                        }
+                    }
+
                     auto it = std::find_if(
                         pendingHostDisplayConfirmations.begin(),
                         pendingHostDisplayConfirmations.end(),
@@ -2436,7 +2579,7 @@ void VulkanRendererContext::pollHostDisplayConfirmations() {
                                 && pending.googlePresentId == timing.presentID;
                         });
                     if (it == pendingHostDisplayConfirmations.end()) continue;
-                    const bool confirmed = timing.actualPresentTime != 0;
+                    const bool confirmed = actuallyPresented;
                     if (confirmed) ++hostDisplayConfirmed_;
                     else ++hostDisplayUnknown_;
                     emitHostDisplayConfirmation(
@@ -2719,6 +2862,7 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
     drainFrameQueueSubmissions("config-transition");
     drainFrameQueuePresentations("config-transition");
 
+    frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);
     lsfgFrameQueueTarget_.store(target, std::memory_order_release);
     lsfgFrameQueueEnabled_.store(enabled, std::memory_order_release);
     currentFrame = 0;
@@ -2730,15 +2874,18 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
     const char* mode = !enabled ? "off"
         : (target == 0 ? "unbuffered"
         : (target == 1 ? "balanced" : "smooth"));
-    const char* fallbackReason = smoothFallback
-        ? "present-wait-unavailable" : "none";
+    const char* fallbackReason = !smoothFallback ? "none"
+        : (frameQueueSmoothRuntimeSuppressed_.load(std::memory_order_acquire)
+            ? "present-retirement-timeout"
+            : "present-retirement-unavailable");
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
         "event=config enabled=%d requested_target=%u effective_target=%u "
         "mode=%s smooth_fallback=%d fallback_reason=%s active_slots=%u "
         "gpu_outstanding=%u max_gpu_outstanding=%u retirement_waits=%llu "
         "retirement_wait_ms=%.3f present_retirement_waits=%llu "
-        "present_retirement_wait_ms=%.3f presented=%llu",
+        "present_retirement_wait_ms=%.3f present_retirement_timeouts=%llu "
+        "presented=%llu",
         enabled ? 1 : 0,
         target,
         effectiveTarget,
@@ -2758,6 +2905,8 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
         static_cast<double>(
             frameQueuePresentRetirementWaitNsTotal_.load(std::memory_order_relaxed))
             / 1000000.0,
+        static_cast<unsigned long long>(
+            frameQueuePresentRetirementTimeoutTotal_.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(
             frameQueuePresentedTotal_.load(std::memory_order_relaxed)));
 }

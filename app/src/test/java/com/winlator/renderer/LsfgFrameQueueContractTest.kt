@@ -132,32 +132,31 @@ class LsfgFrameQueueContractTest {
 
         assertTrue(header.contains("effectiveFrameQueueTarget"))
         assertTrue(implementation.contains("uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const"))
-        assertTrue(implementation.contains("hasPresentationRetirement"))
-        assertTrue(implementation.contains("hostPresentWaitEnabled"))
-        assertTrue(implementation.contains("hostGoogleDisplayTimingEnabled"))
         assertTrue(implementation.contains("frameQueueSmoothRuntimeSuppressed_"))
         assertTrue(implementation.contains("return 1;"))
         assertTrue(implementation.contains("requested_target="))
         assertTrue(implementation.contains("effective_target="))
         assertTrue(implementation.contains("smooth_fallback="))
-        assertTrue(implementation.contains("present-retirement-unavailable"))
+        assertTrue(implementation.contains("present-stall"))
+        assertFalse(implementation.contains("present-retirement-unavailable"))
     }
 
     @Test
-    fun smoothAlsoUsesGoogleDisplayTimingAsARetirementBoundary() {
+    fun smoothBacksOffFromMeasuredPresentStallsWithoutPollingOrBlockingRetirement() {
         val header = source("VulkanRendererContext.h")
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(header.contains("FrameQueuePendingPresentation"))
+        assertTrue(header.contains("SMOOTH_PRESENT_STALL_NS"))
         assertTrue(header.contains("frameQueueSmoothRuntimeSuppressed_"))
-        assertTrue(implementation.contains("hostGoogleDisplayTimingEnabled"))
-        assertTrue(implementation.contains("GetPastPresentationTimingGOOGLE"))
-        assertTrue(implementation.contains("actualPresentTime != 0"))
-        assertTrue(implementation.contains("googlePresentId"))
-        assertTrue(implementation.contains("present-retirement-google"))
-        assertTrue(implementation.contains("smooth-runtime-fallback"))
-        assertTrue(implementation.contains("present-retirement-timeout"))
-        assertTrue(implementation.contains("std::this_thread::sleep_for"))
+        assertTrue(implementation.contains("updateSmoothQueuePressure"))
+        assertTrue(implementation.contains("presentNs >= SMOOTH_PRESENT_STALL_NS"))
+        assertTrue(implementation.contains("event=smooth-runtime-fallback reason=present-stall"))
+        assertFalse(implementation.contains("enforceFrameQueuePresentationBudget"))
+        assertFalse(implementation.contains("drainFrameQueuePresentations"))
+        assertFalse(implementation.contains("FrameQueuePendingPresentation"))
+        assertFalse(implementation.contains("kFrameQueuePresentRetirementTimeoutNs"))
+        assertFalse(implementation.contains("kFrameQueueGooglePollInterval"))
+        assertFalse(implementation.contains("std::this_thread::sleep_for"))
     }
 
     @Test
@@ -180,22 +179,20 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("resetFrameQueueTelemetry"))
         assertTrue(implementation.contains("frameQueueMaxGpuOutstanding_.store(0"))
         assertTrue(implementation.contains("frameQueueRetirementWaitTotal_.store(0"))
-        assertTrue(implementation.contains("frameQueuePresentRetirementWaitTotal_.store(0"))
         assertTrue(implementation.contains("frameQueuePresentSamples_.store(0"))
         assertTrue(implementation.contains("telemetry_epoch="))
     }
 
     @Test
-    fun trueSmoothUsesPresentWaitAsTheRetirementBoundary() {
-        val header = source("VulkanRendererContext.h")
+    fun smoothFallbackIsStickyUntilAnExplicitQueueOrPresentModeChange() {
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(header.contains("enforceFrameQueuePresentationBudget"))
-        assertTrue(header.contains("frameQueuePresentRetirementWaitTotal_"))
-        assertTrue(implementation.contains("enforceFrameQueuePresentationBudget"))
-        assertTrue(implementation.contains("WaitForPresentKHR"))
-        assertTrue(implementation.contains("present_retirement_waits="))
-        assertTrue(implementation.contains("present_retirement_wait_ms="))
+        assertTrue(implementation.contains("frameQueueSmoothRuntimeSuppressed_.store("))
+        assertTrue(implementation.contains("false, std::memory_order_release"))
+        assertTrue(implementation.contains("void VulkanRendererContext::setLsfgFrameQueue"))
+        assertTrue(implementation.contains("void VulkanRendererContext::setPresentMode"))
+        assertTrue(implementation.contains("fallback_reason=%s"))
+        assertTrue(implementation.contains("present-stall"))
     }
 
     @Test

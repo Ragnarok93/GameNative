@@ -374,10 +374,10 @@ private:
     std::size_t hostPresentActive_{0};
     std::array<bool, MAX_FRAMES_IN_FLIGHT> framePresentPending_{};
     std::mutex graphicsQueueMutex_;
-    uint64_t frameQueueEnqueuedTotal_{0};
-    uint64_t frameQueuePresentedTotal_{0};
-    uint64_t frameQueueBackpressureTotal_{0};
-    uint32_t frameQueueHighWatermark_{0};
+    std::atomic<uint64_t> frameQueueEnqueuedTotal_{0};
+    std::atomic<uint64_t> frameQueuePresentedTotal_{0};
+    std::atomic<uint64_t> frameQueueBackpressureTotal_{0};
+    std::atomic<uint32_t> frameQueueHighWatermark_{0};
 
     int lsfgProvenanceSocket = -1;
     std::string lsfgProvenanceSocketPath;

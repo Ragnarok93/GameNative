@@ -612,7 +612,7 @@ void VulkanRendererContext::waitForHostPresentCapacity() {
             static_cast<std::size_t>(frameQueueTarget) + 1U);
     std::unique_lock<std::mutex> lock(hostPresentMutex_);
     if (hostPresentQueue_.size() + hostPresentActive_ >= maxOutstanding)
-        ++frameQueueBackpressureTotal_;
+        frameQueueBackpressureTotal_.fetch_add(1, std::memory_order_relaxed);
     hostPresentCapacityCv_.wait(lock, [this, maxOutstanding] {
         return !hostPresentThreadRunning_.load(std::memory_order_acquire)
             || hostPresentQueue_.size() + hostPresentActive_ < maxOutstanding;
@@ -676,7 +676,7 @@ VkResult VulkanRendererContext::presentHostFrame(
     }
 
     if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
-        ++frameQueuePresentedTotal_;
+        frameQueuePresentedTotal_.fetch_add(1, std::memory_order_relaxed);
         recordHostPresent(
             present.hostPresentId,
             present.googlePresentId,
@@ -706,11 +706,16 @@ VkResult VulkanRendererContext::enqueueHostPresent(PendingHostPresent present) {
         if (present.frameSlot < MAX_FRAMES_IN_FLIGHT)
             framePresentPending_[present.frameSlot] = true;
         hostPresentQueue_.push_back(std::move(present));
-        ++frameQueueEnqueuedTotal_;
-        frameQueueHighWatermark_ = std::max<uint32_t>(
-            frameQueueHighWatermark_,
-            static_cast<uint32_t>(hostPresentQueue_.size() + hostPresentActive_));
-        if (frameQueueEnqueuedTotal_ <= 8 || frameQueueEnqueuedTotal_ % 120 == 0) {
+        const uint64_t enqueued =
+            frameQueueEnqueuedTotal_.fetch_add(1, std::memory_order_relaxed) + 1;
+        const uint32_t depth =
+            static_cast<uint32_t>(hostPresentQueue_.size() + hostPresentActive_);
+        uint32_t highWater =
+            frameQueueHighWatermark_.load(std::memory_order_relaxed);
+        while (highWater < depth
+                && !frameQueueHighWatermark_.compare_exchange_weak(
+                    highWater, depth, std::memory_order_relaxed)) {}
+        if (enqueued <= 8 || enqueued % 120 == 0) {
             __android_log_print(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
                 "event=enqueue enabled=1 target=%u queue_depth=%zu active=%zu "
@@ -718,10 +723,12 @@ VkResult VulkanRendererContext::enqueueHostPresent(PendingHostPresent present) {
                 frameQueueTarget,
                 hostPresentQueue_.size(),
                 hostPresentActive_,
-                frameQueueHighWatermark_,
-                static_cast<unsigned long long>(frameQueueEnqueuedTotal_),
-                static_cast<unsigned long long>(frameQueuePresentedTotal_),
-                static_cast<unsigned long long>(frameQueueBackpressureTotal_));
+                frameQueueHighWatermark_.load(std::memory_order_relaxed),
+                static_cast<unsigned long long>(enqueued),
+                static_cast<unsigned long long>(
+                    frameQueuePresentedTotal_.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(
+                    frameQueueBackpressureTotal_.load(std::memory_order_relaxed)));
         }
     }
     hostPresentCv_.notify_one();
@@ -1361,6 +1368,9 @@ ok=true;}catch(...){}
     }
 
     waitForHostPresentCapacity();
+    const uint32_t activeSlots = activeFrameSlotCount();
+    if (currentFrame >= activeSlots)
+        currentFrame = 0;
     waitForFramePresentSubmission(currentFrame);
     if (currentFrame >= cmdBufs.size() || cmdBufs[currentFrame] == VK_NULL_HANDLE) return;
     bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
@@ -2493,10 +2503,13 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
         target,
         mode,
         activeFrameSlotCount(),
-        static_cast<unsigned long long>(frameQueueEnqueuedTotal_),
-        static_cast<unsigned long long>(frameQueuePresentedTotal_),
-        static_cast<unsigned long long>(frameQueueBackpressureTotal_),
-        frameQueueHighWatermark_);
+        static_cast<unsigned long long>(
+            frameQueueEnqueuedTotal_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(
+            frameQueuePresentedTotal_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(
+            frameQueueBackpressureTotal_.load(std::memory_order_relaxed)),
+        frameQueueHighWatermark_.load(std::memory_order_relaxed));
 }
 
 void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {

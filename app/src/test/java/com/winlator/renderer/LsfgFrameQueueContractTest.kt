@@ -68,6 +68,37 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun queueDepthIsBoundedAndSmoothAloneActivatesThirdRenderSlot() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("BASE_FRAMES_IN_FLIGHT = 2"))
+        assertTrue(header.contains("MAX_FRAMES_IN_FLIGHT = 3"))
+        assertTrue(implementation.contains("static_cast<std::size_t>(frameQueueTarget) + 1U"))
+        assertTrue(implementation.contains("target >= 2 ? MAX_FRAMES_IN_FLIGHT : BASE_FRAMES_IN_FLIGHT"))
+        assertTrue(implementation.contains("currentFrame=(currentFrame+1)%activeFrameSlotCount()"))
+    }
+
+    @Test
+    fun queueTransitionsAndSwapchainTeardownDrainBeforeReuse() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("waitForFramePresentSubmission(currentFrame)"))
+        assertTrue(implementation.contains("framePresentPending_[present.frameSlot] = true"))
+        assertTrue(implementation.contains("framePresentPending_[present.frameSlot] = false"))
+        assertTrue(implementation.contains("void VulkanRendererContext::cleanupSwapchain() {\n    flushHostPresentQueue();"))
+        assertTrue(implementation.contains("if (previousEnabled && previousTarget > 0)\n        flushHostPresentQueue();"))
+    }
+
+    @Test
+    fun renderSubmitAndPresentShareExternalQueueSynchronization() {
+        val implementation = source("VulkanRendererContext.cpp")
+        assertTrue(implementation.contains("std::lock_guard<std::mutex> queueLock(graphicsQueueMutex_)"))
+        assertTrue(implementation.contains("vk_.QueueSubmit("))
+        assertTrue(implementation.contains("vk_.QueuePresentKHR(graphicsQueue, &pi)"))
+    }
+
+    @Test
     fun queuePathDoesNotAddDeviceOrQueueIdleWaits() {
         val implementation = source("VulkanRendererContext.cpp")
         val start = implementation.indexOf("void VulkanRendererContext::hostPresentLoop")

@@ -32,11 +32,12 @@ struct LsfgFrameProvenancePacket {
     uint32_t interpolationCount;
     uint32_t swapchainImageIndex;
     uint64_t runtimeSessionId;
+    uint64_t contextEpoch;
     uint64_t deliveryId;
     uint64_t sourceIndex;
     uint64_t batchId;
 };
-static_assert(sizeof(LsfgFrameProvenancePacket) == 48);
+static_assert(sizeof(LsfgFrameProvenancePacket) == 56);
 
 const char* hostDisplayBackendName(HostDisplayConfirmationBackend backend) {
     switch (backend) {
@@ -1757,6 +1758,27 @@ void VulkanRendererContext::drainLsfgProvenance() {
             continue;
         }
 
+        if (packet.contextEpoch != 0
+                && activeProvenanceContextEpoch_ != 0
+                && packet.contextEpoch != activeProvenanceContextEpoch_) {
+            flushHostDisplayConfirmationsUnknown("provenance-epoch-reset");
+            pendingLsfgProvenance.clear();
+            lsfgSwapchainImageAhbs.clear();
+            for (auto& [id, texture] : texMap)
+                texture.frameProvenance = {};
+            for (auto& [ahb, texture] : ahbImportCache)
+                texture.frameProvenance = {};
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                "LSFG_HOST_DISPLAY",
+                "provenance-epoch-reset previous=%" PRIu64
+                " current=%" PRIu64,
+                activeProvenanceContextEpoch_,
+                packet.contextEpoch);
+        }
+        if (packet.contextEpoch != 0)
+            activeProvenanceContextEpoch_ = packet.contextEpoch;
+
         ++provenanceRxTotal_;
         if (!provenanceFirstPacketLogged_) {
             provenanceFirstPacketLogged_ = true;
@@ -1786,6 +1808,7 @@ void VulkanRendererContext::drainLsfgProvenance() {
         LsfgFrameProvenance provenance{};
         provenance.valid = true;
         provenance.runtimeSessionId = packet.runtimeSessionId;
+        provenance.contextEpoch = packet.contextEpoch;
         provenance.deliveryId = packet.deliveryId;
         provenance.sourceIndex = packet.sourceIndex;
         provenance.batchId = packet.batchId;
@@ -1900,15 +1923,28 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             "LSFG_HOST_DISPLAY",
             "host_present_id=%" PRIu64 " host_wsi_accepted=%d "
             "host_display_confirmed=%d host_display_unknown=%d "
+            "host_wsi_accepted_total=%" PRIu64
+            " host_display_confirmed_total=%" PRIu64
+            " host_display_unknown_total=%" PRIu64
+            " display_delivery_ratio=%.4f "
             "confirmation_backend=%s delivery_id=%" PRIu64
+            " context_epoch=%" PRIu64
             " kind=%s source_index=%" PRIu64 " swapchain_image=%u "
             "interpolation_index=%u interpolation_count=%u reason=%s",
             confirmation.hostPresentId,
             confirmation.hostPresentId != 0 ? 1 : 0,
             confirmed ? 1 : 0,
             unknown ? 1 : 0,
+            hostWsiAccepted_,
+            hostDisplayConfirmed_,
+            hostDisplayUnknown_,
+            hostWsiAccepted_ > 0
+                ? static_cast<double>(hostDisplayConfirmed_)
+                    / static_cast<double>(hostWsiAccepted_)
+                : 0.0,
             hostDisplayBackendName(confirmation.backend),
             provenance.deliveryId,
+            provenance.contextEpoch,
             provenanceKindName(provenance.kind),
             provenance.sourceIndex,
             provenance.swapchainImageIndex,

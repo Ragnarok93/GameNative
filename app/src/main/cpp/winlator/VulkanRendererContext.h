@@ -177,6 +177,7 @@ enum class HostDisplayConfirmationBackend : uint8_t {
 struct LsfgFrameProvenance {
     bool valid = false;
     uint64_t runtimeSessionId = 0;
+    uint64_t contextEpoch = 0;
     uint64_t deliveryId = 0;
     uint64_t sourceIndex = 0;
     uint64_t batchId = 0;
@@ -350,6 +351,7 @@ private:
     uint64_t provenanceRxTotal_ = 0;
     uint64_t provenanceMatchTotal_ = 0;
     uint64_t provenanceMissTotal_ = 0;
+    uint64_t activeProvenanceContextEpoch_ = 0;
     bool provenanceFirstPacketLogged_ = false;
     std::deque<LsfgFrameProvenance> pendingLsfgProvenance;
     std::unordered_map<uint32_t, uint64_t> lsfgSwapchainImageAhbs;

@@ -269,7 +269,7 @@ object LsfgVkManager {
         parseBool(container.getExtra(EXTRA_FRAME_QUEUE_ENABLED, "false"))
 
     fun frameQueueTarget(container: Container): Int =
-        (container.getExtra(EXTRA_FRAME_QUEUE_TARGET, "0").toIntOrNull() ?: 0)
+        (container.getExtra(EXTRA_FRAME_QUEUE_TARGET, "0")?.toIntOrNull() ?: 0)
             .coerceIn(0, 2)
 
 

@@ -124,6 +124,35 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("event=transition-drain"))
     }
 
+
+    @Test
+    fun smoothRequiresPresentRetirementSupportAndFallsBackToBalancedDepthOtherwise() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("effectiveFrameQueueTarget"))
+        assertTrue(implementation.contains("uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const"))
+        assertTrue(implementation.contains("requested == 2 && !hostPresentWaitEnabled"))
+        assertTrue(implementation.contains("return 1;"))
+        assertTrue(implementation.contains("requested_target="))
+        assertTrue(implementation.contains("effective_target="))
+        assertTrue(implementation.contains("smooth_fallback="))
+        assertTrue(implementation.contains("present-wait-unavailable"))
+    }
+
+    @Test
+    fun trueSmoothUsesPresentWaitAsTheRetirementBoundary() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("enforceFrameQueuePresentationBudget"))
+        assertTrue(header.contains("frameQueuePresentRetirementWaitTotal_"))
+        assertTrue(implementation.contains("enforceFrameQueuePresentationBudget"))
+        assertTrue(implementation.contains("WaitForPresentKHR"))
+        assertTrue(implementation.contains("present_retirement_waits="))
+        assertTrue(implementation.contains("present_retirement_wait_ms="))
+    }
+
     @Test
     fun queueTelemetryReportsActualGpuAndPresentPressureRatherThanCpuDequeDepth() {
         val implementation = source("VulkanRendererContext.cpp")

@@ -76,6 +76,27 @@ class VulkanRendererDisplayConfirmationContractTest {
         assertFalse(renderer.contains("unlink(lsfgProvenanceSocketPath"))
     }
 
+
+    @Test
+    fun provenanceSocketOwnershipTransfersToNewestRendererAndDrainsOutsideAhbImport() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("gLsfgProvenanceSocketOwnerMutex"))
+        assertTrue(implementation.contains("gLsfgProvenanceSocketOwner"))
+        assertTrue(implementation.contains("provenance-socket-owner-transfer"))
+        assertTrue(implementation.contains("SO_RCVBUF"))
+        assertTrue(implementation.contains("drainLsfgProvenance();"))
+
+        val renderFrameStart = implementation.indexOf("void VulkanRendererContext::renderFrame()")
+        val renderFrameEnd = implementation.indexOf("void VulkanRendererContext::onSurfaceResized", renderFrameStart)
+        assertTrue(renderFrameStart >= 0 && renderFrameEnd > renderFrameStart)
+        val renderFrame = implementation.substring(renderFrameStart, renderFrameEnd)
+        assertTrue(renderFrame.contains("drainLsfgProvenance();"))
+
+        assertTrue(header.contains("provenanceSocketOwnerGeneration_"))
+    }
+
     @Test
     fun provenanceEpochChangeFlushesOldSwapchainMappings() {
         val header = source("VulkanRendererContext.h")

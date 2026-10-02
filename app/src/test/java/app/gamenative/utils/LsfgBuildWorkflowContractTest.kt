@@ -141,6 +141,30 @@ class LsfgBuildWorkflowContractTest {
         }
     }
 
+
+    @Test
+    fun upgradeableBuildRebuildsAndVerifiesCurrentVulkanRenderer() {
+        val workflow = repoFile(".github/workflows/upgradeable-debug.yml").readText()
+        val action = repoFile(".github/actions/prepare-vulkan-renderer-native/action.yml").readText()
+
+        assertTrue(
+            "Upgradeable APK must rebuild VulkanRenderer source instead of packaging the stale prebuilt .so",
+            workflow.contains("uses: ./.github/actions/prepare-vulkan-renderer-native"),
+        )
+        assertTrue(workflow.contains("lib/arm64-v8a/libvulkan_renderer.so"))
+        assertTrue(workflow.contains("gamenative-host-display-confirmation-v2"))
+
+        listOf(
+            "glslang-tools",
+            "cmake --build",
+            "--target vulkan_renderer",
+            "libvulkan_renderer.so",
+            "gamenative-host-display-confirmation-v2",
+        ).forEach { token ->
+            assertTrue("Vulkan renderer preparation action is missing $token", action.contains(token))
+        }
+    }
+
     @Test
     fun retiredLsfgStagingWorkflowsStayAbsent() {
         val workflowDir = repoFile(".github/workflows/pluvia-pr-check.yml").parentFile

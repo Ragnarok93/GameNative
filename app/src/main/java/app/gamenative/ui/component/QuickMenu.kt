@@ -1641,7 +1641,6 @@ private fun LsfgFrameQueueTargetControls(
     accentColor: Color,
     onSelected: (app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget) -> Unit,
 ) {
-    val target = app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1650,9 +1649,9 @@ private fun LsfgFrameQueueTargetControls(
     ) {
         QuickMenuChoiceChip(
             text = stringResource(R.string.lsfg_frame_queue_unbuffered),
-            selected = selected == target.UNBUFFERED,
+            selected = selected == app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED,
             accentColor = accentColor,
-            onClick = { onSelected(target.UNBUFFERED) },
+            onClick = { onSelected(app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = false,
         )
@@ -1662,17 +1661,17 @@ private fun LsfgFrameQueueTargetControls(
         ) {
             QuickMenuChoiceChip(
                 text = stringResource(R.string.lsfg_frame_queue_balanced),
-                selected = selected == target.BALANCED,
+                selected = selected == app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.BALANCED,
                 accentColor = accentColor,
-                onClick = { onSelected(target.BALANCED) },
+                onClick = { onSelected(app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.BALANCED) },
                 modifier = Modifier.weight(1f),
                 singleLine = false,
             )
             QuickMenuChoiceChip(
                 text = stringResource(R.string.lsfg_frame_queue_smooth),
-                selected = selected == target.SMOOTH,
+                selected = selected == app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.SMOOTH,
                 accentColor = accentColor,
-                onClick = { onSelected(target.SMOOTH) },
+                onClick = { onSelected(app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.SMOOTH) },
                 modifier = Modifier.weight(1f),
                 singleLine = false,
             )

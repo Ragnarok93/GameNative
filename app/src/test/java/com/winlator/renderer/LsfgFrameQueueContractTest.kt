@@ -141,6 +141,23 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun smoothAlsoUsesGoogleDisplayTimingAsARetirementBoundary() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("FrameQueuePendingPresentation"))
+        assertTrue(header.contains("frameQueueSmoothRuntimeSuppressed_"))
+        assertTrue(implementation.contains("hostGoogleDisplayTimingEnabled"))
+        assertTrue(implementation.contains("GetPastPresentationTimingGOOGLE"))
+        assertTrue(implementation.contains("actualPresentTime != 0"))
+        assertTrue(implementation.contains("googlePresentId"))
+        assertTrue(implementation.contains("present-retirement-google"))
+        assertTrue(implementation.contains("smooth-runtime-fallback"))
+        assertTrue(implementation.contains("present-retirement-timeout"))
+        assertTrue(implementation.contains("std::this_thread::sleep_for"))
+    }
+
+    @Test
     fun trueSmoothUsesPresentWaitAsTheRetirementBoundary() {
         val header = source("VulkanRendererContext.h")
         val implementation = source("VulkanRendererContext.cpp")

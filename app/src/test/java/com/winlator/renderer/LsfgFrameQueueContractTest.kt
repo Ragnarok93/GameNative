@@ -29,6 +29,21 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun frameQueueControlsUseCompactTwoRowLayoutWithoutSingleLineClipping() {
+        val quickMenu = repoSource("app/src/main/java/app/gamenative/ui/component/QuickMenu.kt")
+        val strings = repoSource("app/src/main/res/values/strings_lsfg_adaptive.xml")
+
+        assertTrue(quickMenu.contains("private fun LsfgFrameQueueTargetControls"))
+        assertTrue(quickMenu.contains("FrameQueueTarget.UNBUFFERED"))
+        assertTrue(quickMenu.contains("Modifier.fillMaxWidth()"))
+        assertTrue(quickMenu.contains("FrameQueueTarget.BALANCED"))
+        assertTrue(quickMenu.contains("FrameQueueTarget.SMOOTH"))
+        assertTrue(quickMenu.contains("singleLine = false"))
+        assertTrue(strings.contains(">Buffers final output frames to smooth brief stalls.<"))
+        assertTrue(strings.contains(">More depth adds latency.<"))
+    }
+
+    @Test
     fun persistedConfigPublishesQueueMetadataWithoutOwningLsfgGeneration() {
         val manager = repoSource("app/src/main/java/app/gamenative/utils/LsfgVkManager.kt")
 
@@ -39,7 +54,7 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
-    fun vulkanRendererExposesBoundedFinalPresentQueue() {
+    fun vulkanRendererKeepsFinalPresentInlineInsteadOfUsingASecondPresenterThread() {
         val javaRenderer = repoSource("app/src/main/java/com/winlator/renderer/VulkanRenderer.java")
         val jni = source("vulkan_jni.cpp")
         val header = source("VulkanRendererContext.h")
@@ -48,69 +63,77 @@ class LsfgFrameQueueContractTest {
         assertTrue(javaRenderer.contains("setLsfgFrameQueue"))
         assertTrue(javaRenderer.contains("nativeSetLsfgFrameQueue"))
         assertTrue(jni.contains("nativeSetLsfgFrameQueue"))
-        assertTrue(header.contains("PendingHostPresent"))
-        assertTrue(header.contains("hostPresentQueue_"))
-        assertTrue(header.contains("hostPresentThread_"))
-        assertTrue(header.contains("graphicsQueueMutex_"))
-        assertTrue(header.contains("framePresentPending_"))
-        assertTrue(header.contains("queuedRenderDoneSems_"))
-        assertTrue(header.contains("retiredQueuedRenderDoneSems_"))
-        assertTrue(implementation.contains("queuedRenderDoneSems_[imgIdx]"))
-        assertTrue(implementation.contains("The swapchain image was just reacquired"))
-        assertTrue(implementation.contains("waitForHostPresentCapacity"))
-        assertTrue(implementation.contains("enqueueHostPresent"))
-        assertTrue(implementation.contains("hostPresentLoop"))
-        assertTrue(implementation.contains("presentHostFrame"))
-        assertTrue(implementation.contains("LSFG_FRAME_QUEUE"))
+
+        assertFalse(header.contains("hostPresentThread_"))
+        assertFalse(header.contains("hostPresentQueue_"))
+        assertFalse(header.contains("framePresentPending_"))
+        assertFalse(header.contains("queuedRenderDoneSems_"))
+        assertFalse(implementation.contains("hostPresentLoop"))
+        assertFalse(implementation.contains("enqueueHostPresent"))
+        assertFalse(implementation.contains("waitForHostPresentCapacity"))
+
+        val renderFrameStart = implementation.indexOf("void VulkanRendererContext::renderFrame()")
+        val renderFrameEnd = implementation.indexOf("void VulkanRendererContext::onSurfaceResized", renderFrameStart)
+        assertTrue(renderFrameStart >= 0 && renderFrameEnd > renderFrameStart)
+        val renderFrame = implementation.substring(renderFrameStart, renderFrameEnd)
+        val submit = renderFrame.indexOf("vk_.QueueSubmit(")
+        val present = renderFrame.indexOf("presentHostFrame(")
+        assertTrue("Host present must remain inline after the matching submit", submit >= 0 && present > submit)
     }
 
     @Test
-    fun offAndUnbufferedPreserveImmediatePresentation() {
-        val implementation = source("VulkanRendererContext.cpp")
-        assertTrue(implementation.contains("frameQueueTarget == 0"))
-        assertTrue(implementation.contains("return presentHostFrame"))
-    }
-
-    @Test
-    fun queueDepthIsBoundedAndSmoothAloneActivatesThirdRenderSlot() {
-        val header = source("VulkanRendererContext.h")
+    fun enabledQueueTargetsMapToOneTwoAndThreeFrameSlotsWhileOffPreservesBaseline() {
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(header.contains("BASE_FRAMES_IN_FLIGHT = 2"))
-        assertTrue(header.contains("MAX_FRAMES_IN_FLIGHT = 3"))
-        assertTrue(implementation.contains("static_cast<std::size_t>(frameQueueTarget) + 1U"))
-        assertTrue(implementation.contains("target >= 2 ? MAX_FRAMES_IN_FLIGHT : BASE_FRAMES_IN_FLIGHT"))
+        assertTrue(implementation.contains("if (!lsfgFrameQueueEnabled_.load"))
+        assertTrue(implementation.contains("return BASE_FRAMES_IN_FLIGHT;"))
+        assertTrue(implementation.contains("return target + 1U;"))
+        assertTrue(implementation.contains("target = std::min<uint32_t>(2"))
         assertTrue(implementation.contains("currentFrame=(currentFrame+1)%activeFrameSlotCount()"))
     }
 
     @Test
-    fun queueTransitionsAndSwapchainTeardownDrainBeforeReuse() {
+    fun bufferedModesNeverBuildMoreThanTwoUnfinishedGpuCompositorSubmissions() {
+        val header = source("VulkanRendererContext.h")
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(implementation.contains("waitForFramePresentSubmission(currentFrame)"))
-        assertTrue(implementation.contains("framePresentPending_[present.frameSlot] = true"))
-        assertTrue(implementation.contains("framePresentPending_[present.frameSlot] = false"))
-        assertTrue(implementation.contains("void VulkanRendererContext::cleanupSwapchain() {\n    flushHostPresentQueue();"))
-        assertTrue(implementation.contains("if (previousEnabled && previousTarget > 0)\n        flushHostPresentQueue();"))
+        assertTrue(header.contains("MAX_BUFFERED_GPU_SUBMISSIONS = 2"))
+        assertTrue(header.contains("frameQueueRetirementWaitTotal_"))
+        assertTrue(header.contains("frameQueueRetirementWaitNsTotal_"))
+        assertTrue(implementation.contains("enforceFrameQueueSubmissionBudget"))
+        assertTrue(implementation.contains("GetFenceStatus"))
+        assertTrue(implementation.contains("WaitForFences"))
+        assertTrue(implementation.contains("frameQueueRetirementWaitTotal_"))
+        assertTrue(implementation.contains("retirement_waits="))
+        assertTrue(implementation.contains("retirement_wait_ms="))
     }
 
     @Test
-    fun renderSubmitAndPresentShareExternalQueueSynchronization() {
+    fun queueTransitionsDrainGpuSubmissionsWithoutDeviceWideIdle() {
         val implementation = source("VulkanRendererContext.cpp")
-        assertTrue(implementation.contains("std::lock_guard<std::mutex> queueLock(graphicsQueueMutex_)"))
-        assertTrue(implementation.contains("vk_.QueueSubmit("))
-        assertTrue(implementation.contains("vk_.QueuePresentKHR(graphicsQueue, &pi)"))
-    }
-
-    @Test
-    fun queuePathDoesNotAddDeviceOrQueueIdleWaits() {
-        val implementation = source("VulkanRendererContext.cpp")
-        val start = implementation.indexOf("void VulkanRendererContext::hostPresentLoop")
+        val start = implementation.indexOf("void VulkanRendererContext::setLsfgFrameQueue")
+        assertTrue(start >= 0)
         val end = implementation.indexOf("\n}\n", start)
-        assertTrue(start >= 0 && end > start)
-        val queuePath = implementation.substring(start, end + 3)
-        assertFalse(queuePath.contains("DeviceWaitIdle"))
-        assertFalse(queuePath.contains("QueueWaitIdle"))
+        assertTrue(end > start)
+        val transition = implementation.substring(start, end + 3)
+
+        assertTrue(transition.contains("std::unique_lock<std::shared_mutex>"))
+        assertTrue(transition.contains("drainFrameQueueSubmissions"))
+        assertFalse(transition.contains("DeviceWaitIdle"))
+        assertFalse(transition.contains("QueueWaitIdle"))
+        assertTrue(implementation.contains("event=transition-drain"))
+    }
+
+    @Test
+    fun queueTelemetryReportsActualGpuAndPresentPressureRatherThanCpuDequeDepth() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("event=present"))
+        assertTrue(implementation.contains("gpu_outstanding="))
+        assertTrue(implementation.contains("max_gpu_outstanding="))
+        assertTrue(implementation.contains("present_ms="))
+        assertTrue(implementation.contains("acquire_ms="))
+        assertFalse(implementation.contains("queue_depth=%zu"))
     }
 
     private fun source(name: String): String {

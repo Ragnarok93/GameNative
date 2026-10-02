@@ -97,6 +97,18 @@ class VulkanRendererDisplayConfirmationContractTest {
         assertTrue(header.contains("provenanceSocketOwnerGeneration_"))
     }
 
+
+    @Test
+    fun provenanceSocketIsClosedAndResetWhenTheLastRendererContextLeaves() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("if (gLsfgProvenanceSocketContexts.empty())"))
+        assertTrue(implementation.contains("::close(gLsfgProvenanceSocketFd)"))
+        assertTrue(implementation.contains("gLsfgProvenanceSocketFd = -1"))
+        assertTrue(implementation.contains("gLsfgProvenanceSocketOwner = nullptr"))
+        assertTrue(implementation.contains("provenance-socket-release reason=no-renderers"))
+    }
+
     @Test
     fun provenanceEpochChangeFlushesOldSwapchainMappings() {
         val header = source("VulkanRendererContext.h")

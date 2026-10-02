@@ -183,6 +183,20 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("telemetry_epoch="))
     }
 
+
+    @Test
+    fun smoothRequiresTwoPressureStrikesBeforeStickyFallback() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("SMOOTH_PRESENT_STALL_STRIKES = 2"))
+        assertTrue(header.contains("frameQueueSmoothPressureStrikes_"))
+        assertTrue(implementation.contains("fetch_add(1"))
+        assertTrue(implementation.contains("SMOOTH_PRESENT_STALL_STRIKES"))
+        assertTrue(implementation.contains("pressure_strikes="))
+        assertTrue(implementation.contains("frameQueueSmoothPressureStrikes_.store(0"))
+    }
+
     @Test
     fun smoothFallbackIsStickyUntilAnExplicitQueueOrPresentModeChange() {
         val implementation = source("VulkanRendererContext.cpp")

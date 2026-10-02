@@ -1133,6 +1133,38 @@ object LsfgVkManager {
     }
 
     /**
+     * ABI-compatible coherent runtime snapshot used by existing callers.
+     * Frame Queue remains host-owned and is captured from persisted container
+     * state without changing any generation-mode semantics.
+     */
+    @JvmStatic
+    fun updateConfigAtRuntime(
+        container: Container,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        presentMode: String,
+    ): Boolean = updateConfigAtRuntime(
+        container = container,
+        enabled = enabled,
+        multiplier = multiplier,
+        flowScale = flowScale,
+        performanceMode = performanceMode,
+        adaptiveFramegen = adaptiveFramegen,
+        fpsLimit = fpsLimit,
+        adaptiveFlowScale = adaptiveFlowScale,
+        adaptiveFlowPreset = adaptiveFlowPreset,
+        presentMode = presentMode,
+        frameQueueEnabled = frameQueueEnabled(container),
+        frameQueueTarget = frameQueueTarget(container),
+    )
+
+    /**
      * Publish one coherent LSFG runtime snapshot. Callers that already captured
      * Quick Menu state must use this overload so a debounced Flow update cannot
      * reread a newer/older frame-generation mode and silently change modes.
@@ -1150,8 +1182,8 @@ object LsfgVkManager {
         adaptiveFlowScale: Boolean,
         adaptiveFlowPreset: String,
         presentMode: String,
-        frameQueueEnabled: Boolean = false,
-        frameQueueTarget: Int = 0,
+        frameQueueEnabled: Boolean,
+        frameQueueTarget: Int,
     ): Boolean {
         if (!isSupported(container)) return false
 

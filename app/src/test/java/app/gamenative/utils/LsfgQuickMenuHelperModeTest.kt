@@ -91,6 +91,13 @@ class LsfgQuickMenuHelperModeTest {
     }
 
     @Test
+    fun frameQueueTargetsMapToBoundedPresenterDepths() {
+        assertEquals(0, LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED.depth)
+        assertEquals(1, LsfgQuickMenuHelper.FrameQueueTarget.BALANCED.depth)
+        assertEquals(2, LsfgQuickMenuHelper.FrameQueueTarget.SMOOTH.depth)
+    }
+
+    @Test
     fun supportedFixedMultipliersRemainInRange() {
         assertEquals(2, LsfgQuickMenuHelper.sanitizeMultiplier(2))
         assertEquals(4, LsfgQuickMenuHelper.sanitizeMultiplier(4))

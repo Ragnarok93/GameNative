@@ -1007,6 +1007,35 @@ object LsfgVkManager {
         }
     }
 
+    @Suppress("unused")
+    private fun buildConfigToml(
+        dllPath: String?,
+        processExecutable: String?,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        presentMode: String,
+    ): String = buildConfigToml(
+        dllPath = dllPath,
+        processExecutable = processExecutable,
+        enabled = enabled,
+        multiplier = multiplier,
+        flowScale = flowScale,
+        adaptiveFlowScale = adaptiveFlowScale,
+        adaptiveFlowPreset = adaptiveFlowPreset,
+        performanceMode = performanceMode,
+        adaptiveFramegen = adaptiveFramegen,
+        fpsLimit = fpsLimit,
+        presentMode = presentMode,
+        frameQueueEnabled = false,
+        frameQueueTarget = 0,
+    )
+
     private fun buildConfigToml(
         dllPath: String?,
         processExecutable: String?,
@@ -1121,8 +1150,8 @@ object LsfgVkManager {
         adaptiveFlowScale: Boolean,
         adaptiveFlowPreset: String,
         presentMode: String,
-        frameQueueEnabled: Boolean,
-        frameQueueTarget: Int,
+        frameQueueEnabled: Boolean = false,
+        frameQueueTarget: Int = 0,
     ): Boolean {
         if (!isSupported(container)) return false
 

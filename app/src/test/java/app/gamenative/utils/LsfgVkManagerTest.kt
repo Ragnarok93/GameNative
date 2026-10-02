@@ -100,6 +100,22 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun writeConfig_serializesHostFrameQueueMetadataWithoutChangingFramegenMode() {
+        val container = container(armed = true, multiplier = "2")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_ENABLED, "false"))
+            .thenReturn("true")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_TARGET, "0"))
+            .thenReturn("2")
+
+        assertTrue(LsfgVkManager.writeConfig(container))
+
+        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
+        assertTrue(text.contains("multiplier = 2"))
+        assertTrue(text.contains("frame_queue_enabled = true"))
+        assertTrue(text.contains("frame_queue_target = 2"))
+    }
+
+    @Test
     fun publishRuntimePressure_usesSeparateAtomicSidecar() {
         val snapshot = MetricsSnapshot(
             timestampMs = 123456L,

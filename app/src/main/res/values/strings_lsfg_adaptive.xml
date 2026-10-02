@@ -22,4 +22,11 @@
     <string name="lsfg_flow_preset_balanced_desc">Target 0.80 · minimum 0.55. Balances optical-flow detail with GPU headroom.</string>
     <string name="lsfg_flow_preset_low_desc">Target 0.55 · minimum 0.25. Prioritizes LSFG throughput under heavier GPU load.</string>
     <string name="lsfg_flow_preset_auto_desc">Target 1.00 · minimum 0.25. Automatically seeks the highest sustainable Flow Scale across the full range while meeting the requested output target.</string>
+    <string name="lsfg_frame_queue">Frame Queue</string>
+    <string name="lsfg_frame_queue_desc">Buffer completed host frames to absorb brief presentation stalls. Higher targets can improve smoothness at the cost of input latency.</string>
+    <string name="lsfg_frame_queue_target">Frame queue target</string>
+    <string name="lsfg_frame_queue_target_desc">How many finished frames may wait ahead of the display.</string>
+    <string name="lsfg_frame_queue_unbuffered">Unbuffered</string>
+    <string name="lsfg_frame_queue_balanced">Balanced</string>
+    <string name="lsfg_frame_queue_smooth">Smooth</string>
 </resources>

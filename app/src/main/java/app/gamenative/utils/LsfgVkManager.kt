@@ -69,6 +69,8 @@ object LsfgVkManager {
     const val EXTRA_ADAPTIVE_FLOW_PRESET = "lsfgAdaptiveFlowPreset"
     const val EXTRA_PERFORMANCE_MODE = "lsfgPerformanceMode"
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
+    const val EXTRA_FRAME_QUEUE_ENABLED = "lsfgFrameQueueEnabled"
+    const val EXTRA_FRAME_QUEUE_TARGET = "lsfgFrameQueueTarget"
     const val EXTRA_FRAMEGEN_MODE = "lsfgFramegenMode"
     const val EXTRA_FIXED_MULTIPLIER = "lsfgFixedMultiplier"
     const val EXTRA_ADAPTIVE_TARGET_FPS = "lsfgAdaptiveTargetFps"
@@ -109,7 +111,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-bannerlator-engine-a991464537540dce86db09db0ee58dd0eabe9389-r15"
+        "gamenative-bannerlator-engine-592a00c68c7d1c5db186b81434746cf569389226-r16"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -262,6 +264,13 @@ object LsfgVkManager {
     fun presentMode(container: Container): String =
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
+
+    fun frameQueueEnabled(container: Container): Boolean =
+        parseBool(container.getExtra(EXTRA_FRAME_QUEUE_ENABLED, "false"))
+
+    fun frameQueueTarget(container: Container): Int =
+        (container.getExtra(EXTRA_FRAME_QUEUE_TARGET, "0").toIntOrNull() ?: 0)
+            .coerceIn(0, 2)
 
 
     /**
@@ -601,6 +610,8 @@ object LsfgVkManager {
                 adaptiveFramegen = adaptive,
                 fpsLimit = adaptiveTarget,
                 presentMode = presentMode(container),
+                frameQueueEnabled = frameQueueEnabled(container),
+                frameQueueTarget = frameQueueTarget(container),
             )
             writeConfigAtomic(configFile, configText)
         } catch (t: Throwable) {
@@ -1008,6 +1019,8 @@ object LsfgVkManager {
         adaptiveFramegen: Boolean,
         fpsLimit: Int,
         presentMode: String,
+        frameQueueEnabled: Boolean,
+        frameQueueTarget: Int,
     ): String = buildString {
         appendLine("version = 1")
         appendLine()
@@ -1030,6 +1043,8 @@ object LsfgVkManager {
                 appendLine("hdr_mode = false")
                 appendLine("adaptive_framegen = ${if (adaptiveFramegen) "true" else "false"}")
                 appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
+                appendLine("frame_queue_enabled = ${if (enabled && frameQueueEnabled) "true" else "false"}")
+                appendLine("frame_queue_target = ${frameQueueTarget.coerceIn(0, 2)}")
                 appendLine("experimental_present_mode = ${tomlString(presentMode)}")
             }
         }
@@ -1083,6 +1098,8 @@ object LsfgVkManager {
             adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
             adaptiveFlowPreset = adaptiveFlowPreset(container),
             presentMode = presentMode(container),
+            frameQueueEnabled = frameQueueEnabled(container),
+            frameQueueTarget = frameQueueTarget(container),
         )
     }
 
@@ -1104,6 +1121,8 @@ object LsfgVkManager {
         adaptiveFlowScale: Boolean,
         adaptiveFlowPreset: String,
         presentMode: String,
+        frameQueueEnabled: Boolean,
+        frameQueueTarget: Int,
     ): Boolean {
         if (!isSupported(container)) return false
 
@@ -1134,6 +1153,8 @@ object LsfgVkManager {
                 presentMode.takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
             val effectiveAdaptiveFlowPreset =
                 sanitizeAdaptiveFlowPreset(adaptiveFlowPreset)
+            val effectiveFrameQueueEnabled = frameGenActive && frameQueueEnabled
+            val effectiveFrameQueueTarget = frameQueueTarget.coerceIn(0, 2)
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,
@@ -1146,12 +1167,14 @@ object LsfgVkManager {
                 adaptiveFramegen = effectiveAdaptiveFramegen,
                 fpsLimit = effectiveFpsLimit,
                 presentMode = effectivePresentMode,
+                frameQueueEnabled = effectiveFrameQueueEnabled,
+                frameQueueTarget = effectiveFrameQueueTarget,
             )
 
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
                 Timber.tag(TAG).i(
-                    "LSFG runtime config published enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s",
+                    "LSFG runtime config published enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s frameQueue=%b frameQueueTarget=%d",
                     frameGenActive,
                     if (frameGenActive) effectiveMultiplier else 1,
                     effectiveAdaptiveFramegen,
@@ -1160,6 +1183,8 @@ object LsfgVkManager {
                     effectiveAdaptiveFlowPreset,
                     flowScale.coerceIn(0.25f, 1.0f),
                     effectivePresentMode,
+                    effectiveFrameQueueEnabled,
+                    effectiveFrameQueueTarget,
                 )
             }
             ok

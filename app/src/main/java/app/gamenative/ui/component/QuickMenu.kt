@@ -476,6 +476,23 @@ fun QuickMenu(
     var lsfgPresentMode by remember(container?.id) {
         mutableStateOf(container?.let { app.gamenative.utils.LsfgQuickMenuHelper.presentMode(it) } ?: "mailbox")
     }
+    var lsfgFrameQueueEnabled by remember(container?.id) {
+        mutableStateOf(
+            container?.let { app.gamenative.utils.LsfgQuickMenuHelper.frameQueueEnabled(it) } ?: false
+        )
+    }
+    var lsfgFrameQueueTarget by remember(container?.id) {
+        mutableStateOf(
+            container?.let { app.gamenative.utils.LsfgQuickMenuHelper.frameQueueTarget(it) }
+                ?: app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED
+        )
+    }
+    LaunchedEffect(lsfgMultiplier, lsfgFrameQueueEnabled, lsfgFrameQueueTarget, renderer) {
+        renderer?.setLsfgFrameQueue(
+            lsfgMultiplier >= 2 && lsfgFrameQueueEnabled,
+            lsfgFrameQueueTarget.depth,
+        )
+    }
 
     var selectedTab by rememberSaveable {
         mutableIntStateOf(
@@ -919,6 +936,30 @@ fun QuickMenu(
                                             onMultiplierChanged = onLsfgMultiplierChanged,
                                             onFlowScaleChanged = onLsfgFlowScaleChanged,
                                             onPerformanceModeChanged = onLsfgPerformanceModeChanged,
+                                            frameQueueEnabled = lsfgFrameQueueEnabled,
+                                            frameQueueTarget = lsfgFrameQueueTarget,
+                                            onFrameQueueEnabledChanged = { enabled ->
+                                                lsfgFrameQueueEnabled = enabled
+                                                container?.let {
+                                                    app.gamenative.utils.LsfgQuickMenuHelper
+                                                        .setFrameQueueEnabled(it, enabled)
+                                                }
+                                                renderer?.setLsfgFrameQueue(
+                                                    lsfgMultiplier >= 2 && enabled,
+                                                    lsfgFrameQueueTarget.depth,
+                                                )
+                                            },
+                                            onFrameQueueTargetChanged = { target ->
+                                                lsfgFrameQueueTarget = target
+                                                container?.let {
+                                                    app.gamenative.utils.LsfgQuickMenuHelper
+                                                        .setFrameQueueTarget(it, target)
+                                                }
+                                                renderer?.setLsfgFrameQueue(
+                                                    lsfgMultiplier >= 2 && lsfgFrameQueueEnabled,
+                                                    target.depth,
+                                                )
+                                            },
                                             presentMode = lsfgPresentMode,
                                             onPresentModeChanged = { mode ->
                                                 lsfgPresentMode = mode
@@ -1604,6 +1645,10 @@ private fun LsfgQuickMenuTab(
     onMultiplierChanged: (Int) -> Unit,
     onFlowScaleChanged: (Float) -> Unit,
     onPerformanceModeChanged: (Boolean) -> Unit,
+    frameQueueEnabled: Boolean,
+    frameQueueTarget: app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget,
+    onFrameQueueEnabledChanged: (Boolean) -> Unit,
+    onFrameQueueTargetChanged: (app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget) -> Unit,
     presentMode: String,
     onPresentModeChanged: (String) -> Unit,
     scrollState: ScrollState,
@@ -1909,6 +1954,51 @@ private fun LsfgQuickMenuTab(
                     onToggle = { onPerformanceModeChanged(!performanceMode) },
                     accentColor = accentColor,
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                QuickMenuToggleRow(
+                    title = stringResource(R.string.lsfg_frame_queue),
+                    subtitle = stringResource(R.string.lsfg_frame_queue_desc),
+                    enabled = frameQueueEnabled,
+                    onToggle = { onFrameQueueEnabledChanged(!frameQueueEnabled) },
+                    accentColor = accentColor,
+                )
+                AnimatedVisibility(
+                    visible = frameQueueEnabled,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut(),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        QuickMenuSectionHeader(
+                            title = stringResource(R.string.lsfg_frame_queue_target),
+                            subtitle = stringResource(R.string.lsfg_frame_queue_target_desc),
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            listOf(
+                                app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED to
+                                    R.string.lsfg_frame_queue_unbuffered,
+                                app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.BALANCED to
+                                    R.string.lsfg_frame_queue_balanced,
+                                app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.SMOOTH to
+                                    R.string.lsfg_frame_queue_smooth,
+                            ).forEach { (candidate, label) ->
+                                QuickMenuChoiceChip(
+                                    text = stringResource(label),
+                                    selected = frameQueueTarget == candidate,
+                                    accentColor = accentColor,
+                                    onClick = { onFrameQueueTargetChanged(candidate) },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true,
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
                 QuickMenuSectionHeader(
                     title = stringResource(R.string.lsfg_present_mode),

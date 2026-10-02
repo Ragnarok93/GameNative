@@ -1,6 +1,7 @@
 package app.gamenative.utils
 
 import com.winlator.container.Container
+import com.winlator.renderer.VulkanRenderer
 import java.util.Locale
 import java.util.concurrent.Executors
 import timber.log.Timber
@@ -18,6 +19,11 @@ object LsfgQuickMenuHelper {
     enum class FrameGenerationMode { FIXED, ADAPTIVE }
     enum class FlowScaleMode { FIXED, ADAPTIVE }
     enum class AdaptiveFlowPreset { QUALITY, BALANCED, LOW, AUTO }
+    enum class FrameQueueTarget(val depth: Int) {
+        UNBUFFERED(0),
+        BALANCED(1),
+        SMOOTH(2),
+    }
 
     data class Settings(
         val multiplier: Int,
@@ -34,6 +40,8 @@ object LsfgQuickMenuHelper {
         val flowScaleMode: FlowScaleMode,
         val adaptiveFlowPreset: AdaptiveFlowPreset,
         val presentMode: String,
+        val frameQueueEnabled: Boolean,
+        val frameQueueTarget: FrameQueueTarget,
     )
 
     fun isAvailable(container: Container): Boolean {
@@ -144,6 +152,35 @@ object LsfgQuickMenuHelper {
 
     fun presentMode(container: Container): String = LsfgVkManager.presentMode(container)
 
+    fun frameQueueEnabled(container: Container): Boolean =
+        LsfgVkManager.frameQueueEnabled(container)
+
+    fun frameQueueTarget(container: Container): FrameQueueTarget =
+        when (LsfgVkManager.frameQueueTarget(container)) {
+            1 -> FrameQueueTarget.BALANCED
+            2 -> FrameQueueTarget.SMOOTH
+            else -> FrameQueueTarget.UNBUFFERED
+        }
+
+    fun setFrameQueueEnabled(container: Container, enabled: Boolean) {
+        container.putExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_ENABLED, enabled.toString())
+        container.saveData()
+        // Host-only setting: do not rewrite conf.toml just to change queue depth.
+        // This avoids an unnecessary LSFG runtime/config transition.
+    }
+
+    fun setFrameQueueTarget(container: Container, target: FrameQueueTarget) {
+        container.putExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_TARGET, target.depth.toString())
+        container.saveData()
+    }
+
+    fun applyFrameQueueToRenderer(container: Container, renderer: VulkanRenderer?) {
+        renderer?.setLsfgFrameQueue(
+            frameQueueEnabled(container) && sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2,
+            frameQueueTarget(container).depth,
+        )
+    }
+
     fun applyPresentMode(container: Container, mode: String) {
         val sanitized = mode.takeIf { it == "mailbox" || it == "fifo" } ?: "mailbox"
         container.putExtra(LsfgVkManager.EXTRA_PRESENT_MODE, sanitized)
@@ -176,6 +213,8 @@ object LsfgQuickMenuHelper {
         flowScaleMode = flowScaleMode(container),
         adaptiveFlowPreset = adaptiveFlowPreset(container),
         presentMode = presentMode(container),
+        frameQueueEnabled = frameQueueEnabled(container),
+        frameQueueTarget = frameQueueTarget(container),
     )
 
     private fun scheduleRuntimeConfig(container: Container) {
@@ -229,6 +268,8 @@ object LsfgQuickMenuHelper {
             adaptiveFlowScale = adaptiveFlow,
             adaptiveFlowPreset = serializedFlowPreset,
             presentMode = snapshot.presentMode,
+            frameQueueEnabled = enabled && snapshot.frameQueueEnabled,
+            frameQueueTarget = snapshot.frameQueueTarget.depth,
         )
     }
 }

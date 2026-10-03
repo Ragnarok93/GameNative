@@ -193,16 +193,37 @@ struct LsfgFrameProvenance {
     bool uniqueDelivery = false;
 };
 
+struct HostDesiredPresentDecision {
+    uint64_t provenanceDesiredPresentTimeNs = 0;
+    uint64_t submittedDesiredPresentTimeNs = 0;
+    uint64_t desiredStaleByNs = 0;
+    uint64_t desiredFutureByNs = 0;
+    const char* fallbackReason = "none";
+};
+
 struct HostDisplayConfirmation {
     uint64_t hostPresentId = 0;
     uint32_t googlePresentId = 0;
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
-    uint64_t desiredPresentTimeNs = 0;
+    uint64_t provenanceDesiredPresentTimeNs = 0;
+    uint64_t submittedDesiredPresentTimeNs = 0;
+    uint64_t wsiDesiredPresentTimeNs = 0;
+    uint64_t desiredStaleByNs = 0;
+    uint64_t desiredFutureByNs = 0;
+    const char* desiredFallbackReason = "none";
     uint64_t actualPresentTimeNs = 0;
     uint64_t earliestPresentTimeNs = 0;
     uint64_t presentMarginNs = 0;
+    uint64_t presentMarginRawNs = 0;
+    uint64_t enqueuedAtNs = 0;
+    uint64_t swapchainGeneration = 0;
+    uint64_t submissionSerial = 0;
+    uint64_t presentCallNs = 0;
+    uint64_t submitCallNs = 0;
+    uint32_t frameSlot = 0;
+    uint32_t gpuOutstandingAtSubmit = 0;
 };
 
 struct PendingHostPresent {
@@ -215,9 +236,12 @@ struct PendingHostPresent {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
-    uint64_t desiredPresentTimeNs = 0;
+    HostDesiredPresentDecision desiredDecision{};
     bool hasUniqueLsfgDelivery = false;
     uint64_t acquireNs = 0;
+    uint64_t submitCallNs = 0;
+    uint64_t submissionSerial = 0;
+    uint64_t swapchainGeneration = 0;
     uint32_t gpuOutstanding = 0;
 };
 
@@ -380,6 +404,13 @@ private:
     uint64_t firstUniquePhysicalPresentNs_ = 0;
     uint64_t lastUniquePhysicalPresentNs_ = 0;
     uint64_t lastAcceptedDesiredPresentTimeNs_ = 0;
+    uint64_t hostSwapchainGeneration_ = 0;
+    uint64_t hostPhysicalCadenceEpoch_ = 0;
+    uint64_t hostConfirmationPendingHighWater_ = 0;
+    uint64_t hostConfirmationExpiredTotal_ = 0;
+    uint64_t hostConfirmationOverflowTotal_ = 0;
+    uint64_t hostDisplayTimingQueryFailureTotal_ = 0;
+    uint64_t hostInvalidPresentMarginTotal_ = 0;
     std::deque<uint64_t> physicalCadenceErrorsNs_;
     std::unordered_set<uint64_t> consumedLsfgDeliveries_;
     std::deque<HostDisplayConfirmation> pendingHostDisplayConfirmations;
@@ -577,13 +608,12 @@ private:
     void pollHostDisplayConfirmations();
     std::vector<LsfgFrameProvenance> classifyHostPresentProvenance(
         const std::vector<DrawEntry>& draws) const;
-    uint64_t validatedHostDesiredPresentTime(
+    HostDesiredPresentDecision validatedHostDesiredPresentTime(
         const std::vector<LsfgFrameProvenance>& provenance);
     void recordHostPresent(
-        uint64_t hostPresentId,
-        uint32_t googlePresentId,
-        HostDisplayConfirmationBackend backend,
-        const std::vector<LsfgFrameProvenance>& frameProvenance);
+        const PendingHostPresent& present,
+        uint64_t presentCallNs);
+    void resetHostPhysicalCadenceTelemetry(const char* reason);
     void emitHostDisplayConfirmation(
         const HostDisplayConfirmation& confirmation,
         bool confirmed,

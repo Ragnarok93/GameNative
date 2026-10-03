@@ -89,7 +89,11 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("return BASE_FRAMES_IN_FLIGHT;"))
         assertTrue(implementation.contains("return target + 1U;"))
         assertTrue(implementation.contains("target = std::min<uint32_t>(2"))
-        assertTrue(implementation.contains("currentFrame=(currentFrame+1)%activeFrameSlotCount()"))
+        assertTrue(implementation.contains("uniqueLsfgContentPending"))
+        assertTrue(implementation.contains("frameQueueEnabled && uniqueLsfgContentPending"))
+        assertTrue(implementation.contains("hasUniqueLsfgDelivery"))
+        assertTrue(implementation.contains("BASE_FRAMES_IN_FLIGHT"))
+        assertTrue(implementation.contains("immutable composite snapshot"))
     }
 
     @Test
@@ -163,7 +167,7 @@ class LsfgFrameQueueContractTest {
     fun smoothNeverUsesThreeSlotsWithFifoBecauseQueuePresentCanBecomeTheThrottle() {
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(implementation.contains("requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR"))
+        assertTrue(implementation.contains("activePresentMode == VK_PRESENT_MODE_FIFO_KHR"))
         assertTrue(implementation.contains("frameQueueSmoothFifoFallback_"))
         assertTrue(implementation.contains("fifo-present-blocking"))
         assertTrue(implementation.contains("if (requested == 2 && fifoPresent)"))
@@ -219,6 +223,122 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("present_ms="))
         assertTrue(implementation.contains("acquire_ms="))
         assertFalse(implementation.contains("queue_depth=%zu"))
+    }
+
+    @Test
+    fun provenanceIsConsumedOnceAndRepeatedContentIsClassifiedSeparately() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("uniqueDelivery"))
+        assertTrue(header.contains("repeatedContentPresent"))
+        assertTrue(implementation.contains("classifyHostPresentProvenance"))
+        assertTrue(implementation.contains("consumedLsfgDeliveries_"))
+        assertTrue(implementation.contains("repeated_content_present="))
+        assertTrue(implementation.contains("unique_delivery="))
+    }
+
+    @Test
+    fun temporalIntentReachesFinalGoogleDisplayTimingWithConservativeValidation() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("desiredPresentTimeNs"))
+        assertTrue(header.contains("lastAcceptedDesiredPresentTimeNs_"))
+        assertTrue(implementation.contains("validatedHostDesiredPresentTime"))
+        assertTrue(implementation.contains("googlePresentTime.desiredPresentTime ="))
+        assertFalse(implementation.contains("googlePresentTime.desiredPresentTime = 0;"))
+        assertTrue(implementation.contains("CLOCK_MONOTONIC"))
+        assertTrue(implementation.contains("desired_vs_actual"))
+        assertTrue(implementation.contains("actual_present_time="))
+        assertTrue(implementation.contains("earliest_present_time="))
+        assertTrue(implementation.contains("present_margin="))
+    }
+
+    @Test
+    fun presentModePolicyUsesLiveSwapchainModeAndSerializesRequests() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("activePresentMode"))
+        assertTrue(implementation.contains("activePresentMode = presentMode"))
+        assertTrue(implementation.contains("activePresentMode == VK_PRESENT_MODE_FIFO_KHR"))
+        assertFalse(implementation.contains("requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR"))
+        val start = implementation.indexOf("void VulkanRendererContext::setPresentMode")
+        val end = implementation.indexOf("\n}\n", start)
+        assertTrue(start >= 0 && end > start)
+        val transition = implementation.substring(start, end + 3)
+        assertTrue(transition.contains("std::unique_lock<std::shared_mutex>"))
+    }
+
+    @Test
+    fun balancedAndFifoSmoothFallbackReuseBaselinePresentSemaphoreOwnership() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("useFrameQueuePresentSemaphore"))
+        assertTrue(implementation.contains("activeFrameSlotCount() > BASE_FRAMES_IN_FLIGHT"))
+        assertTrue(implementation.contains("hasUniqueLsfgDelivery"))
+        assertTrue(implementation.contains("renderDoneSems[currentFrame]"))
+    }
+
+    @Test
+    fun frameQueueTelemetrySeparatesUniquePhysicalCadenceFromHostRedrawRate() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("lastUniquePhysicalPresentNs_"))
+        assertTrue(header.contains("physicalCadenceErrorsNs_"))
+        assertTrue(implementation.contains("unique_physical_fps="))
+        assertTrue(implementation.contains("generated_physical_fps="))
+        assertTrue(implementation.contains("source_physical_fps="))
+        assertTrue(implementation.contains("cadence_error_p50_ms="))
+        assertTrue(implementation.contains("cadence_error_p95_ms="))
+        assertTrue(implementation.contains("provenance_superseded_total="))
+    }
+
+    @Test
+    fun quickMenuPresentModeChangeReachesTheFinalVulkanCompositor() {
+        val quickMenu = repoSource("app/src/main/java/app/gamenative/ui/component/QuickMenu.kt")
+
+        val callback = quickMenu.substring(
+            quickMenu.indexOf("onPresentModeChanged = { mode ->"),
+            quickMenu.indexOf("scrollState = lsfgScrollState"),
+        )
+        assertTrue(callback.contains("renderer?.setVkPresentMode"))
+        assertTrue(callback.contains("mode == \"mailbox\""))
+        assertTrue(quickMenu.contains("LaunchedEffect(lsfgPresentMode, renderer)"))
+    }
+
+    @Test
+    fun hostDisplayTelemetryTracksTemporalFallbackAndResetsPhysicalCadencePerEpoch() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("HostDesiredPresentDecision"))
+        assertTrue(header.contains("provenanceDesiredPresentTimeNs"))
+        assertTrue(header.contains("submittedDesiredPresentTimeNs"))
+        assertTrue(header.contains("desiredStaleByNs"))
+        assertTrue(header.contains("enqueuedAtNs"))
+        assertTrue(header.contains("swapchainGeneration"))
+        assertTrue(implementation.contains("resetHostPhysicalCadenceTelemetry"))
+        assertTrue(implementation.contains("provenance-epoch-reset"))
+        assertTrue(implementation.contains("swapchain-recreated"))
+        assertTrue(implementation.contains("desired_fallback_reason="))
+        assertTrue(implementation.contains("desired_stale_by_ms="))
+        assertTrue(implementation.contains("present_margin_valid="))
+        assertTrue(implementation.contains("confirmation_pending_high_water="))
+        assertTrue(implementation.contains("swapchain_generation="))
+    }
+
+    @Test
+    fun hostDisplayConfirmationFeedbackIsBestEffortAndNonblocking() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("publishLsfgHostDisplayFeedback"))
+        assertTrue(implementation.contains("gamenative-lsfg-display-feedback-v1"))
+        assertTrue(implementation.contains("SOCK_NONBLOCK"))
+        assertTrue(implementation.contains("MSG_DONTWAIT"))
+        assertTrue(implementation.contains("host-feedback-send"))
     }
 
     private fun source(name: String): String {

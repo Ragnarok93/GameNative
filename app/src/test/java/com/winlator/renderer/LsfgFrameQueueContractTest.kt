@@ -89,7 +89,11 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("return BASE_FRAMES_IN_FLIGHT;"))
         assertTrue(implementation.contains("return target + 1U;"))
         assertTrue(implementation.contains("target = std::min<uint32_t>(2"))
-        assertTrue(implementation.contains("currentFrame=(currentFrame+1)%activeFrameSlotCount()"))
+        assertTrue(implementation.contains("uniqueLsfgContentPending"))
+        assertTrue(implementation.contains("frameQueueEnabled && uniqueLsfgContentPending"))
+        assertTrue(implementation.contains("hasUniqueLsfgDelivery"))
+        assertTrue(implementation.contains("BASE_FRAMES_IN_FLIGHT"))
+        assertTrue(implementation.contains("immutable composite snapshot"))
     }
 
     @Test
@@ -289,6 +293,7 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("source_physical_fps="))
         assertTrue(implementation.contains("cadence_error_p50_ms="))
         assertTrue(implementation.contains("cadence_error_p95_ms="))
+        assertTrue(implementation.contains("provenance_superseded_total="))
     }
 
     private fun source(name: String): String {

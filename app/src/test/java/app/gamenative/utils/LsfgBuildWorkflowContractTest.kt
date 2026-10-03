@@ -165,6 +165,36 @@ class LsfgBuildWorkflowContractTest {
         }
     }
 
+
+    @Test
+    fun branchTestingPublishesOnlyThePinnedUpgradeableDebugLineage() {
+        val upgradeable = repoFile(".github/workflows/upgradeable-debug.yml").readText()
+        val prCheck = repoFile(".github/workflows/pluvia-pr-check.yml").readText()
+
+        assertTrue(
+            "Upgradeable workflow must pin the historical test signing lineage",
+            upgradeable.contains("UPGRADEABLE_DEBUG_SIGNER_SHA256"),
+        )
+        assertTrue(upgradeable.contains("0ff2ee400fcbaa8bf57a48f0297e49f139be8255fead61f96f409c3e11814d7a"))
+        assertTrue(upgradeable.contains("version_name=\"upgradeable-debug-"))
+        assertTrue(upgradeable.contains("actions_run_id="))
+        assertTrue(upgradeable.contains("actions_run_number="))
+        assertTrue(upgradeable.contains("head_branch="))
+        assertTrue(upgradeable.contains("lineage=GameNative-upgradeable-debug"))
+
+        val uploadStart = prCheck.indexOf("- name: Upload LegacyDebug APK")
+        assertTrue("PR-check upload step must exist", uploadStart >= 0)
+        val uploadBlock = prCheck.substring(uploadStart)
+        assertTrue(
+            "Push builds must not publish a competing ordinary-debug APK",
+            uploadBlock.contains("if: github.event_name == 'pull_request'"),
+        )
+        assertTrue(
+            "PR artifact must state that it is not the upgradeable testing lineage",
+            prCheck.contains("gamenative-pr-validation-debug-non-upgradeable"),
+        )
+    }
+
     @Test
     fun retiredLsfgStagingWorkflowsStayAbsent() {
         val workflowDir = repoFile(".github/workflows/pluvia-pr-check.yml").parentFile

@@ -494,6 +494,10 @@ fun QuickMenu(
         )
     }
 
+    LaunchedEffect(lsfgPresentMode, renderer) {
+        renderer?.setVkPresentMode(if (lsfgPresentMode == "mailbox") 1 else 2)
+    }
+
     var selectedTab by rememberSaveable {
         mutableIntStateOf(
             when {
@@ -963,6 +967,7 @@ fun QuickMenu(
                                             presentMode = lsfgPresentMode,
                                             onPresentModeChanged = { mode ->
                                                 lsfgPresentMode = mode
+                                                renderer?.setVkPresentMode(if (mode == "mailbox") 1 else 2)
                                                 container?.let { activeContainer ->
                                                     app.gamenative.utils.LsfgQuickMenuHelper.applyPresentMode(
                                                         activeContainer,

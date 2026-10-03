@@ -906,7 +906,8 @@ VkResult VulkanRendererContext::presentHostFrame(
             __android_log_print(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
                 "event=present telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
-                "mode=%s smooth_fallback=%d fallback_reason=%s active_slots=%u "
+                "mode=%s smooth_fallback=%d fallback_reason=%s requested_present_mode=%d "
+                "active_present_mode=%d active_slots=%u unique_content=%d "
                 "gpu_outstanding=%u max_gpu_outstanding=%u acquire_ms=%.3f "
                 "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f "
                 "presented=%llu",
@@ -918,7 +919,10 @@ VkResult VulkanRendererContext::presentHostFrame(
                 mode,
                 smoothFallback ? 1 : 0,
                 fallbackReason,
-                activeFrameSlotCount(),
+                static_cast<int>(requestedPresentMode),
+                static_cast<int>(activePresentMode),
+                present.hasUniqueLsfgDelivery ? activeFrameSlotCount() : BASE_FRAMES_IN_FLIGHT,
+                present.hasUniqueLsfgDelivery ? 1 : 0,
                 present.gpuOutstanding,
                 frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
                 static_cast<double>(present.acquireNs) / 1000000.0,
@@ -2437,33 +2441,38 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         const char* reason) {
     if (confirmation.frameProvenance.empty()) return;
     for (const auto& provenance : confirmation.frameProvenance) {
+        uint64_t uniquePhysicalIntervalNs = 0;
         if (confirmed && provenance.uniqueDelivery && confirmation.actualPresentTimeNs != 0) {
             if (firstUniquePhysicalPresentNs_ == 0)
                 firstUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
             if (lastUniquePhysicalPresentNs_ != 0
                     && confirmation.actualPresentTimeNs > lastUniquePhysicalPresentNs_) {
-                const uint64_t interval =
+                uniquePhysicalIntervalNs =
                     confirmation.actualPresentTimeNs - lastUniquePhysicalPresentNs_;
-                const uint64_t expected =
-                    provenance.desiredPresentTimeNs != 0
-                        && lastAcceptedDesiredPresentTimeNs_ != 0
-                        ? interval : interval;
+            }
+            if (provenance.desiredPresentTimeNs != 0) {
                 physicalCadenceErrorsNs_.push_back(
-                    provenance.desiredPresentTimeNs != 0
-                        ? static_cast<uint64_t>(std::llabs(
-                            static_cast<long long>(confirmation.actualPresentTimeNs)
-                            - static_cast<long long>(provenance.desiredPresentTimeNs)))
-                        : 0);
+                    static_cast<uint64_t>(std::llabs(
+                        static_cast<long long>(confirmation.actualPresentTimeNs)
+                        - static_cast<long long>(provenance.desiredPresentTimeNs))));
                 while (physicalCadenceErrorsNs_.size() > 240)
                     physicalCadenceErrorsNs_.pop_front();
-                std::sort(physicalCadenceErrorsNs_.begin(), physicalCadenceErrorsNs_.end());
-                (void)expected;
             }
             lastUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
             ++uniquePhysicalPresent_;
             if (provenance.kind == 1) ++generatedUniquePhysicalPresent_;
             else ++sourceUniquePhysicalPresent_;
         }
+        std::vector<uint64_t> sortedCadenceErrors(
+            physicalCadenceErrorsNs_.begin(), physicalCadenceErrorsNs_.end());
+        std::sort(sortedCadenceErrors.begin(), sortedCadenceErrors.end());
+        const double cadenceErrorP50Ms = sortedCadenceErrors.empty() ? 0.0
+            : static_cast<double>(
+                sortedCadenceErrors[sortedCadenceErrors.size() / 2]) / 1000000.0;
+        const double cadenceErrorP95Ms = sortedCadenceErrors.empty() ? 0.0
+            : static_cast<double>(sortedCadenceErrors[std::min(
+                sortedCadenceErrors.size() - 1,
+                (sortedCadenceErrors.size() * 95) / 100)]) / 1000000.0;
         __android_log_print(
             ANDROID_LOG_INFO,
             "LSFG_HOST_DISPLAY",
@@ -2479,7 +2488,8 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             "interpolation_index=%u interpolation_count=%u unique_delivery=%d "
             "repeated_content_present=%llu desired_present_time=%llu actual_present_time=%llu "
             "earliest_present_time=%llu present_margin=%llu desired_vs_actual_ms=%.3f "
-            "unique_physical_fps=%.3f source_physical_fps=%.3f generated_physical_fps=%.3f "
+            "unique_physical_interval_ms=%.3f unique_physical_fps=%.3f "
+            "source_physical_fps=%.3f generated_physical_fps=%.3f "
             "cadence_error_p50_ms=%.3f cadence_error_p95_ms=%.3f reason=%s",
             confirmation.hostPresentId,
             confirmation.hostPresentId != 0 ? 1 : 0,
@@ -2511,6 +2521,7 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                     static_cast<int64_t>(confirmation.actualPresentTimeNs)
                     - static_cast<int64_t>(confirmation.desiredPresentTimeNs)) / 1000000.0
                 : 0.0,
+            static_cast<double>(uniquePhysicalIntervalNs) / 1000000.0,
             firstUniquePhysicalPresentNs_ != 0 && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
                 ? static_cast<double>(uniquePhysicalPresent_) * 1000000000.0
                     / static_cast<double>(lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
@@ -2523,12 +2534,8 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                 ? static_cast<double>(generatedUniquePhysicalPresent_) * 1000000000.0
                     / static_cast<double>(lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
                 : 0.0,
-            physicalCadenceErrorsNs_.empty() ? 0.0
-                : static_cast<double>(physicalCadenceErrorsNs_[physicalCadenceErrorsNs_.size()/2]) / 1000000.0,
-            physicalCadenceErrorsNs_.empty() ? 0.0
-                : static_cast<double>(physicalCadenceErrorsNs_[std::min(
-                    physicalCadenceErrorsNs_.size()-1,
-                    (physicalCadenceErrorsNs_.size()*95)/100)]) / 1000000.0,
+            cadenceErrorP50Ms,
+            cadenceErrorP95Ms,
             reason ? reason : "none");
     }
 }

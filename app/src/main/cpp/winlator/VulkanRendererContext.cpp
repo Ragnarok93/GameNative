@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <chrono>
 #include <unordered_set>
+#include <time.h>
 #include "window_vert.h"
 #include "window_frag.h"
 
@@ -24,7 +25,7 @@ const char gamenative_vulkan_renderer_build_marker[] =
 namespace {
 constexpr char LSFG_PROVENANCE_SOCKET[] = "gamenative-lsfg-provenance-v1";
 constexpr uint32_t kLsfgFrameProvenanceMagic = 0x4c534650U; // "LSFP"
-constexpr uint16_t kLsfgFrameProvenanceVersion = 1;
+constexpr uint16_t kLsfgFrameProvenanceVersion = 2;
 constexpr std::size_t kMaxPendingLsfgProvenance = 512;
 constexpr std::size_t kMaxPendingHostConfirmations = 256;
 constexpr int kLsfgProvenanceReceiveBufferBytes = 1024 * 1024;
@@ -47,8 +48,9 @@ struct LsfgFrameProvenancePacket {
     uint64_t deliveryId;
     uint64_t sourceIndex;
     uint64_t batchId;
+    uint64_t desiredPresentTimeNs;
 };
-static_assert(sizeof(LsfgFrameProvenancePacket) == 56);
+static_assert(sizeof(LsfgFrameProvenancePacket) == 64);
 
 const char* hostDisplayBackendName(HostDisplayConfirmationBackend backend) {
     switch (backend) {
@@ -429,6 +431,17 @@ void VulkanRendererContext::createSwapchain() {
     if (vk_.CreateSwapchainKHR(device,&ci,nullptr,&swapchain)!=VK_SUCCESS) throw std::runtime_error("swapchain");
     RLOG("swapchain created: %dx%d format=%d presentMode=%d compositeAlpha=%d imgCount=%u",
         swapchainExt.width,swapchainExt.height,(int)swapchainFmt,(int)presentMode,(int)compositeAlpha,imgCount);
+    const VkPresentModeKHR previousActivePresentMode = activePresentMode;
+    activePresentMode = presentMode;
+    if (previousActivePresentMode != activePresentMode) {
+        frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);
+        frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
+        frameQueueSmoothFifoFallback_.store(false, std::memory_order_release);
+        resetFrameQueueTelemetry();
+        __android_log_print(ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+            "event=active-present-mode-transition requested_present_mode=%d active_present_mode=%d",
+            static_cast<int>(requestedPresentMode), static_cast<int>(activePresentMode));
+    }
     if (oldSwapchain!=VK_NULL_HANDLE) vk_.DestroySwapchainKHR(device,oldSwapchain,nullptr);
     vk_.GetSwapchainImagesKHR(device,swapchain,&imgCount,nullptr);
     swapchainImages.resize(imgCount); vk_.GetSwapchainImagesKHR(device,swapchain,&imgCount,swapchainImages.data());
@@ -637,7 +650,7 @@ uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
 
     const uint32_t requested =
         std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
-    const bool fifoPresent = requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR;
+    const bool fifoPresent = activePresentMode == VK_PRESENT_MODE_FIFO_KHR;
     frameQueueSmoothFifoFallback_.store(
         requested == 2 && fifoPresent, std::memory_order_release);
 
@@ -733,7 +746,7 @@ void VulkanRendererContext::enforceFrameQueueSubmissionBudget(uint32_t target) {
 void VulkanRendererContext::updateSmoothQueuePressure(uint64_t presentNs) {
     if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
             || lsfgFrameQueueTarget_.load(std::memory_order_acquire) != 2
-            || requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR) {
+            || activePresentMode == VK_PRESENT_MODE_FIFO_KHR) {
         frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
         return;
     }
@@ -814,7 +827,7 @@ VkResult VulkanRendererContext::presentHostFrame(
 
     VkPresentTimeGOOGLE googlePresentTime{};
     googlePresentTime.presentID = present.googlePresentId;
-    googlePresentTime.desiredPresentTime = 0;
+    googlePresentTime.desiredPresentTime = present.desiredPresentTimeNs;
     VkPresentTimesInfoGOOGLE googlePresentTimes{};
     googlePresentTimes.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE;
     googlePresentTimes.swapchainCount = 1;
@@ -1643,9 +1656,22 @@ ok=true;}catch(...){}
         curUpload,hasCurUpload,
         ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis);
 
+    std::vector<LsfgFrameProvenance> frameProvenance =
+        classifyHostPresentProvenance(frameDraws);
+    const bool hasUniqueLsfgDelivery = std::any_of(
+        frameProvenance.begin(), frameProvenance.end(),
+        [](const LsfgFrameProvenance& provenance) {
+            return provenance.uniqueDelivery;
+        });
+    const uint64_t desiredPresentTimeNs =
+        validatedHostDesiredPresentTime(frameProvenance);
+
     VkSemaphore wSem[]={imgAvailSems[currentFrame]};
     VkSemaphore signalSemaphore = renderDoneSems[currentFrame];
-    if (!toXr && frameQueueEnabled) {
+    const bool useFrameQueuePresentSemaphore =
+        !toXr && frameQueueEnabled && hasUniqueLsfgDelivery
+        && activeFrameSlotCount() > BASE_FRAMES_IN_FLIGHT;
+    if (useFrameQueuePresentSemaphore) {
         if (imgIdx >= frameQueuePresentSems_.size()
                 || frameQueuePresentSems_[imgIdx] == VK_NULL_HANDLE) {
             fbResized.store(true, std::memory_order_release);
@@ -1683,15 +1709,6 @@ ok=true;}catch(...){}
         markDrawResourcesSubmitted(submissionSerial);
     }
     if (!toXr) {
-        std::vector<LsfgFrameProvenance> frameProvenance;
-        std::unordered_set<uint64_t> seenDeliveries;
-        for (const auto& draw : frameDraws) {
-            if (!draw.frameProvenance.valid || draw.frameProvenance.deliveryId == 0)
-                continue;
-            if (seenDeliveries.insert(draw.frameProvenance.deliveryId).second)
-                frameProvenance.push_back(draw.frameProvenance);
-        }
-
         uint64_t hostPresentId = hostPresentId_++;
         if (hostPresentId == 0) {
             hostPresentId = 1;
@@ -1721,6 +1738,8 @@ ok=true;}catch(...){}
             .googlePresentId = googlePresentId,
             .backend = confirmationBackend,
             .frameProvenance = std::move(frameProvenance),
+            .desiredPresentTimeNs = desiredPresentTimeNs,
+            .hasUniqueLsfgDelivery = hasUniqueLsfgDelivery,
             .acquireNs = acquireNs,
             .gpuOutstanding = gpuOutstanding,
         });
@@ -2182,6 +2201,8 @@ void VulkanRendererContext::drainLsfgProvenance() {
             flushHostDisplayConfirmationsUnknown("provenance-epoch-reset");
             pendingLsfgProvenance.clear();
             lsfgSwapchainImageAhbs.clear();
+            consumedLsfgDeliveries_.clear();
+            lastAcceptedDesiredPresentTimeNs_ = 0;
             for (auto& [id, texture] : texMap)
                 texture.frameProvenance = {};
             for (auto& [ahb, texture] : ahbImportCache)
@@ -2234,6 +2255,7 @@ void VulkanRendererContext::drainLsfgProvenance() {
         provenance.interpolationCount = packet.interpolationCount;
         provenance.interpolationIndex = packet.interpolationIndex;
         provenance.kind = packet.kind;
+        provenance.desiredPresentTimeNs = packet.desiredPresentTimeNs;
         pendingLsfgProvenance.push_back(provenance);
         while (pendingLsfgProvenance.size() > kMaxPendingLsfgProvenance) {
             HostDisplayConfirmation dropped{};
@@ -2329,6 +2351,55 @@ void VulkanRendererContext::bindLsfgProvenance(
     }
 }
 
+std::vector<LsfgFrameProvenance> VulkanRendererContext::classifyHostPresentProvenance(
+        const std::vector<DrawEntry>& draws) const {
+    std::vector<LsfgFrameProvenance> result;
+    std::unordered_set<uint64_t> seenThisPresent;
+    for (const auto& draw : draws) {
+        if (!draw.frameProvenance.valid || draw.frameProvenance.deliveryId == 0)
+            continue;
+        if (!seenThisPresent.insert(draw.frameProvenance.deliveryId).second)
+            continue;
+        auto provenance = draw.frameProvenance;
+        provenance.uniqueDelivery =
+            consumedLsfgDeliveries_.find(provenance.deliveryId)
+                == consumedLsfgDeliveries_.end();
+        result.push_back(provenance);
+    }
+    return result;
+}
+
+uint64_t VulkanRendererContext::validatedHostDesiredPresentTime(
+        const std::vector<LsfgFrameProvenance>& provenance) {
+    if (!hostGoogleDisplayTimingEnabled)
+        return 0;
+    uint64_t desired = 0;
+    for (const auto& frame : provenance) {
+        if (!frame.uniqueDelivery || frame.desiredPresentTimeNs == 0)
+            continue;
+        if (desired != 0 && desired != frame.desiredPresentTimeNs)
+            return 0;
+        desired = frame.desiredPresentTimeNs;
+    }
+    if (desired == 0)
+        return 0;
+
+    timespec ts{};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    const uint64_t nowNs =
+        static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL
+        + static_cast<uint64_t>(ts.tv_nsec);
+    constexpr uint64_t kMaxFutureDesiredPresentNs = 250000000ULL;
+    if (desired <= nowNs || desired - nowNs > kMaxFutureDesiredPresentNs)
+        return 0;
+    if (lastAcceptedDesiredPresentTimeNs_ != 0
+            && desired < lastAcceptedDesiredPresentTimeNs_)
+        return 0;
+    lastAcceptedDesiredPresentTimeNs_ = desired;
+    return desired;
+}
+
 void VulkanRendererContext::emitHostDisplayConfirmation(
         const HostDisplayConfirmation& confirmation,
         bool confirmed,
@@ -2336,6 +2407,33 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         const char* reason) {
     if (confirmation.frameProvenance.empty()) return;
     for (const auto& provenance : confirmation.frameProvenance) {
+        if (confirmed && provenance.uniqueDelivery && confirmation.actualPresentTimeNs != 0) {
+            if (firstUniquePhysicalPresentNs_ == 0)
+                firstUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
+            if (lastUniquePhysicalPresentNs_ != 0
+                    && confirmation.actualPresentTimeNs > lastUniquePhysicalPresentNs_) {
+                const uint64_t interval =
+                    confirmation.actualPresentTimeNs - lastUniquePhysicalPresentNs_;
+                const uint64_t expected =
+                    provenance.desiredPresentTimeNs != 0
+                        && lastAcceptedDesiredPresentTimeNs_ != 0
+                        ? interval : interval;
+                physicalCadenceErrorsNs_.push_back(
+                    provenance.desiredPresentTimeNs != 0
+                        ? static_cast<uint64_t>(std::llabs(
+                            static_cast<long long>(confirmation.actualPresentTimeNs)
+                            - static_cast<long long>(provenance.desiredPresentTimeNs)))
+                        : 0);
+                while (physicalCadenceErrorsNs_.size() > 240)
+                    physicalCadenceErrorsNs_.pop_front();
+                std::sort(physicalCadenceErrorsNs_.begin(), physicalCadenceErrorsNs_.end());
+                (void)expected;
+            }
+            lastUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
+            ++uniquePhysicalPresent_;
+            if (provenance.kind == 1) ++generatedUniquePhysicalPresent_;
+            else ++sourceUniquePhysicalPresent_;
+        }
         __android_log_print(
             ANDROID_LOG_INFO,
             "LSFG_HOST_DISPLAY",
@@ -2348,7 +2446,11 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             "confirmation_backend=%s delivery_id=%" PRIu64
             " context_epoch=%" PRIu64
             " kind=%s source_index=%" PRIu64 " swapchain_image=%u "
-            "interpolation_index=%u interpolation_count=%u reason=%s",
+            "interpolation_index=%u interpolation_count=%u unique_delivery=%d "
+            "repeated_content_present=%llu desired_present_time=%llu actual_present_time=%llu "
+            "earliest_present_time=%llu present_margin=%llu desired_vs_actual_ms=%.3f "
+            "unique_physical_fps=%.3f source_physical_fps=%.3f generated_physical_fps=%.3f "
+            "cadence_error_p50_ms=%.3f cadence_error_p95_ms=%.3f reason=%s",
             confirmation.hostPresentId,
             confirmation.hostPresentId != 0 ? 1 : 0,
             confirmed ? 1 : 0,
@@ -2368,6 +2470,35 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             provenance.swapchainImageIndex,
             static_cast<unsigned>(provenance.interpolationIndex),
             provenance.interpolationCount,
+            provenance.uniqueDelivery ? 1 : 0,
+            static_cast<unsigned long long>(repeatedContentPresent_),
+            static_cast<unsigned long long>(confirmation.desiredPresentTimeNs),
+            static_cast<unsigned long long>(confirmation.actualPresentTimeNs),
+            static_cast<unsigned long long>(confirmation.earliestPresentTimeNs),
+            static_cast<unsigned long long>(confirmation.presentMarginNs),
+            confirmation.actualPresentTimeNs != 0 && confirmation.desiredPresentTimeNs != 0
+                ? static_cast<double>(
+                    static_cast<int64_t>(confirmation.actualPresentTimeNs)
+                    - static_cast<int64_t>(confirmation.desiredPresentTimeNs)) / 1000000.0
+                : 0.0,
+            firstUniquePhysicalPresentNs_ != 0 && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
+                ? static_cast<double>(uniquePhysicalPresent_) * 1000000000.0
+                    / static_cast<double>(lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
+                : 0.0,
+            firstUniquePhysicalPresentNs_ != 0 && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
+                ? static_cast<double>(sourceUniquePhysicalPresent_) * 1000000000.0
+                    / static_cast<double>(lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
+                : 0.0,
+            firstUniquePhysicalPresentNs_ != 0 && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
+                ? static_cast<double>(generatedUniquePhysicalPresent_) * 1000000000.0
+                    / static_cast<double>(lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
+                : 0.0,
+            physicalCadenceErrorsNs_.empty() ? 0.0
+                : static_cast<double>(physicalCadenceErrorsNs_[physicalCadenceErrorsNs_.size()/2]) / 1000000.0,
+            physicalCadenceErrorsNs_.empty() ? 0.0
+                : static_cast<double>(physicalCadenceErrorsNs_[std::min(
+                    physicalCadenceErrorsNs_.size()-1,
+                    (physicalCadenceErrorsNs_.size()*95)/100)]) / 1000000.0,
             reason ? reason : "none");
     }
 }
@@ -2383,6 +2514,17 @@ void VulkanRendererContext::recordHostPresent(
     confirmation.googlePresentId = googlePresentId;
     confirmation.backend = backend;
     confirmation.frameProvenance = frameProvenance;
+    for (const auto& provenance : frameProvenance) {
+        if (provenance.uniqueDelivery) {
+            consumedLsfgDeliveries_.insert(provenance.deliveryId);
+            confirmation.desiredPresentTimeNs =
+                provenance.desiredPresentTimeNs != 0
+                    ? provenance.desiredPresentTimeNs
+                    : confirmation.desiredPresentTimeNs;
+        } else {
+            ++repeatedContentPresent_;
+        }
+    }
     ++hostWsiAccepted_;
 
     if (backend == HostDisplayConfirmationBackend::WsiAccepted) {
@@ -2426,6 +2568,10 @@ void VulkanRendererContext::pollHostDisplayConfirmations() {
                                 && pending.googlePresentId == timing.presentID;
                         });
                     if (it == pendingHostDisplayConfirmations.end()) continue;
+                    it->actualPresentTimeNs = timing.actualPresentTime;
+                    it->desiredPresentTimeNs = timing.desiredPresentTime;
+                    it->earliestPresentTimeNs = timing.earliestPresentTime;
+                    it->presentMarginNs = timing.presentMargin;
                     const bool confirmed = timing.actualPresentTime != 0;
                     if (confirmed) ++hostDisplayConfirmed_;
                     else ++hostDisplayUnknown_;
@@ -2752,15 +2898,13 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
 }
 
 void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {
+    std::unique_lock<std::shared_mutex> frameLock(frameMutex);
     bool supported = false;
     for (auto pm : availablePresentModes) if (pm == mode) { supported = true; break; }
     VkPresentModeKHR target = supported ? mode : VK_PRESENT_MODE_FIFO_KHR;
-    RLOG("setPresentMode: requested=%d supported=%d -> applying=%d",
-        (int)mode, (int)supported, (int)target);
+    RLOG("setPresentMode: requested=%d supported=%d -> pending=%d active=%d",
+        (int)mode, (int)supported, (int)target, (int)activePresentMode);
     if (requestedPresentMode==target) { RLOG("setPresentMode: already set, skipping"); return; }
-    frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);
-    frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
-    frameQueueSmoothFifoFallback_.store(false, std::memory_order_release);
     requestedPresentMode=target;
     fbResized.store(true); dirtyCV.notify_one();
 }

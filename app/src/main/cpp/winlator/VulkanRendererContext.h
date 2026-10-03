@@ -189,6 +189,8 @@ struct LsfgFrameProvenance {
     uint32_t interpolationCount = 0;
     uint8_t interpolationIndex = 0;
     uint8_t kind = 0; // 0=source, 1=generated
+    uint64_t desiredPresentTimeNs = 0;
+    bool uniqueDelivery = false;
 };
 
 struct HostDisplayConfirmation {
@@ -197,6 +199,10 @@ struct HostDisplayConfirmation {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
+    uint64_t desiredPresentTimeNs = 0;
+    uint64_t actualPresentTimeNs = 0;
+    uint64_t earliestPresentTimeNs = 0;
+    uint64_t presentMarginNs = 0;
 };
 
 struct PendingHostPresent {
@@ -209,6 +215,8 @@ struct PendingHostPresent {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
+    uint64_t desiredPresentTimeNs = 0;
+    bool hasUniqueLsfgDelivery = false;
     uint64_t acquireNs = 0;
     uint32_t gpuOutstanding = 0;
 };
@@ -351,6 +359,8 @@ private:
     bool  cubicSupported          = false;
     VkPhysicalDeviceMemoryProperties memProperties{};
     VkPresentModeKHR requestedPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    // Updated only after a replacement swapchain is successfully created.
+    VkPresentModeKHR activePresentMode = VK_PRESENT_MODE_FIFO_KHR;
     uint32_t graphicsQueueFamilyIndex = 0;
     std::vector<VkPresentModeKHR> availablePresentModes;
 
@@ -363,6 +373,15 @@ private:
     uint64_t hostWsiAccepted_ = 0;
     uint64_t hostDisplayConfirmed_ = 0;
     uint64_t hostDisplayUnknown_ = 0;
+    uint64_t repeatedContentPresent_ = 0;
+    uint64_t uniquePhysicalPresent_ = 0;
+    uint64_t sourceUniquePhysicalPresent_ = 0;
+    uint64_t generatedUniquePhysicalPresent_ = 0;
+    uint64_t firstUniquePhysicalPresentNs_ = 0;
+    uint64_t lastUniquePhysicalPresentNs_ = 0;
+    uint64_t lastAcceptedDesiredPresentTimeNs_ = 0;
+    std::deque<uint64_t> physicalCadenceErrorsNs_;
+    std::unordered_set<uint64_t> consumedLsfgDeliveries_;
     std::deque<HostDisplayConfirmation> pendingHostDisplayConfirmations;
 
     // Frame Queue is retirement-aware final-compositor buffering. Presentation
@@ -555,6 +574,10 @@ private:
     void bindLsfgProvenance(AHardwareBuffer* ahb, WinTex& texture);
     uint64_t ahbIdentity(AHardwareBuffer* ahb) const;
     void pollHostDisplayConfirmations();
+    std::vector<LsfgFrameProvenance> classifyHostPresentProvenance(
+        const std::vector<DrawEntry>& draws) const;
+    uint64_t validatedHostDesiredPresentTime(
+        const std::vector<LsfgFrameProvenance>& provenance);
     void recordHostPresent(
         uint64_t hostPresentId,
         uint32_t googlePresentId,

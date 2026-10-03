@@ -163,7 +163,7 @@ class LsfgFrameQueueContractTest {
     fun smoothNeverUsesThreeSlotsWithFifoBecauseQueuePresentCanBecomeTheThrottle() {
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(implementation.contains("requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR"))
+        assertTrue(implementation.contains("activePresentMode == VK_PRESENT_MODE_FIFO_KHR"))
         assertTrue(implementation.contains("frameQueueSmoothFifoFallback_"))
         assertTrue(implementation.contains("fifo-present-blocking"))
         assertTrue(implementation.contains("if (requested == 2 && fifoPresent)"))
@@ -219,6 +219,76 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("present_ms="))
         assertTrue(implementation.contains("acquire_ms="))
         assertFalse(implementation.contains("queue_depth=%zu"))
+    }
+
+    @Test
+    fun provenanceIsConsumedOnceAndRepeatedContentIsClassifiedSeparately() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("uniqueDelivery"))
+        assertTrue(header.contains("repeatedContentPresent"))
+        assertTrue(implementation.contains("classifyHostPresentProvenance"))
+        assertTrue(implementation.contains("consumedLsfgDeliveries_"))
+        assertTrue(implementation.contains("repeated_content_present="))
+        assertTrue(implementation.contains("unique_delivery="))
+    }
+
+    @Test
+    fun temporalIntentReachesFinalGoogleDisplayTimingWithConservativeValidation() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("desiredPresentTimeNs"))
+        assertTrue(header.contains("lastAcceptedDesiredPresentTimeNs_"))
+        assertTrue(implementation.contains("validatedHostDesiredPresentTime"))
+        assertTrue(implementation.contains("googlePresentTime.desiredPresentTime ="))
+        assertFalse(implementation.contains("googlePresentTime.desiredPresentTime = 0;"))
+        assertTrue(implementation.contains("CLOCK_MONOTONIC"))
+        assertTrue(implementation.contains("desired_vs_actual"))
+        assertTrue(implementation.contains("actual_present_time="))
+        assertTrue(implementation.contains("earliest_present_time="))
+        assertTrue(implementation.contains("present_margin="))
+    }
+
+    @Test
+    fun presentModePolicyUsesLiveSwapchainModeAndSerializesRequests() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("activePresentMode"))
+        assertTrue(implementation.contains("activePresentMode = presentMode"))
+        assertTrue(implementation.contains("activePresentMode == VK_PRESENT_MODE_FIFO_KHR"))
+        assertFalse(implementation.contains("requestedPresentMode == VK_PRESENT_MODE_FIFO_KHR"))
+        val start = implementation.indexOf("void VulkanRendererContext::setPresentMode")
+        val end = implementation.indexOf("\n}\n", start)
+        assertTrue(start >= 0 && end > start)
+        val transition = implementation.substring(start, end + 3)
+        assertTrue(transition.contains("std::unique_lock<std::shared_mutex>"))
+    }
+
+    @Test
+    fun balancedAndFifoSmoothFallbackReuseBaselinePresentSemaphoreOwnership() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("useFrameQueuePresentSemaphore"))
+        assertTrue(implementation.contains("activeFrameSlotCount() > BASE_FRAMES_IN_FLIGHT"))
+        assertTrue(implementation.contains("hasUniqueLsfgDelivery"))
+        assertTrue(implementation.contains("renderDoneSems[currentFrame]"))
+    }
+
+    @Test
+    fun frameQueueTelemetrySeparatesUniquePhysicalCadenceFromHostRedrawRate() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("lastUniquePhysicalPresentNs_"))
+        assertTrue(header.contains("physicalCadenceErrorsNs_"))
+        assertTrue(implementation.contains("unique_physical_fps="))
+        assertTrue(implementation.contains("generated_physical_fps="))
+        assertTrue(implementation.contains("source_physical_fps="))
+        assertTrue(implementation.contains("cadence_error_p50_ms="))
+        assertTrue(implementation.contains("cadence_error_p95_ms="))
     }
 
     private fun source(name: String): String {

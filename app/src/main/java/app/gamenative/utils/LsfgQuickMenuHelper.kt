@@ -175,7 +175,9 @@ object LsfgQuickMenuHelper {
     }
 
     fun applyFrameQueueToRenderer(container: Container, renderer: VulkanRenderer?) {
-        renderer?.setLsfgFrameQueue(
+        renderer ?: return
+        renderer.setVkPresentMode(if (presentMode(container) == "mailbox") 1 else 2)
+        renderer.setLsfgFrameQueue(
             frameQueueEnabled(container) && sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2,
             frameQueueTarget(container).depth,
         )

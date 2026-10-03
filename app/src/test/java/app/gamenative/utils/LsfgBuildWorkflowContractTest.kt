@@ -180,7 +180,7 @@ class LsfgBuildWorkflowContractTest {
         assertTrue(upgradeable.contains("actions_run_id="))
         assertTrue(upgradeable.contains("actions_run_number="))
         assertTrue(upgradeable.contains("head_branch="))
-        assertTrue(upgradeable.contains("lineage=GameNative-upgradeable-debug"))
+        assertTrue(upgradeable.contains("lineage=$UPGRADEABLE_DEBUG_LINEAGE"))
 
         val uploadStart = prCheck.indexOf("- name: Upload LegacyDebug APK")
         assertTrue("PR-check upload step must exist", uploadStart >= 0)

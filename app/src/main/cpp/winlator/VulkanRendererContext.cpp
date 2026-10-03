@@ -20,7 +20,7 @@
 
 extern "C" __attribute__((used, visibility("default")))
 const char gamenative_vulkan_renderer_build_marker[] =
-    "gamenative-host-display-confirmation-v3";
+    "gamenative-host-display-confirmation-v2";
 
 namespace {
 constexpr char LSFG_PROVENANCE_SOCKET[] = "gamenative-lsfg-provenance-v1";

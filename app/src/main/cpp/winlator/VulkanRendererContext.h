@@ -406,6 +406,7 @@ private:
     uint64_t provenanceRxTotal_ = 0;
     uint64_t provenanceMatchTotal_ = 0;
     uint64_t provenanceMissTotal_ = 0;
+    uint64_t provenanceSupersededTotal_ = 0;
     uint64_t activeProvenanceContextEpoch_ = 0;
     uint64_t provenanceSocketOwnerGeneration_ = 0;
     bool provenanceFirstPacketLogged_ = false;

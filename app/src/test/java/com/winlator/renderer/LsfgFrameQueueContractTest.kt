@@ -296,6 +296,51 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("provenance_superseded_total="))
     }
 
+    @Test
+    fun quickMenuPresentModeChangeReachesTheFinalVulkanCompositor() {
+        val quickMenu = repoSource("app/src/main/java/app/gamenative/ui/component/QuickMenu.kt")
+
+        val callback = quickMenu.substring(
+            quickMenu.indexOf("onPresentModeChanged = { mode ->"),
+            quickMenu.indexOf("scrollState = lsfgScrollState"),
+        )
+        assertTrue(callback.contains("renderer?.setVkPresentMode"))
+        assertTrue(callback.contains("mode == \"mailbox\""))
+        assertTrue(quickMenu.contains("LaunchedEffect(lsfgPresentMode, renderer)"))
+    }
+
+    @Test
+    fun hostDisplayTelemetryTracksTemporalFallbackAndResetsPhysicalCadencePerEpoch() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("HostDesiredPresentDecision"))
+        assertTrue(header.contains("provenanceDesiredPresentTimeNs"))
+        assertTrue(header.contains("submittedDesiredPresentTimeNs"))
+        assertTrue(header.contains("desiredStaleByNs"))
+        assertTrue(header.contains("enqueuedAtNs"))
+        assertTrue(header.contains("swapchainGeneration"))
+        assertTrue(implementation.contains("resetHostPhysicalCadenceTelemetry"))
+        assertTrue(implementation.contains("provenance-epoch-reset"))
+        assertTrue(implementation.contains("swapchain-recreated"))
+        assertTrue(implementation.contains("desired_fallback_reason="))
+        assertTrue(implementation.contains("desired_stale_by_ms="))
+        assertTrue(implementation.contains("present_margin_valid="))
+        assertTrue(implementation.contains("confirmation_pending_high_water="))
+        assertTrue(implementation.contains("swapchain_generation="))
+    }
+
+    @Test
+    fun hostDisplayConfirmationFeedbackIsBestEffortAndNonblocking() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("publishLsfgHostDisplayFeedback"))
+        assertTrue(implementation.contains("gamenative-lsfg-display-feedback-v1"))
+        assertTrue(implementation.contains("SOCK_NONBLOCK"))
+        assertTrue(implementation.contains("MSG_DONTWAIT"))
+        assertTrue(implementation.contains("host-feedback-send"))
+    }
+
     private fun source(name: String): String {
         val candidates = listOf(
             Paths.get("src/main/cpp/winlator").resolve(name),

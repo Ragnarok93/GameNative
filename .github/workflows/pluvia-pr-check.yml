@@ -100,11 +100,17 @@ jobs:
           ls -lh /tmp/gamenative-legacy-debug/
 
       - name: Upload LegacyDebug APK
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: gamenative-legacy-debug
+          name: gamenative-pr-validation-debug-non-upgradeable
           path: |
             /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk
             /tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk.sha256
           if-no-files-found: error
           compression-level: 0
+
+      - name: Point branch testers to upgradeable lineage
+        if: github.event_name == 'push'
+        run: |
+          echo "::notice::This PR-check run intentionally publishes no APK on branch pushes. Use the matching 'Upgradeable Debug APK' workflow artifact named 'GameNative-upgradeable-debug' for install-over testing."

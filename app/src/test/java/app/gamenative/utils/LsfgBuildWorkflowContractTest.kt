@@ -58,7 +58,7 @@ class LsfgBuildWorkflowContractTest {
         }
 
         val prCheck = repoFile(".github/workflows/pluvia-pr-check.yml").readText()
-        assertTrue(prCheck.contains("name: gamenative-legacy-debug"))
+        assertTrue(prCheck.contains("name: gamenative-pr-validation-debug-non-upgradeable"))
         assertTrue(prCheck.contains("gamenative-legacy-debug.apk.sha256"))
 
         val release = repoFile(".github/workflows/legacy-release-build.yml").readText()

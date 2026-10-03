@@ -1517,7 +1517,29 @@ ok=true;}catch(...){}
         return;
     }
 
-    const uint32_t activeSlots = activeFrameSlotCount();
+    // Frame Queue depth belongs to unique LSFG content only. The raw imported
+    // AHB is never retained as queued storage: after QueueSubmit the acquired
+    // host swapchain image is the immutable composite snapshot, and its render
+    // completion semaphore owns the handoff to WSI.
+    bool uniqueLsfgContentPending = false;
+    if (lsfgFrameQueueEnabled_.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lk(renderMutex);
+        for (const auto& entry : renderList) {
+            const auto it = texMap.find(entry.id);
+            if (it == texMap.end())
+                continue;
+            const auto& provenance = it->second.frameProvenance;
+            if (provenance.valid && provenance.deliveryId != 0
+                    && consumedLsfgDeliveries_.find(provenance.deliveryId)
+                        == consumedLsfgDeliveries_.end()) {
+                uniqueLsfgContentPending = true;
+                break;
+            }
+        }
+    }
+    const uint32_t activeSlots = uniqueLsfgContentPending
+        ? activeFrameSlotCount()
+        : BASE_FRAMES_IN_FLIGHT;
     if (currentFrame >= activeSlots)
         currentFrame = 0;
     if (currentFrame >= cmdBufs.size() || cmdBufs[currentFrame] == VK_NULL_HANDLE) return;
@@ -1552,8 +1574,10 @@ ok=true;}catch(...){}
 
     const bool frameQueueEnabled =
         lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
-    const uint32_t frameQueueTarget = frameQueueEnabled
-        ? effectiveFrameQueueTarget() : 0;
+    const uint32_t frameQueueTarget =
+        frameQueueEnabled && uniqueLsfgContentPending
+            ? effectiveFrameQueueTarget()
+            : 0;
     if (!toXr) {
         enforceFrameQueueSubmissionBudget(frameQueueTarget);
     }
@@ -1753,7 +1777,10 @@ ok=true;}catch(...){}
                 device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX) == VK_SUCCESS)
             submissionTimeline.completeFrame(currentFrame);
     }
-    currentFrame=(currentFrame+1)%activeFrameSlotCount();
+    const uint32_t nextSlotCount = hasUniqueLsfgDelivery
+        ? activeFrameSlotCount()
+        : BASE_FRAMES_IN_FLIGHT;
+    currentFrame=(currentFrame+1)%nextSlotCount;
 }
 
 void VulkanRendererContext::onSurfaceResized(int w, int h) {
@@ -2328,6 +2355,7 @@ void VulkanRendererContext::bindLsfgProvenance(
     while (pendingLsfgProvenance.begin() != selected) {
         HostDisplayConfirmation superseded{};
         superseded.frameProvenance.push_back(pendingLsfgProvenance.front());
+        ++provenanceSupersededTotal_;
         emitHostDisplayConfirmation(
             superseded, false, true, "superseded-before-host-import");
         pendingLsfgProvenance.pop_front();
@@ -2343,10 +2371,12 @@ void VulkanRendererContext::bindLsfgProvenance(
             "provenance_rx_total=%" PRIu64
             " provenance_match_total=%" PRIu64
             " provenance_miss_total=%" PRIu64
+            " provenance_superseded_total=%" PRIu64
             " matched_delivery_id=%" PRIu64,
             provenanceRxTotal_,
             provenanceMatchTotal_,
             provenanceMissTotal_,
+            provenanceSupersededTotal_,
             texture.frameProvenance.deliveryId);
     }
 }

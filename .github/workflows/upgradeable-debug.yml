@@ -205,13 +205,13 @@ jobs:
           {
             echo "### Upgradeable debug test lineage"
             echo
-            echo "- Lineage: `$UPGRADEABLE_DEBUG_LINEAGE`"
-            echo "- Branch: `$GITHUB_REF_NAME`"
-            echo "- GameNative: `$GITHUB_SHA`"
-            echo "- lsfg-vk-android: `$expected_native_commit`"
-            echo "- Version: `$VERSION_NAME ($VERSION_CODE)`"
-            echo "- Signer SHA-256: `$actual_cert`"
-            echo "- Artifact: `GameNative-upgradeable-debug`"
+            echo "- Lineage: $UPGRADEABLE_DEBUG_LINEAGE"
+            echo "- Branch: $GITHUB_REF_NAME"
+            echo "- GameNative: $GITHUB_SHA"
+            echo "- lsfg-vk-android: $expected_native_commit"
+            echo "- Version: $VERSION_NAME ($VERSION_CODE)"
+            echo "- Signer SHA-256: $actual_cert"
+            echo "- Artifact: GameNative-upgradeable-debug"
           } >> "$GITHUB_STEP_SUMMARY"
 
           sha256sum "$staged_apk" > "$stage/GameNative-upgradeable-debug.apk.sha256"

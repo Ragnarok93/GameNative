@@ -1075,6 +1075,10 @@ VkResult VulkanRendererContext::presentHostFrame(
 void VulkanRendererContext::cleanupSwapchain() {
     retireFrameQueuePresentSemaphores();
     flushHostDisplayConfirmationsUnknown("swapchain-recreate");
+    if (swapchain != VK_NULL_HANDLE) {
+        resetHostPhysicalCadenceTelemetry("swapchain-destroyed");
+        lastAcceptedDesiredPresentTimeNs_ = 0;
+    }
     for (auto fb:swapchainFBs) vk_.DestroyFramebuffer(device,fb,nullptr); swapchainFBs.clear();
     for (auto iv:swapchainViews) vk_.DestroyImageView(device,iv,nullptr); swapchainViews.clear();
     if (!cmdBufs.empty()){vk_.FreeCommandBuffers(device,cmdPool,(uint32_t)cmdBufs.size(),cmdBufs.data());cmdBufs.clear();}

@@ -180,7 +180,41 @@ class LsfgBuildWorkflowContractTest {
         assertTrue(upgradeable.contains("actions_run_id="))
         assertTrue(upgradeable.contains("actions_run_number="))
         assertTrue(upgradeable.contains("head_branch="))
-        assertTrue(upgradeable.contains("lineage=$UPGRADEABLE_DEBUG_LINEAGE"))
+        assertTrue(upgradeable.contains("lineage=${'
+
+        val uploadStart = prCheck.indexOf("- name: Upload LegacyDebug APK")
+        assertTrue("PR-check upload step must exist", uploadStart >= 0)
+        val uploadBlock = prCheck.substring(uploadStart)
+        assertTrue(
+            "Push builds must not publish a competing ordinary-debug APK",
+            uploadBlock.contains("if: github.event_name == 'pull_request'"),
+        )
+        assertTrue(
+            "PR artifact must state that it is not the upgradeable testing lineage",
+            prCheck.contains("gamenative-pr-validation-debug-non-upgradeable"),
+        )
+    }
+
+    @Test
+    fun retiredLsfgStagingWorkflowsStayAbsent() {
+        val workflowDir = repoFile(".github/workflows/pluvia-pr-check.yml").parentFile
+        listOf(
+            "adhoc-signed-build.yml",
+            "b14-directional-adaptive-promotion.yml",
+            "b14-fixed-wrapper-validation.yml",
+            "experimental-adaptive-legacydebug.yml",
+            "finalize-adaptive-ui-stage.yml",
+            "integrate-adaptive-stage.yml",
+            "lsfg-legacy-single-apk.yml",
+        ).forEach { name ->
+            assertFalse(
+                "retired LSFG staging workflow must stay removed: $name",
+                File(workflowDir, name).exists(),
+            )
+        }
+    }
+}
+}UPGRADEABLE_DEBUG_LINEAGE"))
 
         val uploadStart = prCheck.indexOf("- name: Upload LegacyDebug APK")
         assertTrue("PR-check upload step must exist", uploadStart >= 0)

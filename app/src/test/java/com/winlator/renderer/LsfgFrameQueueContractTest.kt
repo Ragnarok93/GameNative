@@ -341,6 +341,42 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("host-feedback-send"))
     }
 
+
+    @Test
+    fun staleTemporalIntentIsPhaseRescheduledUsingTheRealDisplayRefreshCycle() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("PFN_vkGetRefreshCycleDurationGOOGLE"))
+        assertTrue(header.contains("hostRefreshPeriodNs_"))
+        assertTrue(header.contains("phaseAdvanceCycles"))
+        assertTrue(header.contains("phaseAdvanceNs"))
+        assertTrue(implementation.contains("LOAD_D2(GetRefreshCycleDurationGOOGLE)"))
+        assertTrue(implementation.contains("vk_.GetRefreshCycleDurationGOOGLE"))
+        assertTrue(implementation.contains("advanceDesiredPresentPhase"))
+        assertTrue(implementation.contains("phase-rescheduled"))
+        assertTrue(implementation.contains("refresh_period_ns="))
+        assertTrue(implementation.contains("phase_advance_cycles="))
+        assertTrue(implementation.contains("phase_advance_ms="))
+        assertFalse(implementation.contains("std::this_thread::sleep_for"))
+    }
+
+    @Test
+    fun hostPhysicalDeliveryAccountingSeparatesGeneratedLossFromGenerationSuccess() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("sourceUniqueWsiAccepted_"))
+        assertTrue(header.contains("generatedUniqueWsiAccepted_"))
+        assertTrue(header.contains("sourcePhysicalUnknown_"))
+        assertTrue(header.contains("generatedPhysicalUnknown_"))
+        assertTrue(implementation.contains("generated_delivery_efficiency="))
+        assertTrue(implementation.contains("source_delivery_efficiency="))
+        assertTrue(implementation.contains("physical_delivery_unknown="))
+        assertTrue(implementation.contains("physical_unknown_reason="))
+        assertTrue(implementation.contains("temporal_backlog="))
+    }
+
     private fun source(name: String): String {
         val candidates = listOf(
             Paths.get("src/main/cpp/winlator").resolve(name),

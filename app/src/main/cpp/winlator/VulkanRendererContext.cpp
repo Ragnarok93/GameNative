@@ -1146,6 +1146,7 @@ bool VulkanRendererContext::selectQueuedLsfgHostDelivery(
             else
                 sourceBacklogDrop_.fetch_add(1, std::memory_order_relaxed);
             pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+            releaseWindowAhbReference(queued.ahb);
             emitHostDeliveryAccounting("queued-import-missing", &queued.provenance);
             continue;
         }
@@ -3655,7 +3656,14 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     wt.w    = src.w;
     wt.h    = src.h;
 
-    if (src.needsTransition) {
+    const bool queuedDeliveryOwnsTransition =
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+        && incomingProvenance.valid
+        && incomingProvenance.deliveryId != 0;
+    // queued delivery owns first AHB transition: do not transfer/clear the
+    // import transition on the latest-content texMap path before the queued
+    // snapshot selects this AHB.
+    if (src.needsTransition && !queuedDeliveryOwnsTransition) {
         wt.needsTransition  = true;
         src.needsTransition = false;
     }

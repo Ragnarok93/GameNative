@@ -419,6 +419,18 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun provenanceEpochResetImmediatelyInvalidatesQueuedHostDeliveries() {
+        val implementation = source("VulkanRendererContext.cpp")
+        val drainStart = implementation.indexOf("void VulkanRendererContext::drainLsfgProvenance")
+        val drainEnd = implementation.indexOf("void VulkanRendererContext::bindLsfgProvenance", drainStart)
+        assertTrue(drainStart >= 0 && drainEnd > drainStart)
+        val drain = implementation.substring(drainStart, drainEnd)
+
+        assertTrue(drain.contains("hostDeliveryQueueContextEpoch_ = packet.contextEpoch"))
+        assertTrue(drain.contains("hostSnapshottedLsfgDeliveries_.clear()"))
+    }
+
+    @Test
     fun queuedAhbTransitionOwnershipSurvivesUntilTheQueuedSnapshot() {
         val implementation = source("VulkanRendererContext.cpp")
         val updateStart = implementation.indexOf("void VulkanRendererContext::updateWindowContentAHB")

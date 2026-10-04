@@ -2824,6 +2824,8 @@ void VulkanRendererContext::drainLsfgProvenance() {
                 && packet.contextEpoch != activeProvenanceContextEpoch_) {
             flushHostDisplayConfirmationsUnknown("provenance-epoch-reset");
             pendingLsfgProvenance.clear();
+            hostDeliveryQueueContextEpoch_ = packet.contextEpoch;
+            hostSnapshottedLsfgDeliveries_.clear();
             lsfgSwapchainImageAhbs.clear();
             consumedLsfgDeliveries_.clear();
             lastAcceptedDesiredPresentTimeNs_ = 0;

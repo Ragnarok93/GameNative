@@ -490,7 +490,10 @@ class LsfgFrameQueueContractTest {
         val update = implementation.substring(updateStart, updateEnd)
 
         assertTrue(update.contains("queued delivery owns first AHB transition"))
-        assertTrue(update.contains("lsfgFrameQueueEnabled_.load(std::memory_order_acquire)"))
+        assertTrue(update.contains("hostDeliveryQueueCapacity() >= MIN_HOST_DELIVERY_QUEUE_CAPACITY"))
+        assertFalse(update.contains(
+            "queuedDeliveryOwnsTransition =\n        lsfgFrameQueueEnabled_.load"
+        ))
     }
 
     @Test

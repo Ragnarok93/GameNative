@@ -482,6 +482,35 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun capableHostUsesSecondSameFamilyQueueForPresentation() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("VkQueue presentQueue"))
+        assertTrue(header.contains("presentQueueMutex_"))
+        assertTrue(header.contains("hostSplitPresentQueueEnabled_"))
+
+        val deviceStart = implementation.indexOf("void VulkanRendererContext::createLogicalDevice")
+        val deviceEnd = implementation.indexOf("void VulkanRendererContext::createSwapchain", deviceStart)
+        assertTrue(deviceStart >= 0 && deviceEnd > deviceStart)
+        val device = implementation.substring(deviceStart, deviceEnd)
+        assertTrue(device.contains("graphicsQueueFamilyQueueCount >= 2"))
+        assertTrue(device.contains("requestedHostQueueCount"))
+        assertTrue(device.contains("qi.queueCount=requestedHostQueueCount"))
+        assertTrue(device.contains("GetDeviceQueue(device,graphicsQueueFamilyIndex,1,&presentQueue)"))
+        assertTrue(device.contains("presentQueue = graphicsQueue"))
+
+        val presentStart = implementation.indexOf("VkResult VulkanRendererContext::presentHostFrame")
+        val presentEnd = implementation.indexOf("void VulkanRendererContext::cleanupSwapchain", presentStart)
+        assertTrue(presentStart >= 0 && presentEnd > presentStart)
+        val present = implementation.substring(presentStart, presentEnd)
+        assertTrue(present.contains("QueuePresentKHR(presentQueue"))
+        assertTrue(present.contains("presentQueueMutex_"))
+        assertTrue(present.contains("present_queue_split="))
+        assertTrue(present.contains("present_queue_index="))
+    }
+
+    @Test
     fun queuedAhbTransitionOwnershipSurvivesUntilTheQueuedSnapshot() {
         val implementation = source("VulkanRendererContext.cpp")
         val updateStart = implementation.indexOf("void VulkanRendererContext::updateWindowContentAHB")

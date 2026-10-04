@@ -3221,9 +3221,11 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             "LSFG_HOST_DISPLAY",
             "host_present_id=%" PRIu64 " host_wsi_accepted=%d "
             "host_display_confirmed=%d host_display_unknown=%d "
-            "delivery_id=%" PRIu64 " context_epoch=%" PRIu64 " kind=%s "
+            "confirmation_backend=%s delivery_id=%" PRIu64
+            " context_epoch=%" PRIu64 " kind=%s "
             "source_index=%" PRIu64 " interpolation_index=%u interpolation_count=%u "
-            "unique_delivery=%d provenance_desired_time=%" PRIu64
+            "unique_delivery=%d repeated_content_present=%" PRIu64
+            " provenance_desired_time=%" PRIu64
             " submitted_desired_time=%" PRIu64 " wsi_desired_time=%" PRIu64
             " desired_stale_by_ms=%.3f desired_future_by_ms=%.3f "
             "desired_fallback_reason=%s actual_present_time=%" PRIu64
@@ -3237,6 +3239,7 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             confirmation.hostPresentId != 0 ? 1 : 0,
             confirmed ? 1 : 0,
             unknown ? 1 : 0,
+            hostDisplayBackendName(confirmation.backend),
             provenance.deliveryId,
             provenance.contextEpoch,
             provenanceKindName(provenance.kind),
@@ -3244,6 +3247,7 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             static_cast<unsigned>(provenance.interpolationIndex),
             provenance.interpolationCount,
             provenance.uniqueDelivery ? 1 : 0,
+            repeatedContentPresent_,
             confirmation.provenanceDesiredPresentTimeNs,
             confirmation.submittedDesiredPresentTimeNs,
             confirmation.wsiDesiredPresentTimeNs,

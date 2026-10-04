@@ -486,7 +486,7 @@ class LsfgFrameQueueContractTest {
         val header = source("VulkanRendererContext.h")
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(header.contains("VkQueue presentQueue"))
+        assertTrue(header.contains("presentQueue = VK_NULL_HANDLE"))
         assertTrue(header.contains("presentQueueMutex_"))
         assertTrue(header.contains("hostSplitPresentQueueEnabled_"))
 

@@ -418,6 +418,31 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("confirmation_pending_high_water="))
     }
 
+    @Test
+    fun queuedAhbTransitionOwnershipSurvivesUntilTheQueuedSnapshot() {
+        val implementation = source("VulkanRendererContext.cpp")
+        val updateStart = implementation.indexOf("void VulkanRendererContext::updateWindowContentAHB")
+        val updateEnd = implementation.indexOf("void VulkanRendererContext::setRenderList", updateStart)
+        assertTrue(updateStart >= 0 && updateEnd > updateStart)
+        val update = implementation.substring(updateStart, updateEnd)
+
+        assertTrue(update.contains("queued delivery owns first AHB transition"))
+        assertTrue(update.contains("lsfgFrameQueueEnabled_.load(std::memory_order_acquire)"))
+    }
+
+    @Test
+    fun missingQueuedImportReleasesTheQueueHeldAhbReference() {
+        val implementation = source("VulkanRendererContext.cpp")
+        val selectStart = implementation.indexOf("bool VulkanRendererContext::selectQueuedLsfgHostDelivery")
+        val selectEnd = implementation.indexOf("void VulkanRendererContext::recordHostSnapshotCreated", selectStart)
+        assertTrue(selectStart >= 0 && selectEnd > selectStart)
+        val select = implementation.substring(selectStart, selectEnd)
+        val missing = select.indexOf("queued-import-missing")
+        assertTrue(missing >= 0)
+        val branch = select.substring((missing - 900).coerceAtLeast(0), (missing + 400).coerceAtMost(select.length))
+        assertTrue(branch.contains("releaseWindowAhbReference(queued.ahb)"))
+    }
+
     private fun source(name: String): String {
         val candidates = listOf(
             Paths.get("src/main/cpp/winlator").resolve(name),

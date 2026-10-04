@@ -196,6 +196,18 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
+    fun prCheckRunsTheRendererContractsThatGateUpgradeableTesting() {
+        val prCheck = repoFile(".github/workflows/pluvia-pr-check.yml").readText()
+        listOf(
+            "com.winlator.renderer.VulkanRendererAhbCacheContractTest",
+            "com.winlator.renderer.VulkanRendererDisplayConfirmationContractTest",
+            "com.winlator.renderer.LsfgFrameQueueContractTest",
+        ).forEach { contract ->
+            assertTrue("PR check must run renderer contract: $contract", prCheck.contains(contract))
+        }
+    }
+
+    @Test
     fun retiredLsfgStagingWorkflowsStayAbsent() {
         val workflowDir = repoFile(".github/workflows/pluvia-pr-check.yml").parentFile
         listOf(

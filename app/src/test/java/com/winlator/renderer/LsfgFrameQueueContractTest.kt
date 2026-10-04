@@ -411,7 +411,7 @@ class LsfgFrameQueueContractTest {
     fun hostDeliveryTelemetryUsesItsOwnCompactRecordInsteadOfExtendingDisplayLines() {
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(implementation.contains(""LSFG_HOST_DELIVERY""))
+        assertTrue(implementation.contains("\"LSFG_HOST_DELIVERY\""))
         assertTrue(implementation.contains("event=delivery-accounting"))
         assertTrue(implementation.contains("phase_rescheduled_total="))
         assertTrue(implementation.contains("scheduled_error_p50_ms="))

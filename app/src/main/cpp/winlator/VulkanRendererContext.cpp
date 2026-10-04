@@ -219,6 +219,7 @@ VulkanRendererContext::~VulkanRendererContext() {
         else destroyWinTex(wt);
     }
     texMap.clear();
+    dropQueuedLsfgHostDeliveries("renderer-destroy");
     cleanupAllAHBCache();
 
     for (auto& retired : retiredWindowTextures) {
@@ -394,19 +395,36 @@ void VulkanRendererContext::pickPhysicalDevice() {
     std::vector<VkPhysicalDevice> devs(n); vk_.EnumeratePhysicalDevices(instance,&n,devs.data());
     physicalDevice = VK_NULL_HANDLE;
     graphicsQueueFamilyIndex = 0;
+    graphicsQueueFamilyQueueCount = 1;
+    presentCapableQueueFamilyCount = 0;
+    alternatePresentQueueFamilyAvailable = false;
     for (auto d : devs) {
         uint32_t qCount = 0;
         vk_.GetPhysicalDeviceQueueFamilyProperties(d, &qCount, nullptr);
         std::vector<VkQueueFamilyProperties> qProps(qCount);
         vk_.GetPhysicalDeviceQueueFamilyProperties(d, &qCount, qProps.data());
+
+        int32_t selectedGraphicsPresentFamily = -1;
+        uint32_t presentFamilyCount = 0;
         for (uint32_t i = 0; i < qCount; i++) {
             VkBool32 present = VK_FALSE;
             vk_.GetPhysicalDeviceSurfaceSupportKHR(d, i, surface, &present);
-            if ((qProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present) {
-                physicalDevice = d;
-                graphicsQueueFamilyIndex = i;
-                return;
+            if (present) ++presentFamilyCount;
+            if (selectedGraphicsPresentFamily < 0
+                    && (qProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+                    && present) {
+                selectedGraphicsPresentFamily = static_cast<int32_t>(i);
             }
+        }
+        if (selectedGraphicsPresentFamily >= 0) {
+            physicalDevice = d;
+            graphicsQueueFamilyIndex =
+                static_cast<uint32_t>(selectedGraphicsPresentFamily);
+            graphicsQueueFamilyQueueCount =
+                qProps[graphicsQueueFamilyIndex].queueCount;
+            presentCapableQueueFamilyCount = presentFamilyCount;
+            alternatePresentQueueFamilyAvailable = presentFamilyCount > 1;
+            return;
         }
     }
     if (n > 0) physicalDevice = devs[0];
@@ -505,6 +523,16 @@ void VulkanRendererContext::createLogicalDevice() {
         hostGoogleDisplayTimingEnabled ? 1 : 0,
         vk_.GetRefreshCycleDurationGOOGLE ? 1 : 0,
         hostPresentWaitEnabled ? 1 : 0);
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+        "event=queue-capability graphics_family=%u family_queue_count=%u "
+        "requested_device_queues=1 present_capable_families=%u "
+        "alternate_present_family=%d second_same_family_queue_available=%d",
+        graphicsQueueFamilyIndex,
+        graphicsQueueFamilyQueueCount,
+        presentCapableQueueFamilyCount,
+        alternatePresentQueueFamilyAvailable ? 1 : 0,
+        graphicsQueueFamilyQueueCount > 1 ? 1 : 0);
 }
 
 void VulkanRendererContext::createSwapchain() {
@@ -829,6 +857,359 @@ uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
         return 1;
 
     return requested;
+}
+
+
+uint32_t VulkanRendererContext::hostDeliveryQueueCapacity() const {
+    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
+        return 0;
+    return std::min<uint32_t>(
+        MAX_HOST_DELIVERY_QUEUE_CAPACITY,
+        effectiveFrameQueueTarget() + 1U);
+}
+
+bool VulkanRendererContext::isLsfgHostDeliveryStale(
+        const LsfgFrameProvenance& provenance) const {
+    if (!provenance.valid || provenance.deliveryId == 0)
+        return false;
+    if (hostDeliveryQueueContextEpoch_ != 0
+            && provenance.contextEpoch != 0
+            && provenance.contextEpoch != hostDeliveryQueueContextEpoch_) {
+        return true;
+    }
+    if (provenance.desiredPresentTimeNs == 0)
+        return false;
+    const uint64_t nowNs = monotonicTimeNs();
+    return nowNs != 0
+        && nowNs > provenance.desiredPresentTimeNs
+        && nowNs - provenance.desiredPresentTimeNs
+            > MAX_HOST_TEMPORAL_STALE_NS;
+}
+
+void VulkanRendererContext::emitHostDeliveryAccounting(
+        const char* reason,
+        const LsfgFrameProvenance* provenance) {
+    const uint64_t sourceReceived =
+        sourceDeliveryReceived_.load(std::memory_order_relaxed);
+    const uint64_t generatedReceived =
+        generatedDeliveryReceived_.load(std::memory_order_relaxed);
+    const uint64_t sourceSnapshots =
+        sourceSnapshotCreated_.load(std::memory_order_relaxed);
+    const uint64_t generatedSnapshots =
+        generatedSnapshotCreated_.load(std::memory_order_relaxed);
+    const uint64_t sourceCoalesced =
+        sourceCoalescedDrop_.load(std::memory_order_relaxed);
+    const uint64_t generatedCoalesced =
+        generatedCoalescedDrop_.load(std::memory_order_relaxed);
+    const uint64_t sourceBacklog =
+        sourceBacklogDrop_.load(std::memory_order_relaxed);
+    const uint64_t generatedBacklog =
+        generatedBacklogDrop_.load(std::memory_order_relaxed);
+    const uint64_t sourceStale =
+        sourceStaleDrop_.load(std::memory_order_relaxed);
+    const uint64_t generatedStale =
+        generatedStaleDrop_.load(std::memory_order_relaxed);
+    const uint64_t sourceReuse =
+        sourceAhbReuseDrop_.load(std::memory_order_relaxed);
+    const uint64_t generatedReuse =
+        generatedAhbReuseDrop_.load(std::memory_order_relaxed);
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_HOST_DELIVERY",
+        "event=delivery-accounting reason=%s delivery_id=%" PRIu64
+        " context_epoch=%" PRIu64 " kind=%s pending=%u pending_high_water=%" PRIu64
+        " host_received=%" PRIu64 " host_snapshot_created=%" PRIu64
+        " host_coalesced_drop=%" PRIu64 " host_backlog_drop=%" PRIu64
+        " host_stale_drop=%" PRIu64 " host_ahb_reuse_drop=%" PRIu64
+        " source_received=%" PRIu64 " generated_received=%" PRIu64
+        " source_snapshot_created=%" PRIu64 " generated_snapshot_created=%" PRIu64
+        " source_coalesced_drop=%" PRIu64 " generated_coalesced_drop=%" PRIu64
+        " source_backlog_drop=%" PRIu64 " generated_backlog_drop=%" PRIu64
+        " source_stale_drop=%" PRIu64 " generated_stale_drop=%" PRIu64
+        " source_ahb_reuse_drop=%" PRIu64 " generated_ahb_reuse_drop=%" PRIu64,
+        reason ? reason : "none",
+        provenance ? provenance->deliveryId : 0,
+        provenance ? provenance->contextEpoch : 0,
+        provenance ? provenanceKindName(provenance->kind) : "none",
+        pendingLsfgHostDeliveryCount_.load(std::memory_order_relaxed),
+        hostDeliveryPendingHighWater_.load(std::memory_order_relaxed),
+        sourceReceived + generatedReceived,
+        sourceSnapshots + generatedSnapshots,
+        sourceCoalesced + generatedCoalesced,
+        sourceBacklog + generatedBacklog,
+        sourceStale + generatedStale,
+        sourceReuse + generatedReuse,
+        sourceReceived,
+        generatedReceived,
+        sourceSnapshots,
+        generatedSnapshots,
+        sourceCoalesced,
+        generatedCoalesced,
+        sourceBacklog,
+        generatedBacklog,
+        sourceStale,
+        generatedStale,
+        sourceReuse,
+        generatedReuse);
+}
+
+void VulkanRendererContext::dropQueuedLsfgHostDeliveriesForWindow(
+        int64_t ownerId, const char* reason) {
+    auto qit = pendingLsfgHostDeliveries_.find(ownerId);
+    if (qit == pendingLsfgHostDeliveries_.end())
+        return;
+    auto& queue = qit->second;
+    while (!queue.empty()) {
+        QueuedLsfgHostDelivery dropped = queue.front();
+        queue.pop_front();
+        if (reason && strcmp(reason, "provenance-epoch-reset") == 0) {
+            if (dropped.provenance.kind == 1)
+                generatedStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+            else
+                sourceStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            if (dropped.provenance.kind == 1)
+                generatedBacklogDrop_.fetch_add(1, std::memory_order_relaxed);
+            else
+                sourceBacklogDrop_.fetch_add(1, std::memory_order_relaxed);
+        }
+        pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+        releaseWindowAhbReference(dropped.ahb);
+        emitHostDeliveryAccounting(reason, &dropped.provenance);
+    }
+    pendingLsfgHostDeliveries_.erase(qit);
+}
+
+void VulkanRendererContext::dropQueuedLsfgHostDeliveries(const char* reason) {
+    std::vector<int64_t> owners;
+    owners.reserve(pendingLsfgHostDeliveries_.size());
+    for (const auto& [ownerId, queue] : pendingLsfgHostDeliveries_) {
+        if (!queue.empty())
+            owners.push_back(ownerId);
+    }
+    for (int64_t ownerId : owners)
+        dropQueuedLsfgHostDeliveriesForWindow(ownerId, reason);
+}
+
+bool VulkanRendererContext::enqueueLsfgHostDelivery(
+        int64_t ownerId, AHardwareBuffer* ahb, WinTex& source) {
+    const LsfgFrameProvenance provenance = source.frameProvenance;
+    if (!provenance.valid || provenance.deliveryId == 0)
+        return true;
+
+    if (provenance.kind == 1)
+        generatedDeliveryReceived_.fetch_add(1, std::memory_order_relaxed);
+    else
+        sourceDeliveryReceived_.fetch_add(1, std::memory_order_relaxed);
+
+    if (provenance.contextEpoch != 0
+            && hostDeliveryQueueContextEpoch_ != 0
+            && provenance.contextEpoch != hostDeliveryQueueContextEpoch_) {
+        dropQueuedLsfgHostDeliveries("provenance-epoch-reset");
+        hostSnapshottedLsfgDeliveries_.clear();
+    }
+    if (provenance.contextEpoch != 0)
+        hostDeliveryQueueContextEpoch_ = provenance.contextEpoch;
+
+    if (isLsfgHostDeliveryStale(provenance)) {
+        if (provenance.kind == 1)
+            generatedStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+        else
+            sourceStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+        emitHostDeliveryAccounting("stale-before-host-snapshot", &provenance);
+        source.frameProvenance = {};
+        return false;
+    }
+
+    const uint32_t capacity = hostDeliveryQueueCapacity();
+    if (capacity == 0) {
+        const uint64_t received =
+            sourceDeliveryReceived_.load(std::memory_order_relaxed)
+            + generatedDeliveryReceived_.load(std::memory_order_relaxed);
+        if (received == 1 || received % 120 == 0)
+            emitHostDeliveryAccounting("periodic", &provenance);
+        return true;
+    }
+
+    auto& queue = pendingLsfgHostDeliveries_[ownerId];
+
+    // If an AHB is reused before an older queued delivery using it was
+    // snapshotted, that older content is no longer immutable. Drop it rather
+    // than presenting newer pixels with older provenance.
+    for (auto it = queue.begin(); it != queue.end();) {
+        if (it->ahb != ahb || it->provenance.deliveryId == provenance.deliveryId) {
+            ++it;
+            continue;
+        }
+        QueuedLsfgHostDelivery dropped = *it;
+        it = queue.erase(it);
+        if (dropped.provenance.kind == 1) {
+            generatedCoalescedDrop_.fetch_add(1, std::memory_order_relaxed);
+            generatedAhbReuseDrop_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            sourceCoalescedDrop_.fetch_add(1, std::memory_order_relaxed);
+            sourceAhbReuseDrop_.fetch_add(1, std::memory_order_relaxed);
+        }
+        pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+        releaseWindowAhbReference(dropped.ahb);
+        emitHostDeliveryAccounting("ahb-reused-before-snapshot", &dropped.provenance);
+    }
+
+    const auto duplicate = std::find_if(
+        queue.begin(), queue.end(),
+        [&](const QueuedLsfgHostDelivery& queued) {
+            return queued.provenance.deliveryId == provenance.deliveryId;
+        });
+    if (duplicate != queue.end())
+        return true;
+
+    while (queue.size() >= capacity) {
+        auto dropIt = std::find_if(
+            queue.begin(), queue.end(),
+            [](const QueuedLsfgHostDelivery& queued) {
+                return queued.provenance.kind == 1;
+            });
+        if (dropIt == queue.end() && provenance.kind == 1) {
+            generatedBacklogDrop_.fetch_add(1, std::memory_order_relaxed);
+            emitHostDeliveryAccounting("generated-backlog-protect-source", &provenance);
+            source.frameProvenance = {};
+            return false;
+        }
+        if (dropIt == queue.end())
+            dropIt = queue.begin();
+
+        QueuedLsfgHostDelivery dropped = *dropIt;
+        queue.erase(dropIt);
+        if (dropped.provenance.kind == 1)
+            generatedBacklogDrop_.fetch_add(1, std::memory_order_relaxed);
+        else
+            sourceBacklogDrop_.fetch_add(1, std::memory_order_relaxed);
+        pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+        releaseWindowAhbReference(dropped.ahb);
+        emitHostDeliveryAccounting("host-delivery-queue-full", &dropped.provenance);
+    }
+
+    ++ahbWindowRefCounts[ahb];
+    queue.push_back(QueuedLsfgHostDelivery{
+        .ahb = ahb,
+        .provenance = provenance,
+        .enqueuedAtNs = monotonicTimeNs(),
+    });
+    const uint32_t pending =
+        pendingLsfgHostDeliveryCount_.fetch_add(1, std::memory_order_relaxed) + 1U;
+    uint64_t highWater =
+        hostDeliveryPendingHighWater_.load(std::memory_order_relaxed);
+    while (highWater < pending
+            && !hostDeliveryPendingHighWater_.compare_exchange_weak(
+                highWater, pending, std::memory_order_relaxed)) {}
+
+    const uint64_t received =
+        sourceDeliveryReceived_.load(std::memory_order_relaxed)
+        + generatedDeliveryReceived_.load(std::memory_order_relaxed);
+    if (received == 1 || received % 120 == 0)
+        emitHostDeliveryAccounting("periodic", &provenance);
+    return true;
+}
+
+bool VulkanRendererContext::selectQueuedLsfgHostDelivery(
+        const RenderEntry& renderEntry, DrawEntry& draw) {
+    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
+        return false;
+    auto qit = pendingLsfgHostDeliveries_.find(renderEntry.id);
+    if (qit == pendingLsfgHostDeliveries_.end())
+        return false;
+    auto& queue = qit->second;
+    while (!queue.empty()) {
+        const QueuedLsfgHostDelivery queued = queue.front();
+        const bool wrongEpoch =
+            hostDeliveryQueueContextEpoch_ != 0
+            && queued.provenance.contextEpoch != 0
+            && queued.provenance.contextEpoch != hostDeliveryQueueContextEpoch_;
+        if (wrongEpoch || isLsfgHostDeliveryStale(queued.provenance)) {
+            queue.pop_front();
+            if (queued.provenance.kind == 1)
+                generatedStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+            else
+                sourceStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+            pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+            releaseWindowAhbReference(queued.ahb);
+            emitHostDeliveryAccounting(
+                wrongEpoch ? "provenance-epoch-reset" : "queued-delivery-stale",
+                &queued.provenance);
+            continue;
+        }
+
+        auto imported = ahbImportCache.find(queued.ahb);
+        if (imported == ahbImportCache.end()) {
+            queue.pop_front();
+            if (queued.provenance.kind == 1)
+                generatedBacklogDrop_.fetch_add(1, std::memory_order_relaxed);
+            else
+                sourceBacklogDrop_.fetch_add(1, std::memory_order_relaxed);
+            pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+            emitHostDeliveryAccounting("queued-import-missing", &queued.provenance);
+            continue;
+        }
+
+        WinTex& source = imported->second;
+        draw.ownerId = renderEntry.id;
+        draw.img = source.img;
+        draw.ds = source.ds;
+        draw.x = renderEntry.x;
+        draw.y = renderEntry.y;
+        draw.w = source.w;
+        draw.h = source.h;
+        draw.isAHB = true;
+        draw.ahb = queued.ahb;
+        draw.frameProvenance = queued.provenance;
+        if (source.needsTransition) {
+            draw.needsTransition = true;
+            source.needsTransition = false;
+        }
+        return true;
+    }
+    pendingLsfgHostDeliveries_.erase(qit);
+    return false;
+}
+
+void VulkanRendererContext::recordHostSnapshotCreated(
+        const LsfgFrameProvenance& provenance) {
+    if (!provenance.valid || provenance.deliveryId == 0)
+        return;
+    if (!hostSnapshottedLsfgDeliveries_.insert(provenance.deliveryId).second)
+        return;
+    if (provenance.kind == 1)
+        generatedSnapshotCreated_.fetch_add(1, std::memory_order_relaxed);
+    else
+        sourceSnapshotCreated_.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t snapshots =
+        sourceSnapshotCreated_.load(std::memory_order_relaxed)
+        + generatedSnapshotCreated_.load(std::memory_order_relaxed);
+    if (snapshots == 1 || snapshots % 120 == 0)
+        emitHostDeliveryAccounting("host-snapshot-created", &provenance);
+}
+
+void VulkanRendererContext::consumeQueuedLsfgHostDeliveries(
+        const std::vector<DrawEntry>& draws) {
+    for (const auto& draw : draws) {
+        if (!draw.frameProvenance.valid || draw.frameProvenance.deliveryId == 0)
+            continue;
+        auto qit = pendingLsfgHostDeliveries_.find(draw.ownerId);
+        if (qit == pendingLsfgHostDeliveries_.end() || qit->second.empty())
+            continue;
+        auto& queued = qit->second.front();
+        if (queued.provenance.deliveryId != draw.frameProvenance.deliveryId)
+            continue;
+        AHardwareBuffer* ahb = queued.ahb;
+        qit->second.pop_front();
+        pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+        releaseWindowAhbReference(ahb);
+        if (qit->second.empty())
+            pendingLsfgHostDeliveries_.erase(qit);
+    }
+    if (pendingLsfgHostDeliveryCount_.load(std::memory_order_relaxed) > 0) {
+        needsRender.store(true, std::memory_order_release);
+        dirtyCV.notify_one();
+    }
 }
 
 void VulkanRendererContext::resetFrameQueueTelemetry() {
@@ -1716,8 +2097,10 @@ ok=true;}catch(...){}
     // AHB is never retained as queued storage: after QueueSubmit the acquired
     // host swapchain image is the immutable composite snapshot, and its render
     // completion semaphore owns the handoff to WSI.
-    bool uniqueLsfgContentPending = false;
-    if (lsfgFrameQueueEnabled_.load(std::memory_order_acquire)) {
+    bool uniqueLsfgContentPending =
+        pendingLsfgHostDeliveryCount_.load(std::memory_order_acquire) > 0;
+    if (!uniqueLsfgContentPending
+            && lsfgFrameQueueEnabled_.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lk(renderMutex);
         for (const auto& entry : renderList) {
             const auto it = texMap.find(entry.id);
@@ -1834,25 +2217,35 @@ ok=true;}catch(...){}
 
         frameDraws.clear();
         for (auto& re:renderList) {
-            auto it=texMap.find(re.id);
-            if (it==texMap.end()) continue;
-            WinTex& wt=it->second;
-            if (wt.ds==VK_NULL_HANDLE) continue;
             DrawEntry de{};
-            de.ownerId=re.id;
-            de.img=wt.img;
-            de.ds=wt.ds;
-            de.x=re.x; de.y=re.y; de.w=wt.w; de.h=wt.h;
-            de.isAHB=wt.isAHB;
-            de.ahb=wt.ahb;
-            de.frameProvenance=wt.frameProvenance;
-            if (wt.needsTransition) { de.needsTransition=true; wt.needsTransition=false; }
-            if (wt.dirty && !wt.isAHB && wt.stg!=VK_NULL_HANDLE) {
-                de.upload=wt.stg;
-                wt.dirty=false;
-            } else if (wt.isAHB) {
-                wt.dirty=false;
+            const bool queuedLsfg =
+                selectQueuedLsfgHostDelivery(re, de);
+            if (!queuedLsfg) {
+                auto it=texMap.find(re.id);
+                if (it==texMap.end()) continue;
+                WinTex& wt=it->second;
+                if (wt.ds==VK_NULL_HANDLE) continue;
+                de.ownerId=re.id;
+                de.img=wt.img;
+                de.ds=wt.ds;
+                de.x=re.x; de.y=re.y; de.w=wt.w; de.h=wt.h;
+                de.isAHB=wt.isAHB;
+                de.ahb=wt.ahb;
+                de.frameProvenance=wt.frameProvenance;
+                if (wt.needsTransition) {
+                    de.needsTransition=true;
+                    wt.needsTransition=false;
+                }
+                if (wt.dirty && !wt.isAHB && wt.stg!=VK_NULL_HANDLE) {
+                    de.upload=wt.stg;
+                    wt.dirty=false;
+                } else if (wt.isAHB) {
+                    wt.dirty=false;
+                }
             }
+            if (de.ds == VK_NULL_HANDLE)
+                continue;
+            recordHostSnapshotCreated(de.frameProvenance);
             frameDraws.push_back(de);
         }
 
@@ -1930,6 +2323,7 @@ ok=true;}catch(...){}
     {
         std::lock_guard<std::mutex> lk(renderMutex);
         markDrawResourcesSubmitted(submissionSerial);
+        consumeQueuedLsfgHostDeliveries(frameDraws);
     }
     if (!toXr) {
         uint64_t hostPresentId = hostPresentId_++;
@@ -2662,6 +3056,11 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
     constexpr uint64_t kMaxFutureDesiredPresentNs = 250000000ULL;
     if (desired <= nowNs)
         decision.desiredStaleByNs = nowNs - desired;
+    if (decision.desiredStaleByNs > MAX_HOST_TEMPORAL_STALE_NS) {
+        decision.temporalBacklog = true;
+        decision.fallbackReason = "stale-beyond-host-budget";
+        return decision;
+    }
 
     uint64_t earliestAllowedNs = nowNs;
     if (hostRefreshPeriodNs_ != 0) {
@@ -2822,75 +3221,40 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             "LSFG_HOST_DISPLAY",
             "host_present_id=%" PRIu64 " host_wsi_accepted=%d "
             "host_display_confirmed=%d host_display_unknown=%d "
-            "host_wsi_accepted_total=%" PRIu64
-            " host_display_confirmed_total=%" PRIu64
-            " host_display_unknown_total=%" PRIu64
-            " display_delivery_ratio=%.4f confirmation_backend=%s "
-            "delivery_id=%" PRIu64 " context_epoch=%" PRIu64
-            " kind=%s source_index=%" PRIu64 " swapchain_image=%u "
-            "interpolation_index=%u interpolation_count=%u unique_delivery=%d "
-            "repeated_content_present=%llu "
-            "provenance_desired_time=%llu submitted_desired_time=%llu "
-            "wsi_desired_time=%llu desired_present_time=%llu "
-            "desired_stale_by_ms=%.3f desired_future_by_ms=%.3f "
-            "desired_fallback_reason=%s actual_present_time=%llu "
-            "earliest_present_time=%llu present_margin=%llu "
-            "present_margin_raw=%llu present_margin_valid=%d "
+            "delivery_id=%" PRIu64 " context_epoch=%" PRIu64 " kind=%s "
+            "source_index=%" PRIu64 " interpolation_index=%u interpolation_count=%u "
+            "unique_delivery=%d provenance_desired_time=%" PRIu64
+            " submitted_desired_time=%" PRIu64 " wsi_desired_time=%" PRIu64
+            " desired_stale_by_ms=%.3f desired_future_by_ms=%.3f "
+            "desired_fallback_reason=%s actual_present_time=%" PRIu64
+            " earliest_present_time=%" PRIu64 " present_margin=%" PRIu64
+            " present_margin_raw=%" PRIu64 " present_margin_valid=%d "
             "desired_vs_actual_ms=%.3f provenance_vs_actual_ms=%.3f "
-            "unique_physical_interval_ms=%.3f unique_physical_fps=%.3f "
-            "source_physical_fps=%.3f generated_physical_fps=%.3f "
-            "cadence_error_p50_ms=%.3f cadence_error_p95_ms=%.3f "
-            "confirmation_age_ms=%.3f confirmation_pending=%zu "
-            "confirmation_pending_high_water=%llu confirmation_expired_total=%llu "
-            "confirmation_overflow_total=%llu display_timing_query_failures=%llu "
-            "invalid_present_margin_total=%llu swapchain_generation=%llu "
-            "cadence_epoch=%llu frame_slot=%u gpu_outstanding_at_submit=%u "
-            "submission_serial=%llu completed_submission_serial=%llu "
-            "submit_call_ms=%.3f present_call_ms=%.3f "
-            "refresh_period_ns=%" PRIu64 " phase_advance_cycles=%" PRIu64
-            " phase_advance_ms=%.3f temporal_backlog=%d "
-            "phase_rescheduled_total=%" PRIu64 " temporal_backlog_total=%" PRIu64
-            " source_delivery_efficiency=%.4f generated_delivery_efficiency=%.4f "
-            "source_physical_unknown=%" PRIu64 " generated_physical_unknown=%" PRIu64
-            " physical_delivery_unknown=%d physical_unknown_reason=%s "
-            "scheduled_error_p50_ms=%.3f scheduled_error_p95_ms=%.3f reason=%s",
+            "unique_physical_interval_ms=%.3f refresh_period_ns=%" PRIu64
+            " phase_advance_cycles=%" PRIu64 " phase_advance_ms=%.3f "
+            "temporal_backlog=%d reason=%s",
             confirmation.hostPresentId,
             confirmation.hostPresentId != 0 ? 1 : 0,
             confirmed ? 1 : 0,
             unknown ? 1 : 0,
-            hostWsiAccepted_,
-            hostDisplayConfirmed_,
-            hostDisplayUnknown_,
-            hostWsiAccepted_ > 0
-                ? static_cast<double>(hostDisplayConfirmed_)
-                    / static_cast<double>(hostWsiAccepted_)
-                : 0.0,
-            hostDisplayBackendName(confirmation.backend),
             provenance.deliveryId,
             provenance.contextEpoch,
             provenanceKindName(provenance.kind),
             provenance.sourceIndex,
-            provenance.swapchainImageIndex,
             static_cast<unsigned>(provenance.interpolationIndex),
             provenance.interpolationCount,
             provenance.uniqueDelivery ? 1 : 0,
-            static_cast<unsigned long long>(repeatedContentPresent_),
-            static_cast<unsigned long long>(
-                confirmation.provenanceDesiredPresentTimeNs),
-            static_cast<unsigned long long>(
-                confirmation.submittedDesiredPresentTimeNs),
-            static_cast<unsigned long long>(
-                confirmation.wsiDesiredPresentTimeNs),
-            static_cast<unsigned long long>(
-                confirmation.submittedDesiredPresentTimeNs),
+            confirmation.provenanceDesiredPresentTimeNs,
+            confirmation.submittedDesiredPresentTimeNs,
+            confirmation.wsiDesiredPresentTimeNs,
             static_cast<double>(confirmation.desiredStaleByNs) / 1000000.0,
             static_cast<double>(confirmation.desiredFutureByNs) / 1000000.0,
             confirmation.desiredFallbackReason
                 ? confirmation.desiredFallbackReason : "none",
-            static_cast<unsigned long long>(confirmation.actualPresentTimeNs),
-            static_cast<unsigned long long>(confirmation.earliestPresentTimeNs),
-            static_cast<unsigned long long>(confirmation.presentMarginNs),
-            static_cast<unsigned long long>(confirmation.presentMarginRawNs),
+            confirmation.actualPresentTimeNs,
+            confirmation.earliestPresentTimeNs,
+            confirmation.presentMarginNs,
+            confirmation.presentMarginRawNs,
             presentMarginValid ? 1 : 0,
             confirmation.actualPresentTimeNs != 0
                     && confirmation.submittedDesiredPresentTimeNs != 0
@@ -2907,71 +3271,102 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                         confirmation.provenanceDesiredPresentTimeNs))
                     / 1000000.0 : 0.0,
             static_cast<double>(uniquePhysicalIntervalNs) / 1000000.0,
-            firstUniquePhysicalPresentNs_ != 0
-                    && lastUniquePhysicalPresentNs_
-                        > firstUniquePhysicalPresentNs_
-                ? static_cast<double>(uniquePhysicalPresent_) * 1000000000.0
-                    / static_cast<double>(
-                        lastUniquePhysicalPresentNs_
-                        - firstUniquePhysicalPresentNs_) : 0.0,
-            firstUniquePhysicalPresentNs_ != 0
-                    && lastUniquePhysicalPresentNs_
-                        > firstUniquePhysicalPresentNs_
-                ? static_cast<double>(sourceUniquePhysicalPresent_)
-                    * 1000000000.0
-                    / static_cast<double>(
-                        lastUniquePhysicalPresentNs_
-                        - firstUniquePhysicalPresentNs_) : 0.0,
-            firstUniquePhysicalPresentNs_ != 0
-                    && lastUniquePhysicalPresentNs_
-                        > firstUniquePhysicalPresentNs_
-                ? static_cast<double>(generatedUniquePhysicalPresent_)
-                    * 1000000000.0
-                    / static_cast<double>(
-                        lastUniquePhysicalPresentNs_
-                        - firstUniquePhysicalPresentNs_) : 0.0,
-            cadenceErrorP50Ms,
-            cadenceErrorP95Ms,
-            static_cast<double>(confirmationAgeNs) / 1000000.0,
-            pendingHostDisplayConfirmations.size(),
-            static_cast<unsigned long long>(
-                hostConfirmationPendingHighWater_),
-            static_cast<unsigned long long>(
-                hostConfirmationExpiredTotal_),
-            static_cast<unsigned long long>(
-                hostConfirmationOverflowTotal_),
-            static_cast<unsigned long long>(
-                hostDisplayTimingQueryFailureTotal_),
-            static_cast<unsigned long long>(
-                hostInvalidPresentMarginTotal_),
-            static_cast<unsigned long long>(
-                confirmation.swapchainGeneration),
-            static_cast<unsigned long long>(
-                hostPhysicalCadenceEpoch_),
-            confirmation.frameSlot,
-            confirmation.gpuOutstandingAtSubmit,
-            static_cast<unsigned long long>(
-                confirmation.submissionSerial),
-            static_cast<unsigned long long>(
-                submissionTimeline.completedSubmissionSerial.load(
-                    std::memory_order_acquire)),
-            static_cast<double>(confirmation.submitCallNs) / 1000000.0,
-            static_cast<double>(confirmation.presentCallNs) / 1000000.0,
             confirmation.refreshPeriodNs,
             confirmation.phaseAdvanceCycles,
             static_cast<double>(confirmation.phaseAdvanceNs) / 1000000.0,
             confirmation.temporalBacklog ? 1 : 0,
-            hostPhaseRescheduledTotal_,
-            hostTemporalBacklogTotal_,
+            reason ? reason : "none");
+
+        const double uniquePhysicalFps =
+            firstUniquePhysicalPresentNs_ != 0
+                    && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
+                ? static_cast<double>(uniquePhysicalPresent_) * 1000000000.0
+                    / static_cast<double>(
+                        lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
+                : 0.0;
+        const double sourcePhysicalFps =
+            firstUniquePhysicalPresentNs_ != 0
+                    && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
+                ? static_cast<double>(sourceUniquePhysicalPresent_) * 1000000000.0
+                    / static_cast<double>(
+                        lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
+                : 0.0;
+        const double generatedPhysicalFps =
+            firstUniquePhysicalPresentNs_ != 0
+                    && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
+                ? static_cast<double>(generatedUniquePhysicalPresent_) * 1000000000.0
+                    / static_cast<double>(
+                        lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
+                : 0.0;
+
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            "LSFG_HOST_DELIVERY",
+            "event=display-accounting host_present_id=%" PRIu64
+            " delivery_id=%" PRIu64 " kind=%s "
+            "host_wsi_accepted_total=%" PRIu64
+            " host_display_confirmed_total=%" PRIu64
+            " host_display_unknown_total=%" PRIu64
+            " display_delivery_ratio=%.4f unique_physical_fps=%.3f "
+            "source_physical_fps=%.3f generated_physical_fps=%.3f "
+            "source_delivery_efficiency=%.4f generated_delivery_efficiency=%.4f "
+            "source_physical_unknown=%" PRIu64 " generated_physical_unknown=%" PRIu64
+            " physical_delivery_unknown=%d physical_unknown_reason=%s "
+            "cadence_error_p50_ms=%.3f cadence_error_p95_ms=%.3f "
+            "scheduled_error_p50_ms=%.3f scheduled_error_p95_ms=%.3f "
+            "confirmation_age_ms=%.3f confirmation_pending=%zu "
+            "confirmation_pending_high_water=%" PRIu64
+            " confirmation_expired_total=%" PRIu64
+            " confirmation_overflow_total=%" PRIu64
+            " display_timing_query_failures=%" PRIu64
+            " invalid_present_margin_total=%" PRIu64
+            " phase_rescheduled_total=%" PRIu64
+            " temporal_backlog_total=%" PRIu64
+            " swapchain_generation=%" PRIu64 " cadence_epoch=%" PRIu64
+            " frame_slot=%u gpu_outstanding_at_submit=%u "
+            "submission_serial=%" PRIu64 " completed_submission_serial=%" PRIu64
+            " submit_call_ms=%.3f present_call_ms=%.3f",
+            confirmation.hostPresentId,
+            provenance.deliveryId,
+            provenanceKindName(provenance.kind),
+            hostWsiAccepted_,
+            hostDisplayConfirmed_,
+            hostDisplayUnknown_,
+            hostWsiAccepted_ > 0
+                ? static_cast<double>(hostDisplayConfirmed_)
+                    / static_cast<double>(hostWsiAccepted_)
+                : 0.0,
+            uniquePhysicalFps,
+            sourcePhysicalFps,
+            generatedPhysicalFps,
             sourceDeliveryEfficiency,
             generatedDeliveryEfficiency,
             sourcePhysicalUnknown_,
             generatedPhysicalUnknown_,
             physicalDeliveryUnknown ? 1 : 0,
             physicalDeliveryUnknown && reason ? reason : "none",
+            cadenceErrorP50Ms,
+            cadenceErrorP95Ms,
             scheduledErrorP50Ms,
             scheduledErrorP95Ms,
-            reason ? reason : "none");
+            static_cast<double>(confirmationAgeNs) / 1000000.0,
+            pendingHostDisplayConfirmations.size(),
+            hostConfirmationPendingHighWater_,
+            hostConfirmationExpiredTotal_,
+            hostConfirmationOverflowTotal_,
+            hostDisplayTimingQueryFailureTotal_,
+            hostInvalidPresentMarginTotal_,
+            hostPhaseRescheduledTotal_,
+            hostTemporalBacklogTotal_,
+            confirmation.swapchainGeneration,
+            hostPhysicalCadenceEpoch_,
+            confirmation.frameSlot,
+            confirmation.gpuOutstandingAtSubmit,
+            confirmation.submissionSerial,
+            submissionTimeline.completedSubmissionSerial.load(
+                std::memory_order_acquire),
+            static_cast<double>(confirmation.submitCallNs) / 1000000.0,
+            static_cast<double>(confirmation.presentCallNs) / 1000000.0);
     }
 }
 
@@ -3211,7 +3606,36 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
 
     WinTex& src = cit->second;
     bindLsfgProvenance(ahb, src);
+    const LsfgFrameProvenance incomingProvenance = src.frameProvenance;
+    if (!enqueueLsfgHostDelivery(id, ahb, src)) {
+        evictWindowAhbImports(id, ahb);
+        if (pendingLsfgHostDeliveryCount_.load(std::memory_order_relaxed) > 0) {
+            needsRender.store(true, std::memory_order_release);
+            dirtyCV.notify_one();
+        }
+        return;
+    }
+
     WinTex& wt  = texMap[id];
+    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+            && incomingProvenance.valid
+            && incomingProvenance.deliveryId != 0
+            && wt.frameProvenance.valid
+            && wt.frameProvenance.deliveryId != 0
+            && wt.frameProvenance.deliveryId != incomingProvenance.deliveryId
+            && hostSnapshottedLsfgDeliveries_.find(
+                wt.frameProvenance.deliveryId)
+                == hostSnapshottedLsfgDeliveries_.end()
+            && consumedLsfgDeliveries_.find(wt.frameProvenance.deliveryId)
+                == consumedLsfgDeliveries_.end()) {
+        if (wt.frameProvenance.kind == 1)
+            generatedCoalescedDrop_.fetch_add(1, std::memory_order_relaxed);
+        else
+            sourceCoalescedDrop_.fetch_add(1, std::memory_order_relaxed);
+        emitHostDeliveryAccounting(
+            "latest-content-overwrite-before-snapshot",
+            &wt.frameProvenance);
+    }
     if (!wt.isAHB && (wt.img != VK_NULL_HANDLE || wt.stg != VK_NULL_HANDLE))
         destroyWinTex(wt);
 
@@ -3253,6 +3677,7 @@ void VulkanRendererContext::removeWindow(int64_t id) {
         texMap.erase(it);
     }
 
+    dropQueuedLsfgHostDeliveriesForWindow(id, "window-removed");
     releaseWindowAhbImports(id);
 
     renderList.erase(std::remove_if(renderList.begin(),renderList.end(),
@@ -3292,6 +3717,9 @@ void VulkanRendererContext::cleanupAllAHBCache() {
     retiredAhbImports.clear();
     ahbWindowRefCounts.clear();
     windowAhbs.clear();
+    pendingLsfgHostDeliveries_.clear();
+    pendingLsfgHostDeliveryCount_.store(0, std::memory_order_relaxed);
+    hostSnapshottedLsfgDeliveries_.clear();
 }
 
 
@@ -3375,12 +3803,27 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
         lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
     const uint32_t previousTarget =
         std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
+    const uint64_t requestSerial =
+        frameQueueConfigRequestSerial_.fetch_add(1, std::memory_order_relaxed) + 1;
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+        "event=config-request request_serial=%" PRIu64
+        " previous_enabled=%d previous_target=%u requested_enabled=%d requested_target=%u",
+        requestSerial,
+        previousEnabled ? 1 : 0,
+        previousTarget,
+        enabled ? 1 : 0,
+        target);
     if (previousEnabled == enabled && previousTarget == target)
         return;
 
     // Configuration changes are explicit recovery boundaries. Drain only
     // compositor GPU work; display confirmation remains telemetry-only.
     drainFrameQueueSubmissions("config-transition");
+    {
+        std::lock_guard<std::mutex> lk(renderMutex);
+        dropQueuedLsfgHostDeliveries("frame-queue-config-transition");
+    }
 
     resetFrameQueueTelemetry();
     frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);
@@ -3402,10 +3845,11 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
             : "present-stall");
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-        "event=config telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
+        "event=config request_serial=%llu telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
         "mode=%s smooth_fallback=%d fallback_reason=%s active_slots=%u "
         "gpu_outstanding=%u max_gpu_outstanding=%u retirement_waits=%llu "
         "retirement_wait_ms=%.3f presented=%llu",
+        static_cast<unsigned long long>(requestSerial),
         static_cast<unsigned long long>(
             frameQueueTelemetryEpoch_.load(std::memory_order_relaxed)),
         enabled ? 1 : 0,
@@ -3446,6 +3890,10 @@ void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {
     if (requestedPresentMode == target) {
         RLOG("setPresentMode: already set, skipping");
         return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(renderMutex);
+        dropQueuedLsfgHostDeliveries("present-mode-transition");
     }
     requestedPresentMode = target;
     frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);

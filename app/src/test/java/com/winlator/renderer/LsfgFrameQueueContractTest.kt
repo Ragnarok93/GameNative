@@ -377,6 +377,47 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("temporal_backlog="))
     }
 
+    @Test
+    fun frameQueueRetainsOrderedLsfgDeliveriesBeforeHostComposition() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("QueuedLsfgHostDelivery"))
+        assertTrue(header.contains("pendingLsfgHostDeliveries_"))
+        assertTrue(implementation.contains("enqueueLsfgHostDelivery"))
+        assertTrue(implementation.contains("selectQueuedLsfgHostDelivery"))
+        assertTrue(implementation.contains("consumeQueuedLsfgHostDeliveries"))
+        assertTrue(implementation.contains("host_snapshot_created"))
+        assertTrue(implementation.contains("host_coalesced_drop"))
+        assertTrue(implementation.contains("host_backlog_drop"))
+        assertTrue(implementation.contains("generated_received"))
+        assertTrue(implementation.contains("generated_snapshot_created"))
+        assertTrue(implementation.contains("generated_backlog_drop"))
+    }
+
+    @Test
+    fun phaseReschedulingRejectsCrossEpochAndExcessivelyStaleContent() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("MAX_HOST_TEMPORAL_STALE_NS"))
+        assertTrue(implementation.contains("stale-beyond-host-budget"))
+        assertTrue(implementation.contains("dropQueuedLsfgHostDeliveries"))
+        assertTrue(implementation.contains("provenance-epoch-reset"))
+        assertTrue(implementation.contains("host_stale_drop"))
+    }
+
+    @Test
+    fun hostDeliveryTelemetryUsesItsOwnCompactRecordInsteadOfExtendingDisplayLines() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains(""LSFG_HOST_DELIVERY""))
+        assertTrue(implementation.contains("event=delivery-accounting"))
+        assertTrue(implementation.contains("phase_rescheduled_total="))
+        assertTrue(implementation.contains("scheduled_error_p50_ms="))
+        assertTrue(implementation.contains("confirmation_pending_high_water="))
+    }
+
     private fun source(name: String): String {
         val candidates = listOf(
             Paths.get("src/main/cpp/winlator").resolve(name),

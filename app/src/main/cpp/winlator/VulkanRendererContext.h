@@ -30,6 +30,7 @@ struct VkTable {
     PFN_vkAcquireNextImageKHR AcquireNextImageKHR;
     PFN_vkQueuePresentKHR QueuePresentKHR;
     PFN_vkGetPastPresentationTimingGOOGLE GetPastPresentationTimingGOOGLE;
+    PFN_vkGetRefreshCycleDurationGOOGLE GetRefreshCycleDurationGOOGLE;
     PFN_vkWaitForPresentKHR WaitForPresentKHR;
     PFN_vkQueueSubmit QueueSubmit;
     PFN_vkCreateRenderPass CreateRenderPass;
@@ -198,6 +199,10 @@ struct HostDesiredPresentDecision {
     uint64_t submittedDesiredPresentTimeNs = 0;
     uint64_t desiredStaleByNs = 0;
     uint64_t desiredFutureByNs = 0;
+    uint64_t refreshPeriodNs = 0;
+    uint64_t phaseAdvanceCycles = 0;
+    uint64_t phaseAdvanceNs = 0;
+    bool temporalBacklog = false;
     const char* fallbackReason = "none";
 };
 
@@ -212,6 +217,10 @@ struct HostDisplayConfirmation {
     uint64_t wsiDesiredPresentTimeNs = 0;
     uint64_t desiredStaleByNs = 0;
     uint64_t desiredFutureByNs = 0;
+    uint64_t refreshPeriodNs = 0;
+    uint64_t phaseAdvanceCycles = 0;
+    uint64_t phaseAdvanceNs = 0;
+    bool temporalBacklog = false;
     const char* desiredFallbackReason = "none";
     uint64_t actualPresentTimeNs = 0;
     uint64_t earliestPresentTimeNs = 0;
@@ -404,6 +413,14 @@ private:
     uint64_t firstUniquePhysicalPresentNs_ = 0;
     uint64_t lastUniquePhysicalPresentNs_ = 0;
     uint64_t lastAcceptedDesiredPresentTimeNs_ = 0;
+    uint64_t hostRefreshPeriodNs_ = 0;
+    uint64_t sourceUniqueWsiAccepted_ = 0;
+    uint64_t generatedUniqueWsiAccepted_ = 0;
+    uint64_t sourcePhysicalUnknown_ = 0;
+    uint64_t generatedPhysicalUnknown_ = 0;
+    uint64_t hostPhaseRescheduledTotal_ = 0;
+    uint64_t hostTemporalBacklogTotal_ = 0;
+    uint64_t hostRefreshCycleQueryFailureTotal_ = 0;
     uint64_t hostSwapchainGeneration_ = 0;
     uint64_t hostPhysicalCadenceEpoch_ = 0;
     uint64_t hostConfirmationPendingHighWater_ = 0;
@@ -412,6 +429,7 @@ private:
     uint64_t hostDisplayTimingQueryFailureTotal_ = 0;
     uint64_t hostInvalidPresentMarginTotal_ = 0;
     std::deque<uint64_t> physicalCadenceErrorsNs_;
+    std::deque<uint64_t> scheduledCadenceErrorsNs_;
     std::unordered_set<uint64_t> consumedLsfgDeliveries_;
     std::deque<HostDisplayConfirmation> pendingHostDisplayConfirmations;
 

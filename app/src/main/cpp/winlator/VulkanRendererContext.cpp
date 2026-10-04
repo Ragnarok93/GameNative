@@ -20,7 +20,7 @@
 
 extern "C" __attribute__((used, visibility("default")))
 const char gamenative_vulkan_renderer_build_marker[] =
-    "gamenative-host-display-confirmation-v2";
+    "gamenative-host-display-phase-scheduler-v3";
 
 namespace {
 constexpr char LSFG_PROVENANCE_SOCKET[] = "gamenative-lsfg-provenance-v1";
@@ -100,6 +100,26 @@ uint64_t monotonicTimeNs() noexcept {
         return 0;
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL
         + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+uint64_t advanceDesiredPresentPhase(
+        uint64_t desiredPresentTimeNs,
+        uint64_t earliestAllowedNs,
+        uint64_t refreshPeriodNs,
+        uint64_t& phaseAdvanceCycles) noexcept {
+    phaseAdvanceCycles = 0;
+    if (refreshPeriodNs == 0 || desiredPresentTimeNs >= earliestAllowedNs)
+        return desiredPresentTimeNs;
+    const uint64_t deltaNs = earliestAllowedNs - desiredPresentTimeNs;
+    uint64_t cycles = deltaNs / refreshPeriodNs;
+    if (deltaNs % refreshPeriodNs != 0)
+        ++cycles;
+    if (cycles == 0)
+        cycles = 1;
+    if (cycles > (UINT64_MAX - desiredPresentTimeNs) / refreshPeriodNs)
+        return 0;
+    phaseAdvanceCycles = cycles;
+    return desiredPresentTimeNs + cycles * refreshPeriodNs;
 }
 
 void publishLsfgHostDisplayFeedback(
@@ -273,6 +293,7 @@ void VulkanRendererContext::loadDeviceDispatch() {
     LOAD_D2(AcquireNextImageKHR);
     LOAD_D2(QueuePresentKHR);
     LOAD_D2(GetPastPresentationTimingGOOGLE);
+    LOAD_D2(GetRefreshCycleDurationGOOGLE);
     LOAD_D2(WaitForPresentKHR);
     LOAD_D2(QueueSubmit);
     LOAD_D2(CreateRenderPass);
@@ -480,8 +501,9 @@ void VulkanRendererContext::createLogicalDevice() {
     vk_.GetPhysicalDeviceProperties(physicalDevice, &props);
     maxAnisotropy = props.limits.maxSamplerAnisotropy;
     __android_log_print(ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
-        "capability google_display_timing=%d present_wait=%d",
+        "capability google_display_timing=%d refresh_cycle_query=%d present_wait=%d",
         hostGoogleDisplayTimingEnabled ? 1 : 0,
+        vk_.GetRefreshCycleDurationGOOGLE ? 1 : 0,
         hostPresentWaitEnabled ? 1 : 0);
 }
 
@@ -538,6 +560,31 @@ void VulkanRendererContext::createSwapchain() {
     }
     ++hostSwapchainGeneration_;
     lastAcceptedDesiredPresentTimeNs_ = 0;
+    hostRefreshPeriodNs_ = 0;
+    VkResult refreshCycleResult = VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (hostGoogleDisplayTimingEnabled && vk_.GetRefreshCycleDurationGOOGLE) {
+        VkRefreshCycleDurationGOOGLE refreshCycle{};
+        refreshCycleResult = vk_.GetRefreshCycleDurationGOOGLE(
+            device, swapchain, &refreshCycle);
+        constexpr uint64_t kMinSaneRefreshPeriodNs = 1000000ULL;
+        constexpr uint64_t kMaxSaneRefreshPeriodNs = 100000000ULL;
+        if (refreshCycleResult == VK_SUCCESS
+                && refreshCycle.refreshDuration >= kMinSaneRefreshPeriodNs
+                && refreshCycle.refreshDuration <= kMaxSaneRefreshPeriodNs) {
+            hostRefreshPeriodNs_ = refreshCycle.refreshDuration;
+        } else {
+            ++hostRefreshCycleQueryFailureTotal_;
+        }
+    }
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+        "event=refresh-cycle swapchain_generation=%" PRIu64
+        " refresh_period_ns=%" PRIu64 " refresh_hz=%.3f query_result=%d",
+        hostSwapchainGeneration_,
+        hostRefreshPeriodNs_,
+        hostRefreshPeriodNs_ != 0
+            ? 1000000000.0 / static_cast<double>(hostRefreshPeriodNs_) : 0.0,
+        static_cast<int>(refreshCycleResult));
     RLOG("swapchain created: %dx%d format=%d presentMode=%d compositeAlpha=%d imgCount=%u",
         swapchainExt.width,swapchainExt.height,(int)swapchainFmt,(int)presentMode,(int)compositeAlpha,imgCount);
     const VkPresentModeKHR previousActivePresentMode = activePresentMode;
@@ -1030,7 +1077,8 @@ VkResult VulkanRendererContext::presentHostFrame(
                 "completed_submission_serial=%llu acquire_ms=%.3f submit_ms=%.3f "
                 "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f presented=%llu "
                 "provenance_desired_time=%llu submitted_desired_time=%llu desired_stale_by_ms=%.3f "
-                "desired_fallback_reason=%s",
+                "desired_fallback_reason=%s refresh_period_ns=%llu phase_advance_cycles=%llu "
+                "phase_advance_ms=%.3f temporal_backlog=%d",
                 static_cast<unsigned long long>(
                     frameQueueTelemetryEpoch_.load(std::memory_order_relaxed)),
                 enabled ? 1 : 0, requestedTarget, effectiveTarget, mode,
@@ -1064,7 +1112,14 @@ VkResult VulkanRendererContext::presentHostFrame(
                 static_cast<double>(
                     present.desiredDecision.desiredStaleByNs) / 1000000.0,
                 present.desiredDecision.fallbackReason
-                    ? present.desiredDecision.fallbackReason : "none");
+                    ? present.desiredDecision.fallbackReason : "none",
+                static_cast<unsigned long long>(
+                    present.desiredDecision.refreshPeriodNs),
+                static_cast<unsigned long long>(
+                    present.desiredDecision.phaseAdvanceCycles),
+                static_cast<double>(
+                    present.desiredDecision.phaseAdvanceNs) / 1000000.0,
+                present.desiredDecision.temporalBacklog ? 1 : 0);
         }
     }
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
@@ -2554,9 +2609,16 @@ void VulkanRendererContext::resetHostPhysicalCadenceTelemetry(
     uniquePhysicalPresent_ = 0;
     sourceUniquePhysicalPresent_ = 0;
     generatedUniquePhysicalPresent_ = 0;
+    sourceUniqueWsiAccepted_ = 0;
+    generatedUniqueWsiAccepted_ = 0;
+    sourcePhysicalUnknown_ = 0;
+    generatedPhysicalUnknown_ = 0;
+    hostPhaseRescheduledTotal_ = 0;
+    hostTemporalBacklogTotal_ = 0;
     firstUniquePhysicalPresentNs_ = 0;
     lastUniquePhysicalPresentNs_ = 0;
     physicalCadenceErrorsNs_.clear();
+    scheduledCadenceErrorsNs_.clear();
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
         "event=physical-cadence-reset cadence_epoch=%" PRIu64
@@ -2586,6 +2648,7 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
         desired = frame.desiredPresentTimeNs;
     }
     decision.provenanceDesiredPresentTimeNs = desired;
+    decision.refreshPeriodNs = hostRefreshPeriodNs_;
     if (desired == 0) {
         decision.fallbackReason = "no-temporal-intent";
         return decision;
@@ -2597,24 +2660,65 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
         return decision;
     }
     constexpr uint64_t kMaxFutureDesiredPresentNs = 250000000ULL;
-    if (desired <= nowNs) {
+    if (desired <= nowNs)
         decision.desiredStaleByNs = nowNs - desired;
-        decision.fallbackReason = "stale";
+
+    uint64_t earliestAllowedNs = nowNs;
+    if (hostRefreshPeriodNs_ != 0) {
+        const uint64_t phaseLeadNs =
+            std::max<uint64_t>(500000ULL, hostRefreshPeriodNs_ / 2ULL);
+        if (nowNs > UINT64_MAX - phaseLeadNs) {
+            decision.fallbackReason = "schedule-overflow";
+            return decision;
+        }
+        earliestAllowedNs = nowNs + phaseLeadNs;
+    }
+    if (lastAcceptedDesiredPresentTimeNs_ != 0
+            && lastAcceptedDesiredPresentTimeNs_ >= earliestAllowedNs) {
+        if (lastAcceptedDesiredPresentTimeNs_ == UINT64_MAX) {
+            decision.fallbackReason = "schedule-overflow";
+            return decision;
+        }
+        earliestAllowedNs = lastAcceptedDesiredPresentTimeNs_ + 1ULL;
+    }
+
+    uint64_t scheduled = desired;
+    if (desired < earliestAllowedNs) {
+        if (hostRefreshPeriodNs_ == 0) {
+            decision.fallbackReason =
+                desired <= nowNs ? "stale-no-refresh-cycle" : "regression";
+            return decision;
+        }
+        scheduled = advanceDesiredPresentPhase(
+            desired, earliestAllowedNs, hostRefreshPeriodNs_,
+            decision.phaseAdvanceCycles);
+        if (scheduled == 0) {
+            decision.fallbackReason = "phase-reschedule-overflow";
+            return decision;
+        }
+        decision.phaseAdvanceNs = scheduled - desired;
+        decision.temporalBacklog =
+            decision.phaseAdvanceCycles > 1
+            || decision.desiredStaleByNs >= hostRefreshPeriodNs_;
+        ++hostPhaseRescheduledTotal_;
+        if (decision.temporalBacklog)
+            ++hostTemporalBacklogTotal_;
+        decision.fallbackReason = "phase-rescheduled";
+    } else {
+        decision.fallbackReason = "accepted";
+    }
+
+    if (scheduled <= nowNs) {
+        decision.fallbackReason = "stale-after-reschedule";
         return decision;
     }
-    decision.desiredFutureByNs = desired - nowNs;
+    decision.desiredFutureByNs = scheduled - nowNs;
     if (decision.desiredFutureByNs > kMaxFutureDesiredPresentNs) {
         decision.fallbackReason = "too-far-future";
         return decision;
     }
-    if (lastAcceptedDesiredPresentTimeNs_ != 0
-            && desired < lastAcceptedDesiredPresentTimeNs_) {
-        decision.fallbackReason = "regression";
-        return decision;
-    }
-    lastAcceptedDesiredPresentTimeNs_ = desired;
-    decision.submittedDesiredPresentTimeNs = desired;
-    decision.fallbackReason = "accepted";
+    lastAcceptedDesiredPresentTimeNs_ = scheduled;
+    decision.submittedDesiredPresentTimeNs = scheduled;
     return decision;
 }
 
@@ -2634,6 +2738,14 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         && confirmation.presentMarginRawNs <= kMaxSanePresentMarginNs;
 
     for (const auto& provenance : confirmation.frameProvenance) {
+        const bool physicalDeliveryUnknown =
+            unknown && provenance.uniqueDelivery
+            && confirmation.backend != HostDisplayConfirmationBackend::WsiAccepted;
+        if (physicalDeliveryUnknown) {
+            if (provenance.kind == 1) ++generatedPhysicalUnknown_;
+            else ++sourcePhysicalUnknown_;
+        }
+
         uint64_t uniquePhysicalIntervalNs = 0;
         if (confirmed && provenance.uniqueDelivery
                 && confirmation.actualPresentTimeNs != 0) {
@@ -2655,6 +2767,15 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                 while (physicalCadenceErrorsNs_.size() > 240)
                     physicalCadenceErrorsNs_.pop_front();
             }
+            if (confirmation.submittedDesiredPresentTimeNs != 0) {
+                scheduledCadenceErrorsNs_.push_back(
+                    static_cast<uint64_t>(std::llabs(
+                        static_cast<long long>(confirmation.actualPresentTimeNs)
+                        - static_cast<long long>(
+                            confirmation.submittedDesiredPresentTimeNs))));
+                while (scheduledCadenceErrorsNs_.size() > 240)
+                    scheduledCadenceErrorsNs_.pop_front();
+            }
             lastUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
             ++uniquePhysicalPresent_;
             if (provenance.kind == 1) ++generatedUniquePhysicalPresent_;
@@ -2671,6 +2792,27 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             : static_cast<double>(sortedCadenceErrors[std::min(
                 sortedCadenceErrors.size() - 1,
                 (sortedCadenceErrors.size() * 95) / 100)]) / 1000000.0;
+        std::vector<uint64_t> sortedScheduledErrors(
+            scheduledCadenceErrorsNs_.begin(), scheduledCadenceErrorsNs_.end());
+        std::sort(sortedScheduledErrors.begin(), sortedScheduledErrors.end());
+        const double scheduledErrorP50Ms = sortedScheduledErrors.empty() ? 0.0
+            : static_cast<double>(
+                sortedScheduledErrors[sortedScheduledErrors.size() / 2])
+                / 1000000.0;
+        const double scheduledErrorP95Ms = sortedScheduledErrors.empty() ? 0.0
+            : static_cast<double>(sortedScheduledErrors[std::min(
+                sortedScheduledErrors.size() - 1,
+                (sortedScheduledErrors.size() * 95) / 100)]) / 1000000.0;
+        const double sourceDeliveryEfficiency =
+            sourceUniqueWsiAccepted_ > 0
+                ? static_cast<double>(sourceUniquePhysicalPresent_)
+                    / static_cast<double>(sourceUniqueWsiAccepted_)
+                : 0.0;
+        const double generatedDeliveryEfficiency =
+            generatedUniqueWsiAccepted_ > 0
+                ? static_cast<double>(generatedUniquePhysicalPresent_)
+                    / static_cast<double>(generatedUniqueWsiAccepted_)
+                : 0.0;
 
         publishLsfgHostDisplayFeedback(
             confirmation, provenance, confirmed);
@@ -2704,7 +2846,14 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             "invalid_present_margin_total=%llu swapchain_generation=%llu "
             "cadence_epoch=%llu frame_slot=%u gpu_outstanding_at_submit=%u "
             "submission_serial=%llu completed_submission_serial=%llu "
-            "submit_call_ms=%.3f present_call_ms=%.3f reason=%s",
+            "submit_call_ms=%.3f present_call_ms=%.3f "
+            "refresh_period_ns=%" PRIu64 " phase_advance_cycles=%" PRIu64
+            " phase_advance_ms=%.3f temporal_backlog=%d "
+            "phase_rescheduled_total=%" PRIu64 " temporal_backlog_total=%" PRIu64
+            " source_delivery_efficiency=%.4f generated_delivery_efficiency=%.4f "
+            "source_physical_unknown=%" PRIu64 " generated_physical_unknown=%" PRIu64
+            " physical_delivery_unknown=%d physical_unknown_reason=%s "
+            "scheduled_error_p50_ms=%.3f scheduled_error_p95_ms=%.3f reason=%s",
             confirmation.hostPresentId,
             confirmation.hostPresentId != 0 ? 1 : 0,
             confirmed ? 1 : 0,
@@ -2808,6 +2957,20 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                     std::memory_order_acquire)),
             static_cast<double>(confirmation.submitCallNs) / 1000000.0,
             static_cast<double>(confirmation.presentCallNs) / 1000000.0,
+            confirmation.refreshPeriodNs,
+            confirmation.phaseAdvanceCycles,
+            static_cast<double>(confirmation.phaseAdvanceNs) / 1000000.0,
+            confirmation.temporalBacklog ? 1 : 0,
+            hostPhaseRescheduledTotal_,
+            hostTemporalBacklogTotal_,
+            sourceDeliveryEfficiency,
+            generatedDeliveryEfficiency,
+            sourcePhysicalUnknown_,
+            generatedPhysicalUnknown_,
+            physicalDeliveryUnknown ? 1 : 0,
+            physicalDeliveryUnknown && reason ? reason : "none",
+            scheduledErrorP50Ms,
+            scheduledErrorP95Ms,
             reason ? reason : "none");
     }
 }
@@ -2829,6 +2992,14 @@ void VulkanRendererContext::recordHostPresent(
         present.desiredDecision.desiredStaleByNs;
     confirmation.desiredFutureByNs =
         present.desiredDecision.desiredFutureByNs;
+    confirmation.refreshPeriodNs =
+        present.desiredDecision.refreshPeriodNs;
+    confirmation.phaseAdvanceCycles =
+        present.desiredDecision.phaseAdvanceCycles;
+    confirmation.phaseAdvanceNs =
+        present.desiredDecision.phaseAdvanceNs;
+    confirmation.temporalBacklog =
+        present.desiredDecision.temporalBacklog;
     confirmation.desiredFallbackReason =
         present.desiredDecision.fallbackReason;
     confirmation.enqueuedAtNs = monotonicTimeNs();
@@ -2841,6 +3012,10 @@ void VulkanRendererContext::recordHostPresent(
     for (const auto& provenance : present.frameProvenance) {
         if (provenance.uniqueDelivery) {
             consumedLsfgDeliveries_.insert(provenance.deliveryId);
+            if (present.backend != HostDisplayConfirmationBackend::WsiAccepted) {
+                if (provenance.kind == 1) ++generatedUniqueWsiAccepted_;
+                else ++sourceUniqueWsiAccepted_;
+            }
         } else {
             ++repeatedContentPresent_;
         }

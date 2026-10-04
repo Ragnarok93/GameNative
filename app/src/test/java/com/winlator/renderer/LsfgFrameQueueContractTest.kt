@@ -431,6 +431,57 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun frameQueueOffStillPreservesOneOrderedLsfgHostDelivery() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("MIN_HOST_DELIVERY_QUEUE_CAPACITY"))
+        val capacityStart = implementation.indexOf("uint32_t VulkanRendererContext::hostDeliveryQueueCapacity")
+        val capacityEnd = implementation.indexOf("bool VulkanRendererContext::isLsfgHostDeliveryStale", capacityStart)
+        assertTrue(capacityStart >= 0 && capacityEnd > capacityStart)
+        val capacity = implementation.substring(capacityStart, capacityEnd)
+        assertTrue(capacity.contains("MIN_HOST_DELIVERY_QUEUE_CAPACITY"))
+        assertFalse(capacity.contains("return 0;"))
+
+        val selectStart = implementation.indexOf("bool VulkanRendererContext::selectQueuedLsfgHostDelivery")
+        val selectEnd = implementation.indexOf("void VulkanRendererContext::recordHostSnapshotCreated", selectStart)
+        assertTrue(selectStart >= 0 && selectEnd > selectStart)
+        val select = implementation.substring(selectStart, selectEnd)
+        assertFalse(select.contains("if (!lsfgFrameQueueEnabled_.load"))
+        assertTrue(implementation.contains("delivery_handoff=ordered-minimum"))
+    }
+
+    @Test
+    fun hostDeliveryQueueDepthUsesRequestedModeNotSmoothFallbackDepth() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        val capacityStart = implementation.indexOf("uint32_t VulkanRendererContext::hostDeliveryQueueCapacity")
+        val capacityEnd = implementation.indexOf("bool VulkanRendererContext::isLsfgHostDeliveryStale", capacityStart)
+        assertTrue(capacityStart >= 0 && capacityEnd > capacityStart)
+        val capacity = implementation.substring(capacityStart, capacityEnd)
+
+        assertTrue(capacity.contains("lsfgFrameQueueTarget_.load"))
+        assertFalse(capacity.contains("effectiveFrameQueueTarget()"))
+        assertTrue(implementation.contains("delivery_queue_capacity="))
+        assertTrue(implementation.contains("effective_gpu_target="))
+    }
+
+    @Test
+    fun queueCapabilityTelemetryPersistsBeyondRendererStartup() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        val accountingStart = implementation.indexOf("void VulkanRendererContext::emitHostDeliveryAccounting")
+        val accountingEnd = implementation.indexOf("void VulkanRendererContext::dropQueuedLsfgHostDeliveriesForWindow", accountingStart)
+        assertTrue(accountingStart >= 0 && accountingEnd > accountingStart)
+        val accounting = implementation.substring(accountingStart, accountingEnd)
+
+        assertTrue(accounting.contains("graphics_family="))
+        assertTrue(accounting.contains("family_queue_count="))
+        assertTrue(accounting.contains("present_capable_families="))
+        assertTrue(accounting.contains("second_same_family_queue_available="))
+    }
+
+    @Test
     fun queuedAhbTransitionOwnershipSurvivesUntilTheQueuedSnapshot() {
         val implementation = source("VulkanRendererContext.cpp")
         val updateStart = implementation.indexOf("void VulkanRendererContext::updateWindowContentAHB")

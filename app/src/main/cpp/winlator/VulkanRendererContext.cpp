@@ -862,10 +862,16 @@ uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
 
 uint32_t VulkanRendererContext::hostDeliveryQueueCapacity() const {
     if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
-        return 0;
+        return MIN_HOST_DELIVERY_QUEUE_CAPACITY;
+
+    // Pre-composition delivery retention is a correctness boundary, not a GPU
+    // submission-depth control. Keep the requested delivery depth even when
+    // Smooth falls back to Balanced WSI/GPU pacing after a present stall.
+    const uint32_t requestedTarget = std::min<uint32_t>(
+        2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
     return std::min<uint32_t>(
         MAX_HOST_DELIVERY_QUEUE_CAPACITY,
-        effectiveFrameQueueTarget() + 1U);
+        requestedTarget + MIN_HOST_DELIVERY_QUEUE_CAPACITY);
 }
 
 bool VulkanRendererContext::isLsfgHostDeliveryStale(
@@ -925,7 +931,10 @@ void VulkanRendererContext::emitHostDeliveryAccounting(
         " source_coalesced_drop=%" PRIu64 " generated_coalesced_drop=%" PRIu64
         " source_backlog_drop=%" PRIu64 " generated_backlog_drop=%" PRIu64
         " source_stale_drop=%" PRIu64 " generated_stale_drop=%" PRIu64
-        " source_ahb_reuse_drop=%" PRIu64 " generated_ahb_reuse_drop=%" PRIu64,
+        " source_ahb_reuse_drop=%" PRIu64 " generated_ahb_reuse_drop=%" PRIu64
+        " delivery_handoff=%s delivery_queue_capacity=%u effective_gpu_target=%u"
+        " graphics_family=%u family_queue_count=%u present_capable_families=%u"
+        " alternate_present_family=%d second_same_family_queue_available=%d",
         reason ? reason : "none",
         provenance ? provenance->deliveryId : 0,
         provenance ? provenance->contextEpoch : 0,
@@ -949,7 +958,17 @@ void VulkanRendererContext::emitHostDeliveryAccounting(
         sourceStale,
         generatedStale,
         sourceReuse,
-        generatedReuse);
+        generatedReuse,
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+            ? "ordered-buffered" : "ordered-minimum",
+        hostDeliveryQueueCapacity(),
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+            ? effectiveFrameQueueTarget() : 0U,
+        graphicsQueueFamilyIndex,
+        graphicsQueueFamilyQueueCount,
+        presentCapableQueueFamilyCount,
+        alternatePresentQueueFamilyAvailable ? 1 : 0,
+        graphicsQueueFamilyQueueCount > 1 ? 1 : 0);
 }
 
 void VulkanRendererContext::dropQueuedLsfgHostDeliveriesForWindow(
@@ -1112,8 +1131,8 @@ bool VulkanRendererContext::enqueueLsfgHostDelivery(
 
 bool VulkanRendererContext::selectQueuedLsfgHostDelivery(
         const RenderEntry& renderEntry, DrawEntry& draw) {
-    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
-        return false;
+    // Ordered LSFG handoff remains active even with user-facing Frame Queue
+    // Off. Off disables extra GPU/WSI buffering, not delivery correctness.
     auto qit = pendingLsfgHostDeliveries_.find(renderEntry.id);
     if (qit == pendingLsfgHostDeliveries_.end())
         return false;
@@ -3624,25 +3643,6 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     }
 
     WinTex& wt  = texMap[id];
-    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
-            && incomingProvenance.valid
-            && incomingProvenance.deliveryId != 0
-            && wt.frameProvenance.valid
-            && wt.frameProvenance.deliveryId != 0
-            && wt.frameProvenance.deliveryId != incomingProvenance.deliveryId
-            && hostSnapshottedLsfgDeliveries_.find(
-                wt.frameProvenance.deliveryId)
-                == hostSnapshottedLsfgDeliveries_.end()
-            && consumedLsfgDeliveries_.find(wt.frameProvenance.deliveryId)
-                == consumedLsfgDeliveries_.end()) {
-        if (wt.frameProvenance.kind == 1)
-            generatedCoalescedDrop_.fetch_add(1, std::memory_order_relaxed);
-        else
-            sourceCoalescedDrop_.fetch_add(1, std::memory_order_relaxed);
-        emitHostDeliveryAccounting(
-            "latest-content-overwrite-before-snapshot",
-            &wt.frameProvenance);
-    }
     if (!wt.isAHB && (wt.img != VK_NULL_HANDLE || wt.stg != VK_NULL_HANDLE))
         destroyWinTex(wt);
 
@@ -3659,9 +3659,9 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     wt.h    = src.h;
 
     const bool queuedDeliveryOwnsTransition =
-        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
-        && incomingProvenance.valid
-        && incomingProvenance.deliveryId != 0;
+        incomingProvenance.valid
+        && incomingProvenance.deliveryId != 0
+        && hostDeliveryQueueCapacity() >= MIN_HOST_DELIVERY_QUEUE_CAPACITY;
     // queued delivery owns first AHB transition: do not transfer/clear the
     // import transition on the latest-content texMap path before the queued
     // snapshot selects this AHB.
@@ -3861,6 +3861,7 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
         ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
         "event=config request_serial=%llu telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
         "mode=%s smooth_fallback=%d fallback_reason=%s active_slots=%u "
+        "delivery_queue_capacity=%u delivery_handoff=%s effective_gpu_target=%u "
         "gpu_outstanding=%u max_gpu_outstanding=%u retirement_waits=%llu "
         "retirement_wait_ms=%.3f presented=%llu",
         static_cast<unsigned long long>(requestSerial),
@@ -3873,6 +3874,9 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
         smoothFallback ? 1 : 0,
         fallbackReason,
         activeFrameSlotCount(),
+        hostDeliveryQueueCapacity(),
+        enabled ? "ordered-buffered" : "ordered-minimum",
+        effectiveTarget,
         countOutstandingFrameSubmissions(true),
         frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
         static_cast<unsigned long long>(
@@ -3882,6 +3886,20 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
             / 1000000.0,
         static_cast<unsigned long long>(
             frameQueuePresentedTotal_.load(std::memory_order_relaxed)));
+    if (!enabled) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_HOST_DELIVERY",
+            "event=delivery-policy delivery_handoff=ordered-minimum "
+            "delivery_queue_capacity=%u effective_gpu_target=0 "
+            "graphics_family=%u family_queue_count=%u present_capable_families=%u "
+            "alternate_present_family=%d second_same_family_queue_available=%d",
+            hostDeliveryQueueCapacity(),
+            graphicsQueueFamilyIndex,
+            graphicsQueueFamilyQueueCount,
+            presentCapableQueueFamilyCount,
+            alternatePresentQueueFamilyAvailable ? 1 : 0,
+            graphicsQueueFamilyQueueCount > 1 ? 1 : 0);
+    }
 }
 
 void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {

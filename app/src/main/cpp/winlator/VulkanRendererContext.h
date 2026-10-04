@@ -123,6 +123,7 @@ static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
 static constexpr uint64_t SMOOTH_PRESENT_STALL_NS = 8'000'000ULL;
 static constexpr uint32_t SMOOTH_PRESENT_STALL_STRIKES = 2;
 static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
+static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
 static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the

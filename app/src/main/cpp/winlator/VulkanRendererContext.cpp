@@ -431,9 +431,15 @@ void VulkanRendererContext::pickPhysicalDevice() {
 }
 
 void VulkanRendererContext::createLogicalDevice() {
-    float p=1.f;
+    const char* splitQueueEnv = std::getenv("GAMENATIVE_LSFG_SPLIT_PRESENT_QUEUE");
+    hostSplitPresentQueueEnabled_ =
+        splitQueueEnv == nullptr || std::strcmp(splitQueueEnv, "0") != 0;
+    const bool splitPresentQueueCapable = graphicsQueueFamilyQueueCount >= 2;
+    uint32_t requestedHostQueueCount =
+        hostSplitPresentQueueEnabled_ && splitPresentQueueCapable ? 2U : 1U;
+    std::array<float, 2> p{1.f, 1.f};
     VkDeviceQueueCreateInfo qi{}; qi.sType=VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    qi.queueFamilyIndex=graphicsQueueFamilyIndex; qi.queueCount=1; qi.pQueuePriorities=&p;
+    qi.queueFamilyIndex=graphicsQueueFamilyIndex; qi.queueCount=requestedHostQueueCount; qi.pQueuePriorities=p.data();
 
     bool googleDisplayTimingExtension = false;
     bool presentIdExtension = false;
@@ -504,7 +510,21 @@ void VulkanRendererContext::createLogicalDevice() {
     ci.pQueueCreateInfos=&qi; ci.queueCreateInfoCount=1;
     ci.enabledExtensionCount=(uint32_t)extList.size(); ci.ppEnabledExtensionNames=extList.data();
     ci.pNext = hostPresentWaitEnabled ? &enabledPresentWait : nullptr;
-    if (vk_.CreateDevice(physicalDevice,&ci,nullptr,&device)!=VK_SUCCESS) throw std::runtime_error("device");
+    VkResult deviceCreateResult =
+        vk_.CreateDevice(physicalDevice,&ci,nullptr,&device);
+    if (deviceCreateResult != VK_SUCCESS && requestedHostQueueCount > 1) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
+            "event=split-present-queue-fallback reason=device-create-failed result=%d "
+            "requested_device_queues=%u fallback_device_queues=1",
+            static_cast<int>(deviceCreateResult),
+            requestedHostQueueCount);
+        requestedHostQueueCount = 1;
+        qi.queueCount = 1;
+        deviceCreateResult =
+            vk_.CreateDevice(physicalDevice,&ci,nullptr,&device);
+    }
+    if (deviceCreateResult != VK_SUCCESS) throw std::runtime_error("device");
     vk_.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)gipa(instance, "vkGetDeviceProcAddr");
     loadDeviceDispatch();
     if (!vk_.GetPastPresentationTimingGOOGLE)
@@ -512,6 +532,24 @@ void VulkanRendererContext::createLogicalDevice() {
     if (!vk_.WaitForPresentKHR)
         hostPresentWaitEnabled = false;
     vk_.GetDeviceQueue(device,graphicsQueueFamilyIndex,0,&graphicsQueue);
+    presentQueue = graphicsQueue;
+    hostSplitPresentQueueActive_ = false;
+    hostPresentQueueIndex_ = 0;
+    if (requestedHostQueueCount > 1) {
+        presentQueue = VK_NULL_HANDLE;
+        vk_.GetDeviceQueue(device,graphicsQueueFamilyIndex,1,&presentQueue);
+        if (presentQueue != VK_NULL_HANDLE) {
+            hostSplitPresentQueueActive_ = true;
+            hostPresentQueueIndex_ = 1;
+        } else {
+            presentQueue = graphicsQueue;
+            __android_log_print(
+                ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
+                "event=split-present-queue-fallback reason=queue-handle-unavailable "
+                "requested_device_queues=%u fallback_present_queue_index=0",
+                requestedHostQueueCount);
+        }
+    }
 
     vk_.GetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
 
@@ -526,13 +564,19 @@ void VulkanRendererContext::createLogicalDevice() {
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
         "event=queue-capability graphics_family=%u family_queue_count=%u "
-        "requested_device_queues=1 present_capable_families=%u "
-        "alternate_present_family=%d second_same_family_queue_available=%d",
+        "requested_device_queues=%u present_capable_families=%u "
+        "alternate_present_family=%d second_same_family_queue_available=%d "
+        "split_present_queue_enabled=%d split_present_queue_active=%d "
+        "present_queue_index=%u",
         graphicsQueueFamilyIndex,
         graphicsQueueFamilyQueueCount,
+        requestedHostQueueCount,
         presentCapableQueueFamilyCount,
         alternatePresentQueueFamilyAvailable ? 1 : 0,
-        graphicsQueueFamilyQueueCount > 1 ? 1 : 0);
+        graphicsQueueFamilyQueueCount > 1 ? 1 : 0,
+        hostSplitPresentQueueEnabled_ ? 1 : 0,
+        hostSplitPresentQueueActive_ ? 1 : 0,
+        hostPresentQueueIndex_);
 }
 
 void VulkanRendererContext::createSwapchain() {
@@ -934,7 +978,8 @@ void VulkanRendererContext::emitHostDeliveryAccounting(
         " source_ahb_reuse_drop=%" PRIu64 " generated_ahb_reuse_drop=%" PRIu64
         " delivery_handoff=%s delivery_queue_capacity=%u effective_gpu_target=%u"
         " graphics_family=%u family_queue_count=%u present_capable_families=%u"
-        " alternate_present_family=%d second_same_family_queue_available=%d",
+        " alternate_present_family=%d second_same_family_queue_available=%d"
+        " present_queue_split=%d present_queue_index=%u",
         reason ? reason : "none",
         provenance ? provenance->deliveryId : 0,
         provenance ? provenance->contextEpoch : 0,
@@ -968,7 +1013,9 @@ void VulkanRendererContext::emitHostDeliveryAccounting(
         graphicsQueueFamilyQueueCount,
         presentCapableQueueFamilyCount,
         alternatePresentQueueFamilyAvailable ? 1 : 0,
-        graphicsQueueFamilyQueueCount > 1 ? 1 : 0);
+        graphicsQueueFamilyQueueCount > 1 ? 1 : 0,
+        hostSplitPresentQueueActive_ ? 1 : 0,
+        hostPresentQueueIndex_);
 }
 
 void VulkanRendererContext::dropQueuedLsfgHostDeliveriesForWindow(
@@ -1427,7 +1474,10 @@ VkResult VulkanRendererContext::presentHostFrame(
 
     const auto presentStart = std::chrono::steady_clock::now();
     VkResult result = VK_SUCCESS;
-    {
+    if (hostSplitPresentQueueActive_) {
+        std::lock_guard<std::mutex> queueLock(presentQueueMutex_);
+        result = vk_.QueuePresentKHR(presentQueue, &pi);
+    } else {
         std::lock_guard<std::mutex> queueLock(graphicsQueueMutex_);
         result = vk_.QueuePresentKHR(graphicsQueue, &pi);
     }
@@ -1474,6 +1524,7 @@ VkResult VulkanRendererContext::presentHostFrame(
                 "event=present telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
                 "mode=%s smooth_fallback=%d fallback_reason=%s requested_present_mode=%d "
                 "active_present_mode=%d swapchain_generation=%llu active_slots=%u unique_content=%d "
+                "present_queue_split=%d present_queue_index=%u "
                 "gpu_outstanding=%u max_gpu_outstanding=%u frame_slot=%u submission_serial=%llu "
                 "completed_submission_serial=%llu acquire_ms=%.3f submit_ms=%.3f "
                 "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f presented=%llu "
@@ -1490,6 +1541,8 @@ VkResult VulkanRendererContext::presentHostFrame(
                 present.hasUniqueLsfgDelivery
                     ? activeFrameSlotCount() : BASE_FRAMES_IN_FLIGHT,
                 present.hasUniqueLsfgDelivery ? 1 : 0,
+                hostSplitPresentQueueActive_ ? 1 : 0,
+                hostPresentQueueIndex_,
                 present.gpuOutstanding,
                 frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
                 present.frameSlot,
@@ -3892,13 +3945,16 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
             "event=delivery-policy delivery_handoff=ordered-minimum "
             "delivery_queue_capacity=%u effective_gpu_target=0 "
             "graphics_family=%u family_queue_count=%u present_capable_families=%u "
-            "alternate_present_family=%d second_same_family_queue_available=%d",
+            "alternate_present_family=%d second_same_family_queue_available=%d "
+            "present_queue_split=%d present_queue_index=%u",
             hostDeliveryQueueCapacity(),
             graphicsQueueFamilyIndex,
             graphicsQueueFamilyQueueCount,
             presentCapableQueueFamilyCount,
             alternatePresentQueueFamilyAvailable ? 1 : 0,
-            graphicsQueueFamilyQueueCount > 1 ? 1 : 0);
+            graphicsQueueFamilyQueueCount > 1 ? 1 : 0,
+            hostSplitPresentQueueActive_ ? 1 : 0,
+            hostPresentQueueIndex_);
     }
 }
 

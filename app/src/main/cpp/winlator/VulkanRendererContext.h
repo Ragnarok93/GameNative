@@ -407,6 +407,9 @@ private:
     uint32_t graphicsQueueFamilyQueueCount = 1;
     uint32_t presentCapableQueueFamilyCount = 0;
     bool alternatePresentQueueFamilyAvailable = false;
+    bool hostSplitPresentQueueEnabled_ = true;
+    bool hostSplitPresentQueueActive_ = false;
+    uint32_t hostPresentQueueIndex_ = 0;
     std::vector<VkPresentModeKHR> availablePresentModes;
 
     // Host-output confirmation remains telemetry-only. It never changes
@@ -472,6 +475,7 @@ private:
     std::atomic<bool> lsfgFrameQueueEnabled_{false};
     std::atomic<uint32_t> lsfgFrameQueueTarget_{0};
     std::mutex graphicsQueueMutex_;
+    std::mutex presentQueueMutex_;
     std::atomic<uint64_t> frameQueuePresentedTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitNsTotal_{0};
@@ -577,6 +581,7 @@ private:
     VkPhysicalDevice physicalDevice;
     VkDevice         device;
     VkQueue          graphicsQueue;
+    VkQueue          presentQueue = VK_NULL_HANDLE;
     VkSwapchainKHR   swapchain   = VK_NULL_HANDLE;
     VkFormat         swapchainFmt;
     VkExtent2D       swapchainExt;

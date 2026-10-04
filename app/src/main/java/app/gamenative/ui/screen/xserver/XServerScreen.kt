@@ -420,6 +420,7 @@ fun XServerScreen(
     bootToContainer: Boolean,
     testGraphics: Boolean = false,
     diagnostics: Boolean = false,
+    debugRun: Boolean = false,
     isOffline: Boolean = false,
     registerBackAction: ( ( ) -> Unit ) -> Unit,
     navigateBack: () -> Unit,
@@ -2643,7 +2644,6 @@ fun XServerScreen(
                 anchor = view,
                 container = container,
                 xServer = xServerView.getxServer(),
-                gameNameProvider = { currentAppInfo?.name ?: container.name },
                 showKeyboard = showSoftKeyboard,
                 openQuickMenu = { showQuickMenu = true },
                 onSettingsVisibilityChanged = { visible ->
@@ -3013,8 +3013,18 @@ fun XServerScreen(
                         // Wait for view to be laid out before loading elements
                         PluviaApp.inputControlsView?.let { icView ->
                             icView.post {
-                                copyInputControlsProfileElements(profile, currentProfile, icView)
-                                SnackbarManager.show(context.getString(R.string.toast_controls_reset))
+                                runCatching {
+                                    val applied = app.gamenative.inputcontrols.ControlProfileService.applyProfile(
+                                        context,
+                                        container,
+                                        manager,
+                                        profile,
+                                        setOf(app.gamenative.inputcontrols.ControlProfileSection.ON_SCREEN),
+                                    )
+                                    applied.loadElements(icView)
+                                    icView.setProfile(applied)
+                                    icView.invalidate()
+                                }.onFailure { Timber.w(it, "Failed to apply duplicated control profile") }
                             }
                         }
                     }
@@ -3416,7 +3426,7 @@ private fun EditModeToolbar(
                 TextButton(onClick = { duplicateProfileOpen = !duplicateProfileOpen }) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = "Copy From", tint = androidx.compose.ui.graphics.Color.White)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text(stringResource(R.string.copy_from), color = androidx.compose.ui.graphics.Color.White)
+                    Text("Copy From", color = androidx.compose.ui.graphics.Color.White)
                 }
 
                 val knownProfiles = PluviaApp.inputControlsManager?.getProfiles(false) ?: emptyList()
@@ -3456,7 +3466,6 @@ private fun EditModeToolbar(
 }
 
 private fun showInputControls(profile: ControlsProfile, winHandler: WinHandler, container: Container) {
-    profile.setVirtualGamepad(true)
     PluviaApp.radialMenuCoordinator?.setProfile(profile)
 
     PluviaApp.inputControlsView?.let { icView ->
@@ -4229,17 +4238,31 @@ private fun setupXEnvironment(
     // environment.addComponent(SteamClientComponent(UnixSocketConfig.createSocket(SteamService.getAppDirPath(appId), "/steam_pipe")))
     // environment.addComponent(SteamClientComponent(UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.STEAM_PIPE_PATH)))
 
+    val micEnabled = container.getMicEnabled() && PulseAudioComponent.isMicModuleAvailable(context)
+    if (container.getMicEnabled() && !micEnabled) {
+        Timber.w("Microphone enabled for this container but module-pipe-source.so is missing; skipping")
+    }
     if (xServerState.value.audioDriver == "alsa") {
         envVars.put("ANDROID_ALSA_SERVER", imageFs.getRootDir().getPath() + UnixSocketConfig.ALSA_SERVER_PATH)
         envVars.put("ANDROID_ASERVER_USE_SHM", "true")
         val options = ALSAClient.Options.fromKeyValueSet(null)
         environment.addComponent(ALSAServerComponent(UnixSocketConfig.createSocket(imageFs.getRootDir().getPath(), UnixSocketConfig.ALSA_SERVER_PATH), options))
+        if (micEnabled) {
+            envVars.put("PULSE_SERVER", imageFs.getRootDir().getPath() + UnixSocketConfig.PULSE_SERVER_PATH)
+            environment.addComponent(PulseAudioComponent(
+                UnixSocketConfig.createSocket(imageFs.getRootDir().getPath(), UnixSocketConfig.PULSE_SERVER_PATH),
+                container.pulseaudioLowLatency, true, false
+            ))
+        }
     } else if (xServerState.value.audioDriver == "pulseaudio") {
         envVars.put("PULSE_SERVER", imageFs.getRootDir().getPath() + UnixSocketConfig.PULSE_SERVER_PATH)
         environment.addComponent(PulseAudioComponent(
             UnixSocketConfig.createSocket(imageFs.getRootDir().getPath(), UnixSocketConfig.PULSE_SERVER_PATH),
-            container.pulseaudioLowLatency
+            container.pulseaudioLowLatency, micEnabled, true
         ))
+    }
+    if (micEnabled) {
+        environment.addComponent(com.winlator.xenvironment.components.MicrophoneComponent(PulseAudioComponent.getMicFifoFile(context)))
     }
 
     if (xServerState.value.graphicsDriver == "virgl") {

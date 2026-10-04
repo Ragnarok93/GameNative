@@ -102,7 +102,7 @@ object AdaptiveFpsCapController {
     }
 
     private fun runCycle() {
-        if (PowerManager.currentProfile?.enableAdaptiveFpsCap == false) {
+        if (PowerManager.currentProfile?.adaptiveFpsCapEnabled == false) {
             running = false
             restoreUserCap("disabled")
             return

@@ -39,6 +39,15 @@ public class FrameRating extends FrameLayout implements Runnable {
     private int minFPS = Integer.MAX_VALUE;
     private long lastReadingTime = 0;
     private long fpsSum = 0; // Sum of all FPS readings for average calculation
+    private long lastFrameTime = 0;
+    private long totalFrames = 0;
+    private long activeMs = 0;
+    private static final int FRAME_HIST_CAP_MS = 200;
+    private static final int FPS_BUCKET_MS = 5 * 60 * 1000;
+    private static final int MAX_FPS_BUCKETS = 48;
+    private final long[] bucketFpsSum = new long[MAX_FPS_BUCKETS];
+    private final int[] bucketReadings = new int[MAX_FPS_BUCKETS];
+    private final int[] frameHistMs = new int[FRAME_HIST_CAP_MS + 1];
 
     public FrameRating(Context context) {
         this(context, null);
@@ -68,13 +77,23 @@ public class FrameRating extends FrameLayout implements Runnable {
 
     public void update() {
         FrameTimeRing.record();
-        if (lastTime == 0) {
-            lastTime = SystemClock.elapsedRealtime();
-            if (sessionStartTime == 0) {
-                sessionStartTime = lastTime;
-            }
-        }
         long time = SystemClock.elapsedRealtime();
+        if (lastTime == 0) {
+            lastTime = time;
+            if (sessionStartTime == 0) sessionStartTime = time;
+        }
+        try {
+            if (lastFrameTime != 0 && time >= lastFrameTime) {
+                int delta = (int)Math.min(time - lastFrameTime, FRAME_HIST_CAP_MS);
+                frameHistMs[delta]++;
+            }
+            if (lastFrameTime != 0 && time > lastFrameTime && time - lastFrameTime < 1000) {
+                activeMs += time - lastFrameTime;
+            }
+            if (time > lastFrameTime) lastFrameTime = time;
+            totalFrames++;
+        } catch (RuntimeException ignored) {}
+
         if (time >= lastTime + 500) {
             float sampleFPS = ((float)(frameCount * 1000) / (time - lastTime));
             if (!isPlausibleFps(sampleFPS)) {
@@ -85,31 +104,24 @@ public class FrameRating extends FrameLayout implements Runnable {
                 resetSamplingEpoch();
                 return;
             }
-
             lastFPS = sampleFPS;
-
-            // Take reading at specified interval
             if (lastReadingTime == 0 || time >= lastReadingTime + READING_INTERVAL_MS) {
                 int currentFPS = Math.round(lastFPS);
                 readingCount++;
                 fpsSum += currentFPS;
-
-                // Track max and min FPS (min must be > 1)
-                if (currentFPS > maxFPS) {
-                    maxFPS = currentFPS;
+                int bucket = (int)((time - sessionStartTime) / FPS_BUCKET_MS);
+                if (bucket >= 0 && bucket < MAX_FPS_BUCKETS) {
+                    bucketFpsSum[bucket] += currentFPS;
+                    bucketReadings[bucket]++;
                 }
-                if (currentFPS > 1 && currentFPS < minFPS) {
-                    minFPS = currentFPS;
-                }
-
+                if (currentFPS > maxFPS) maxFPS = currentFPS;
+                if (currentFPS > 1 && currentFPS < minFPS) minFPS = currentFPS;
                 lastReadingTime = time;
             }
-
             post(this);
             lastTime = time;
             frameCount = 0;
         }
-
         frameCount++;
     }
 
@@ -135,6 +147,12 @@ public class FrameRating extends FrameLayout implements Runnable {
         minFPS = Integer.MAX_VALUE;
         lastReadingTime = 0;
         fpsSum = 0;
+        lastFrameTime = 0;
+        totalFrames = 0;
+        activeMs = 0;
+        java.util.Arrays.fill(bucketFpsSum, 0L);
+        java.util.Arrays.fill(bucketReadings, 0);
+        java.util.Arrays.fill(frameHistMs, 0);
         post(() -> textView.setText(String.format(Locale.ENGLISH, "%.1f", 0f)));
     }
 
@@ -146,6 +164,27 @@ public class FrameRating extends FrameLayout implements Runnable {
     public float getAvgFPS() {
         if (readingCount == 0) return 0;
         return (float) fpsSum / readingCount;
+    }
+
+    public long getTotalFrames() { return totalFrames; }
+    public long getActiveMs() { return activeMs; }
+
+    public java.util.List<Integer> getFpsBy5Min() {
+        java.util.ArrayList<Integer> out = new java.util.ArrayList<>();
+        for (int i = 0; i < MAX_FPS_BUCKETS && bucketReadings[i] > 0; i++) {
+            out.add((int)(bucketFpsSum[i] / bucketReadings[i]));
+        }
+        return out;
+    }
+
+    public int getFramePercentileMs(double percentile) {
+        long counted = 0;
+        long target = (long)Math.ceil(percentile * Math.max(0L, totalFrames - 1));
+        for (int ms = 0; ms < frameHistMs.length; ms++) {
+            counted += frameHistMs[ms];
+            if (counted > target) return ms;
+        }
+        return FRAME_HIST_CAP_MS;
     }
 
     public float getSessionLengthSec() {

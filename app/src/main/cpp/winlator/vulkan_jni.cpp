@@ -289,6 +289,13 @@ Java_com_winlator_renderer_VulkanRenderer_nativeSetLsfgFrameQueue(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeArmFrameGeneration(
+        JNIEnv*, jobject, jlong handle) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->armFrameGeneration();
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationEnabled(
         JNIEnv*, jobject, jlong handle, jboolean enabled) {
     if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))

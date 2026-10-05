@@ -327,6 +327,7 @@ class LsfgQuickMenuState(
     val performanceMode: Boolean = true,
     val backend: String = "legacy",
     val runtimeStatus: String = "",
+    val onBackendChanged: (String) -> Unit = {},
     val onMultiplierChanged: (Int) -> Unit = {},
     val onFlowScaleChanged: (Float) -> Unit = {},
     val onPerformanceModeChanged: (Boolean) -> Unit = {},
@@ -373,6 +374,7 @@ fun QuickMenu(
     val lsfgPerformanceMode = lsfg.performanceMode
     val lsfgBackend = lsfg.backend
     val lsfgRuntimeStatus = lsfg.runtimeStatus
+    val onLsfgBackendChanged = lsfg.onBackendChanged
     val onLsfgMultiplierChanged = lsfg.onMultiplierChanged
     val onLsfgFlowScaleChanged = lsfg.onFlowScaleChanged
     val onLsfgPerformanceModeChanged = lsfg.onPerformanceModeChanged
@@ -939,7 +941,7 @@ fun QuickMenu(
                                             flowScale = lsfgFlowScale,
                                             performanceMode = lsfgPerformanceMode,
                                             backend = lsfgBackend,
-                                            onBackendChanged = { backend -> container?.let { app.gamenative.utils.LsfgVkManager.setBackend(it, backend) } },
+                                            onBackendChanged = onLsfgBackendChanged,
                                             runtimeStatus = lsfgRuntimeStatus,
                                             onMultiplierChanged = onLsfgMultiplierChanged,
                                             onFlowScaleChanged = onLsfgFlowScaleChanged,

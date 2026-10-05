@@ -261,13 +261,13 @@ private const val DEFAULT_FPS_LIMITER_TARGET_HZ = 60
 private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
 private const val FPS_LIMITER_TARGET_EXTRA = "fpsLimiterTarget"
 
-private class XServerCoroutineScope(private val delegate: CoroutineScope) {
-    fun launch(block: suspend CoroutineScope.() -> Unit): Job = delegate.launch(block = block)
-}
+private class XServerCoroutineScope(
+    private val delegate: CoroutineScope
+) : CoroutineScope by delegate
 
 @Composable
 private fun rememberXServerCoroutineScope(): XServerCoroutineScope {
-    val scope = rememberXServerCoroutineScope()
+    val scope = rememberCoroutineScope()
     return remember(scope) { XServerCoroutineScope(scope) }
 }
 

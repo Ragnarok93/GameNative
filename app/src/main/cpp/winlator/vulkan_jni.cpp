@@ -289,6 +289,67 @@ Java_com_winlator_renderer_VulkanRenderer_nativeSetLsfgFrameQueue(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->setFrameGenerationEnabled(enabled == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationShaders(
+        JNIEnv* env, jobject, jlong handle, jstring cachePath) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    if (!renderer || !cachePath) return;
+    const char* chars = env->GetStringUTFChars(cachePath, nullptr);
+    if (!chars) return;
+    renderer->setFrameGenerationShaders(chars);
+    env->ReleaseStringUTFChars(cachePath, chars);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationRefreshRate(
+        JNIEnv*, jobject, jlong handle, jfloat hz) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->setFrameGenerationRefreshRate((float)hz);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationMode(
+        JNIEnv*, jobject, jlong handle, jint multiplier, jint targetRate, jint flowScalePct) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->setFrameGenerationMode(
+            (int)multiplier, (int)targetRate, (int)flowScalePct);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetGeneratedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? (jlong)renderer->getGeneratedFrameCount() : 0;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetPresentedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? (jlong)renderer->getPresentedFrameCount() : 0;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetRealFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? (jlong)renderer->getRealFrameCount() : 0;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetSourceFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? (jlong)renderer->getSourceFrameCount() : 0;
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetEffect(
     JNIEnv*, jobject, jlong handle, jint effectId, jfloat sharpness,
     jint effectMask, jfloat brightness, jfloat contrast, jfloat gamma) {

@@ -70,6 +70,19 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private boolean xRenderingPausedForScanout = false;
     private volatile VulkanXrFrameBridge xrFrameBridge = null;
     private volatile long xrTargetAhbPtr = 0;
+    private volatile boolean flatPresentationEnabled = true;
+
+    public void setFlatPresentationEnabled(boolean enabled) {
+        if (flatPresentationEnabled == enabled) return;
+        flatPresentationEnabled = enabled;
+        if (!enabled) {
+            scenePending.set(false);
+        } else {
+            onPointerMove(xServer.pointer.getX(), xServer.pointer.getY());
+            queueSceneUpdate();
+            xServerView.requestRender();
+        }
+    }
 
     /** See VulkanXrFrameBridge's kdoc — null except for the Meta Quest immersive path. */
     public void setVulkanXrFrameBridge(VulkanXrFrameBridge xrFrameBridge) {

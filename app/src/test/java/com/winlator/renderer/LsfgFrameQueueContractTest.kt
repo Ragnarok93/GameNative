@@ -511,6 +511,48 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun splitPresentQueueUsesBoundedPresenterWorkerWithoutChangingLsfgSyncTopology() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("MAX_HOST_PRESENT_QUEUE_DEPTH"))
+        assertTrue(header.contains("CompletedHostPresent"))
+        assertTrue(header.contains("pendingHostPresents_"))
+        assertTrue(header.contains("completedHostPresents_"))
+        assertTrue(header.contains("hostPresenterThread_"))
+        assertTrue(header.contains("hostPresentCompletionPending_"))
+        assertTrue(header.contains("hostAsyncPresenterActive_"))
+
+        assertTrue(implementation.contains("enqueueHostPresent"))
+        assertTrue(implementation.contains("hostPresenterLoop"))
+        assertTrue(implementation.contains("processHostPresentCompletions"))
+        assertTrue(implementation.contains("drainHostPresenter"))
+        assertTrue(implementation.contains("host_present_enqueue_wait_ms="))
+        assertTrue(implementation.contains("host_present_queue_depth="))
+        assertTrue(implementation.contains("host_present_worker=1"))
+        assertTrue(implementation.contains("hostAsyncPresenterActive_ ="))
+        assertTrue(implementation.contains("hostSplitPresentQueueActive_"))
+        assertTrue(implementation.contains("drainHostPresenter(\"swapchain-cleanup\")"))
+
+        val renderStart = implementation.indexOf("void VulkanRendererContext::renderFrame")
+        val resizeStart = implementation.indexOf("void VulkanRendererContext::onSurfaceResized", renderStart)
+        assertTrue(renderStart >= 0 && resizeStart > renderStart)
+        val render = implementation.substring(renderStart, resizeStart)
+        assertTrue(render.contains("enqueueHostPresent"))
+        assertTrue(render.contains("hostAsyncPresenterActive_"))
+        assertTrue(render.contains("frameQueuePresentSems_[imgIdx]"))
+        assertFalse(render.contains("std::this_thread::sleep_for"))
+
+        val presenterStart = implementation.indexOf("void VulkanRendererContext::hostPresenterLoop")
+        val presenterEnd = implementation.indexOf("void VulkanRendererContext::processHostPresentCompletions", presenterStart)
+        assertTrue(presenterStart >= 0 && presenterEnd > presenterStart)
+        val presenter = implementation.substring(presenterStart, presenterEnd)
+        assertTrue(presenter.contains("executeHostPresent"))
+        assertFalse(presenter.contains("recordHostPresent"))
+        assertFalse(presenter.contains("pollHostDisplayConfirmations"))
+    }
+
+    @Test
     fun queuedAhbTransitionOwnershipSurvivesUntilTheQueuedSnapshot() {
         val implementation = source("VulkanRendererContext.cpp")
         val updateStart = implementation.indexOf("void VulkanRendererContext::updateWindowContentAHB")

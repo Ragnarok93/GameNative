@@ -1723,7 +1723,10 @@ VkResult VulkanRendererContext::presentHostFrame(
                 "event=present telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
                 "mode=%s smooth_fallback=%d fallback_reason=%s requested_present_mode=%d "
                 "active_present_mode=%d swapchain_generation=%llu active_slots=%u unique_content=%d "
-                "present_queue_split=%d present_queue_index=%u "
+                "present_queue_split=%d present_queue_index=%u present_async=%d "
+                "present_enqueue_wait_ms=%.3f presenter_queue_depth=%u presenter_queue_high_water=%u "
+                "presenter_backpressure_total=%llu presenter_backpressure_wait_ms_total=%.3f "
+                "presenter_slot_wait_total=%llu presenter_slot_wait_ms_total=%.3f "
                 "gpu_outstanding=%u max_gpu_outstanding=%u frame_slot=%u submission_serial=%llu "
                 "completed_submission_serial=%llu acquire_ms=%.3f submit_ms=%.3f "
                 "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f presented=%llu "
@@ -1742,6 +1745,20 @@ VkResult VulkanRendererContext::presentHostFrame(
                 present.hasUniqueLsfgDelivery ? 1 : 0,
                 hostSplitPresentQueueActive_ ? 1 : 0,
                 hostPresentQueueIndex_,
+                present.asyncPresent ? 1 : 0,
+                static_cast<double>(present.presentEnqueueWaitNs) / 1000000.0,
+                present.presenterQueueDepth,
+                hostPresenterPendingHighWater_.load(std::memory_order_relaxed),
+                static_cast<unsigned long long>(
+                    hostPresenterBackpressureTotal_.load(std::memory_order_relaxed)),
+                static_cast<double>(
+                    hostPresenterBackpressureNsTotal_.load(std::memory_order_relaxed))
+                    / 1000000.0,
+                static_cast<unsigned long long>(
+                    hostPresenterSlotWaitTotal_.load(std::memory_order_relaxed)),
+                static_cast<double>(
+                    hostPresenterSlotWaitNsTotal_.load(std::memory_order_relaxed))
+                    / 1000000.0,
                 present.gpuOutstanding,
                 frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
                 present.frameSlot,

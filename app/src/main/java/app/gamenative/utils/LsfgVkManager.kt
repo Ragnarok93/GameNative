@@ -580,9 +580,9 @@ object LsfgVkManager {
         val requested = isNativeBackend(container)
         val enabled = requested && isArmed(container) && multiplier(container) >= 2
 
-        // Arm the native control seam first; subsequent shader/mode setters are
-        // intentionally ignored by the renderer until this explicit bridge exists.
-        renderer.setFrameGenerationEnabled(false)
+        // Arm the native control seam without tearing down an already-running
+        // native context on every Quick Menu setting update.
+        renderer.armFrameGeneration()
         renderer.setFrameGenerationMode(
             multiplier(container).coerceAtLeast(2),
             if (generationMode(container) == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,

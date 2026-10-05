@@ -54,31 +54,22 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
-    fun vulkanRendererKeepsFinalPresentInlineInsteadOfUsingASecondPresenterThread() {
+    fun vulkanRendererKeepsSynchronousFallbackWhenSplitPresentationIsUnavailable() {
         val javaRenderer = repoSource("app/src/main/java/com/winlator/renderer/VulkanRenderer.java")
         val jni = source("vulkan_jni.cpp")
-        val header = source("VulkanRendererContext.h")
         val implementation = source("VulkanRendererContext.cpp")
 
         assertTrue(javaRenderer.contains("setLsfgFrameQueue"))
         assertTrue(javaRenderer.contains("nativeSetLsfgFrameQueue"))
         assertTrue(jni.contains("nativeSetLsfgFrameQueue"))
 
-        assertFalse(header.contains("hostPresentThread_"))
-        assertFalse(header.contains("hostPresentQueue_"))
-        assertFalse(header.contains("framePresentPending_"))
-        assertFalse(header.contains("queuedRenderDoneSems_"))
-        assertFalse(implementation.contains("hostPresentLoop"))
-        assertFalse(implementation.contains("enqueueHostPresent"))
-        assertFalse(implementation.contains("waitForHostPresentCapacity"))
-
-        val renderFrameStart = implementation.indexOf("void VulkanRendererContext::renderFrame()")
-        val renderFrameEnd = implementation.indexOf("void VulkanRendererContext::onSurfaceResized", renderFrameStart)
-        assertTrue(renderFrameStart >= 0 && renderFrameEnd > renderFrameStart)
-        val renderFrame = implementation.substring(renderFrameStart, renderFrameEnd)
-        val submit = renderFrame.indexOf("vk_.QueueSubmit(")
-        val present = renderFrame.indexOf("presentHostFrame(")
-        assertTrue("Host present must remain inline after the matching submit", submit >= 0 && present > submit)
+        val enqueueStart = implementation.indexOf("VkResult VulkanRendererContext::enqueueHostPresent")
+        val enqueueEnd = implementation.indexOf("void VulkanRendererContext::drainHostPresenter", enqueueStart)
+        assertTrue(enqueueStart >= 0 && enqueueEnd > enqueueStart)
+        val enqueue = implementation.substring(enqueueStart, enqueueEnd)
+        assertTrue(enqueue.contains("!hostSplitPresentQueueActive_"))
+        assertTrue(enqueue.contains("return presentHostFrame(present)"))
+        assertFalse(enqueue.contains("pop_front(); // drop"))
     }
 
     @Test
@@ -538,6 +529,8 @@ class LsfgFrameQueueContractTest {
         val render = implementation.substring(renderStart, detachStart)
         assertTrue(render.contains("waitForHostPresenterSlot(currentFrame)"))
         assertTrue(render.contains("enqueueHostPresent(std::move(pendingPresent))"))
+        assertTrue(render.contains("hostSplitPresentQueueActive_"))
+        assertTrue(render.contains("frameQueuePresentSems_[imgIdx]"))
 
         val cleanupStart = implementation.indexOf("void VulkanRendererContext::cleanupSwapchain")
         val cleanupEnd = implementation.indexOf("void VulkanRendererContext::createFramebuffers", cleanupStart)

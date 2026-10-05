@@ -120,7 +120,8 @@ struct VkTable {
 static constexpr uint32_t BASE_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
-static constexpr uint32_t HOST_PRESENTER_QUEUE_CAPACITY = MAX_FRAMES_IN_FLIGHT;
+static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = MAX_FRAMES_IN_FLIGHT;
+static constexpr uint32_t HOST_PRESENTER_QUEUE_CAPACITY = MAX_HOST_PRESENT_QUEUE_DEPTH;
 static constexpr uint64_t SMOOTH_PRESENT_STALL_NS = 8'000'000ULL;
 static constexpr uint32_t SMOOTH_PRESENT_STALL_STRIKES = 2;
 static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
@@ -272,6 +273,15 @@ struct PendingHostPresent {
     uint64_t presenterEnqueuedAtNs = 0;
     uint32_t presenterQueueDepth = 0;
     bool asyncPresent = false;
+};
+
+struct CompletedHostPresent {
+    PendingHostPresent present{};
+    VkResult result = VK_SUCCESS;
+    uint64_t presentCallNs = 0;
+    uint64_t presenterQueueAgeNs = 0;
+    uint64_t presenterWorkerNs = 0;
+    uint32_t presenterQueueDepthAfter = 0;
 };
 
 struct WindowPushConstants {
@@ -496,7 +506,10 @@ private:
     std::condition_variable hostPresenterCapacityCv_;
     std::condition_variable hostPresenterDrainCv_;
     std::deque<PendingHostPresent> pendingHostPresents_;
+    std::deque<CompletedHostPresent> completedHostPresents_;
     bool hostPresenterInFlight_ = false;
+    bool hostAsyncPresenterActive_ = false;
+    std::atomic<bool> hostPresentCompletionPending_{false};
     std::array<std::atomic<uint64_t>, MAX_FRAMES_IN_FLIGHT>
         presenterEnqueuedSubmissionSerialBySlot_{};
     std::array<std::atomic<uint64_t>, MAX_FRAMES_IN_FLIGHT>
@@ -736,6 +749,9 @@ private:
         VkPresentModeKHR presentMode);
     void drainFrameQueueSubmissions(const char* reason);
     void hostPresenterLoop();
+    CompletedHostPresent executeHostPresent(PendingHostPresent&& present);
+    void processHostPresentCompletion(CompletedHostPresent&& completed);
+    void processHostPresentCompletions();
     VkResult enqueueHostPresent(PendingHostPresent&& present);
     void drainHostPresenter(const char* reason);
     void waitForHostPresenterSlot(uint32_t frameSlot);

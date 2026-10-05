@@ -200,3 +200,18 @@ Before implementation, the upstream lineage was checked rather than assuming a "
 The native GameNative compositor implementation is a different lineage: it derives from Eden's native Vulkan LSFG implementation, which Eden merged in PR #4263, rather than from an lsfg-vk "1.3.0" release. Therefore no nonexistent 1.3.0 code will be fabricated or transplanted. The native integration work will instead use the merged Eden implementation and the later proven compositor-side fixes as the source-of-truth lineage, while preserving the repository's existing protected Adreno synchronization behavior.
 
 **Implication:** the pre-integration task is not an lsfg-vk version bump. It is an audit/reconciliation of the native Eden-derived engine against the current compositor-side implementation, especially generation planning, history priming, target management, provenance, and multi-present scheduling. Those changes must be integrated before native backend activation is declared functional.
+
+
+## Progress update — 2026-10-05
+
+Completed the first real native-renderer integration slice on this branch:
+- reconciled the native helper with VulkanRendererContext state and Vulkan dispatch;
+- added explicit native renderer arm/control JNI seams;
+- connected authoritative backend selection to the host renderer;
+- added swapchain transfer-usage gating required for compositor output;
+- integrated native LSFG history processing and one generated-frame (2x) output into the actual render submission;
+- acquired a second WSI image, signaled per-image present semaphores, and queued the generated image as a distinct present;
+- added native source/generated counters and render-loop contract coverage;
+- preserved the legacy path and avoided DeviceWaitIdle/QueueWaitIdle in renderFrame().
+
+Current deliberate limitation: native generation is bring-up-gated to a single generated frame (2x). 3x/4x scheduling remains a separate follow-up so the first runtime proof does not claim unsupported multiplier behavior.

@@ -298,7 +298,8 @@ object LsfgVkManager {
             requestedAtNs = System.nanoTime(),
         )
         Timber.i(
-            "LSFG_BACKEND: event=backend_request request_serial=%d requested_backend=%s previous_backend=%s",
+            "LSFG_BACKEND: event=backend_request backend_generation=%d request_serial=%d requested_backend=%s previous_backend=%s",
+            request.serial,
             request.serial,
             sanitized,
             previous,
@@ -306,7 +307,8 @@ object LsfgVkManager {
         container.putExtra(EXTRA_BACKEND, sanitized)
         container.saveData()
         Timber.i(
-            "LSFG_BACKEND: event=backend_state_changed request_serial=%d backend_state=%s",
+            "LSFG_BACKEND: event=backend_state_changed backend_generation=%d request_serial=%d backend_state=%s",
+            request.serial,
             request.serial,
             sanitized,
         )
@@ -321,9 +323,10 @@ object LsfgVkManager {
     ) {
         val latencyMs = ((appliedAtNs - request.requestedAtNs).coerceAtLeast(0L)) / 1_000_000.0
         Timber.i(
-            "LSFG_BACKEND: event=backend_runtime_applied request_serial=%d backend=%s runtime_backend=%s " +
-                "backend_apply_latency_ms=%.3f backend_apply_result=%s",
+            "LSFG_BACKEND: event=backend_runtime_applied backend_generation=%d request_serial=%d backend_apply_serial=%d " +
+                "backend=%s runtime_backend=%s backend_apply_latency_ms=%.3f backend_apply_result=%s",
             request.serial,
+            if (result == "runtime-applied") request.serial else 0L,
             request.backend,
             sanitizeBackend(runtimeBackend),
             latencyMs,

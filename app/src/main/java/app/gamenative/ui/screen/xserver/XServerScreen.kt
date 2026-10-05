@@ -2668,6 +2668,7 @@ fun XServerScreen(
                     updatePortraitGameHostHeight(
                         gameHost,
                         isPortrait,
+                        container.isPortraitBelowCutout,
                         screenWidth,
                         container.screenSize,
                     )

@@ -684,7 +684,6 @@ fun XServerScreen(
     var lsfgRuntimeMultiplier by rememberSaveable(container.id) {
         mutableIntStateOf(if (isLsfgGenerationActive) initialLsfgSettings.multiplier else 1)
     }
-    var lsfgRuntimeTransitionGeneration by remember(container.id) { mutableIntStateOf(0) }
     var lastLsfgPacingActive by remember(container.id) {
         mutableStateOf(isLsfgGenerationActive)
     }

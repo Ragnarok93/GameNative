@@ -2,6 +2,7 @@ package app.gamenative.utils
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,8 +41,8 @@ class LsfgHostQueueTelemetryContractTest {
     }
 
     private fun sourcePath(relative: String): Path {
-        val modulePath = Path.of("src/main/java").resolve(relative)
+        val modulePath = Paths.get("src/main/java").resolve(relative)
         if (Files.isRegularFile(modulePath)) return modulePath
-        return Path.of("app/src/main/java").resolve(relative)
+        return Paths.get("app/src/main/java").resolve(relative)
     }
 }

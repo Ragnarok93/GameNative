@@ -831,7 +831,14 @@ fun XServerScreen(
         // Re-push it only when the authoritative backend is native; legacy keeps
         // the protected lsfg-vk path unchanged.
         if (LsfgVkManager.isNativeBackend(container)) {
-            LsfgVkManager.refreshNativeRuntime(container)
+            val renderer = xServerView?.renderer as? VulkanRenderer
+            if (renderer != null) {
+                LsfgVkManager.applyNativeRuntime(
+                    renderer = renderer,
+                    container = container,
+                    context = xServerView!!.context,
+                )
+            }
         }
     }
 

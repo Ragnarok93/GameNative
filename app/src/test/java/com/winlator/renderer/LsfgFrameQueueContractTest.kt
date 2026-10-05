@@ -500,14 +500,25 @@ class LsfgFrameQueueContractTest {
         assertTrue(device.contains("GetDeviceQueue(device,graphicsQueueFamilyIndex,1,&presentQueue)"))
         assertTrue(device.contains("presentQueue = graphicsQueue"))
 
-        val presentStart = implementation.indexOf("VkResult VulkanRendererContext::presentHostFrame")
-        val presentEnd = implementation.indexOf("void VulkanRendererContext::cleanupSwapchain", presentStart)
-        assertTrue(presentStart >= 0 && presentEnd > presentStart)
-        val present = implementation.substring(presentStart, presentEnd)
-        assertTrue(present.contains("QueuePresentKHR(presentQueue"))
-        assertTrue(present.contains("presentQueueMutex_"))
-        assertTrue(present.contains("present_queue_split="))
-        assertTrue(present.contains("present_queue_index="))
+        val executeStart = implementation.indexOf(
+            "CompletedHostPresent VulkanRendererContext::executeHostPresent"
+        )
+        val executeEnd = implementation.indexOf(
+            "void VulkanRendererContext::finalizeHostPresent", executeStart
+        )
+        assertTrue(executeStart >= 0 && executeEnd > executeStart)
+        val execute = implementation.substring(executeStart, executeEnd)
+        assertTrue(execute.contains("QueuePresentKHR(presentQueue"))
+        assertTrue(execute.contains("presentQueueMutex_"))
+
+        val finalizeStart = executeEnd
+        val finalizeEnd = implementation.indexOf(
+            "VkResult VulkanRendererContext::presentHostFrame", finalizeStart
+        )
+        assertTrue(finalizeStart >= 0 && finalizeEnd > finalizeStart)
+        val finalize = implementation.substring(finalizeStart, finalizeEnd)
+        assertTrue(finalize.contains("present_queue_split="))
+        assertTrue(finalize.contains("present_queue_index="))
     }
 
     @Test

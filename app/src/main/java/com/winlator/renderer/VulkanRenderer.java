@@ -177,6 +177,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetSwapRB(long handle, boolean enabled);
     private native void nativeSetPresentMode(long handle, int mode);
     private native void nativeSetLsfgFrameQueue(long handle, boolean enabled, int target);
+    private native void nativeArmFrameGeneration(long handle);
     private native void nativeSetFrameGenerationEnabled(long handle, boolean enabled);
     private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
     private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
@@ -860,6 +861,12 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     public void setVkPresentMode(int mode) {
         pendingPresentMode = mode;
         synchronized (lock) { if (nativeHandle != 0) nativeSetPresentMode(nativeHandle, mode); }
+    }
+
+    public void armFrameGeneration() {
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeArmFrameGeneration(nativeHandle);
+        }
     }
 
     public void setFrameGenerationEnabled(boolean enabled) {

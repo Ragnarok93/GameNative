@@ -907,21 +907,18 @@ void VulkanRendererContext::createSyncObjects() {
 }
 
 bool VulkanRendererContext::ensureNativeExtraAcquireSemaphores() {
-    if (!device) return false;
+    if (!device || !vk_.CreateSemaphore) return false;
     VkSemaphoreCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
         for (auto& semaphore : nativeExtraAcquireSems_[frame]) {
             if (semaphore != VK_NULL_HANDLE) continue;
-            if (!vk_.CreateSemaphore(device, &info, nullptr, &semaphore)) continue;
-            // Keep creation deterministic; a partial set is not usable for the
-            // native compositor because an acquire semaphore is consumed by the
-            // same submission that writes the generated image.
+            if (vk_.CreateSemaphore(device, &info, nullptr, &semaphore) != VK_SUCCESS) {
+                RLOG_E("Native LSFG acquire semaphore creation failed frame=%u", frame);
+                return false;
+            }
         }
     }
-    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame)
-        for (auto semaphore : nativeExtraAcquireSems_[frame])
-            if (semaphore == VK_NULL_HANDLE) return false;
     return true;
 }
 
@@ -2522,6 +2519,12 @@ ok=true;}catch(...){}
         if (!ensureNativeExtraAcquireSemaphores()) {
             nativeRuntimeActive = false;
             RLOG_E("Native LSFG disabled for frame: acquire semaphore initialization failed");
+        }
+    }
+    if (nativeRuntimeActive) {
+        if (!ensureNativeExtraAcquireSemaphores()) {
+            nativeRuntimeActive = false;
+            RLOG_E("Native LSFG disabled for frame: generated-image acquire sync unavailable");
         }
     }
     if (nativeRuntimeActive) {

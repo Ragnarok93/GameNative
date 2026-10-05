@@ -34,5 +34,16 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(context.contains("vkd_unload()"))
         assertTrue(native.contains("vkr_lsfg_create"))
         assertTrue(native.contains("vkr_lsfg_generate_into"))
+        assertTrue(context.contains("nativeExtraAcquireSems_"))
+        assertTrue(context.contains("nativeGeneratedAcquireSemaphore"))
+        assertTrue(context.contains("nativeGeneratedImgIdx"))
+        assertTrue(context.contains("vkr_lsfg_plan(lsfg, 1, nativeSourceFrame)"))
+        assertTrue(context.contains("vkr_lsfg_process("))
+        assertTrue(context.contains("blitCompositeToSwapchain("))
+        assertTrue(context.contains("signalSemaphoreCount=signalSemaphoreCount"))
+        assertTrue(context.contains("nativeRuntimeActive"))
+        val renderStart = context.indexOf("void VulkanRendererContext::renderFrame()")
+        val renderBody = context.substring(renderStart)
+        assertTrue(!renderBody.contains("DeviceWaitIdle"))
     }
 }

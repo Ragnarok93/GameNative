@@ -733,6 +733,7 @@ private:
     void createCmdBufs();
     void createSyncObjects();
     void createFrameQueuePresentSemaphores();
+    bool ensureNativeExtraAcquireSemaphores();
     void retireFrameQueuePresentSemaphores();
     void destroyRetiredFrameQueuePresentSemaphores();
     void cleanupSwapchain();

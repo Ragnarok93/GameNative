@@ -135,6 +135,8 @@ import app.gamenative.utils.CustomGameScanner
 import app.gamenative.utils.ExecutableSelectionUtils
 import app.gamenative.utils.LsfgQuickMenuHelper
 import app.gamenative.utils.LsfgVkManager
+import app.gamenative.utils.LsfgRuntimeHandoffController
+import app.gamenative.utils.LsfgRuntimeMode
 import app.gamenative.utils.ManifestComponentHelper
 import app.gamenative.utils.launchdependencies.BionicSteamAssetsDependency
 import app.gamenative.utils.downloader.DXWrapperDownloader
@@ -253,9 +255,6 @@ private const val EXIT_PROCESS_TIMEOUT_MS = 30_000L
 private const val EXIT_PROCESS_POLL_INTERVAL_MS = 1_000L
 private const val EXIT_PROCESS_RESPONSE_TIMEOUT_MS = 2_000L
 private const val QUICK_MENU_PROCESS_POLL_INTERVAL_MS = 2_000L
-private const val LSFG_RUNTIME_HANDOFF_DELAY_MS = 1_200L
-private const val LSFG_RUNTIME_HANDOFF_TIMEOUT_MS = 2_500L
-private const val LSFG_RUNTIME_HANDOFF_POLL_MS = 100L
 private const val DEFAULT_FPS_LIMITER_MAX_HZ = 60
 private const val DEFAULT_FPS_LIMITER_TARGET_HZ = 60
 private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
@@ -269,15 +268,6 @@ private class XServerCoroutineScope(
 private fun rememberXServerCoroutineScope(): XServerCoroutineScope {
     val scope = rememberCoroutineScope()
     return remember(scope) { XServerCoroutineScope(scope) }
-}
-
-private enum class LsfgRuntimeMode(val label: String) {
-    OFF("Off"),
-    TURNING_ON("Turning on"),
-    GENERATING("Generating"),
-    TURNING_OFF("Turning off"),
-    SOURCE_ONLY_RESIDENT("Source only"),
-    DEGRADED("Degraded"),
 }
 
 private fun initialFpsLimiterEnabled(container: Container): Boolean =
@@ -469,7 +459,7 @@ fun XServerScreen(
     Timber.i("Starting up XServerScreen")
     val context = LocalContext.current
     val view = LocalView.current
-    val scope = rememberCoroutineScope()
+    val coroutineController = rememberXServerCoroutineScope()
     val adaptiveCapGeneration = remember { AtomicLong(0L) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val imm = remember(context) {
@@ -591,7 +581,10 @@ fun XServerScreen(
     var win32AppWorkarounds: Win32AppWorkarounds? by remember { mutableStateOf(null) }
     var physicalControllerHandler: PhysicalControllerHandler? by remember { mutableStateOf(null) }
     var exitWatchJob: Job? by remember { mutableStateOf(null) }
-    val keyboardEscMenuHandler = remember(scope) { KeyboardEscMenuHandler(scope) }
+    val keyboardEscMenuHandler = remember(coroutineController) { KeyboardEscMenuHandler(coroutineController) }
+    val lsfgRuntimeHandoffController = remember(container.id) {
+        LsfgRuntimeHandoffController(container) { PluviaApp.isOverlayPaused }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -602,6 +595,7 @@ fun XServerScreen(
             exitWatchJob?.cancel()
             exitWatchJob = null
             keyboardEscMenuHandler.cancel()
+            lsfgRuntimeHandoffController.cancel()
         }
     }
     var isKeyboardVisible = false
@@ -852,81 +846,19 @@ fun XServerScreen(
     }
 
     fun scheduleLsfgRuntimeHandoff(active: Boolean, multiplier: Int) {
-        val generation = ++lsfgRuntimeTransitionGeneration
         lsfgRuntimeMode = if (active) LsfgRuntimeMode.TURNING_ON else LsfgRuntimeMode.TURNING_OFF
-        scope.launch {
-            var activePollingElapsedMs = 0L
-            var observed = false
-            var suspensionLogged = false
-            while (activePollingElapsedMs < LSFG_RUNTIME_HANDOFF_TIMEOUT_MS) {
-                if (generation != lsfgRuntimeTransitionGeneration) return@launch
-
-                // Quick Menu normally SIGSTOPs the guest. The native LSFG layer
-                // cannot consume conf.toml or publish fresh stats while stopped,
-                // so wall-clock timeout here would manufacture a DEGRADED state.
-                if (PluviaApp.isOverlayPaused) {
-                    if (!suspensionLogged) {
-                        Timber.i(
-                            "LSFG runtime handoff waiting for guest resume: generation=%d active=%b multiplier=%d",
-                            generation,
-                            active,
-                            multiplier,
-                        )
-                        suspensionLogged = true
-                    }
-                    delay(LSFG_RUNTIME_HANDOFF_POLL_MS)
-                    continue
-                }
-
-                if (suspensionLogged) {
-                    Timber.i(
-                        "LSFG runtime handoff polling resumed: generation=%d active=%b elapsed_active_ms=%d",
-                        generation,
-                        active,
-                        activePollingElapsedMs,
-                    )
-                    suspensionLogged = false
-                }
-
-                val pollStartedAt = SystemClock.elapsedRealtime()
-                val runtimeState = withContext(Dispatchers.IO) {
-                    LsfgVkManager.readRuntimeState(container)
-                }
-                observed = if (active) {
-                    runtimeState.readyForGeneration
-                } else {
-                    runtimeState.readyForSourceOnly
-                }
-                activePollingElapsedMs +=
-                    (SystemClock.elapsedRealtime() - pollStartedAt).coerceAtLeast(0L)
-                if (observed) break
-
-                delay(LSFG_RUNTIME_HANDOFF_POLL_MS)
-                activePollingElapsedMs += LSFG_RUNTIME_HANDOFF_POLL_MS
-            }
-
-            val remainingSettleMs =
-                LSFG_RUNTIME_HANDOFF_DELAY_MS - activePollingElapsedMs
-            if (remainingSettleMs > 0L) delay(remainingSettleMs)
-            if (generation != lsfgRuntimeTransitionGeneration) return@launch
-            if (active && !observed) {
-                isLsfgGenerationActive = false
-                lsfgRuntimeMultiplier = 1
-                lsfgRuntimeMode = LsfgRuntimeMode.DEGRADED
-                Timber.w(
-                    "LSFG runtime handoff timed out after %d active ms: generation=%d multiplier=%d",
-                    activePollingElapsedMs,
-                    generation,
-                    multiplier,
-                )
+        lsfgRuntimeHandoffController.schedule(
+            active = active,
+            multiplier = multiplier,
+            onStateChanged = { generationActive, runtimeMultiplier, mode ->
+                isLsfgGenerationActive = generationActive
+                lsfgRuntimeMultiplier = runtimeMultiplier
+                lsfgRuntimeMode = mode
+            },
+            applyFpsLimiter = {
                 applyFpsLimiterToEngines(effectiveFpsLimit())
-                return@launch
-            }
-            isLsfgGenerationActive = active
-            lsfgRuntimeMultiplier = if (active) multiplier.coerceIn(2, 4) else 1
-            lsfgRuntimeMode = if (active) LsfgRuntimeMode.GENERATING else LsfgRuntimeMode.SOURCE_ONLY_RESIDENT
-            applyFpsLimiterToEngines(effectiveFpsLimit())
-        }
+            },
+        )
     }
 
     fun applyFpsLimiterEnabled(enabled: Boolean) {
@@ -3287,7 +3219,7 @@ fun XServerScreen(
                     showPlayingBlockedDialog = false
                     playingBlockedRemoteName = null
                     SteamService.clearPlayingConflict()
-                    scope.launch {
+                    coroutineController.launch {
                         SteamService.kickPlayingSession(onlyGame = true)
                     }
                 }) {

@@ -1299,6 +1299,11 @@ void VulkanRendererContext::resetFrameQueueTelemetry() {
     frameQueuePresentSamples_.store(0, std::memory_order_relaxed);
     frameQueueMaxGpuOutstanding_.store(0, std::memory_order_relaxed);
     frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
+    hostPresenterBackpressureTotal_.store(0, std::memory_order_relaxed);
+    hostPresenterBackpressureNsTotal_.store(0, std::memory_order_relaxed);
+    hostPresenterSlotWaitTotal_.store(0, std::memory_order_relaxed);
+    hostPresenterSlotWaitNsTotal_.store(0, std::memory_order_relaxed);
+    hostPresenterPendingHighWater_.store(0, std::memory_order_relaxed);
     frameQueueTelemetryEpoch_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -1370,10 +1375,14 @@ void VulkanRendererContext::enforceFrameQueueSubmissionBudget(uint32_t target) {
         static_cast<int>(waitResult));
 }
 
-void VulkanRendererContext::updateSmoothQueuePressure(uint64_t presentNs) {
-    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
-            || lsfgFrameQueueTarget_.load(std::memory_order_acquire) != 2
-            || activePresentMode == VK_PRESENT_MODE_FIFO_KHR) {
+void VulkanRendererContext::updateSmoothQueuePressure(
+        uint64_t presentNs,
+        bool frameQueueEnabled,
+        uint32_t requestedTarget,
+        VkPresentModeKHR presentMode) {
+    if (!frameQueueEnabled
+            || requestedTarget != 2
+            || presentMode == VK_PRESENT_MODE_FIFO_KHR) {
         frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
         return;
     }
@@ -1697,18 +1706,19 @@ VkResult VulkanRendererContext::presentHostFrame(
         const uint64_t presented =
             frameQueuePresentedTotal_.fetch_add(1, std::memory_order_relaxed) + 1;
         recordHostPresent(present, presentNs);
-        updateSmoothQueuePressure(presentNs);
+        updateSmoothQueuePressure(
+            presentNs,
+            present.frameQueueEnabled,
+            present.requestedFrameQueueTarget,
+            present.activePresentModeSnapshot);
         pollHostDisplayConfirmations();
 
         if (sample <= 8 || sample % 120 == 0 || presentNs >= 8000000ULL) {
-            const bool enabled =
-                lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
-            const uint32_t requestedTarget = enabled
-                ? std::min<uint32_t>(
-                    2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
-                : 0;
+            const bool enabled = present.frameQueueEnabled;
+            const uint32_t requestedTarget =
+                present.requestedFrameQueueTarget;
             const uint32_t effectiveTarget =
-                enabled ? effectiveFrameQueueTarget() : 0;
+                present.effectiveFrameQueueTarget;
             const bool smoothFallback =
                 enabled && requestedTarget == 2 && effectiveTarget < 2;
             const char* mode = !enabled ? "off"
@@ -1737,11 +1747,10 @@ VkResult VulkanRendererContext::presentHostFrame(
                     frameQueueTelemetryEpoch_.load(std::memory_order_relaxed)),
                 enabled ? 1 : 0, requestedTarget, effectiveTarget, mode,
                 smoothFallback ? 1 : 0, fallbackReason,
-                static_cast<int>(requestedPresentMode),
-                static_cast<int>(activePresentMode),
+                static_cast<int>(present.requestedPresentModeSnapshot),
+                static_cast<int>(present.activePresentModeSnapshot),
                 static_cast<unsigned long long>(present.swapchainGeneration),
-                present.hasUniqueLsfgDelivery
-                    ? activeFrameSlotCount() : BASE_FRAMES_IN_FLIGHT,
+                present.activeFrameSlots,
                 present.hasUniqueLsfgDelivery ? 1 : 0,
                 hostSplitPresentQueueActive_ ? 1 : 0,
                 hostPresentQueueIndex_,
@@ -2659,6 +2668,17 @@ ok=true;}catch(...){}
             .submissionSerial = submissionSerial,
             .swapchainGeneration = hostSwapchainGeneration_,
             .gpuOutstanding = gpuOutstanding,
+            .frameQueueEnabled = frameQueueEnabled,
+            .requestedFrameQueueTarget = frameQueueEnabled
+                ? std::min<uint32_t>(
+                    2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
+                : 0,
+            .effectiveFrameQueueTarget = frameQueueEnabled
+                ? effectiveFrameQueueTarget()
+                : 0,
+            .activeFrameSlots = activeSlots,
+            .requestedPresentModeSnapshot = requestedPresentMode,
+            .activePresentModeSnapshot = activePresentMode,
         };
         res = enqueueHostPresent(std::move(pendingPresent));
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR)
@@ -4111,8 +4131,10 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
     if (previousEnabled == enabled && previousTarget == target)
         return;
 
-    // Configuration changes are explicit recovery boundaries. Drain only
-    // compositor GPU work; display confirmation remains telemetry-only.
+    // Configuration changes are explicit recovery boundaries. Drain queued
+    // host presentation before resetting telemetry so results from the prior
+    // mode cannot leak into the next A/B interval.
+    drainHostPresenter("config-transition");
     drainFrameQueueSubmissions("config-transition");
     {
         std::lock_guard<std::mutex> lk(renderMutex);
@@ -4206,6 +4228,7 @@ void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {
         RLOG("setPresentMode: already set, skipping");
         return;
     }
+    drainHostPresenter("present-mode-transition");
     {
         std::lock_guard<std::mutex> lk(renderMutex);
         dropQueuedLsfgHostDeliveries("present-mode-transition");

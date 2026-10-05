@@ -1,6 +1,7 @@
 package app.gamenative.ui.screen.xr
 
 import androidx.compose.ui.focus.FocusManager
+import androidx.compose.runtime.staticCompositionLocalOf
 
 /**
  * Everything ImmersiveXrActivity threads into [app.gamenative.ui.screen.xserver.XServerScreen],
@@ -24,3 +25,5 @@ class ImmersiveSessionHooks(
     val registerToggle: ((() -> Unit) -> Unit)? = null,
     val registerStartHeld: (((Boolean) -> Unit) -> Unit)? = null,
 )
+
+val LocalImmersiveSessionHooks = staticCompositionLocalOf<ImmersiveSessionHooks?> { null }

@@ -687,6 +687,7 @@ private:
     std::string lsfgCachePath;
     bool framegenArmed = false;
     bool framegenSupported = false;
+    bool nativeVulkanDispatchLoaded_ = false;
     bool framegenRequested = false;
     bool framegenArmWarned = false;
     uint32_t framegenMultiplier = 2;

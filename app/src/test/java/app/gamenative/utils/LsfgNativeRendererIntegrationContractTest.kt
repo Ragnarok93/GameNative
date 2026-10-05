@@ -30,6 +30,10 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(cmake.contains("winlator/VulkanRendererLsfg.cpp"))
 
         assertTrue(context.contains("#include \"../lsfg/vk_dispatch.h\""))
+        val createDeviceEnd = context.indexOf("vk_.GetDeviceQueue(device,graphicsQueueFamilyIndex,0,&graphicsQueue);")
+        val createDeviceBody = context.substring(0, createDeviceEnd)
+        assertTrue(!createDeviceBody.contains("vkd_load(instance, device, gipa)"))
+
         assertTrue(context.contains("vkd_load(instance, device, gipa)"))
         assertTrue(context.contains("vkd_unload()"))
         assertTrue(native.contains("vkr_lsfg_create"))

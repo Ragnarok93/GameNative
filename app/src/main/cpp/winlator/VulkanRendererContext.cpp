@@ -1535,6 +1535,7 @@ void VulkanRendererContext::hostPresenterLoop() {
 VkResult VulkanRendererContext::enqueueHostPresent(
         PendingHostPresent&& present) {
     if (!hostSplitPresentQueueActive_
+            || !present.hasUniqueLsfgDelivery
             || !hostPresenterRunning_.load(std::memory_order_acquire)) {
         return presentHostFrame(present);
     }
@@ -2586,7 +2587,7 @@ ok=true;}catch(...){}
     // blocked in vkQueuePresentKHR.
     const bool useFrameQueuePresentSemaphore =
         !toXr && (
-            hostSplitPresentQueueActive_
+            (hostSplitPresentQueueActive_ && hasUniqueLsfgDelivery)
             || (frameQueueEnabled && hasUniqueLsfgDelivery
                 && activeFrameSlotCount() > BASE_FRAMES_IN_FLIGHT));
     if (useFrameQueuePresentSemaphore) {

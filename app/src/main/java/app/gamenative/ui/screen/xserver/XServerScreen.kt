@@ -965,7 +965,9 @@ fun XServerScreen(
         // explicitly rather than falsely claiming the runtime switched.
         LsfgVkManager.recordBackendRuntimeApplied(
             request = request,
-            runtimeBackend = LsfgVkManager.backend(container),
+            // The native LSFG implementation is not runtime-wired on this branch,
+            // so a native request must not be reported as applied.
+            runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
             result = if (request.backend == LsfgVkManager.BACKEND_NATIVE) {
                 "runtime-bridge-unavailable"
             } else {

@@ -266,6 +266,14 @@ private fun rememberKeyboardEscMenuHandler(): KeyboardEscMenuHandler {
     return remember(scope) { KeyboardEscMenuHandler(scope) }
 }
 
+@Composable
+private fun rememberKickPlayingSessionAction(): () -> Unit {
+    val scope = rememberCoroutineScope()
+    return remember(scope) {
+        { scope.launch { SteamService.kickPlayingSession(onlyGame = true) } }
+    }
+}
+
 private fun initialFpsLimiterEnabled(container: Container): Boolean =
     parseBooleanExtra(container.getExtra(FPS_LIMITER_ENABLED_EXTRA)) ?: true
 
@@ -455,6 +463,7 @@ fun XServerScreen(
     Timber.i("Starting up XServerScreen")
     val context = LocalContext.current
     val view = LocalView.current
+    val kickPlayingSession = rememberKickPlayingSessionAction()
     val adaptiveCapGeneration = remember { AtomicLong(0L) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val imm = remember(context) {
@@ -3214,9 +3223,7 @@ fun XServerScreen(
                     showPlayingBlockedDialog = false
                     playingBlockedRemoteName = null
                     SteamService.clearPlayingConflict()
-                    rememberCoroutineScope().launch {
-                        SteamService.kickPlayingSession(onlyGame = true)
-                    }
+                    kickPlayingSession()
                 }) {
                     Text(text = stringResource(R.string.main_play_anyway))
                 }

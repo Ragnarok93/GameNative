@@ -28,8 +28,10 @@ class XServerLsfgCoroutineIsolationContractTest {
         assertTrue(screenEnd > screenStart)
 
         val screenBody = source.substring(screenStart, screenEnd)
-        assertTrue(screenBody.contains("val scope = rememberCoroutineScope()"))
-        assertTrue(screenBody.contains("scope.launch"))
+        assertFalse(screenBody.contains("val scope = rememberCoroutineScope()"))
+        assertFalse(screenBody.contains("scope.launch"))
+        assertFalse(screenBody.contains("CoroutineScope("))
+        assertTrue(screenBody.contains("launchXServerIo"))
         assertTrue(screenBody.contains("LsfgRuntimeHandoffController("))
         assertTrue(screenBody.contains("lsfgRuntimeHandoffController.schedule("))
     }

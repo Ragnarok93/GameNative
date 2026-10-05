@@ -128,7 +128,7 @@ static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
 static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
 static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
 static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
-static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = VKR_LSFG_MAX_GENERATIONS + 1;
+static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = 4;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.

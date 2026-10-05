@@ -44,12 +44,9 @@ class LsfgQuickMenuHelperModeTest {
 
     @Test
     fun suspendedQuickMenuDoesNotTimeoutLsfgRuntimeHandoff() {
-        val xServer = repoFile(
-            "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt",
+        val handoff = repoFile(
+            "app/src/main/java/app/gamenative/utils/LsfgRuntimeHandoffController.kt",
         ).readText()
-        val start = xServer.indexOf("fun scheduleLsfgRuntimeHandoff(")
-        val end = xServer.indexOf("fun applyFpsLimiterEnabled(", start)
-        val handoff = xServer.substring(start, end)
 
         assertTrue(
             "Runtime acknowledgement timeout must pause while the guest is suspended by Quick Menu",

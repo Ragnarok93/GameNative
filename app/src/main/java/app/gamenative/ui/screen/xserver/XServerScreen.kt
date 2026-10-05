@@ -48,6 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import app.gamenative.ui.screen.xr.LocalImmersiveSessionHooks
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -443,11 +444,11 @@ fun XServerScreen(
     onGameLaunchError: ((String) -> Unit)? = null,
     // Non-null only when hosted by ImmersiveXrActivity. One bundled parameter, not nine — this
     // composable sits at the dex verifier's register limit (see ImmersiveSessionHooks' kdoc).
-    immersiveHooks: app.gamenative.ui.screen.xr.ImmersiveSessionHooks? = null,
 ) {
     Timber.i("Starting up XServerScreen")
     val context = LocalContext.current
     val view = LocalView.current
+    val immersiveHooks = LocalImmersiveSessionHooks.current
     val kickPlayingSession = rememberKickPlayingSessionAction()
     val adaptiveCapGeneration = remember { AtomicLong(0L) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }

@@ -653,6 +653,12 @@ fun XServerScreen(
     var lsfgMultiplier by rememberSaveable(container.id) { mutableIntStateOf(initialLsfgSettings.multiplier) }
     var lsfgFlowScale by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.flowScale) }
     var lsfgPerformanceMode by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.performanceMode) }
+    // Backend selection is an authoritative Quick Menu state, not a persisted-state
+    // read during recomposition. This lets the selected chip update immediately
+    // while the runtime application/acknowledgement is recorded independently.
+    var lsfgBackend by rememberSaveable(container.id) {
+        mutableStateOf(LsfgVkManager.backend(container))
+    }
     val isLsfgRequested = isLsfgAvailable && lsfgMultiplier >= 2
     fun initialLsfgRuntimeMode(): LsfgRuntimeMode = when {
         !isLsfgAvailable -> LsfgRuntimeMode.OFF
@@ -946,6 +952,26 @@ fun XServerScreen(
         runtimeConfigRevision++
         lsfgPerformanceMode = enabled
         applyLsfgSettings()
+    }
+
+    fun applyLsfgBackend(requestedBackend: String) {
+        val request = LsfgVkManager.setBackend(container, requestedBackend)
+        // Commit UI/authoritative state immediately; menu dismissal must not be
+        // responsible for making the selected renderer look active.
+        lsfgBackend = request.backend
+
+        // The current branch has no runtime JNI bridge that can safely activate
+        // the unfinished native-LSFG implementation. Record that boundary
+        // explicitly rather than falsely claiming the runtime switched.
+        LsfgVkManager.recordBackendRuntimeApplied(
+            request = request,
+            runtimeBackend = LsfgVkManager.backend(container),
+            result = if (request.backend == LsfgVkManager.BACKEND_NATIVE) {
+                "runtime-bridge-unavailable"
+            } else {
+                "legacy-state-committed"
+            },
+        )
     }
 
     fun applyAdaptiveFpsCapOnMain(capFps: Int): Boolean {
@@ -3123,8 +3149,9 @@ fun XServerScreen(
                 multiplier = lsfgMultiplier,
                 flowScale = lsfgFlowScale,
                 performanceMode = lsfgPerformanceMode,
-                backend = LsfgVkManager.backend(container),
+                backend = lsfgBackend,
                 runtimeStatus = lsfgRuntimeMode.label,
+                onBackendChanged = ::applyLsfgBackend,
                 onMultiplierChanged = ::applyLsfgMultiplier,
                 onFlowScaleChanged = ::applyLsfgFlowScale,
                 onPerformanceModeChanged = ::applyLsfgPerformanceMode,

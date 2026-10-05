@@ -501,6 +501,9 @@ private:
     std::atomic<uint64_t> hostPresentEnqueueWaitNsTotal_{0};
     std::atomic<uint64_t> hostPresentEnqueueWaitCount_{0};
     std::atomic<uint32_t> hostPresentQueueHighWater_{0};
+    // Telemetry-only serial for the queue that owns vkQueuePresentKHR. This
+    // must never be used for pacing or synchronization decisions.
+    std::atomic<uint64_t> presentQueuePresentSerial_{0};
 
     std::atomic<uint64_t> frameQueuePresentedTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitTotal_{0};

@@ -18,6 +18,7 @@
 #include "window_vert.h"
 #include "window_frag.h"
 #include "../lsfg/vk_dispatch.h"
+#include "../lsfg/vkr_lsfg.h"
 
 extern "C" __attribute__((used, visibility("default")))
 const char gamenative_vulkan_renderer_build_marker[] =

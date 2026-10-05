@@ -276,7 +276,6 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                 }
 
                 val immersiveHooks = ImmersiveSessionHooks(
-                    ImmersiveSessionHooks(
                         windowsVr = windowsVrRuntimeService,
                         onQuickMenuVisibilityChanged = { visible ->
                             Timber.i("Immersive: quick menu visibility changed to %b", visible)
@@ -347,7 +346,6 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                         },
                     ),
                     ),
-                )
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     CompositionLocalProvider(LocalImmersiveSessionHooks provides immersiveHooks) {

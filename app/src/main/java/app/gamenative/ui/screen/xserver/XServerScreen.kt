@@ -459,7 +459,7 @@ fun XServerScreen(
     Timber.i("Starting up XServerScreen")
     val context = LocalContext.current
     val view = LocalView.current
-    val coroutineController = rememberXServerCoroutineScope()
+    val scope = rememberCoroutineScope()
     val adaptiveCapGeneration = remember { AtomicLong(0L) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val imm = remember(context) {
@@ -581,7 +581,7 @@ fun XServerScreen(
     var win32AppWorkarounds: Win32AppWorkarounds? by remember { mutableStateOf(null) }
     var physicalControllerHandler: PhysicalControllerHandler? by remember { mutableStateOf(null) }
     var exitWatchJob: Job? by remember { mutableStateOf(null) }
-    val keyboardEscMenuHandler = remember(coroutineController) { KeyboardEscMenuHandler(coroutineController) }
+    val keyboardEscMenuHandler = remember(scope) { KeyboardEscMenuHandler(scope) }
     val lsfgRuntimeHandoffController = remember(container.id) {
         LsfgRuntimeHandoffController(container) { PluviaApp.isOverlayPaused }
     }
@@ -3219,7 +3219,7 @@ fun XServerScreen(
                     showPlayingBlockedDialog = false
                     playingBlockedRemoteName = null
                     SteamService.clearPlayingConflict()
-                    coroutineController.launch {
+                    scope.launch {
                         SteamService.kickPlayingSession(onlyGame = true)
                     }
                 }) {

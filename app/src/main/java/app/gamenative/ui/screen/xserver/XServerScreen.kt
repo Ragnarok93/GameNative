@@ -2093,7 +2093,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
                 host = mainRoot,
                 anchor = view,
                 container = container,
-                xServer = xServerView.getxServer(),
+                xServer = xServerView!!.getxServer(),
                 gameNameProvider = { currentAppInfo?.name ?: container.name },
                 showKeyboard = showSoftKeyboard,
                 openQuickMenu = { showQuickMenu = true },
@@ -2109,7 +2109,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             // Create InputControlsView and add to FrameLayout
             val icView = InputControlsView(context).apply {
                 // Configure InputControlsView
-                setXServer(xServerView.getxServer())
+                setXServer(xServerView!!.getxServer())
                 setTouchpadView(PluviaApp.touchpadView)
 
                 // Load profile for this container
@@ -2152,7 +2152,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
                     val radialMenuCoordinator = PluviaApp.radialMenuCoordinator
                     physicalControllerHandler = PhysicalControllerHandler(
                         targetProfile,
-                        xServerView.getxServer(),
+                        xServerView!!.getxServer(),
                         gameBack,
                         onShowKeyboard = {
                             PluviaApp.inputControlsView?.triggerShowKeyboard()
@@ -2184,7 +2184,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             }
             PluviaApp.radialMenuCoordinator?.bindInputControlsView(icView)
 
-            xServerView.getxServer().winHandler.setInputControlsView(PluviaApp.inputControlsView)
+            xServerView!!.getxServer().winHandler.setInputControlsView(PluviaApp.inputControlsView)
 
             // Add InputControlsView (portrait: inside fixed-height container at bottom; landscape: overlay)
             if (isPortrait) {
@@ -2199,7 +2199,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             val configuredExternalMode = ExternalDisplayInputController.fromConfig(container.externalDisplayMode)
             val swapEnabled = container.isExternalDisplaySwap
 
-            val overlay = SwapInputOverlayView(context, xServerView.getxServer()).apply {
+            val overlay = SwapInputOverlayView(context, xServerView!!.getxServer()).apply {
                 visibility = View.GONE
                 setMode(ExternalDisplayInputController.Mode.OFF)
             }
@@ -2210,7 +2210,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
                 if (!swapEnabled && configuredExternalMode != ExternalDisplayInputController.Mode.OFF) {
                     ExternalDisplayInputController(
                         context = context,
-                        xServer = xServerView.getxServer(),
+                        xServer = xServerView!!.getxServer(),
                         touchpadViewProvider = { PluviaApp.touchpadView },
                     ).apply {
                         setMode(configuredExternalMode)
@@ -2297,7 +2297,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
 
                         if (shouldShowControls) {
                             Timber.d("Auto-showing onscreen controls")
-                            showInputControls(profile, xServerView.getxServer().winHandler, container)
+                            showInputControls(profile, xServerView!!.getxServer().winHandler, container)
                             areControlsVisible = true
                         } else {
                             Timber.d("Hiding onscreen controls")
@@ -2311,7 +2311,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             }
             frameRating = FrameRating(context)
             frameRating?.setVisibility(View.GONE)
-            xServerView.renderer.setFrameRating(frameRating)
+            xServerView!!.renderer.setFrameRating(frameRating)
 
             if (isPerformanceHudEnabled) {
                 frameLayout.post {
@@ -2752,12 +2752,10 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     //
     //     }
     // }
-}
-
 
     }
 }
-/** Lives outside XServerScreen because that composable sits at the dex verifier's 255-register
+/** Lives outside XServerScreen/ because that composable sits at the dex verifier's 255-register
  * limit — its FocusRequester/effect locals tripped a runtime VerifyError when inlined there. */
 @Composable
 private fun ManualResumeOverlay(onResume: () -> Unit, immersive: Boolean) {

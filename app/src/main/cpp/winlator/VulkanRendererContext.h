@@ -2,6 +2,8 @@
 #include <vulkan/vulkan.h>
 #include <list>
 #include <vulkan/vulkan_android.h>
+
+struct VkrLsfg;
 struct VkTable {
 
     PFN_vkCreateInstance CreateInstance;
@@ -126,6 +128,7 @@ static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
 static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
 static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
 static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
+static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = VKR_LSFG_MAX_GENERATIONS + 1;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -633,7 +636,20 @@ private:
     bool createXrTargetResources(uint32_t w, uint32_t h);
     void destroyXrTargetResources();
 
+    struct VkCompositeTarget {
+        VkImage image = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkFramebuffer framebuffer = VK_NULL_HANDLE;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+
     VkRenderPass          renderPass  = VK_NULL_HANDLE;
+    VkRenderPass          compositePass = VK_NULL_HANDLE;
+    std::array<VkCompositeTarget, VK_MAX_COMPOSITE_TARGETS> composite{};
+    uint32_t compositeCount = 0;
+    bool compositeBuilt = false;
     VkDescriptorSetLayout dsLayout    = VK_NULL_HANDLE;
     VkPipelineLayout      pipeLayout  = VK_NULL_HANDLE;
 
@@ -651,6 +667,24 @@ private:
     std::vector<VkFence>     inFlightFences;
     std::vector<VkFence>     imgInFlight;
     uint32_t                 currentFrame = 0;
+
+    // Native LSFG state is intentionally inert until the renderer is explicitly
+    // armed by a future backend-control seam. This keeps the legacy path unchanged
+    // while the compositor integration is brought up incrementally.
+    VkrLsfg* lsfg = nullptr;
+    std::string lsfgCachePath;
+    bool framegenArmed = false;
+    bool framegenSupported = false;
+    bool framegenRequested = false;
+    bool framegenArmWarned = false;
+    uint32_t framegenMultiplier = 2;
+    uint32_t framegenTargetRate = 0;
+    float framegenFlowScale = 0.7f;
+    float framegenRefreshRate = 60.0f;
+    std::atomic<uint64_t> framegenSourceFrames{0};
+    uint64_t framegenRealFrames = 0;
+    uint64_t framegenMadeFrames = 0;
+    std::atomic<uint64_t> presentedFrames{0};
 
     VkSampler        sampler    = VK_NULL_HANDLE;
     VkDescriptorPool winTexPool = VK_NULL_HANDLE;
@@ -686,6 +720,28 @@ private:
     void retireFrameQueuePresentSemaphores();
     void destroyRetiredFrameQueuePresentSemaphores();
     void cleanupSwapchain();
+
+    void createCompositePass();
+    void destroyOneComposite(VkCompositeTarget& target);
+    void destroyCompositeTargets();
+    bool createOneComposite(VkCompositeTarget& target, uint32_t width, uint32_t height);
+    bool createCompositeTargets(uint32_t width, uint32_t height, uint32_t count);
+    void destroyLsfg();
+    void createLsfg();
+    uint32_t framegenExtraImages() const;
+    bool compositeFormatSupported();
+    void blitCompositeToSwapchain(
+        VkCommandBuffer cmd, const VkCompositeTarget& source, VkImage destination);
+    void setFrameGenerationEnabled(bool enabled);
+    bool isFrameGenerationSupported() const;
+    void setFrameGenerationShaders(const std::string& cachePath);
+    void setSourceFrameCount(uint64_t count);
+    void setFrameGenerationRefreshRate(float hz);
+    void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct);
+    uint64_t getGeneratedFrameCount() const;
+    uint64_t getPresentedFrameCount() const;
+    uint64_t getRealFrameCount() const;
+    uint64_t getSourceFrameCount() const;
 
     void initLsfgProvenanceSocket();
     void closeLsfgProvenanceSocket();

@@ -46,9 +46,9 @@ class LsfgRuntimeHandoffController(
     ) {
         val generation = ++transitionGeneration
         onStateChanged(
-            active = false,
-            multiplier = 1,
-            mode = if (active) LsfgRuntimeMode.TURNING_ON else LsfgRuntimeMode.TURNING_OFF,
+            false,
+            1,
+            if (active) LsfgRuntimeMode.TURNING_ON else LsfgRuntimeMode.TURNING_OFF,
         )
 
         scope.launch {
@@ -111,9 +111,9 @@ class LsfgRuntimeHandoffController(
 
             if (active && !observed) {
                 onStateChanged(
-                    active = false,
-                    multiplier = 1,
-                    mode = LsfgRuntimeMode.DEGRADED,
+                    false,
+                    1,
+                    LsfgRuntimeMode.DEGRADED,
                 )
                 Timber.w(
                     "LSFG runtime handoff timed out after %d active ms: generation=%d multiplier=%d",
@@ -126,13 +126,9 @@ class LsfgRuntimeHandoffController(
             }
 
             onStateChanged(
-                active = active,
-                multiplier = if (active) multiplier.coerceIn(2, 4) else 1,
-                mode = if (active) {
-                    LsfgRuntimeMode.GENERATING
-                } else {
-                    LsfgRuntimeMode.SOURCE_ONLY_RESIDENT
-                },
+                active,
+                if (active) multiplier.coerceIn(2, 4) else 1,
+                if (active) LsfgRuntimeMode.GENERATING else LsfgRuntimeMode.SOURCE_ONLY_RESIDENT,
             )
             applyFpsLimiter()
         }

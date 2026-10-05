@@ -85,7 +85,6 @@ internal class XServerScreenController(
     val neverSuspend = suspendPolicy.equals(Container.SUSPEND_POLICY_NEVER, ignoreCase = true)
     val manualResumeMode = suspendPolicy.equals(Container.SUSPEND_POLICY_MANUAL, ignoreCase = true)
 
-    var physicalControllerHandler: PhysicalControllerHandler? by mutableStateOf(null)
     var touchMouse by mutableStateOf<TouchMouse?>(null)
     var keyboard by mutableStateOf<Keyboard?>(null)
     var xServerView: XServerRendererView? by mutableStateOf(null)

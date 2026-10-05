@@ -685,6 +685,9 @@ private:
     uint64_t framegenRealFrames = 0;
     uint64_t framegenMadeFrames = 0;
     std::atomic<uint64_t> presentedFrames{0};
+    bool nativeSwapchainTransferSupported_ = false;
+    std::array<std::array<VkSemaphore, VK_MAX_COMPOSITE_TARGETS - 1>, MAX_FRAMES_IN_FLIGHT>
+        nativeExtraAcquireSems_{};
 
     VkSampler        sampler    = VK_NULL_HANDLE;
     VkDescriptorPool winTexPool = VK_NULL_HANDLE;
@@ -819,7 +822,7 @@ private:
         VkBuffer cursorUpload, bool hasCursorUpload,
         float ox, float oy, float sx, float sy, float cw, float ch,
         short ptrX, short ptrY, short curHotX, short curHotY,
-        short curW, short curH, bool curVis);
+        short curW, short curH, bool curVis, bool keepOpen = false);
     void renderLoop();
     void renderFrame();
 

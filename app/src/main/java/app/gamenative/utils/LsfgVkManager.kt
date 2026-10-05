@@ -3,6 +3,7 @@ package app.gamenative.utils
 import android.content.Context
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
 import com.winlator.renderer.lsfg.LosslessScaling
@@ -79,6 +80,15 @@ object LsfgVkManager {
 
     const val BACKEND_LEGACY = "legacy"
     const val BACKEND_NATIVE = "native"
+
+    data class BackendRequest(
+        val serial: Long,
+        val previousBackend: String,
+        val backend: String,
+        val requestedAtNs: Long,
+    )
+
+    private val backendRequestSerial = AtomicLong(0L)
 
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
@@ -270,18 +280,55 @@ object LsfgVkManager {
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
 
+    fun sanitizeBackend(backend: String): String =
+        backend.lowercase(Locale.US).takeIf { it == BACKEND_NATIVE } ?: BACKEND_LEGACY
+
     fun backend(container: Container): String =
-        container.getExtra(EXTRA_BACKEND, BACKEND_LEGACY)
-            .lowercase(Locale.US)
-            .takeIf { it == BACKEND_NATIVE } ?: BACKEND_LEGACY
+        sanitizeBackend(container.getExtra(EXTRA_BACKEND, BACKEND_LEGACY))
 
     fun isNativeBackend(container: Container): Boolean = backend(container) == BACKEND_NATIVE
 
-    fun setBackend(container: Container, backend: String) {
-        val sanitized = backend.lowercase(Locale.US).takeIf { it == BACKEND_NATIVE } ?: BACKEND_LEGACY
+    fun setBackend(container: Container, backend: String): BackendRequest {
+        val sanitized = sanitizeBackend(backend)
+        val previous = this.backend(container)
+        val request = BackendRequest(
+            serial = backendRequestSerial.incrementAndGet(),
+            previousBackend = previous,
+            backend = sanitized,
+            requestedAtNs = System.nanoTime(),
+        )
+        Timber.i(
+            "LSFG_BACKEND: event=backend_request request_serial=%d requested_backend=%s previous_backend=%s",
+            request.serial,
+            sanitized,
+            previous,
+        )
         container.putExtra(EXTRA_BACKEND, sanitized)
         container.saveData()
-        Timber.i("LSFG backend changed: backend=%s", sanitized)
+        Timber.i(
+            "LSFG_BACKEND: event=backend_state_changed request_serial=%d backend_state=%s",
+            request.serial,
+            sanitized,
+        )
+        return request
+    }
+
+    fun recordBackendRuntimeApplied(
+        request: BackendRequest,
+        result: String,
+        runtimeBackend: String = request.backend,
+        appliedAtNs: Long = System.nanoTime(),
+    ) {
+        val latencyMs = ((appliedAtNs - request.requestedAtNs).coerceAtLeast(0L)) / 1_000_000.0
+        Timber.i(
+            "LSFG_BACKEND: event=backend_runtime_applied request_serial=%d backend=%s runtime_backend=%s " +
+                "backend_apply_latency_ms=%.3f backend_apply_result=%s",
+            request.serial,
+            request.backend,
+            sanitizeBackend(runtimeBackend),
+            latencyMs,
+            result,
+        )
     }
 
     fun frameQueueEnabled(container: Container): Boolean =

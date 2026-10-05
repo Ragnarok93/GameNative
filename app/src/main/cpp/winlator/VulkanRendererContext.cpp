@@ -1507,17 +1507,59 @@ CompletedHostPresent VulkanRendererContext::executeHostPresent(
     pi.pImageIndices = &present.imageIndex;
 
     const auto start = std::chrono::steady_clock::now();
+    const uint64_t presentQueuePresentSerial =
+        presentQueuePresentSerial_.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint64_t presentQueueBlockedNs = 0;
     VkResult result = VK_SUCCESS;
     if (hostSplitPresentQueueActive_) {
-        std::lock_guard<std::mutex> queueLock(presentQueueMutex_);
+        const auto queueLockStart = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> queueLock(presentQueueMutex_);
+        presentQueueBlockedNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - queueLockStart).count());
         result = vk_.QueuePresentKHR(presentQueue, &pi);
     } else {
-        std::lock_guard<std::mutex> queueLock(graphicsQueueMutex_);
+        const auto queueLockStart = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> queueLock(graphicsQueueMutex_);
+        presentQueueBlockedNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - queueLockStart).count());
         result = vk_.QueuePresentKHR(graphicsQueue, &pi);
     }
     const uint64_t presentNs = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - start).count());
+
+    if (presentQueuePresentSerial <= 8 || presentQueuePresentSerial % 120 == 0
+            || presentQueueBlockedNs >= 1000000ULL
+            || presentNs >= 8000000ULL) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+            "event=present-queue-op"
+            " implementation=host-compositor"
+            " graphics_queue_submit_serial=%" PRIu64
+            " graphics_queue_submit_ms=%.3f"
+            " present_queue_present_serial=%" PRIu64
+            " present_queue_family=%u present_queue_index=%u"
+            " present_queue_present_ms=%.3f present_queue_blocked_ms=%.3f"
+            " present_queue_wait_semaphore_ms=-1.000"
+            " present_queue_idle_ms=-1.000"
+            " queue_idle_measurement=not-observable-without-added-sync"
+            " wait_semaphore_measurement=not-observable-without-added-sync"
+            " render_complete_semaphore=0x%" PRIx64
+            " host_present_id=%" PRIu64
+            " result=%d",
+            present.submissionSerial,
+            static_cast<double>(present.submitCallNs) / 1000000.0,
+            presentQueuePresentSerial,
+            graphicsQueueFamilyIndex,
+            hostSplitPresentQueueActive_ ? hostPresentQueueIndex_ : 0U,
+            static_cast<double>(presentNs) / 1000000.0,
+            static_cast<double>(presentQueueBlockedNs) / 1000000.0,
+            static_cast<uint64_t>(present.waitSemaphore),
+            present.hostPresentId,
+            result);
+    }
     return CompletedHostPresent{
         .present = std::move(present),
         .result = result,
@@ -2556,8 +2598,13 @@ ok=true;}catch(...){}
     vk_.ResetFences(device,1,&inFlightFences[currentFrame]);
     VkResult submitResult = VK_SUCCESS;
     const auto submitStart = std::chrono::steady_clock::now();
+    uint64_t graphicsQueueBlockedNs = 0;
     {
-        std::lock_guard<std::mutex> queueLock(graphicsQueueMutex_);
+        const auto queueLockStart = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> queueLock(graphicsQueueMutex_);
+        graphicsQueueBlockedNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - queueLockStart).count());
         submitResult = vk_.QueueSubmit(
             graphicsQueue,1,&si,inFlightFences[currentFrame]);
     }
@@ -2565,6 +2612,20 @@ ok=true;}catch(...){}
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - submitStart).count());
     if (submitResult!=VK_SUCCESS) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
+            "event=graphics-queue-submit"
+            " implementation=host-compositor"
+            " graphics_queue_family=%u graphics_queue_index=0"
+            " graphics_queue_submit_serial=%" PRIu64
+            " graphics_queue_submit_ms=%.3f graphics_queue_blocked_ms=%.3f"
+            " graphics_queue_idle_ms=-1.000"
+            " queue_idle_measurement=not-observable-without-added-sync result=%d",
+            graphicsQueueFamilyIndex,
+            submissionSerial,
+            static_cast<double>(submitCallNs) / 1000000.0,
+            static_cast<double>(graphicsQueueBlockedNs) / 1000000.0,
+            submitResult);
         vk_.DestroyFence(device,inFlightFences[currentFrame],nullptr);
         VkFenceCreateInfo fi{}; fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; fi.flags=VK_FENCE_CREATE_SIGNALED_BIT;
         vk_.CreateFence(device,&fi,nullptr,&inFlightFences[currentFrame]);
@@ -2572,6 +2633,23 @@ ok=true;}catch(...){}
     }
     submissionTimeline.submitFrame(currentFrame, submissionSerial);
     renderSubmissionSerial.store(submissionSerial, std::memory_order_release);
+    if (submissionSerial <= 8 || submissionSerial % 120 == 0
+            || graphicsQueueBlockedNs >= 1000000ULL
+            || submitCallNs >= 8000000ULL) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+            "event=graphics-queue-submit"
+            " implementation=host-compositor"
+            " graphics_queue_family=%u graphics_queue_index=0"
+            " graphics_queue_submit_serial=%" PRIu64
+            " graphics_queue_submit_ms=%.3f graphics_queue_blocked_ms=%.3f"
+            " graphics_queue_idle_ms=-1.000"
+            " queue_idle_measurement=not-observable-without-added-sync result=0",
+            graphicsQueueFamilyIndex,
+            submissionSerial,
+            static_cast<double>(submitCallNs) / 1000000.0,
+            static_cast<double>(graphicsQueueBlockedNs) / 1000000.0);
+    }
     {
         std::lock_guard<std::mutex> lk(renderMutex);
         markDrawResourcesSubmitted(submissionSerial);

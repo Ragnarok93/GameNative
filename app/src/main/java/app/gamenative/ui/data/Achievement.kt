@@ -11,7 +11,7 @@ data class Achievement(
     val iconGray: String?,
     val progressCurrent: Float? = null,
     val progressMax: Float? = null,
-) {
+){
     /** True when this achievement tracks partial progress (e.g. 45 / 100). */
     val hasProgress: Boolean
         get() = progressMax != null && progressMax > 0f

@@ -3,9 +3,11 @@ package app.gamenative.utils
 import android.content.Context
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import java.util.concurrent.Executors
+import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicLong
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
+import com.winlator.renderer.VulkanRenderer
 import com.winlator.renderer.lsfg.LosslessScaling
 import com.winlator.core.FileUtils
 import com.winlator.core.envvars.EnvVars
@@ -548,6 +550,58 @@ object LsfgVkManager {
             val driverName = LosslessScaling.getDriverName(container)
             LosslessScaling.resolveOrBuildCache(context, dll, driverName)?.absolutePath
         }.getOrNull()
+    }
+
+    // Native host-renderer bridge. Kept weak so the renderer lifecycle owns the
+    // actual Vulkan context; runtime refreshes are best-effort.
+    @Volatile private var nativeRendererRef: WeakReference<VulkanRenderer>? = null
+    @Volatile private var nativeRendererContext: Context? = null
+
+    private fun displayRefreshRate(context: Context): Float =
+        runCatching {
+            val display = context.getSystemService(Context.WINDOW_SERVICE)
+                as? android.view.WindowManager
+            display?.defaultDisplay?.refreshRate
+        }.getOrNull()?.takeIf { it > 1f } ?: 60f
+
+    /**
+     * Push the persisted native-LSFG settings into the host compositor.
+     * Shader-cache construction is kept off the render/launch critical path.
+     */
+    @JvmStatic
+    fun applyNativeRuntime(
+        renderer: VulkanRenderer,
+        container: Container,
+        context: Context,
+    ) {
+        nativeRendererRef = WeakReference(renderer)
+        nativeRendererContext = context.applicationContext
+
+        val requested = isNativeBackend(container)
+        val enabled = requested && isArmed(container) && multiplier(container) >= 2
+        renderer.setFrameGenerationMode(
+            multiplier(container).coerceAtLeast(2),
+            if (generationMode(container) == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,
+            (flowScale(container) * 100f).toInt(),
+        )
+        renderer.setFrameGenerationRefreshRate(displayRefreshRate(context))
+
+        if (!requested) {
+            renderer.setFrameGenerationEnabled(false)
+            return
+        }
+
+        val cache = prepareNativeCache(context, container)
+        if (cache != null) renderer.setFrameGenerationShaders(cache)
+        renderer.setFrameGenerationEnabled(enabled && cache != null)
+    }
+
+    /** Re-apply native settings after Quick Menu changes without retaining a strong renderer ref. */
+    @JvmStatic
+    fun refreshNativeRuntime(container: Container) {
+        val renderer = nativeRendererRef?.get() ?: return
+        val context = nativeRendererContext ?: return
+        applyNativeRuntime(renderer, container, context)
     }
 
     /**

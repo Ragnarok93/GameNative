@@ -2483,8 +2483,37 @@ ok=true;}catch(...){}
     }
 
     uint32_t imgIdx = 0;
+    uint32_t nativeGeneratedImgIdx = VK_NULL_HANDLE;
+    VkSemaphore nativeGeneratedAcquireSemaphore = VK_NULL_HANDLE;
     uint64_t acquireNs = 0;
     VkResult res = VK_SUCCESS;
+
+    // Native LSFG is deliberately a narrow compositor path: 2x only for the
+    // first bring-up slice, with the source still rendered by the existing
+    // renderer and generated output copied into a second acquired WSI image.
+    bool nativeRuntimeActive =
+        !toXr &&
+        framegenArmed &&
+        framegenRequested &&
+        lsfg != nullptr &&
+        framegenSupported &&
+        framegenMultiplier == 2 &&
+        swapchainImages.size() >= 2;
+
+    uint32_t nativeGenerations = 0;
+    uint64_t nativeSourceFrame = framegenSourceFrames.load(std::memory_order_relaxed) + 1;
+    if (nativeRuntimeActive) {
+        vkr_lsfg_set_guest_extent(lsfg, containerWidth, containerHeight);
+        vkr_lsfg_set_refresh_rate(lsfg, framegenRefreshRate);
+        if (!createCompositeTargets(swapchainExt.width, swapchainExt.height, 1) ||
+            !vkr_lsfg_prepare(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt)) {
+            nativeRuntimeActive = false;
+            RLOG_E("Native LSFG disabled for frame: target/chain preparation failed");
+        } else {
+            nativeGenerations = vkr_lsfg_plan(lsfg, 1, nativeSourceFrame);
+        }
+    }
+
     if (!toXr) {
         const auto acquireStart = std::chrono::steady_clock::now();
         res=vk_.AcquireNextImageKHR(device,swapchain,UINT64_MAX,imgAvailSems[currentFrame],VK_NULL_HANDLE,&imgIdx);
@@ -2515,6 +2544,41 @@ ok=true;}catch(...){}
             }
         }
         imgInFlight[imgIdx]=inFlightFences[currentFrame];
+
+        if (nativeRuntimeActive && nativeGenerations > 0) {
+            nativeGeneratedAcquireSemaphore = nativeExtraAcquireSems_[currentFrame][0];
+            res = vk_.AcquireNextImageKHR(
+                device, swapchain, UINT64_MAX, nativeGeneratedAcquireSemaphore,
+                VK_NULL_HANDLE, &nativeGeneratedImgIdx);
+            if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_ERROR_SURFACE_LOST_KHR) {
+                fbResized.store(true);
+                return;
+            }
+            if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+                return;
+            }
+            if (nativeGeneratedImgIdx >= swapchainImages.size() ||
+                nativeGeneratedImgIdx == imgIdx) {
+                RLOG_E("Native LSFG acquired invalid generated image index=%u source=%u images=%zu",
+                    nativeGeneratedImgIdx, imgIdx, swapchainImages.size());
+                return;
+            }
+            if (imgInFlight[nativeGeneratedImgIdx] != VK_NULL_HANDLE &&
+                imgInFlight[nativeGeneratedImgIdx] != inFlightFences[currentFrame]) {
+                VkResult imageFenceStatus = vk_.GetFenceStatus
+                    ? vk_.GetFenceStatus(device, imgInFlight[nativeGeneratedImgIdx])
+                    : VK_NOT_READY;
+                if (imageFenceStatus == VK_SUCCESS) {
+                    completeObservedFence(imgInFlight[nativeGeneratedImgIdx]);
+                } else if (vk_.WaitForFences(
+                        device,1,&imgInFlight[nativeGeneratedImgIdx],VK_TRUE,UINT64_MAX) != VK_SUCCESS) {
+                    return;
+                } else {
+                    completeObservedFence(imgInFlight[nativeGeneratedImgIdx]);
+                }
+            }
+            imgInFlight[nativeGeneratedImgIdx] = inFlightFences[currentFrame];
+        }
     }
 
     vk_.ResetCommandBuffer(cmdBufs[currentFrame],0);
@@ -2526,8 +2590,6 @@ ok=true;}catch(...){}
     {
         std::lock_guard<std::mutex> lk(renderMutex);
 
-        // Fence observation above advances the completion timeline. Reclaim
-        // only resources whose recorded last GPU use is now known complete.
         reclaimRetiredAhbImports();
         reclaimRetiredWindowTextures();
 
@@ -2575,11 +2637,9 @@ ok=true;}catch(...){}
             VkDeviceSize csz=(VkDeviceSize)cursorTexW*cursorTexH*4;
             ensureCursorStaging(csz);
             isCursorImageDirty.store(false); hasCurUpload=true; curUpload=cursorStg;
-
             cursorUploadSize = csz;
         }
     }
-
 
     if (hasCurUpload && cursorStgP && !cursorPixels.empty())
         memcpy(cursorStgP, cursorPixels.data(), cursorUploadSize);
@@ -2588,7 +2648,43 @@ ok=true;}catch(...){}
     recordCmdBuf(cmdBufs[currentFrame],imgIdx,frameDraws,
         frameAhbTransitions,framePreUpload,framePostUpload,
         curUpload,hasCurUpload,
-        ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis);
+        ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis,
+        nativeRuntimeActive);
+
+    if (nativeRuntimeActive) {
+        VkCommandBuffer cb = cmdBufs[currentFrame];
+
+        // The existing render pass ends the source in PRESENT_SRC. Move it into
+        // the LSFG chain's expected GENERAL layout, feed history, and optionally
+        // generate one interpolated frame into the offscreen target.
+        transition(cb, swapchainImages[imgIdx],
+            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
+            0, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        vkr_lsfg_process(
+            lsfg, cb, swapchainImages[imgIdx],
+            swapchainExt.width, swapchainExt.height, nativeGenerations);
+
+        if (nativeGenerations > 0) {
+            vkr_lsfg_generate_into(
+                lsfg, cb, 0, 0, composite[0].image, composite[0].view,
+                swapchainExt.width, swapchainExt.height);
+            blitCompositeToSwapchain(
+                cb, composite[0], swapchainImages[nativeGeneratedImgIdx]);
+            framegenMadeFrames += nativeGenerations;
+        }
+
+        transition(cb, swapchainImages[imgIdx],
+            VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT, 0,
+            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
+        framegenSourceFrames.store(nativeSourceFrame, std::memory_order_release);
+        framegenRealFrames++;
+    }
 
     std::vector<LsfgFrameProvenance> frameProvenance =
         classifyHostPresentProvenance(frameDraws);

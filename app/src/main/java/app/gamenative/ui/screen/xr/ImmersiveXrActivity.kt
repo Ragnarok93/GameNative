@@ -277,6 +277,7 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                 }
 
                 val immersiveHooks = ImmersiveSessionHooks(
+                    ImmersiveSessionHooks(
                         windowsVr = windowsVrRuntimeService,
                         onQuickMenuVisibilityChanged = { visible ->
                             Timber.i("Immersive: quick menu visibility changed to %b", visible)
@@ -345,6 +346,7 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                                 app.gamenative.ui.util.SnackbarManager.show(message)
                             }
                         },
+                    ),
                     ),
                 )
 

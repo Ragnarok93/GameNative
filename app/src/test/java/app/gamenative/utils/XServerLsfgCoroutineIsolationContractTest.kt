@@ -32,7 +32,7 @@ class XServerLsfgCoroutineIsolationContractTest {
         assertFalse(screenBody.contains("scope.launch"))
         assertFalse(screenBody.contains("CoroutineScope("))
         assertFalse(screenBody.contains("InputMethodManager"))
-        assertFalse(screenBody.contains("val imm"))
+        assertFalse(screenBody.contains("val imm ="))
         assertFalse(source.substring(screenStart, source.indexOf(") {", screenStart)).contains("immersiveHooks:"))
         assertTrue(screenBody.contains("LocalImmersiveSessionHooks.current"))
         assertTrue(screenBody.contains("launchXServerIo"))

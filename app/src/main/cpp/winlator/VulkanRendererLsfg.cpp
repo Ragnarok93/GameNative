@@ -178,7 +178,19 @@ void VulkanRendererContext::destroyLsfg() {
 }
 
 void VulkanRendererContext::createLsfg() {
-    if (lsfg || lsfgCachePath.empty() || !device || !physicalDevice || !vkd.CreateComputePipelines) return;
+    if (lsfg || lsfgCachePath.empty() || !device || !physicalDevice) return;
+
+    if (!nativeVulkanDispatchLoaded_) {
+        if (!vkd_load(instance, device, gipa)) {
+            RLOG_E("Native LSFG dispatch unavailable; native backend remains inert");
+            return;
+        }
+        nativeVulkanDispatchLoaded_ = true;
+    }
+    if (!vkd.CreateComputePipelines) {
+        RLOG_E("Native LSFG compute dispatch unavailable; native backend remains inert");
+        return;
+    }
 
     lsfg = vkr_lsfg_create(device, physicalDevice, lsfgCachePath.c_str());
     if (!lsfg) {

@@ -54,7 +54,7 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
-    fun vulkanRendererKeepsFinalPresentInlineInsteadOfUsingASecondPresenterThread() {
+    fun vulkanRendererBoundsAsyncPresentToTheSplitQueuePath() {
         val javaRenderer = repoSource("app/src/main/java/com/winlator/renderer/VulkanRenderer.java")
         val jni = source("vulkan_jni.cpp")
         val header = source("VulkanRendererContext.h")
@@ -64,21 +64,24 @@ class LsfgFrameQueueContractTest {
         assertTrue(javaRenderer.contains("nativeSetLsfgFrameQueue"))
         assertTrue(jni.contains("nativeSetLsfgFrameQueue"))
 
-        assertFalse(header.contains("hostPresentThread_"))
-        assertFalse(header.contains("hostPresentQueue_"))
-        assertFalse(header.contains("framePresentPending_"))
-        assertFalse(header.contains("queuedRenderDoneSems_"))
-        assertFalse(implementation.contains("hostPresentLoop"))
-        assertFalse(implementation.contains("enqueueHostPresent"))
-        assertFalse(implementation.contains("waitForHostPresentCapacity"))
+        assertTrue(header.contains("MAX_HOST_PRESENT_QUEUE_DEPTH"))
+        assertTrue(header.contains("hostPresenterThread_"))
+        assertTrue(header.contains("hostAsyncPresenterActive_"))
+        assertTrue(implementation.contains(
+            "hostAsyncPresenterActive_ =\n        hostAsyncPresenterEnabled_ && hostSplitPresentQueueActive_"
+        ))
+        assertTrue(implementation.contains("enqueueHostPresent"))
+        assertTrue(implementation.contains("drainHostPresenter(\"swapchain-cleanup\")"))
 
-        val renderFrameStart = implementation.indexOf("void VulkanRendererContext::renderFrame()")
-        val renderFrameEnd = implementation.indexOf("void VulkanRendererContext::onSurfaceResized", renderFrameStart)
-        assertTrue(renderFrameStart >= 0 && renderFrameEnd > renderFrameStart)
-        val renderFrame = implementation.substring(renderFrameStart, renderFrameEnd)
-        val submit = renderFrame.indexOf("vk_.QueueSubmit(")
-        val present = renderFrame.indexOf("presentHostFrame(")
-        assertTrue("Host present must remain inline after the matching submit", submit >= 0 && present > submit)
+        val workerStart = implementation.indexOf("void VulkanRendererContext::hostPresenterLoop")
+        val workerEnd = implementation.indexOf(
+            "void VulkanRendererContext::processHostPresentCompletions", workerStart
+        )
+        assertTrue(workerStart >= 0 && workerEnd > workerStart)
+        val worker = implementation.substring(workerStart, workerEnd)
+        assertTrue(worker.contains("executeHostPresent"))
+        assertFalse(worker.contains("recordHostPresent"))
+        assertFalse(worker.contains("pollHostDisplayConfirmations"))
     }
 
     @Test

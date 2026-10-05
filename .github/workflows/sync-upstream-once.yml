@@ -31,8 +31,16 @@ jobs:
 
       - name: Merge prerelease while preserving custom conflict hunks
         run: |
-          git merge --no-ff -X ours 231d1365cf1a09b7f1763cfaebd3906628ec1381 \
-            -m "merge: sync upstream v1.3.0 prerelease"
+          if ! git merge --no-ff -X ours 231d1365cf1a09b7f1763cfaebd3906628ec1381 \
+            -m "merge: sync upstream v1.3.0 prerelease"; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            echo "Unresolved merge paths:"
+            printf '%s\n' "$conflicts"
+            test "$conflicts" = ".github/workflows/adhoc-signed-build.yml"
+            git rm -f .github/workflows/adhoc-signed-build.yml
+            git add -A
+            git commit --no-edit
+          fi
           git rm .github/workflows/sync-upstream-once.yml
           git commit --amend --no-edit
           echo "MERGED_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"

@@ -84,7 +84,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- app/src/main/cpp/lsfg-vk-android app/src/main/cpp | tee /tmp/native-diff.txt
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+          fi
+          git diff --name-only "$base_sha" "${{ github.sha }}" -- app/src/main/cpp/lsfg-vk-android app/src/main/cpp | tee /tmp/native-diff.txt
           if grep -q . /tmp/native-diff.txt; then
             echo "::error::Native LSFG/Vulkan sources changed in an XServer verifier-only fix."
             exit 1

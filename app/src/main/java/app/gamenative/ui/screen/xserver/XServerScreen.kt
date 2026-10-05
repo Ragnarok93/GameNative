@@ -215,10 +215,6 @@ import com.winlator.xserver.WindowManager
 import com.winlator.xserver.XServer
 import com.winlator.xserver.extensions.PresentExtension
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -245,9 +241,6 @@ import kotlin.math.roundToInt
 import kotlin.text.lowercase
 import com.winlator.PrefManager as WinlatorPrefManager
 
-private fun launchXServerIo(block: suspend () -> Unit): Job =
-    CoroutineScope(Dispatchers.IO).launch(start = CoroutineStart.DEFAULT) { block() }
-
 // Always re-extract drivers and DXVK on every launch to handle cases of container corruption
 // where games randomly stop working. Set to false once corruption issues are resolved.
 private const val ALWAYS_REEXTRACT = true
@@ -263,20 +256,6 @@ private const val DEFAULT_FPS_LIMITER_MAX_HZ = 60
 private const val DEFAULT_FPS_LIMITER_TARGET_HZ = 60
 private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
 private const val FPS_LIMITER_TARGET_EXTRA = "fpsLimiterTarget"
-
-@Composable
-private fun rememberKeyboardEscMenuHandler(): KeyboardEscMenuHandler {
-    val scope = rememberCoroutineScope()
-    return remember(scope) { KeyboardEscMenuHandler(scope) }
-}
-
-@Composable
-private fun rememberKickPlayingSessionAction(): () -> Unit {
-    val scope = rememberCoroutineScope()
-    return remember(scope) {
-        { scope.launch { SteamService.kickPlayingSession(onlyGame = true) } }
-    }
-}
 
 private fun initialFpsLimiterEnabled(container: Container): Boolean =
     parseBooleanExtra(container.getExtra(FPS_LIMITER_ENABLED_EXTRA)) ?: true

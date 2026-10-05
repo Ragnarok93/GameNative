@@ -17,7 +17,6 @@
 #include <time.h>
 #include "window_vert.h"
 #include "window_frag.h"
-#include "../lsfg/vk_dispatch.h"
 #include "../lsfg/vkr_lsfg.h"
 
 extern "C" __attribute__((used, visibility("default")))
@@ -293,7 +292,10 @@ VulkanRendererContext::~VulkanRendererContext() {
     }
     vk_.DestroyCommandPool(device, cmdPool, nullptr);
     vk_.DestroyRenderPass(device, renderPass, nullptr);
-    vkd_unload();
+    if (nativeVulkanDispatchLoaded_) {
+        vkd_unload();
+        nativeVulkanDispatchLoaded_ = false;
+    }
     vk_.DestroyDevice(device, nullptr);
     vk_.DestroySurfaceKHR(instance, surface, nullptr);
     vk_.DestroyInstance(instance, nullptr);
@@ -566,11 +568,6 @@ void VulkanRendererContext::createLogicalDevice() {
     if (deviceCreateResult != VK_SUCCESS) throw std::runtime_error("device");
     vk_.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)gipa(instance, "vkGetDeviceProcAddr");
     loadDeviceDispatch();
-    if (!vkd_load(instance, device, gipa)) {
-        __android_log_print(
-            ANDROID_LOG_WARN, "VkrLsfg",
-            "native LSFG dispatch unavailable; native backend remains inert");
-    }
     if (!vk_.GetPastPresentationTimingGOOGLE)
         hostGoogleDisplayTimingEnabled = false;
     if (!vk_.WaitForPresentKHR)

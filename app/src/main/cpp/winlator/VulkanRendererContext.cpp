@@ -201,6 +201,11 @@ VulkanRendererContext::VulkanRendererContext(
     createFramebuffers(); createCmdPool(); createSampler();
     createWinTexPool(); createAhbTexPool(); createCursorDS(); createCmdBufs(); createSyncObjects();
     initLsfgProvenanceSocket();
+    if (hostSplitPresentQueueActive_) {
+        hostPresenterRunning_.store(true, std::memory_order_release);
+        hostPresenterThread_ =
+            std::thread(&VulkanRendererContext::hostPresenterLoop, this);
+    }
     isRunning = true;
     renderThread = std::thread(&VulkanRendererContext::renderLoop, this);
 }
@@ -208,6 +213,12 @@ VulkanRendererContext::VulkanRendererContext(
 VulkanRendererContext::~VulkanRendererContext() {
     isRunning = false; dirtyCV.notify_all();
     if (renderThread.joinable()) renderThread.join();
+    drainHostPresenter("renderer-destroy");
+    hostPresenterRunning_.store(false, std::memory_order_release);
+    hostPresenterCv_.notify_all();
+    hostPresenterCapacityCv_.notify_all();
+    hostPresenterDrainCv_.notify_all();
+    if (hostPresenterThread_.joinable()) hostPresenterThread_.join();
     std::lock_guard<std::mutex> lk(renderMutex);
     vk_.DeviceWaitIdle(device);
     submissionTimeline.completeAllFrames();

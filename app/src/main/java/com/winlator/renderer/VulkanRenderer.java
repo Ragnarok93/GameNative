@@ -177,6 +177,14 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetSwapRB(long handle, boolean enabled);
     private native void nativeSetPresentMode(long handle, int mode);
     private native void nativeSetLsfgFrameQueue(long handle, boolean enabled, int target);
+    private native void nativeSetFrameGenerationEnabled(long handle, boolean enabled);
+    private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
+    private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
+    private native void nativeSetFrameGenerationMode(long handle, int multiplier, int targetRate, int flowScalePct);
+    private native long nativeGetGeneratedFrameCount(long handle);
+    private native long nativeGetPresentedFrameCount(long handle);
+    private native long nativeGetRealFrameCount(long handle);
+    private native long nativeGetSourceFrameCount(long handle);
     private native void nativeSetEffect(long handle, int effectId, float sharpness,
         int effectMask, float brightness, float contrast, float gamma);
     private native long nativeEnableXrTarget(long handle);
@@ -852,6 +860,61 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     public void setVkPresentMode(int mode) {
         pendingPresentMode = mode;
         synchronized (lock) { if (nativeHandle != 0) nativeSetPresentMode(nativeHandle, mode); }
+    }
+
+    public void setFrameGenerationEnabled(boolean enabled) {
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeSetFrameGenerationEnabled(nativeHandle, enabled);
+        }
+    }
+
+    public void setFrameGenerationShaders(String cachePath) {
+        if (cachePath == null || cachePath.isEmpty()) return;
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeSetFrameGenerationShaders(nativeHandle, cachePath);
+        }
+    }
+
+    public void setFrameGenerationRefreshRate(float hz) {
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeSetFrameGenerationRefreshRate(nativeHandle, hz);
+        }
+    }
+
+    public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {
+        synchronized (lock) {
+            if (nativeHandle != 0) {
+                nativeSetFrameGenerationMode(
+                    nativeHandle,
+                    Math.max(2, Math.min(4, multiplier)),
+                    Math.max(0, targetRate),
+                    Math.max(25, Math.min(100, flowScalePct)));
+            }
+        }
+    }
+
+    public long getGeneratedFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetGeneratedFrameCount(nativeHandle) : 0L;
+        }
+    }
+
+    public long getPresentedFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetPresentedFrameCount(nativeHandle) : 0L;
+        }
+    }
+
+    public long getRealFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetRealFrameCount(nativeHandle) : 0L;
+        }
+    }
+
+    public long getSourceFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetSourceFrameCount(nativeHandle) : 0L;
+        }
     }
 
     public void setLsfgFrameQueue(boolean enabled, int target) {

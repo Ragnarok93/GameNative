@@ -4436,7 +4436,7 @@ private fun setupXEnvironment(
     val isCustomGame = gameSource == GameSource.CUSTOM_GAME
     val gameIdForTicket = ContainerUtils.extractGameIdFromContainerId(appId)
     if (!bootToContainer && !isCustomGame && gameIdForTicket != null && !container.isLaunchRealSteam && !container.isLaunchBionicSteam) {
-        CoroutineScope(Dispatchers.IO).launch {
+        launchXServerIo {
             try {
                 val ticket = SteamService.instance?.getEncryptedAppTicket(gameIdForTicket)
                 if (ticket != null) {
@@ -4521,7 +4521,7 @@ private fun setupXEnvironment(
     }
 
     // put in separate scope since winhandler start method does some network stuff
-    CoroutineScope(Dispatchers.IO).launch {
+    launchXServerIo {
         xServer.winHandler.start()
     }
     envVars.clear()
@@ -5022,7 +5022,7 @@ private fun exit(
     // inheriting the previous session's half-dead state.
     if (container.isLaunchBionicSteam) {
         // Launch async to avoid ANR if nativeShutdown() takes >5s
-        CoroutineScope(Dispatchers.IO).launch {
+        launchXServerIo {
             try {
                 Timber.d("SteamBootstrap stopping...")
                 SteamBootstrap.stop()
@@ -5034,7 +5034,7 @@ private fun exit(
     }
 
     // empty Wine/XDG trash in background after container stops
-    CoroutineScope(Dispatchers.IO).launch {
+    launchXServerIo {
         try {
             val trashDir = File(container.rootDir, ".local/share/Trash")
             val children = trashDir.listFiles()

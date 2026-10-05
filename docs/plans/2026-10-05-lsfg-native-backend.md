@@ -192,3 +192,11 @@ Commit only test/telemetry changes required by the verification findings. Do not
 - If native initialization fails while legacy is already running, the design recommends retaining legacy as the runtime backend; no separate user-visible error surface beyond the existing Quick Menu telemetry/logging is required by the current specification.
 - The native backend's exact JNI method names and the exact CMake target path are repository-dependent and must be taken from the current source/build files rather than invented; these are engineering integration details, not product behavior.
 - No performance threshold beyond 'no material regression' is numerically defined yet; runtime comparison should therefore report measured deltas rather than silently inventing a pass/fail percentage.
+
+## Upstream LSFG version audit (2026-10-05)
+
+Before implementation, the upstream lineage was checked rather than assuming a "1.3.0 prerelease" exists. The public PancakeTAS lsfg-vk release history currently exposes 1.0.0 and 2.0.0-dev prereleases; there is no upstream lsfg-vk 1.3.0 release/tag. The LSFG model lineage is separately at LSFG 3.1. The Android lsfg-vk fork used by this project is based on lsfg-vk 1.0.0 and its current release branch already contains the Android AHardwareBuffer/Vortek/Turnip and shader-float16 updates verified against the fork's latest release branch.
+
+The native GameNative compositor implementation is a different lineage: it derives from Eden's native Vulkan LSFG implementation, which Eden merged in PR #4263, rather than from an lsfg-vk "1.3.0" release. Therefore no nonexistent 1.3.0 code will be fabricated or transplanted. The native integration work will instead use the merged Eden implementation and the later proven compositor-side fixes as the source-of-truth lineage, while preserving the repository's existing protected Adreno synchronization behavior.
+
+**Implication:** the pre-integration task is not an lsfg-vk version bump. It is an audit/reconciliation of the native Eden-derived engine against the current compositor-side implementation, especially generation planning, history priming, target management, provenance, and multi-present scheduling. Those changes must be integrated before native backend activation is declared functional.

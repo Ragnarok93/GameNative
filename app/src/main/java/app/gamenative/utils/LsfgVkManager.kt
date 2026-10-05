@@ -326,6 +326,7 @@ object LsfgVkManager {
             "LSFG_BACKEND: event=backend_runtime_applied backend_generation=%d request_serial=%d backend_apply_serial=%d " +
                 "backend=%s runtime_backend=%s backend_apply_latency_ms=%.3f backend_apply_result=%s",
             request.serial,
+            request.serial,
             if (result == "runtime-applied") request.serial else 0L,
             request.backend,
             sanitizeBackend(runtimeBackend),

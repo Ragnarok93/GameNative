@@ -53,6 +53,7 @@ add_library(
     "${WINLATOR_DIR}/VulkanRendererLsfg.cpp"
     "${WINLATOR_DIR}/VulkanRendererScanout.cpp"
     "${LSFG_DIR}/vk_dispatch.c"
+    "${LSFG_DIR}/lsfg_dll.c"
     "${LSFG_DIR}/vkr_lsfg.cpp"
     "${LSFG_DIR}/lsfg_alpha.cpp"
     "${LSFG_DIR}/lsfg_beta.cpp"

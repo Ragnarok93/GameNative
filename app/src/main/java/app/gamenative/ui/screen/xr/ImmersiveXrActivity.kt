@@ -9,6 +9,7 @@ import android.os.HandlerThread
 import android.view.PixelCopy
 import android.view.SurfaceView
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.activity.viewModels
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -276,7 +277,8 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
-                XServerScreen(
+                CompositionLocalProvider(
+                    LocalImmersiveSessionHooks provides ImmersiveSessionHooks(
                     appId = appId,
                     bootToContainer = false,
                     isOffline = isOffline,
@@ -314,7 +316,6 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                         }
                         finish()
                     },
-                    immersiveHooks = ImmersiveSessionHooks(
                         windowsVr = windowsVrRuntimeService,
                         onQuickMenuVisibilityChanged = { visible ->
                             Timber.i("Immersive: quick menu visibility changed to %b", visible)
@@ -386,6 +387,7 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                     ),
                     ),
                 )
+                }
 
                 val splashVisible = mainState.showBootingSplash && mappedWindowCount == 0 && !overlayPausedUi
                 LaunchedEffect(splashVisible) { bootingSplashVisible = splashVisible }

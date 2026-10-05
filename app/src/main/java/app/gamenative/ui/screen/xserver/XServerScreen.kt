@@ -1754,8 +1754,7 @@ fun XServerScreen(
                         if (Build.VERSION.SDK_INT >= 30) {
                             view.windowInsetsController?.hide(WindowInsets.Type.ime())
                         } else {
-                            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                            if (view.windowToken != null) imm.hideSoftInputFromWindow(view.windowToken, 0)
+                    hideSoftInput(context, view)
                         }
                     }
                 }

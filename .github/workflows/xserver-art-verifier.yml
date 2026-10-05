@@ -78,7 +78,7 @@ jobs:
             printf '%s\n' "${apks[@]}"
             exit 1
           fi
-          tools/verify-xserver-art-method.sh "${apks[0]}"
+          bash tools/verify-xserver-art-method.sh "${apks[0]}"
 
       - name: Verify native LSFG/Vulkan provenance is unchanged
         shell: bash

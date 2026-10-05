@@ -1583,7 +1583,7 @@ CompletedHostPresent VulkanRendererContext::executeHostPresent(
             hostSplitPresentQueueActive_ ? hostPresentQueueIndex_ : 0U,
             static_cast<double>(presentNs) / 1000000.0,
             static_cast<double>(presentQueueBlockedNs) / 1000000.0,
-            static_cast<uint64_t>(present.waitSemaphore),
+            reinterpret_cast<uint64_t>(present.waitSemaphore),
             present.hostPresentId,
             result);
     }

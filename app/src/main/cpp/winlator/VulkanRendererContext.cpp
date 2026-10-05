@@ -1781,6 +1781,7 @@ VkResult VulkanRendererContext::presentHostFrame(
 }
 
 void VulkanRendererContext::cleanupSwapchain() {
+    drainHostPresenter("swapchain-recreate");
     retireFrameQueuePresentSemaphores();
     flushHostDisplayConfirmationsUnknown("swapchain-recreate");
     if (swapchain != VK_NULL_HANDLE) {
@@ -2393,6 +2394,7 @@ ok=true;}catch(...){}
     if (currentFrame >= activeSlots)
         currentFrame = 0;
     if (currentFrame >= cmdBufs.size() || cmdBufs[currentFrame] == VK_NULL_HANDLE) return;
+    waitForHostPresenterSlot(currentFrame);
     bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
     bool currentFenceWaited = false;
     bool currentFenceComplete = false;
@@ -2552,9 +2554,15 @@ ok=true;}catch(...){}
 
     VkSemaphore wSem[]={imgAvailSems[currentFrame]};
     VkSemaphore signalSemaphore = renderDoneSems[currentFrame];
+    // Async presentation must use a swapchain-image-owned semaphore. Reacquiring
+    // that image is the proof that WSI consumed its prior wait, so the renderer
+    // cannot re-signal a frame-slot semaphore while the presenter is still
+    // blocked in vkQueuePresentKHR.
     const bool useFrameQueuePresentSemaphore =
-        !toXr && frameQueueEnabled && hasUniqueLsfgDelivery
-        && activeFrameSlotCount() > BASE_FRAMES_IN_FLIGHT;
+        !toXr && (
+            hostSplitPresentQueueActive_
+            || (frameQueueEnabled && hasUniqueLsfgDelivery
+                && activeFrameSlotCount() > BASE_FRAMES_IN_FLIGHT));
     if (useFrameQueuePresentSemaphore) {
         if (imgIdx >= frameQueuePresentSems_.size()
                 || frameQueuePresentSems_[imgIdx] == VK_NULL_HANDLE) {
@@ -2618,7 +2626,7 @@ ok=true;}catch(...){}
 
         const uint32_t gpuOutstanding =
             countOutstandingFrameSubmissions(true);
-        res = presentHostFrame(PendingHostPresent{
+        PendingHostPresent pendingPresent{
             .frameSlot = currentFrame,
             .imageIndex = imgIdx,
             .swapchain = swapchain,
@@ -2634,7 +2642,8 @@ ok=true;}catch(...){}
             .submissionSerial = submissionSerial,
             .swapchainGeneration = hostSwapchainGeneration_,
             .gpuOutstanding = gpuOutstanding,
-        });
+        };
+        res = enqueueHostPresent(std::move(pendingPresent));
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR)
             fbResized.store(true);
     } else {
@@ -2663,6 +2672,7 @@ void VulkanRendererContext::detachSurface() {
 
     { std::unique_lock<std::shared_mutex> frameLock(frameMutex); }
 
+    drainHostPresenter("surface-detach");
     vk_.DeviceWaitIdle(device);
     submissionTimeline.completeAllFrames();
     cleanupSwapchain();
@@ -3093,6 +3103,7 @@ void VulkanRendererContext::drainLsfgProvenance() {
         if (packet.contextEpoch != 0
                 && activeProvenanceContextEpoch_ != 0
                 && packet.contextEpoch != activeProvenanceContextEpoch_) {
+            drainHostPresenter("provenance-epoch-reset");
             flushHostDisplayConfirmationsUnknown("provenance-epoch-reset");
             pendingLsfgProvenance.clear();
             hostDeliveryQueueContextEpoch_ = packet.contextEpoch;

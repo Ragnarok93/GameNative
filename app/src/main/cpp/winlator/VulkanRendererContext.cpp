@@ -1478,63 +1478,284 @@ void VulkanRendererContext::hostPresenterLoop() {
         }
 
         const uint64_t dequeuedAtNs = monotonicTimeNs();
-        const uint64_t queueAgeNs =
-            present.presenterEnqueuedAtNs != 0
-                && dequeuedAtNs >= present.presenterEnqueuedAtNs
-            ? dequeuedAtNs - present.presenterEnqueuedAtNs
+        CompletedHostPresent completed =
+            executeHostPresent(std::move(present));
+        completed.presenterQueueAgeNs =
+            completed.present.presenterEnqueuedAtNs != 0
+                && dequeuedAtNs >= completed.present.presenterEnqueuedAtNs
+            ? dequeuedAtNs - completed.present.presenterEnqueuedAtNs
             : 0;
-        const auto presenterCallStart = std::chrono::steady_clock::now();
-        const VkResult result = presentHostFrame(present);
-        const uint64_t presenterCallNs = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - presenterCallStart).count());
+        completed.presenterWorkerNs = completed.presentCallNs;
+        completed.presenterQueueDepthAfter = pendingAfterDequeue;
 
+        const uint32_t frameSlot = completed.present.frameSlot;
+        const uint64_t submissionSerial = completed.present.submissionSerial;
         {
             std::lock_guard<std::mutex> lock(hostPresenterMutex_);
-            if (present.frameSlot < MAX_FRAMES_IN_FLIGHT) {
-                presenterCompletedSubmissionSerialBySlot_[present.frameSlot].store(
-                    present.submissionSerial, std::memory_order_release);
+            completedHostPresents_.push_back(std::move(completed));
+            if (frameSlot < MAX_FRAMES_IN_FLIGHT) {
+                presenterCompletedSubmissionSerialBySlot_[frameSlot].store(
+                    submissionSerial, std::memory_order_release);
             }
             hostPresenterInFlight_ = false;
+            hostPresentCompletionPending_.store(true, std::memory_order_release);
         }
         hostPresenterCapacityCv_.notify_all();
         hostPresenterDrainCv_.notify_all();
-
-        __android_log_print(
-            ANDROID_LOG_INFO, "LSFG_HOST_PRESENTER",
-            "event=present-complete present_async=1 host_present_id=%" PRIu64
-            " frame_slot=%u submission_serial=%" PRIu64
-            " result=%d presenter_queue_age_ms=%.3f presenter_call_ms=%.3f"
-            " presenter_queue_depth_after=%u presenter_queue_high_water=%u"
-            " presenter_backpressure_total=%" PRIu64
-            " presenter_backpressure_wait_ms_total=%.3f"
-            " presenter_slot_wait_total=%" PRIu64
-            " presenter_slot_wait_ms_total=%.3f",
-            present.hostPresentId,
-            present.frameSlot,
-            present.submissionSerial,
-            static_cast<int>(result),
-            static_cast<double>(queueAgeNs) / 1000000.0,
-            static_cast<double>(presenterCallNs) / 1000000.0,
-            pendingAfterDequeue,
-            hostPresenterPendingHighWater_.load(std::memory_order_relaxed),
-            hostPresenterBackpressureTotal_.load(std::memory_order_relaxed),
-            static_cast<double>(
-                hostPresenterBackpressureNsTotal_.load(std::memory_order_relaxed))
-                / 1000000.0,
-            hostPresenterSlotWaitTotal_.load(std::memory_order_relaxed),
-            static_cast<double>(
-                hostPresenterSlotWaitNsTotal_.load(std::memory_order_relaxed))
-                / 1000000.0);
+        dirtyCV.notify_one();
     }
 
     hostPresenterCapacityCv_.notify_all();
     hostPresenterDrainCv_.notify_all();
 }
 
+void VulkanRendererContext::processHostPresentCompletions() {
+    if (!hostPresentCompletionPending_.load(std::memory_order_acquire))
+        return;
+
+    std::deque<CompletedHostPresent> completed;
+    {
+        std::lock_guard<std::mutex> lock(hostPresenterMutex_);
+        completed.swap(completedHostPresents_);
+        hostPresentCompletionPending_.store(
+            !completedHostPresents_.empty(), std::memory_order_release);
+    }
+    for (auto& item : completed)
+        processHostPresentCompletion(std::move(item));
+}
+
+void VulkanRendererContext::processHostPresentCompletion(
+        CompletedHostPresent&& completed) {
+    const PendingHostPresent& present = completed.present;
+    const VkResult result = completed.result;
+    const uint64_t presentNs = completed.presentCallNs;
+
+    frameQueueAcquireNsTotal_.fetch_add(
+        present.acquireNs, std::memory_order_relaxed);
+    frameQueuePresentNsTotal_.fetch_add(
+        presentNs, std::memory_order_relaxed);
+    const uint64_t sample =
+        frameQueuePresentSamples_.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint32_t observedMax =
+        frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed);
+    while (observedMax < present.gpuOutstanding
+            && !frameQueueMaxGpuOutstanding_.compare_exchange_weak(
+                observedMax, present.gpuOutstanding,
+                std::memory_order_relaxed)) {}
+
+    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+        const uint64_t presented =
+            frameQueuePresentedTotal_.fetch_add(
+                1, std::memory_order_relaxed) + 1;
+        recordHostPresent(present, presentNs);
+        updateSmoothQueuePressure(
+            presentNs,
+            present.frameQueueEnabled,
+            present.requestedFrameQueueTarget,
+            present.activePresentModeSnapshot);
+        pollHostDisplayConfirmations();
+
+        if (sample <= 8 || sample % 120 == 0 || presentNs >= 8000000ULL) {
+            const bool enabled = present.frameQueueEnabled;
+            const uint32_t requestedTarget =
+                present.requestedFrameQueueTarget;
+            const uint32_t effectiveTarget =
+                present.effectiveFrameQueueTarget;
+            const bool smoothFallback =
+                enabled && requestedTarget == 2 && effectiveTarget < 2;
+            const char* mode = !enabled ? "off"
+                : (requestedTarget == 0 ? "unbuffered"
+                : (requestedTarget == 1 ? "balanced" : "smooth"));
+            const char* fallbackReason = !smoothFallback ? "none"
+                : (frameQueueSmoothFifoFallback_.load(
+                        std::memory_order_acquire)
+                    ? "fifo-present-blocking"
+                    : "present-stall");
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+                "event=present telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
+                "mode=%s smooth_fallback=%d fallback_reason=%s requested_present_mode=%d "
+                "active_present_mode=%d swapchain_generation=%llu active_slots=%u unique_content=%d "
+                "present_queue_split=%d present_queue_index=%u present_async=%d "
+                "present_enqueue_wait_ms=%.3f host_present_enqueue_wait_ms=%.3f "
+                "presenter_queue_depth=%u host_present_queue_depth=%u presenter_queue_high_water=%u "
+                "presenter_backpressure_total=%llu presenter_backpressure_wait_ms_total=%.3f "
+                "presenter_slot_wait_total=%llu presenter_slot_wait_ms_total=%.3f "
+                "host_present_worker=%d presenter_queue_age_ms=%.3f presenter_worker_ms=%.3f "
+                "gpu_outstanding=%u max_gpu_outstanding=%u frame_slot=%u submission_serial=%llu "
+                "completed_submission_serial=%llu acquire_ms=%.3f submit_ms=%.3f "
+                "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f presented=%llu "
+                "provenance_desired_time=%llu submitted_desired_time=%llu desired_stale_by_ms=%.3f "
+                "desired_fallback_reason=%s refresh_period_ns=%llu phase_advance_cycles=%llu "
+                "phase_advance_ms=%.3f temporal_backlog=%d",
+                static_cast<unsigned long long>(
+                    frameQueueTelemetryEpoch_.load(std::memory_order_relaxed)),
+                enabled ? 1 : 0, requestedTarget, effectiveTarget, mode,
+                smoothFallback ? 1 : 0, fallbackReason,
+                static_cast<int>(present.requestedPresentModeSnapshot),
+                static_cast<int>(present.activePresentModeSnapshot),
+                static_cast<unsigned long long>(present.swapchainGeneration),
+                present.activeFrameSlots,
+                present.hasUniqueLsfgDelivery ? 1 : 0,
+                hostSplitPresentQueueActive_ ? 1 : 0,
+                hostPresentQueueIndex_,
+                present.asyncPresent ? 1 : 0,
+                static_cast<double>(present.presentEnqueueWaitNs) / 1000000.0,
+                static_cast<double>(present.presentEnqueueWaitNs) / 1000000.0,
+                present.presenterQueueDepth,
+                present.presenterQueueDepth,
+                hostPresenterPendingHighWater_.load(std::memory_order_relaxed),
+                static_cast<unsigned long long>(
+                    hostPresenterBackpressureTotal_.load(
+                        std::memory_order_relaxed)),
+                static_cast<double>(
+                    hostPresenterBackpressureNsTotal_.load(
+                        std::memory_order_relaxed)) / 1000000.0,
+                static_cast<unsigned long long>(
+                    hostPresenterSlotWaitTotal_.load(
+                        std::memory_order_relaxed)),
+                static_cast<double>(
+                    hostPresenterSlotWaitNsTotal_.load(
+                        std::memory_order_relaxed)) / 1000000.0,
+                present.asyncPresent ? 1 : 0,
+                static_cast<double>(completed.presenterQueueAgeNs) / 1000000.0,
+                static_cast<double>(completed.presenterWorkerNs) / 1000000.0,
+                present.gpuOutstanding,
+                frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
+                present.frameSlot,
+                static_cast<unsigned long long>(present.submissionSerial),
+                static_cast<unsigned long long>(
+                    submissionTimeline.completedSubmissionSerial.load(
+                        std::memory_order_acquire)),
+                static_cast<double>(present.acquireNs) / 1000000.0,
+                static_cast<double>(present.submitCallNs) / 1000000.0,
+                static_cast<double>(presentNs) / 1000000.0,
+                static_cast<unsigned long long>(
+                    frameQueueRetirementWaitTotal_.load(
+                        std::memory_order_relaxed)),
+                static_cast<double>(
+                    frameQueueRetirementWaitNsTotal_.load(
+                        std::memory_order_relaxed)) / 1000000.0,
+                static_cast<unsigned long long>(presented),
+                static_cast<unsigned long long>(
+                    present.desiredDecision.provenanceDesiredPresentTimeNs),
+                static_cast<unsigned long long>(
+                    present.desiredDecision.submittedDesiredPresentTimeNs),
+                static_cast<double>(
+                    present.desiredDecision.desiredStaleByNs) / 1000000.0,
+                present.desiredDecision.fallbackReason
+                    ? present.desiredDecision.fallbackReason : "none",
+                static_cast<unsigned long long>(
+                    present.desiredDecision.refreshPeriodNs),
+                static_cast<unsigned long long>(
+                    present.desiredDecision.phaseAdvanceCycles),
+                static_cast<double>(
+                    present.desiredDecision.phaseAdvanceNs) / 1000000.0,
+                present.desiredDecision.temporalBacklog ? 1 : 0);
+        }
+    }
+
+    if (present.asyncPresent) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_HOST_PRESENTER",
+            "event=present-complete host_present_worker=1 present_async=1 "
+            "host_present_id=%" PRIu64 " frame_slot=%u submission_serial=%" PRIu64
+            " result=%d host_present_enqueue_wait_ms=%.3f "
+            "host_present_queue_depth=%u presenter_queue_age_ms=%.3f "
+            "presenter_call_ms=%.3f presenter_queue_depth_after=%u "
+            "presenter_queue_high_water=%u presenter_backpressure_total=%" PRIu64
+            " presenter_backpressure_wait_ms_total=%.3f "
+            "presenter_slot_wait_total=%" PRIu64
+            " presenter_slot_wait_ms_total=%.3f",
+            present.hostPresentId,
+            present.frameSlot,
+            present.submissionSerial,
+            static_cast<int>(result),
+            static_cast<double>(present.presentEnqueueWaitNs) / 1000000.0,
+            present.presenterQueueDepth,
+            static_cast<double>(completed.presenterQueueAgeNs) / 1000000.0,
+            static_cast<double>(completed.presenterWorkerNs) / 1000000.0,
+            completed.presenterQueueDepthAfter,
+            hostPresenterPendingHighWater_.load(std::memory_order_relaxed),
+            hostPresenterBackpressureTotal_.load(std::memory_order_relaxed),
+            static_cast<double>(
+                hostPresenterBackpressureNsTotal_.load(
+                    std::memory_order_relaxed)) / 1000000.0,
+            hostPresenterSlotWaitTotal_.load(std::memory_order_relaxed),
+            static_cast<double>(
+                hostPresenterSlotWaitNsTotal_.load(
+                    std::memory_order_relaxed)) / 1000000.0);
+    }
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR
+            || result == VK_ERROR_SURFACE_LOST_KHR) {
+        fbResized.store(true, std::memory_order_release);
+    }
+}
+
+CompletedHostPresent VulkanRendererContext::executeHostPresent(
+        PendingHostPresent&& present) {
+    VkPresentIdKHR presentIdInfo{};
+    presentIdInfo.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+    presentIdInfo.swapchainCount = 1;
+    presentIdInfo.pPresentIds = &present.hostPresentId;
+
+    VkPresentTimeGOOGLE googlePresentTime{};
+    googlePresentTime.presentID = present.googlePresentId;
+    googlePresentTime.desiredPresentTime =
+        present.desiredDecision.submittedDesiredPresentTimeNs;
+    VkPresentTimesInfoGOOGLE googlePresentTimes{};
+    googlePresentTimes.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE;
+    googlePresentTimes.swapchainCount = 1;
+    googlePresentTimes.pTimes = &googlePresentTime;
+
+    const void* presentNext = nullptr;
+    if (present.backend == HostDisplayConfirmationBackend::PresentWait
+            || (present.backend
+                    == HostDisplayConfirmationBackend::GoogleDisplayTiming
+                && hostPresentWaitEnabled && vk_.WaitForPresentKHR)) {
+        presentIdInfo.pNext = presentNext;
+        presentNext = &presentIdInfo;
+    }
+    if (present.backend
+            == HostDisplayConfirmationBackend::GoogleDisplayTiming) {
+        googlePresentTimes.pNext = presentNext;
+        presentNext = &googlePresentTimes;
+    }
+
+    VkSwapchainKHR scs[] = {present.swapchain};
+    VkPresentInfoKHR pi{};
+    pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    pi.pNext = presentNext;
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &present.waitSemaphore;
+    pi.swapchainCount = 1;
+    pi.pSwapchains = scs;
+    pi.pImageIndices = &present.imageIndex;
+
+    const auto presentStart = std::chrono::steady_clock::now();
+    VkResult result = VK_SUCCESS;
+    if (hostSplitPresentQueueActive_) {
+        std::lock_guard<std::mutex> queueLock(presentQueueMutex_);
+        result = vk_.QueuePresentKHR(presentQueue, &pi);
+    } else {
+        std::lock_guard<std::mutex> queueLock(graphicsQueueMutex_);
+        result = vk_.QueuePresentKHR(graphicsQueue, &pi);
+    }
+    const uint64_t presentNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - presentStart).count());
+
+    CompletedHostPresent completed{};
+    completed.present = std::move(present);
+    completed.result = result;
+    completed.presentCallNs = presentNs;
+    return completed;
+}
+
 VkResult VulkanRendererContext::enqueueHostPresent(
         PendingHostPresent&& present) {
-    if (!hostSplitPresentQueueActive_
+    if (!hostAsyncPresenterActive_
             || !present.hasUniqueLsfgDelivery
             || !hostPresenterRunning_.load(std::memory_order_acquire)) {
         return presentHostFrame(present);
@@ -1590,8 +1811,10 @@ VkResult VulkanRendererContext::enqueueHostPresent(
 }
 
 void VulkanRendererContext::drainHostPresenter(const char* reason) {
-    if (!hostSplitPresentQueueActive_ || !hostPresenterThread_.joinable())
+    if (!hostAsyncPresenterActive_ || !hostPresenterThread_.joinable()) {
+        processHostPresentCompletions();
         return;
+    }
 
     const auto waitStart = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lock(hostPresenterMutex_);
@@ -1602,18 +1825,19 @@ void VulkanRendererContext::drainHostPresenter(const char* reason) {
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - waitStart).count());
     lock.unlock();
+    processHostPresentCompletions();
 
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_HOST_PRESENTER",
-        "event=drain reason=%s wait_ms=%.3f presenter_queue_depth=0"
-        " presenter_backpressure_total=%" PRIu64,
+        "event=drain reason=%s wait_ms=%.3f host_present_worker=1 "
+        "host_present_queue_depth=0 presenter_backpressure_total=%" PRIu64,
         reason ? reason : "unknown",
         static_cast<double>(waitNs) / 1000000.0,
         hostPresenterBackpressureTotal_.load(std::memory_order_relaxed));
 }
 
 void VulkanRendererContext::waitForHostPresenterSlot(uint32_t frameSlot) {
-    if (!hostSplitPresentQueueActive_
+    if (!hostAsyncPresenterActive_
             || !hostPresenterRunning_.load(std::memory_order_acquire)
             || frameSlot >= MAX_FRAMES_IN_FLIGHT) {
         return;
@@ -1645,165 +1869,11 @@ void VulkanRendererContext::waitForHostPresenterSlot(uint32_t frameSlot) {
 
 VkResult VulkanRendererContext::presentHostFrame(
         const PendingHostPresent& present) {
-    VkPresentIdKHR presentIdInfo{};
-    presentIdInfo.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
-    presentIdInfo.swapchainCount = 1;
-    presentIdInfo.pPresentIds = &present.hostPresentId;
-
-    VkPresentTimeGOOGLE googlePresentTime{};
-    googlePresentTime.presentID = present.googlePresentId;
-    googlePresentTime.desiredPresentTime =
-        present.desiredDecision.submittedDesiredPresentTimeNs;
-    VkPresentTimesInfoGOOGLE googlePresentTimes{};
-    googlePresentTimes.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE;
-    googlePresentTimes.swapchainCount = 1;
-    googlePresentTimes.pTimes = &googlePresentTime;
-
-    const void* presentNext = nullptr;
-    if (present.backend == HostDisplayConfirmationBackend::PresentWait
-            || (present.backend == HostDisplayConfirmationBackend::GoogleDisplayTiming
-                && hostPresentWaitEnabled && vk_.WaitForPresentKHR)) {
-        presentIdInfo.pNext = presentNext;
-        presentNext = &presentIdInfo;
-    }
-    if (present.backend == HostDisplayConfirmationBackend::GoogleDisplayTiming) {
-        googlePresentTimes.pNext = presentNext;
-        presentNext = &googlePresentTimes;
-    }
-
-    VkSwapchainKHR scs[] = {present.swapchain};
-    VkPresentInfoKHR pi{};
-    pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    pi.pNext = presentNext;
-    pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &present.waitSemaphore;
-    pi.swapchainCount = 1;
-    pi.pSwapchains = scs;
-    pi.pImageIndices = &present.imageIndex;
-
-    const auto presentStart = std::chrono::steady_clock::now();
-    VkResult result = VK_SUCCESS;
-    if (hostSplitPresentQueueActive_) {
-        std::lock_guard<std::mutex> queueLock(presentQueueMutex_);
-        result = vk_.QueuePresentKHR(presentQueue, &pi);
-    } else {
-        std::lock_guard<std::mutex> queueLock(graphicsQueueMutex_);
-        result = vk_.QueuePresentKHR(graphicsQueue, &pi);
-    }
-    const uint64_t presentNs = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - presentStart).count());
-
-    frameQueueAcquireNsTotal_.fetch_add(present.acquireNs, std::memory_order_relaxed);
-    frameQueuePresentNsTotal_.fetch_add(presentNs, std::memory_order_relaxed);
-    const uint64_t sample =
-        frameQueuePresentSamples_.fetch_add(1, std::memory_order_relaxed) + 1;
-    uint32_t observedMax = frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed);
-    while (observedMax < present.gpuOutstanding
-            && !frameQueueMaxGpuOutstanding_.compare_exchange_weak(
-                observedMax, present.gpuOutstanding, std::memory_order_relaxed)) {}
-
-    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
-        const uint64_t presented =
-            frameQueuePresentedTotal_.fetch_add(1, std::memory_order_relaxed) + 1;
-        recordHostPresent(present, presentNs);
-        updateSmoothQueuePressure(
-            presentNs,
-            present.frameQueueEnabled,
-            present.requestedFrameQueueTarget,
-            present.activePresentModeSnapshot);
-        pollHostDisplayConfirmations();
-
-        if (sample <= 8 || sample % 120 == 0 || presentNs >= 8000000ULL) {
-            const bool enabled = present.frameQueueEnabled;
-            const uint32_t requestedTarget =
-                present.requestedFrameQueueTarget;
-            const uint32_t effectiveTarget =
-                present.effectiveFrameQueueTarget;
-            const bool smoothFallback =
-                enabled && requestedTarget == 2 && effectiveTarget < 2;
-            const char* mode = !enabled ? "off"
-                : (requestedTarget == 0 ? "unbuffered"
-                : (requestedTarget == 1 ? "balanced" : "smooth"));
-            const char* fallbackReason = !smoothFallback ? "none"
-                : (frameQueueSmoothFifoFallback_.load(std::memory_order_acquire)
-                    ? "fifo-present-blocking"
-                    : "present-stall");
-            __android_log_print(
-                ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-                "event=present telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
-                "mode=%s smooth_fallback=%d fallback_reason=%s requested_present_mode=%d "
-                "active_present_mode=%d swapchain_generation=%llu active_slots=%u unique_content=%d "
-                "present_queue_split=%d present_queue_index=%u present_async=%d "
-                "present_enqueue_wait_ms=%.3f presenter_queue_depth=%u presenter_queue_high_water=%u "
-                "presenter_backpressure_total=%llu presenter_backpressure_wait_ms_total=%.3f "
-                "presenter_slot_wait_total=%llu presenter_slot_wait_ms_total=%.3f "
-                "gpu_outstanding=%u max_gpu_outstanding=%u frame_slot=%u submission_serial=%llu "
-                "completed_submission_serial=%llu acquire_ms=%.3f submit_ms=%.3f "
-                "present_ms=%.3f retirement_waits=%llu retirement_wait_ms=%.3f presented=%llu "
-                "provenance_desired_time=%llu submitted_desired_time=%llu desired_stale_by_ms=%.3f "
-                "desired_fallback_reason=%s refresh_period_ns=%llu phase_advance_cycles=%llu "
-                "phase_advance_ms=%.3f temporal_backlog=%d",
-                static_cast<unsigned long long>(
-                    frameQueueTelemetryEpoch_.load(std::memory_order_relaxed)),
-                enabled ? 1 : 0, requestedTarget, effectiveTarget, mode,
-                smoothFallback ? 1 : 0, fallbackReason,
-                static_cast<int>(present.requestedPresentModeSnapshot),
-                static_cast<int>(present.activePresentModeSnapshot),
-                static_cast<unsigned long long>(present.swapchainGeneration),
-                present.activeFrameSlots,
-                present.hasUniqueLsfgDelivery ? 1 : 0,
-                hostSplitPresentQueueActive_ ? 1 : 0,
-                hostPresentQueueIndex_,
-                present.asyncPresent ? 1 : 0,
-                static_cast<double>(present.presentEnqueueWaitNs) / 1000000.0,
-                present.presenterQueueDepth,
-                hostPresenterPendingHighWater_.load(std::memory_order_relaxed),
-                static_cast<unsigned long long>(
-                    hostPresenterBackpressureTotal_.load(std::memory_order_relaxed)),
-                static_cast<double>(
-                    hostPresenterBackpressureNsTotal_.load(std::memory_order_relaxed))
-                    / 1000000.0,
-                static_cast<unsigned long long>(
-                    hostPresenterSlotWaitTotal_.load(std::memory_order_relaxed)),
-                static_cast<double>(
-                    hostPresenterSlotWaitNsTotal_.load(std::memory_order_relaxed))
-                    / 1000000.0,
-                present.gpuOutstanding,
-                frameQueueMaxGpuOutstanding_.load(std::memory_order_relaxed),
-                present.frameSlot,
-                static_cast<unsigned long long>(present.submissionSerial),
-                static_cast<unsigned long long>(
-                    submissionTimeline.completedSubmissionSerial.load(
-                        std::memory_order_acquire)),
-                static_cast<double>(present.acquireNs) / 1000000.0,
-                static_cast<double>(present.submitCallNs) / 1000000.0,
-                static_cast<double>(presentNs) / 1000000.0,
-                static_cast<unsigned long long>(
-                    frameQueueRetirementWaitTotal_.load(std::memory_order_relaxed)),
-                static_cast<double>(
-                    frameQueueRetirementWaitNsTotal_.load(std::memory_order_relaxed))
-                    / 1000000.0,
-                static_cast<unsigned long long>(presented),
-                static_cast<unsigned long long>(
-                    present.desiredDecision.provenanceDesiredPresentTimeNs),
-                static_cast<unsigned long long>(
-                    present.desiredDecision.submittedDesiredPresentTimeNs),
-                static_cast<double>(
-                    present.desiredDecision.desiredStaleByNs) / 1000000.0,
-                present.desiredDecision.fallbackReason
-                    ? present.desiredDecision.fallbackReason : "none",
-                static_cast<unsigned long long>(
-                    present.desiredDecision.refreshPeriodNs),
-                static_cast<unsigned long long>(
-                    present.desiredDecision.phaseAdvanceCycles),
-                static_cast<double>(
-                    present.desiredDecision.phaseAdvanceNs) / 1000000.0,
-                present.desiredDecision.temporalBacklog ? 1 : 0);
-        }
-    }
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
-        fbResized.store(true, std::memory_order_release);
+    PendingHostPresent copy = present;
+    CompletedHostPresent completed =
+        executeHostPresent(std::move(copy));
+    const VkResult result = completed.result;
+    processHostPresentCompletion(std::move(completed));
     return result;
 }
 

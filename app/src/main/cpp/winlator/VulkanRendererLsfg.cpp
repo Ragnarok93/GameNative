@@ -1,5 +1,6 @@
 #include "VulkanRendererContext.h"
 #include "../lsfg/vk_dispatch.h"
+#include "../lsfg/vkr_lsfg.h"
 
 #include <cstring>
 #include <string>
@@ -210,7 +211,7 @@ bool VulkanRendererContext::compositeFormatSupported() {
     if (swapchainFmt == VK_FORMAT_UNDEFINED) return false;
 
     VkFormatProperties props{};
-    vk_.GetPhysicalDeviceFormatProperties(physicalDevice, swapchainFmt, &props);
+    vkd.GetPhysicalDeviceFormatProperties(physicalDevice, swapchainFmt, &props);
 
     const VkFormatFeatureFlags required = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
                                         | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
@@ -237,7 +238,7 @@ void VulkanRendererContext::blitCompositeToSwapchain(VkCommandBuffer cmd, const 
     blit.dstOffsets[1].x = (int32_t)swapchainExt.width;
     blit.dstOffsets[1].y = (int32_t)swapchainExt.height;
     blit.dstOffsets[1].z = 1;
-    vk_.CmdBlitImage(cmd, src.image, VK_IMAGE_LAYOUT_GENERAL,
+    vkd.CmdBlitImage(cmd, src.image, VK_IMAGE_LAYOUT_GENERAL,
                      dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
 
     transition(cmd, dst,

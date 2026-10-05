@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+env:
+  UPGRADEABLE_DEBUG_SIGNER_SHA256: "0ff2ee400fcbaa8bf57a48f0297e49f139be8255fead61f96f409c3e11814d7a"
+  UPGRADEABLE_DEBUG_LINEAGE: "GameNative-upgradeable-debug"
+
 concurrency:
   group: gamenative-upgradeable-debug-${{ github.ref }}
   cancel-in-progress: true
@@ -40,14 +44,26 @@ jobs:
       - name: Prepare pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
 
+      - name: Rebuild Vulkan display renderer
+        uses: ./.github/actions/prepare-vulkan-renderer-native
+
       - name: Verify persistent debug signing identity
         shell: bash
         run: |
           set -euo pipefail
           keystore=".github/debug-signing/gamenative-upgrade-debug.jks"
           test -s "$keystore"
-          keytool -list -v             -keystore "$keystore"             -storepass android             -alias gamenative-upgrade-debug |
-            sed -n 's/^[[:space:]]*SHA256: /Upgradeable debug signer SHA256: /p'
+          actual_lineage_cert="$(
+            keytool -list -v               -keystore "$keystore"               -storepass android               -alias gamenative-upgrade-debug |
+              sed -n 's/^[[:space:]]*SHA256: //p' |
+              head -n 1 |
+              tr -d ':' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          test -n "$actual_lineage_cert"
+          [[ "$actual_lineage_cert" == "$UPGRADEABLE_DEBUG_SIGNER_SHA256" ]]
+          echo "Upgradeable debug signer SHA256: $actual_lineage_cert"
+          echo "Upgradeable debug lineage: $UPGRADEABLE_DEBUG_LINEAGE"
 
       - name: Generate version-independent debug metadata
         id: version
@@ -61,7 +77,7 @@ jobs:
           epoch_2020=1577836800
           now="$(date -u +%s)"
           version_code=$((1000000 + (now - epoch_2020) / 60))
-          version_name="debug-${GITHUB_SHA::12}"
+          version_name="upgradeable-debug-${GITHUB_SHA::12}"
 
           echo "code=$version_code" >> "$GITHUB_OUTPUT"
           echo "name=$version_name" >> "$GITHUB_OUTPUT"
@@ -93,6 +109,8 @@ jobs:
           --tests app.gamenative.utils.LsfgAdaptiveFlowUiContractTest
           --tests app.gamenative.utils.LsfgBuildWorkflowContractTest
           --tests com.winlator.renderer.VulkanRendererAhbCacheContractTest
+          --tests com.winlator.renderer.VulkanRendererDisplayConfirmationContractTest
+          --tests com.winlator.renderer.LsfgFrameQueueContractTest
           --tests app.gamenative.ui.component.FpsLimiterUtilsTest
           --tests app.gamenative.powercontrol.metrics.FrameTimeRingTest
           --tests com.winlator.widget.FrameRatingTest
@@ -127,6 +145,10 @@ jobs:
           expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
           unzip -p "$staged_apk" 'lib/arm64-v8a/liblsfg-vk-layer.so' |
             grep -aFq "$expected_native_commit"
+          unzip -p "$staged_apk" 'lib/arm64-v8a/libvulkan_renderer.so' |
+            grep -aFq 'gamenative-host-display-confirmation-v3-split-present-worker'
+          unzip -p "$staged_apk" 'lib/arm64-v8a/libvulkan_renderer.so' |
+            grep -aFq 'LSFG_FRAME_QUEUE'
 
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
           aapt="$(
@@ -162,16 +184,35 @@ jobs:
 
           test -n "$expected_cert"
           test -n "$actual_cert"
-          [[ "$actual_cert" == "$expected_cert" ]]
+          [[ "$expected_cert" == "$UPGRADEABLE_DEBUG_SIGNER_SHA256" ]]
+          [[ "$actual_cert" == "$UPGRADEABLE_DEBUG_SIGNER_SHA256" ]]
 
           {
+            echo "lineage=$UPGRADEABLE_DEBUG_LINEAGE"
             echo "game_commit=$GITHUB_SHA"
             echo "lsfg_native_commit=$expected_native_commit"
             echo "application_id=app.gamenative"
             echo "version_code=$VERSION_CODE"
             echo "version_name=$VERSION_NAME"
             echo "signing_cert_sha256=$actual_cert"
+            echo "actions_run_id=$GITHUB_RUN_ID"
+            echo "actions_run_number=$GITHUB_RUN_NUMBER"
+            echo "actions_run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "actions_workflow=$GITHUB_WORKFLOW"
+            echo "head_branch=$GITHUB_REF_NAME"
           } > "$stage/build-metadata.txt"
+
+          {
+            echo "### Upgradeable debug test lineage"
+            echo
+            echo "- Lineage: $UPGRADEABLE_DEBUG_LINEAGE"
+            echo "- Branch: $GITHUB_REF_NAME"
+            echo "- GameNative: $GITHUB_SHA"
+            echo "- lsfg-vk-android: $expected_native_commit"
+            echo "- Version: $VERSION_NAME ($VERSION_CODE)"
+            echo "- Signer SHA-256: $actual_cert"
+            echo "- Artifact: GameNative-upgradeable-debug"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           sha256sum "$staged_apk" > "$stage/GameNative-upgradeable-debug.apk.sha256"
 

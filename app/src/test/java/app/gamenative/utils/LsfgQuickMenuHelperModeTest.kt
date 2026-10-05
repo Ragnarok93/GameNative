@@ -44,16 +44,13 @@ class LsfgQuickMenuHelperModeTest {
 
     @Test
     fun suspendedQuickMenuDoesNotTimeoutLsfgRuntimeHandoff() {
-        val xServer = repoFile(
-            "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt",
+        val handoff = repoFile(
+            "app/src/main/java/app/gamenative/utils/LsfgRuntimeHandoffController.kt",
         ).readText()
-        val start = xServer.indexOf("fun scheduleLsfgRuntimeHandoff(")
-        val end = xServer.indexOf("fun applyFpsLimiterEnabled(", start)
-        val handoff = xServer.substring(start, end)
 
         assertTrue(
             "Runtime acknowledgement timeout must pause while the guest is suspended by Quick Menu",
-            handoff.contains("PluviaApp.isOverlayPaused") &&
+            handoff.contains("isOverlayPaused()") &&
                 handoff.contains("activePollingElapsedMs"),
         )
     }
@@ -88,6 +85,13 @@ class LsfgQuickMenuHelperModeTest {
             ),
             LsfgQuickMenuHelper.AdaptiveFlowPreset.values().toSet(),
         )
+    }
+
+    @Test
+    fun frameQueueTargetsMapToBoundedPresenterDepths() {
+        assertEquals(0, LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED.depth)
+        assertEquals(1, LsfgQuickMenuHelper.FrameQueueTarget.BALANCED.depth)
+        assertEquals(2, LsfgQuickMenuHelper.FrameQueueTarget.SMOOTH.depth)
     }
 
     @Test

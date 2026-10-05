@@ -3,8 +3,12 @@ package app.gamenative.utils
 import android.content.Context
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import java.util.concurrent.Executors
+import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicLong
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
+import com.winlator.renderer.VulkanRenderer
+import com.winlator.renderer.lsfg.LosslessScaling
 import com.winlator.core.FileUtils
 import com.winlator.core.envvars.EnvVars
 import java.io.File
@@ -69,9 +73,24 @@ object LsfgVkManager {
     const val EXTRA_ADAPTIVE_FLOW_PRESET = "lsfgAdaptiveFlowPreset"
     const val EXTRA_PERFORMANCE_MODE = "lsfgPerformanceMode"
     const val EXTRA_PRESENT_MODE = "lsfgPresentMode"
+    const val EXTRA_FRAME_QUEUE_ENABLED = "lsfgFrameQueueEnabled"
+    const val EXTRA_FRAME_QUEUE_TARGET = "lsfgFrameQueueTarget"
     const val EXTRA_FRAMEGEN_MODE = "lsfgFramegenMode"
     const val EXTRA_FIXED_MULTIPLIER = "lsfgFixedMultiplier"
     const val EXTRA_ADAPTIVE_TARGET_FPS = "lsfgAdaptiveTargetFps"
+    const val EXTRA_BACKEND = "lsfgBackend"
+
+    const val BACKEND_LEGACY = "legacy"
+    const val BACKEND_NATIVE = "native"
+
+    data class BackendRequest(
+        val serial: Long,
+        val previousBackend: String,
+        val backend: String,
+        val requestedAtNs: Long,
+    )
+
+    private val backendRequestSerial = AtomicLong(0L)
 
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
@@ -109,7 +128,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-bannerlator-engine-c0e1103550c61c9893a17aa2ecccb197d91b9db5-r10"
+        "gamenative-bannerlator-engine-54545ff93a46ecf846b3ffb56c396d5874ed7de2-r19"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -262,6 +281,68 @@ object LsfgVkManager {
     fun presentMode(container: Container): String =
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
+
+    fun sanitizeBackend(backend: String): String =
+        backend.lowercase(Locale.US).takeIf { it == BACKEND_NATIVE } ?: BACKEND_LEGACY
+
+    fun backend(container: Container): String =
+        sanitizeBackend(container.getExtra(EXTRA_BACKEND, BACKEND_LEGACY))
+
+    fun isNativeBackend(container: Container): Boolean = backend(container) == BACKEND_NATIVE
+
+    fun setBackend(container: Container, backend: String): BackendRequest {
+        val sanitized = sanitizeBackend(backend)
+        val previous = this.backend(container)
+        val request = BackendRequest(
+            serial = backendRequestSerial.incrementAndGet(),
+            previousBackend = previous,
+            backend = sanitized,
+            requestedAtNs = System.nanoTime(),
+        )
+        Timber.i(
+            "LSFG_BACKEND: event=backend_request backend_generation=%d request_serial=%d requested_backend=%s previous_backend=%s",
+            request.serial,
+            request.serial,
+            sanitized,
+            previous,
+        )
+        container.putExtra(EXTRA_BACKEND, sanitized)
+        container.saveData()
+        Timber.i(
+            "LSFG_BACKEND: event=backend_state_changed backend_generation=%d request_serial=%d backend_state=%s",
+            request.serial,
+            request.serial,
+            sanitized,
+        )
+        return request
+    }
+
+    fun recordBackendRuntimeApplied(
+        request: BackendRequest,
+        result: String,
+        runtimeBackend: String = request.backend,
+        appliedAtNs: Long = System.nanoTime(),
+    ) {
+        val latencyMs = ((appliedAtNs - request.requestedAtNs).coerceAtLeast(0L)) / 1_000_000.0
+        Timber.i(
+            "LSFG_BACKEND: event=backend_runtime_applied backend_generation=%d request_serial=%d backend_apply_serial=%d " +
+                "backend=%s runtime_backend=%s backend_apply_latency_ms=%.3f backend_apply_result=%s",
+            request.serial,
+            request.serial,
+            if (result == "runtime-applied") request.serial else 0L,
+            request.backend,
+            sanitizeBackend(runtimeBackend),
+            latencyMs,
+            result,
+        )
+    }
+
+    fun frameQueueEnabled(container: Container): Boolean =
+        parseBool(container.getExtra(EXTRA_FRAME_QUEUE_ENABLED, "false"))
+
+    fun frameQueueTarget(container: Container): Int =
+        (container.getExtra(EXTRA_FRAME_QUEUE_TARGET, "0")?.toIntOrNull() ?: 0)
+            .coerceIn(0, 2)
 
 
     /**
@@ -456,6 +537,75 @@ object LsfgVkManager {
     )
 
     /**
+     * Warm the native renderer shader cache off the launch-critical path.
+     * Upstream 1.3 invokes this during Bionic startup; keep it best-effort so
+     * cache generation can never prevent the LSFG Vulkan layer from launching.
+     */
+    @JvmStatic
+    @Synchronized
+    fun prepareNativeCache(context: Context, container: Container): String? {
+        val dll = containerDllPath(container)?.let { File(it) } ?: findSteamDll()
+        if (dll == null || !dll.isFile) return null
+        return runCatching {
+            val driverName = LosslessScaling.getDriverName(container)
+            LosslessScaling.resolveOrBuildCache(context, dll, driverName)?.absolutePath
+        }.getOrNull()
+    }
+
+    // Native host-renderer bridge. Kept weak so the renderer lifecycle owns the
+    // actual Vulkan context; runtime refreshes are best-effort.
+    @Volatile private var nativeRendererRef: WeakReference<VulkanRenderer>? = null
+    @Volatile private var nativeRendererContext: Context? = null
+
+    private fun displayRefreshRate(context: Context): Float =
+        runCatching {
+            val display = context.getSystemService(Context.WINDOW_SERVICE)
+                as? android.view.WindowManager
+            display?.defaultDisplay?.refreshRate
+        }.getOrNull()?.takeIf { it > 1f } ?: 60f
+
+    /**
+     * Push the persisted native-LSFG settings into the host compositor.
+     * Shader-cache construction is kept off the render/launch critical path.
+     */
+    @JvmStatic
+    fun applyNativeRuntime(
+        renderer: VulkanRenderer,
+        container: Container,
+        context: Context,
+    ) {
+        nativeRendererRef = WeakReference(renderer)
+        nativeRendererContext = context.applicationContext
+
+        val requested = isNativeBackend(container)
+        val enabled = requested && isArmed(container) && multiplier(container) >= 2
+
+        // Arm the native control seam without tearing down an already-running
+        // native context on every Quick Menu setting update.
+        renderer.armFrameGeneration()
+        renderer.setFrameGenerationMode(
+            multiplier(container).coerceAtLeast(2),
+            if (generationMode(container) == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,
+            (flowScale(container) * 100f).toInt(),
+        )
+        renderer.setFrameGenerationRefreshRate(displayRefreshRate(context))
+
+        if (!requested) return
+
+        val cache = prepareNativeCache(context, container)
+        if (cache != null) renderer.setFrameGenerationShaders(cache)
+        renderer.setFrameGenerationEnabled(enabled && cache != null)
+    }
+
+    /** Re-apply native settings after Quick Menu changes without retaining a strong renderer ref. */
+    @JvmStatic
+    fun refreshNativeRuntime(container: Container) {
+        val renderer = nativeRendererRef?.get() ?: return
+        val context = nativeRendererContext ?: return
+        applyNativeRuntime(renderer, container, context)
+    }
+
+    /**
      * Install the layer runtime + DLL into the container's filesystem.
      * Called during container startup in BionicProgramLauncherComponent.
      *
@@ -601,6 +751,8 @@ object LsfgVkManager {
                 adaptiveFramegen = adaptive,
                 fpsLimit = adaptiveTarget,
                 presentMode = presentMode(container),
+                frameQueueEnabled = frameQueueEnabled(container),
+                frameQueueTarget = frameQueueTarget(container),
             )
             writeConfigAtomic(configFile, configText)
         } catch (t: Throwable) {
@@ -996,6 +1148,7 @@ object LsfgVkManager {
         }
     }
 
+    @Suppress("unused")
     private fun buildConfigToml(
         dllPath: String?,
         processExecutable: String?,
@@ -1008,6 +1161,36 @@ object LsfgVkManager {
         adaptiveFramegen: Boolean,
         fpsLimit: Int,
         presentMode: String,
+    ): String = buildConfigToml(
+        dllPath = dllPath,
+        processExecutable = processExecutable,
+        enabled = enabled,
+        multiplier = multiplier,
+        flowScale = flowScale,
+        adaptiveFlowScale = adaptiveFlowScale,
+        adaptiveFlowPreset = adaptiveFlowPreset,
+        performanceMode = performanceMode,
+        adaptiveFramegen = adaptiveFramegen,
+        fpsLimit = fpsLimit,
+        presentMode = presentMode,
+        frameQueueEnabled = false,
+        frameQueueTarget = 0,
+    )
+
+    private fun buildConfigToml(
+        dllPath: String?,
+        processExecutable: String?,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        presentMode: String,
+        frameQueueEnabled: Boolean,
+        frameQueueTarget: Int,
     ): String = buildString {
         appendLine("version = 1")
         appendLine()
@@ -1030,6 +1213,8 @@ object LsfgVkManager {
                 appendLine("hdr_mode = false")
                 appendLine("adaptive_framegen = ${if (adaptiveFramegen) "true" else "false"}")
                 appendLine("fps_limit = ${fpsLimit.coerceAtLeast(0)}")
+                appendLine("frame_queue_enabled = ${if (enabled && frameQueueEnabled) "true" else "false"}")
+                appendLine("frame_queue_target = ${frameQueueTarget.coerceIn(0, 2)}")
                 appendLine("experimental_present_mode = ${tomlString(presentMode)}")
             }
         }
@@ -1083,8 +1268,42 @@ object LsfgVkManager {
             adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
             adaptiveFlowPreset = adaptiveFlowPreset(container),
             presentMode = presentMode(container),
+            frameQueueEnabled = frameQueueEnabled(container),
+            frameQueueTarget = frameQueueTarget(container),
         )
     }
+
+    /**
+     * ABI-compatible coherent runtime snapshot used by existing callers.
+     * Frame Queue remains host-owned and is captured from persisted container
+     * state without changing any generation-mode semantics.
+     */
+    @JvmStatic
+    fun updateConfigAtRuntime(
+        container: Container,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        presentMode: String,
+    ): Boolean = updateConfigAtRuntime(
+        container = container,
+        enabled = enabled,
+        multiplier = multiplier,
+        flowScale = flowScale,
+        performanceMode = performanceMode,
+        adaptiveFramegen = adaptiveFramegen,
+        fpsLimit = fpsLimit,
+        adaptiveFlowScale = adaptiveFlowScale,
+        adaptiveFlowPreset = adaptiveFlowPreset,
+        presentMode = presentMode,
+        frameQueueEnabled = frameQueueEnabled(container),
+        frameQueueTarget = frameQueueTarget(container),
+    )
 
     /**
      * Publish one coherent LSFG runtime snapshot. Callers that already captured
@@ -1104,6 +1323,8 @@ object LsfgVkManager {
         adaptiveFlowScale: Boolean,
         adaptiveFlowPreset: String,
         presentMode: String,
+        frameQueueEnabled: Boolean,
+        frameQueueTarget: Int,
     ): Boolean {
         if (!isSupported(container)) return false
 
@@ -1134,6 +1355,8 @@ object LsfgVkManager {
                 presentMode.takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
             val effectiveAdaptiveFlowPreset =
                 sanitizeAdaptiveFlowPreset(adaptiveFlowPreset)
+            val effectiveFrameQueueEnabled = frameGenActive && frameQueueEnabled
+            val effectiveFrameQueueTarget = frameQueueTarget.coerceIn(0, 2)
             val configText = buildConfigToml(
                 dllPath = dllPath,
                 processExecutable = processExecutable,
@@ -1146,12 +1369,15 @@ object LsfgVkManager {
                 adaptiveFramegen = effectiveAdaptiveFramegen,
                 fpsLimit = effectiveFpsLimit,
                 presentMode = effectivePresentMode,
+                frameQueueEnabled = effectiveFrameQueueEnabled,
+                frameQueueTarget = effectiveFrameQueueTarget,
             )
 
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
                 Timber.tag(TAG).i(
-                    "LSFG runtime config published enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s",
+                    "LSFG runtime config published backend=%s enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s frameQueue=%b frameQueueTarget=%d",
+                    backend(container),
                     frameGenActive,
                     if (frameGenActive) effectiveMultiplier else 1,
                     effectiveAdaptiveFramegen,
@@ -1160,6 +1386,8 @@ object LsfgVkManager {
                     effectiveAdaptiveFlowPreset,
                     flowScale.coerceIn(0.25f, 1.0f),
                     effectivePresentMode,
+                    effectiveFrameQueueEnabled,
+                    effectiveFrameQueueTarget,
                 )
             }
             ok

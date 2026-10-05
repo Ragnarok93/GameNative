@@ -178,6 +178,9 @@ object LsfgDiagnosticExporter {
             normalized.contains("lsfg_event") ||
             normalized.contains("lsfg_flow") ||
             normalized.contains("lsfg_provenance") ||
+            normalized.contains("lsfg_host_display") ||
+            normalized.contains("lsfg_frame_queue") ||
+            normalized.contains("lsfg_frame_provenance") ||
             normalized.contains("lsfg_wsi") ||
             normalized.contains("lsfg_outcome") ||
             normalized.contains("lsfg_system") ||

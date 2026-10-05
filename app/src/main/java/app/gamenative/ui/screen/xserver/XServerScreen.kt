@@ -48,6 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import app.gamenative.ui.screen.xr.LocalImmersiveSessionHooks
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -58,7 +59,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import app.gamenative.MainActivity
@@ -135,6 +135,8 @@ import app.gamenative.utils.CustomGameScanner
 import app.gamenative.utils.ExecutableSelectionUtils
 import app.gamenative.utils.LsfgQuickMenuHelper
 import app.gamenative.utils.LsfgVkManager
+import app.gamenative.utils.LsfgRuntimeHandoffController
+import app.gamenative.utils.LsfgRuntimeMode
 import app.gamenative.utils.ManifestComponentHelper
 import app.gamenative.utils.launchdependencies.BionicSteamAssetsDependency
 import app.gamenative.utils.downloader.DXWrapperDownloader
@@ -213,10 +215,10 @@ import com.winlator.xserver.WindowManager
 import com.winlator.xserver.XServer
 import com.winlator.xserver.extensions.PresentExtension
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -244,6 +246,18 @@ import com.winlator.PrefManager as WinlatorPrefManager
 
 // Always re-extract drivers and DXVK on every launch to handle cases of container corruption
 // where games randomly stop working. Set to false once corruption issues are resolved.
+private fun toggleSoftInput(context: Context) {
+    val inputMethodManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    inputMethodManager.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+}
+
+private fun hideSoftInput(context: Context, view: View) {
+    val inputMethodManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    if (view.windowToken != null) {
+        inputMethodManager.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+}
+
 private const val ALWAYS_REEXTRACT = true
 
 // Guard to prevent duplicate game_exited events when multiple exit triggers fire simultaneously
@@ -253,22 +267,10 @@ private const val EXIT_PROCESS_TIMEOUT_MS = 30_000L
 private const val EXIT_PROCESS_POLL_INTERVAL_MS = 1_000L
 private const val EXIT_PROCESS_RESPONSE_TIMEOUT_MS = 2_000L
 private const val QUICK_MENU_PROCESS_POLL_INTERVAL_MS = 2_000L
-private const val LSFG_RUNTIME_HANDOFF_DELAY_MS = 1_200L
-private const val LSFG_RUNTIME_HANDOFF_TIMEOUT_MS = 2_500L
-private const val LSFG_RUNTIME_HANDOFF_POLL_MS = 100L
 private const val DEFAULT_FPS_LIMITER_MAX_HZ = 60
 private const val DEFAULT_FPS_LIMITER_TARGET_HZ = 60
 private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
 private const val FPS_LIMITER_TARGET_EXTRA = "fpsLimiterTarget"
-
-private enum class LsfgRuntimeMode(val label: String) {
-    OFF("Off"),
-    TURNING_ON("Turning on"),
-    GENERATING("Generating"),
-    TURNING_OFF("Turning off"),
-    SOURCE_ONLY_RESIDENT("Source only"),
-    DEGRADED("Degraded"),
-}
 
 private fun initialFpsLimiterEnabled(container: Container): Boolean =
     parseBooleanExtra(container.getExtra(FPS_LIMITER_ENABLED_EXTRA)) ?: true
@@ -368,17 +370,41 @@ internal fun portraitGameHostHeight(
     return if (availableHeight > 0) minOf(aspectHeight, availableHeight) else aspectHeight
 }
 
+internal fun portraitCutoutTopInset(
+    belowCutout: Boolean,
+    cutoutTop: Int,
+    hostTopInWindow: Int,
+): Int {
+    if (!belowCutout) return 0
+    return (cutoutTop - hostTopInWindow).coerceAtLeast(0)
+}
+
+private fun portraitCutoutTopInset(host: View, belowCutout: Boolean): Int {
+    if (!belowCutout) return 0
+    val cutoutTop = ViewCompat.getRootWindowInsets(host)
+        ?.getInsets(WindowInsetsCompat.Type.displayCutout())?.top ?: return 0
+    val location = IntArray(2)
+    host.getLocationInWindow(location)
+    return portraitCutoutTopInset(belowCutout, cutoutTop, location[1])
+}
+
 private fun updatePortraitGameHostHeight(
     gameHost: View,
     isPortrait: Boolean,
+    belowCutout: Boolean,
     screenWidth: Int,
     screenSize: String,
 ) {
     val params = gameHost.layoutParams ?: return
+    val host = gameHost.parent as? View
+    val topInset = if (isPortrait && host != null) portraitCutoutTopInset(host, belowCutout) else 0
+    if (host != null && host.paddingTop != topInset) {
+        host.setPadding(host.paddingLeft, topInset, host.paddingRight, host.paddingBottom)
+    }
     val height = portraitGameHostHeight(
         isPortrait,
         screenWidth,
-        (gameHost.parent as? View)?.height ?: 0,
+        ((host?.height ?: 0) - topInset).coerceAtLeast(0),
         screenSize,
     )
     if (params.height != height) {
@@ -420,6 +446,7 @@ fun XServerScreen(
     bootToContainer: Boolean,
     testGraphics: Boolean = false,
     diagnostics: Boolean = false,
+    debugRun: Boolean = false,
     isOffline: Boolean = false,
     registerBackAction: ( ( ) -> Unit ) -> Unit,
     navigateBack: () -> Unit,
@@ -429,18 +456,14 @@ fun XServerScreen(
     onGameLaunchError: ((String) -> Unit)? = null,
     // Non-null only when hosted by ImmersiveXrActivity. One bundled parameter, not nine — this
     // composable sits at the dex verifier's register limit (see ImmersiveSessionHooks' kdoc).
-    immersiveHooks: app.gamenative.ui.screen.xr.ImmersiveSessionHooks? = null,
 ) {
     Timber.i("Starting up XServerScreen")
     val context = LocalContext.current
     val view = LocalView.current
-    val scope = rememberCoroutineScope()
+    val immersiveHooks = LocalImmersiveSessionHooks.current
+    val kickPlayingSession = rememberKickPlayingSessionAction()
     val adaptiveCapGeneration = remember { AtomicLong(0L) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
-    val imm = remember(context) {
-        context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-    }
-
     // PluviaApp.events.emit(AndroidEvent.SetAppBarVisibility(false))
     PluviaApp.events.emit(AndroidEvent.SetSystemUIVisibility(false))
 
@@ -556,7 +579,10 @@ fun XServerScreen(
     var win32AppWorkarounds: Win32AppWorkarounds? by remember { mutableStateOf(null) }
     var physicalControllerHandler: PhysicalControllerHandler? by remember { mutableStateOf(null) }
     var exitWatchJob: Job? by remember { mutableStateOf(null) }
-    val keyboardEscMenuHandler = remember(scope) { KeyboardEscMenuHandler(scope) }
+    val keyboardEscMenuHandler = rememberKeyboardEscMenuHandler()
+    val lsfgRuntimeHandoffController = remember(container.id) {
+        LsfgRuntimeHandoffController(container) { PluviaApp.isOverlayPaused }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -567,6 +593,7 @@ fun XServerScreen(
             exitWatchJob?.cancel()
             exitWatchJob = null
             keyboardEscMenuHandler.cancel()
+            lsfgRuntimeHandoffController.cancel()
         }
     }
     var isKeyboardVisible = false
@@ -628,6 +655,12 @@ fun XServerScreen(
     var lsfgMultiplier by rememberSaveable(container.id) { mutableIntStateOf(initialLsfgSettings.multiplier) }
     var lsfgFlowScale by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.flowScale) }
     var lsfgPerformanceMode by rememberSaveable(container.id) { mutableStateOf(initialLsfgSettings.performanceMode) }
+    // Backend selection is an authoritative Quick Menu state, not a persisted-state
+    // read during recomposition. This lets the selected chip update immediately
+    // while the runtime application/acknowledgement is recorded independently.
+    var lsfgBackend by rememberSaveable(container.id) {
+        mutableStateOf(LsfgVkManager.backend(container))
+    }
     val isLsfgRequested = isLsfgAvailable && lsfgMultiplier >= 2
     fun initialLsfgRuntimeMode(): LsfgRuntimeMode = when {
         !isLsfgAvailable -> LsfgRuntimeMode.OFF
@@ -643,7 +676,6 @@ fun XServerScreen(
     var lsfgRuntimeMultiplier by rememberSaveable(container.id) {
         mutableIntStateOf(if (isLsfgGenerationActive) initialLsfgSettings.multiplier else 1)
     }
-    var lsfgRuntimeTransitionGeneration by remember(container.id) { mutableIntStateOf(0) }
     var lastLsfgPacingActive by remember(container.id) {
         mutableStateOf(isLsfgGenerationActive)
     }
@@ -720,7 +752,10 @@ fun XServerScreen(
     LaunchedEffect(xServerView?.renderer) {
         val screenEffectsConfig = loadScreenEffectsConfig(container)
         when (val renderer = xServerView?.renderer) {
-            is VulkanRenderer -> applyScreenEffectsConfig(renderer, screenEffectsConfig)
+            is VulkanRenderer -> {
+                applyScreenEffectsConfig(renderer, screenEffectsConfig)
+                LsfgQuickMenuHelper.applyFrameQueueToRenderer(container, renderer)
+            }
             is GLRenderer -> applyScreenEffectsConfig(renderer, screenEffectsConfig)
         }
     }
@@ -793,84 +828,35 @@ fun XServerScreen(
             container,
             LsfgQuickMenuHelper.Settings(lsfgMultiplier, lsfgFlowScale, lsfgPerformanceMode),
         )
+        // Native LSFG is host-renderer state, not an implicit-layer config.
+        // Re-push it only when the authoritative backend is native; legacy keeps
+        // the protected lsfg-vk path unchanged.
+        if (LsfgVkManager.isNativeBackend(container)) {
+            val renderer = xServerView?.renderer as? VulkanRenderer
+            if (renderer != null) {
+                LsfgVkManager.applyNativeRuntime(
+                    renderer = renderer,
+                    container = container,
+                    context = xServerView!!.context,
+                )
+            }
+        }
     }
 
     fun scheduleLsfgRuntimeHandoff(active: Boolean, multiplier: Int) {
-        val generation = ++lsfgRuntimeTransitionGeneration
         lsfgRuntimeMode = if (active) LsfgRuntimeMode.TURNING_ON else LsfgRuntimeMode.TURNING_OFF
-        scope.launch {
-            var activePollingElapsedMs = 0L
-            var observed = false
-            var suspensionLogged = false
-            while (activePollingElapsedMs < LSFG_RUNTIME_HANDOFF_TIMEOUT_MS) {
-                if (generation != lsfgRuntimeTransitionGeneration) return@launch
-
-                // Quick Menu normally SIGSTOPs the guest. The native LSFG layer
-                // cannot consume conf.toml or publish fresh stats while stopped,
-                // so wall-clock timeout here would manufacture a DEGRADED state.
-                if (PluviaApp.isOverlayPaused) {
-                    if (!suspensionLogged) {
-                        Timber.i(
-                            "LSFG runtime handoff waiting for guest resume: generation=%d active=%b multiplier=%d",
-                            generation,
-                            active,
-                            multiplier,
-                        )
-                        suspensionLogged = true
-                    }
-                    delay(LSFG_RUNTIME_HANDOFF_POLL_MS)
-                    continue
-                }
-
-                if (suspensionLogged) {
-                    Timber.i(
-                        "LSFG runtime handoff polling resumed: generation=%d active=%b elapsed_active_ms=%d",
-                        generation,
-                        active,
-                        activePollingElapsedMs,
-                    )
-                    suspensionLogged = false
-                }
-
-                val pollStartedAt = SystemClock.elapsedRealtime()
-                val runtimeState = withContext(Dispatchers.IO) {
-                    LsfgVkManager.readRuntimeState(container)
-                }
-                observed = if (active) {
-                    runtimeState.readyForGeneration
-                } else {
-                    runtimeState.readyForSourceOnly
-                }
-                activePollingElapsedMs +=
-                    (SystemClock.elapsedRealtime() - pollStartedAt).coerceAtLeast(0L)
-                if (observed) break
-
-                delay(LSFG_RUNTIME_HANDOFF_POLL_MS)
-                activePollingElapsedMs += LSFG_RUNTIME_HANDOFF_POLL_MS
-            }
-
-            val remainingSettleMs =
-                LSFG_RUNTIME_HANDOFF_DELAY_MS - activePollingElapsedMs
-            if (remainingSettleMs > 0L) delay(remainingSettleMs)
-            if (generation != lsfgRuntimeTransitionGeneration) return@launch
-            if (active && !observed) {
-                isLsfgGenerationActive = false
-                lsfgRuntimeMultiplier = 1
-                lsfgRuntimeMode = LsfgRuntimeMode.DEGRADED
-                Timber.w(
-                    "LSFG runtime handoff timed out after %d active ms: generation=%d multiplier=%d",
-                    activePollingElapsedMs,
-                    generation,
-                    multiplier,
-                )
+        lsfgRuntimeHandoffController.schedule(
+            active = active,
+            multiplier = multiplier,
+            onStateChanged = { generationActive, runtimeMultiplier, mode ->
+                isLsfgGenerationActive = generationActive
+                lsfgRuntimeMultiplier = runtimeMultiplier
+                lsfgRuntimeMode = mode
+            },
+            applyFpsLimiter = {
                 applyFpsLimiterToEngines(effectiveFpsLimit())
-                return@launch
-            }
-            isLsfgGenerationActive = active
-            lsfgRuntimeMultiplier = if (active) multiplier.coerceIn(2, 4) else 1
-            lsfgRuntimeMode = if (active) LsfgRuntimeMode.GENERATING else LsfgRuntimeMode.SOURCE_ONLY_RESIDENT
-            applyFpsLimiterToEngines(effectiveFpsLimit())
-        }
+            },
+        )
     }
 
     fun applyFpsLimiterEnabled(enabled: Boolean) {
@@ -918,6 +904,38 @@ fun XServerScreen(
         runtimeConfigRevision++
         lsfgPerformanceMode = enabled
         applyLsfgSettings()
+    }
+
+    fun applyLsfgBackend(requestedBackend: String) {
+        val request = LsfgVkManager.setBackend(container, requestedBackend)
+        lsfgBackend = request.backend
+
+        val renderer = xServerView?.renderer as? VulkanRenderer
+        if (request.backend == LsfgVkManager.BACKEND_NATIVE && renderer != null) {
+            LsfgVkManager.applyNativeRuntime(
+                renderer = renderer,
+                container = container,
+                context = xServerView!!.context,
+            )
+            LsfgVkManager.recordBackendRuntimeApplied(
+                request = request,
+                runtimeBackend = LsfgVkManager.BACKEND_NATIVE,
+                result = "runtime-applied",
+            )
+        } else if (request.backend == LsfgVkManager.BACKEND_NATIVE) {
+            LsfgVkManager.recordBackendRuntimeApplied(
+                request = request,
+                runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
+                result = "runtime-bridge-unavailable",
+            )
+        } else {
+            renderer?.setFrameGenerationEnabled(false)
+            LsfgVkManager.recordBackendRuntimeApplied(
+                request = request,
+                runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
+                result = "legacy-state-committed",
+            )
+        }
     }
 
     fun applyAdaptiveFpsCapOnMain(capFps: Int): Boolean {
@@ -1147,7 +1165,7 @@ fun XServerScreen(
         val targetExecutable = extractExecutableBasename(container.executablePath)
         if (!windowMatchesExecutable(window, targetExecutable)) return
 
-        exitWatchJob = CoroutineScope(Dispatchers.IO).launch {
+        exitWatchJob = launchXServerIo {
             val allowlist = buildEssentialProcessAllowlist()
             val previousListener = winHandler.getOnGetProcessInfoListener()
             val lock = Any()
@@ -1379,9 +1397,9 @@ fun XServerScreen(
                         (anchor.display?.displayId ?: Display.DEFAULT_DISPLAY) != Display.DEFAULT_DISPLAY
 
                     if (isExternalDisplaySession) {
-                        imeInputReceiver?.showKeyboard() ?: imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                        imeInputReceiver?.showKeyboard() ?: toggleSoftInput(context)
                     } else {
-                        imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                        toggleSoftInput(context)
                     }
                 }
                 if (Build.VERSION.SDK_INT > 29) {
@@ -1652,8 +1670,7 @@ fun XServerScreen(
                 if (Build.VERSION.SDK_INT >= 30) {
                     view.windowInsetsController?.hide(WindowInsets.Type.ime())
                 } else {
-                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                    if (view.windowToken != null) imm.hideSoftInputFromWindow(view.windowToken, 0)
+                    hideSoftInput(context, view)
                 }
             }
             return@gameBack
@@ -1737,8 +1754,7 @@ fun XServerScreen(
                         if (Build.VERSION.SDK_INT >= 30) {
                             view.windowInsetsController?.hide(WindowInsets.Type.ime())
                         } else {
-                            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                            if (view.windowToken != null) imm.hideSoftInputFromWindow(view.windowToken, 0)
+                    hideSoftInput(context, view)
                         }
                     }
                 }
@@ -2226,9 +2242,9 @@ fun XServerScreen(
                             (anchor.display?.displayId ?: android.view.Display.DEFAULT_DISPLAY) != android.view.Display.DEFAULT_DISPLAY
                         if (isExternalDisplaySession) {
                             imeInputReceiver?.showKeyboard()
-                                ?: imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                                ?: toggleSoftInput(context)
                         } else {
-                            imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                            toggleSoftInput(context)
                         }
                     }
                 }
@@ -2536,6 +2552,7 @@ fun XServerScreen(
                                 bootToContainer,
                                 testGraphics,
                                 diagnostics,
+                                debugRun,
                                 xServerState,
                                 envVars,
                                 container,
@@ -2548,6 +2565,19 @@ fun XServerScreen(
 
                             // Autostart performance driver after environment is set up
                             PowerManager.autoStart(container.rootDir)
+
+                            if (debugRun) {
+                                app.gamenative.utils.PerfSampler.start(
+                                    context,
+                                    fpsProvider = {
+                                        val raw = frameRating?.currentFPS ?: 0f
+                                        if (isLsfgAvailable && lsfgMultiplier >= 2) {
+                                            LsfgVkManager.readMeasuredFps(container) ?: raw
+                                        } else raw
+                                    },
+                                    drives = container.drives,
+                                )
+                            }
 
                             // Pin game process to performance cores (CPUs 4-7)
                             container.executablePath
@@ -2615,6 +2645,7 @@ fun XServerScreen(
                     updatePortraitGameHostHeight(
                         gameHost,
                         isPortrait,
+                        container.isPortraitBelowCutout,
                         screenWidth,
                         container.screenSize,
                     )
@@ -2625,6 +2656,7 @@ fun XServerScreen(
                     updatePortraitGameHostHeight(
                         gameHost,
                         isPortrait,
+                        container.isPortraitBelowCutout,
                         screenWidth,
                         container.screenSize,
                     )
@@ -2886,6 +2918,7 @@ fun XServerScreen(
                 updatePortraitGameHostHeight(
                     gameHost,
                     isPortrait,
+                    container.isPortraitBelowCutout,
                     binding.screenWidth,
                     container.screenSize,
                 )
@@ -3005,13 +3038,24 @@ fun XServerScreen(
                 onDuplicate = { id ->
                     val manager = PluviaApp.inputControlsManager
                     val profile = manager?.getProfile(id)
-                    val currentProfile = PluviaApp.inputControlsView?.profile
-                    if (profile != null && currentProfile != null) {
-                        // Wait for view to be laid out before loading elements
+                    if (profile != null && manager != null) {
                         PluviaApp.inputControlsView?.let { icView ->
                             icView.post {
-                                copyInputControlsProfileElements(profile, currentProfile, icView)
-                                SnackbarManager.show(context.getString(R.string.toast_controls_reset))
+                                runCatching {
+                                    app.gamenative.inputcontrols.ControlProfileService.applyProfile(
+                                        context,
+                                        container,
+                                        manager,
+                                        profile,
+                                    )
+                                }.onSuccess { applied ->
+                                    applied.loadElements(icView)
+                                    icView.setProfile(applied)
+                                    icView.invalidate()
+                                    SnackbarManager.show(context.getString(R.string.toast_controls_reset))
+                                }.onFailure { error ->
+                                    Timber.w(error, "Failed to copy control profile")
+                                }
                             }
                         }
                     }
@@ -3067,7 +3111,9 @@ fun XServerScreen(
                 multiplier = lsfgMultiplier,
                 flowScale = lsfgFlowScale,
                 performanceMode = lsfgPerformanceMode,
+                backend = lsfgBackend,
                 runtimeStatus = lsfgRuntimeMode.label,
+                onBackendChanged = ::applyLsfgBackend,
                 onMultiplierChanged = ::applyLsfgMultiplier,
                 onFlowScaleChanged = ::applyLsfgFlowScale,
                 onPerformanceModeChanged = ::applyLsfgPerformanceMode,
@@ -3169,9 +3215,7 @@ fun XServerScreen(
                     showPlayingBlockedDialog = false
                     playingBlockedRemoteName = null
                     SteamService.clearPlayingConflict()
-                    scope.launch {
-                        SteamService.kickPlayingSession(onlyGame = true)
-                    }
+                    kickPlayingSession()
                 }) {
                     Text(text = stringResource(R.string.main_play_anyway))
                 }
@@ -3985,6 +4029,7 @@ private fun setupXEnvironment(
     bootToContainer: Boolean,
     testGraphics: Boolean,
     diagnostics: Boolean,
+    debugRun: Boolean,
     xServerState: MutableState<XServerState>,
     envVars: EnvVars,
     container: Container?,
@@ -4039,7 +4084,12 @@ private fun setupXEnvironment(
     val enableBox86Logs = WinlatorPrefManager.getBoolean("enable_box86_64_logs", false)
     val wineDebugChannels = PrefManager.wineDebugChannels
     // explicitly enable or disable Wine debug channels
-    if (diagnostics) {
+    if (debugRun) {
+        envVars.put("WINEDEBUG", "warn+seh,+loaddll,+process,+timestamp,+pid,+tid")
+        envVars.put("DXVK_LOG_LEVEL", "info")
+        envVars.put("DXVK_LOG_PATH", "none")
+        envVars.put("VKD3D_DEBUG", "warn")
+    } else if (diagnostics) {
         envVars.put("WRAPPER_DIAG", "1")
         envVars.put("WRAPPER_DIAG_APPID", appId)
         envVars.put("WRAPPER_LOG_LEVEL", "info")
@@ -4057,12 +4107,13 @@ private fun setupXEnvironment(
     }
     // capture debug output to file if either Wine or Box86/64 logging is enabled
     var logFile: File? = null
-    val captureLogs = enableWineDebug || enableBox86Logs
+    val captureLogs = debugRun || enableWineDebug || enableBox86Logs
     if (captureLogs) {
         val wineLogDir = File(context.getExternalFilesDir(null), "wine_logs")
         wineLogDir.mkdirs()
-        logFile = File(wineLogDir, "wine_debug.log")
+        logFile = File(wineLogDir, if (debugRun) "debug_run_$appId.log" else "wine_debug.log")
         if (logFile.exists()) logFile.delete()
+        if (debugRun) app.gamenative.utils.DebugReportUtils.startLogcatCapture(context, appId)
     }
 
     ProcessHelper.addDebugCallback { line ->
@@ -4141,6 +4192,11 @@ private fun setupXEnvironment(
         guestProgramLauncherComponent.setSteamType(container.getSteamType())
 
         envVars.putAll(container.envVars)
+        if (debugRun) {
+            app.gamenative.utils.DebugRunParamsHolder.get(appId)?.let {
+                app.gamenative.utils.DebugRunParams.applyToDebugEnv(envVars, appId, it)
+            }
+        }
         envVars.remove("DXVK_FRAME_RATE")
         envVars.remove("VKD3D_FRAME_RATE")
         if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1")
@@ -4226,16 +4282,38 @@ private fun setupXEnvironment(
     // environment.addComponent(SteamClientComponent(UnixSocketConfig.createSocket(SteamService.getAppDirPath(appId), "/steam_pipe")))
     // environment.addComponent(SteamClientComponent(UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.STEAM_PIPE_PATH)))
 
+    val micEnabled = container.getMicEnabled() && PulseAudioComponent.isMicModuleAvailable(context)
+    if (container.getMicEnabled() && !micEnabled) {
+        Timber.w("Microphone enabled for this container but module-pipe-source.so is missing; skipping")
+    }
+
     if (xServerState.value.audioDriver == "alsa") {
         envVars.put("ANDROID_ALSA_SERVER", imageFs.getRootDir().getPath() + UnixSocketConfig.ALSA_SERVER_PATH)
         envVars.put("ANDROID_ASERVER_USE_SHM", "true")
         val options = ALSAClient.Options.fromKeyValueSet(null)
         environment.addComponent(ALSAServerComponent(UnixSocketConfig.createSocket(imageFs.getRootDir().getPath(), UnixSocketConfig.ALSA_SERVER_PATH), options))
+        if (micEnabled) {
+            envVars.put("PULSE_SERVER", imageFs.getRootDir().getPath() + UnixSocketConfig.PULSE_SERVER_PATH)
+            environment.addComponent(PulseAudioComponent(
+                UnixSocketConfig.createSocket(imageFs.getRootDir().getPath(), UnixSocketConfig.PULSE_SERVER_PATH),
+                container.pulseaudioLowLatency,
+                true,
+                false
+            ))
+        }
     } else if (xServerState.value.audioDriver == "pulseaudio") {
         envVars.put("PULSE_SERVER", imageFs.getRootDir().getPath() + UnixSocketConfig.PULSE_SERVER_PATH)
         environment.addComponent(PulseAudioComponent(
             UnixSocketConfig.createSocket(imageFs.getRootDir().getPath(), UnixSocketConfig.PULSE_SERVER_PATH),
-            container.pulseaudioLowLatency
+            container.pulseaudioLowLatency,
+            micEnabled,
+            true
+        ))
+    }
+
+    if (micEnabled) {
+        environment.addComponent(com.winlator.xenvironment.components.MicrophoneComponent(
+            PulseAudioComponent.getMicFifoFile(context)
         ))
     }
 
@@ -4347,7 +4425,7 @@ private fun setupXEnvironment(
     val isCustomGame = gameSource == GameSource.CUSTOM_GAME
     val gameIdForTicket = ContainerUtils.extractGameIdFromContainerId(appId)
     if (!bootToContainer && !isCustomGame && gameIdForTicket != null && !container.isLaunchRealSteam && !container.isLaunchBionicSteam) {
-        CoroutineScope(Dispatchers.IO).launch {
+        launchXServerIo {
             try {
                 val ticket = SteamService.instance?.getEncryptedAppTicket(gameIdForTicket)
                 if (ticket != null) {
@@ -4432,7 +4510,7 @@ private fun setupXEnvironment(
     }
 
     // put in separate scope since winhandler start method does some network stuff
-    CoroutineScope(Dispatchers.IO).launch {
+    launchXServerIo {
         xServer.winHandler.start()
     }
     envVars.clear()
@@ -4933,7 +5011,7 @@ private fun exit(
     // inheriting the previous session's half-dead state.
     if (container.isLaunchBionicSteam) {
         // Launch async to avoid ANR if nativeShutdown() takes >5s
-        CoroutineScope(Dispatchers.IO).launch {
+        launchXServerIo {
             try {
                 Timber.d("SteamBootstrap stopping...")
                 SteamBootstrap.stop()
@@ -4945,7 +5023,7 @@ private fun exit(
     }
 
     // empty Wine/XDG trash in background after container stops
-    CoroutineScope(Dispatchers.IO).launch {
+    launchXServerIo {
         try {
             val trashDir = File(container.rootDir, ".local/share/Trash")
             val children = trashDir.listFiles()

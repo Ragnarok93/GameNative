@@ -19,7 +19,9 @@ import com.winlator.xserver.WindowAttributes;
 import com.winlator.xserver.WindowManager;
 import com.winlator.xserver.XLock;
 import com.winlator.xserver.XServer;
+import com.winlator.xenvironment.ImageFs;
 
+import java.io.File;
 import java.util.ArrayList;
 
 public class VulkanRenderer implements WindowManager.OnWindowModificationListener,
@@ -68,6 +70,19 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private boolean xRenderingPausedForScanout = false;
     private volatile VulkanXrFrameBridge xrFrameBridge = null;
     private volatile long xrTargetAhbPtr = 0;
+    private volatile boolean flatPresentationEnabled = true;
+
+    public void setFlatPresentationEnabled(boolean enabled) {
+        if (flatPresentationEnabled == enabled) return;
+        flatPresentationEnabled = enabled;
+        if (!enabled) {
+            scenePending.set(false);
+        } else {
+            onPointerMove(xServer.pointer.getX(), xServer.pointer.getY());
+            queueSceneUpdate();
+            xServerView.requestRender();
+        }
+    }
 
     /** See VulkanXrFrameBridge's kdoc — null except for the Meta Quest immersive path. */
     public void setVulkanXrFrameBridge(VulkanXrFrameBridge xrFrameBridge) {
@@ -130,7 +145,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         } catch (Exception e) { return null; }
     }
 
-    private native long nativeInit(Surface surface, int screenWidth, int screenHeight, String driverPath, String libraryName, String nativeLibDir);
+    private native long nativeInit(Surface surface, int screenWidth, int screenHeight, String driverPath, String libraryName, String nativeLibDir, String provenanceSocketPath);
     private native void nativeResize(long handle, int width, int height);
     private native void nativeDestroy(long handle);
     private native void nativeUpdateWindowContent(long handle, long id, java.nio.ByteBuffer pixels,
@@ -161,6 +176,16 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetFilterMode(long handle, int mode);
     private native void nativeSetSwapRB(long handle, boolean enabled);
     private native void nativeSetPresentMode(long handle, int mode);
+    private native void nativeSetLsfgFrameQueue(long handle, boolean enabled, int target);
+    private native void nativeArmFrameGeneration(long handle);
+    private native void nativeSetFrameGenerationEnabled(long handle, boolean enabled);
+    private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
+    private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
+    private native void nativeSetFrameGenerationMode(long handle, int multiplier, int targetRate, int flowScalePct);
+    private native long nativeGetGeneratedFrameCount(long handle);
+    private native long nativeGetPresentedFrameCount(long handle);
+    private native long nativeGetRealFrameCount(long handle);
+    private native long nativeGetSourceFrameCount(long handle);
     private native void nativeSetEffect(long handle, int effectId, float sharpness,
         int effectMask, float brightness, float contrast, float gamma);
     private native long nativeEnableXrTarget(long handle);
@@ -205,9 +230,20 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         return;
                     }
                 }
-                nativeHandle = nativeInit(surface, xServer.screenInfo.width, xServer.screenInfo.height, driverPath, driverLibraryName, nativeLibDir);
+                nativeHandle = nativeInit(
+                    surface,
+                    xServer.screenInfo.width,
+                    xServer.screenInfo.height,
+                    driverPath,
+                    driverLibraryName,
+                    nativeLibDir,
+                    "");
                 if (nativeHandle != 0) {
                     nativeSetPresentMode(nativeHandle, pendingPresentMode);
+                    nativeSetLsfgFrameQueue(
+                        nativeHandle,
+                        pendingLsfgFrameQueueEnabled,
+                        pendingLsfgFrameQueueTarget);
                     nativeSetFilterMode(nativeHandle, pendingFilterMode);
                     nativeSetSwapRB(nativeHandle, pendingSwapRB);
                     nativeSetEffect(nativeHandle, pendingEffectId, pendingSharpness,
@@ -827,6 +863,80 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         synchronized (lock) { if (nativeHandle != 0) nativeSetPresentMode(nativeHandle, mode); }
     }
 
+    public void armFrameGeneration() {
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeArmFrameGeneration(nativeHandle);
+        }
+    }
+
+    public void setFrameGenerationEnabled(boolean enabled) {
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeSetFrameGenerationEnabled(nativeHandle, enabled);
+        }
+    }
+
+    public void setFrameGenerationShaders(String cachePath) {
+        if (cachePath == null || cachePath.isEmpty()) return;
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeSetFrameGenerationShaders(nativeHandle, cachePath);
+        }
+    }
+
+    public void setFrameGenerationRefreshRate(float hz) {
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeSetFrameGenerationRefreshRate(nativeHandle, hz);
+        }
+    }
+
+    public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {
+        synchronized (lock) {
+            if (nativeHandle != 0) {
+                nativeSetFrameGenerationMode(
+                    nativeHandle,
+                    Math.max(2, Math.min(4, multiplier)),
+                    Math.max(0, targetRate),
+                    Math.max(25, Math.min(100, flowScalePct)));
+            }
+        }
+    }
+
+    public long getGeneratedFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetGeneratedFrameCount(nativeHandle) : 0L;
+        }
+    }
+
+    public long getPresentedFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetPresentedFrameCount(nativeHandle) : 0L;
+        }
+    }
+
+    public long getRealFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetRealFrameCount(nativeHandle) : 0L;
+        }
+    }
+
+    public long getSourceFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetSourceFrameCount(nativeHandle) : 0L;
+        }
+    }
+
+    public void setLsfgFrameQueue(boolean enabled, int target) {
+        pendingLsfgFrameQueueEnabled = enabled;
+        pendingLsfgFrameQueueTarget = Math.max(0, Math.min(2, target));
+        synchronized (lock) {
+            if (nativeHandle != 0) {
+                nativeSetLsfgFrameQueue(
+                    nativeHandle,
+                    pendingLsfgFrameQueueEnabled,
+                    pendingLsfgFrameQueueTarget);
+            }
+        }
+    }
+
     private FrameRating hudRef = null;
 
     @Override
@@ -860,6 +970,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     // from fpsLimit, which remains the real/source frame-rate contract.
     private int lsfgPresentationFrameRateHint = 0;
     private int     pendingPresentMode    = 2;
+    private boolean pendingLsfgFrameQueueEnabled = false;
+    private int     pendingLsfgFrameQueueTarget = 0;
     private int     pendingFilterMode     = 0;
     private boolean pendingSwapRB         = false;
     private int     pendingEffectId       = EFFECT_NONE;

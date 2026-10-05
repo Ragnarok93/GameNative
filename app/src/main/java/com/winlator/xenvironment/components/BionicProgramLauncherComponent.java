@@ -21,15 +21,18 @@ import app.gamenative.utils.LsfgVkManager;
 import com.winlator.box86_64.Box86_64Preset;
 import com.winlator.box86_64.Box86_64PresetManager;
 import com.winlator.container.Container;
+import com.winlator.container.ContainerOverlay;
 import com.winlator.container.Shortcut;
 import com.winlator.contents.ContentProfile;
 import com.winlator.contents.ContentsManager;
 import com.winlator.core.Callback;
 import com.winlator.core.DefaultVersion;
+import com.winlator.core.envvars.EnvVarRedaction;
 import com.winlator.core.envvars.EnvVars;
 import com.winlator.core.FileUtils;
 import com.winlator.core.GPUInformation;
 import com.winlator.core.ProcessHelper;
+import com.winlator.core.SharedComponents;
 import com.winlator.core.TarCompressorUtils;
 import com.winlator.core.WineInfo;
 import com.winlator.fexcore.FEXCorePreset;
@@ -46,10 +49,10 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.RandomAccessFile;
+import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 import app.gamenative.BuildConfig;
 import app.gamenative.PluviaApp;
@@ -82,6 +85,20 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
     public Container getContainer() { return this.container; }
     public void setContainer(Container container) { this.container = container; }
+
+    // Resolve which libredirect shim to preload. Normally the flavor default
+    // (PRELOAD_BIONIC_SO). When the container disables libredirect, modern falls
+    // back to the W^X-only minimal shim (still required to run Wine on a strict
+    // W^X kernel) and legacy preloads nothing. Returns null to preload nothing.
+    private String resolveLibredirectPreload(ImageFs imageFs) {
+        if (container != null && container.isDisableLibredirect()) {
+            if (BuildConfig.MODERN_ANDROID) {
+                return imageFs.getLibDir() + "/libredirect-bionic-wx-minimal.so";
+            }
+            return null;
+        }
+        return imageFs.getLibDir() + "/" + BuildConfig.PRELOAD_BIONIC_SO;
+    }
 
     /** Numeric Steam appid for the game in this container (e.g. "221380").
      *  Set from XServerScreen before start(); only consumed in real-Steam mode
@@ -275,19 +292,18 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         envVars.put("WINE_NO_DUPLICATE_EXPLORER", "1");
         envVars.put("PREFIX", rootDir.getPath() + "/usr");
         envVars.put("WINE_DISABLE_FULLSCREEN_HACK", "1");
-        File utilLayerLibrary = new File(imageFs.getLibDir(), "libutil_layer.so");
-        if (utilLayerLibrary.isFile()) {
-            envVars.put("ENABLE_UTIL_LAYER", "1");
-        } else {
-            Log.i("BionicProgramLauncherComponent",
-                    "Vulkan util layer disabled because libutil_layer.so is not installed");
-        }
+        envVars.put("ENABLE_UTIL_LAYER", "1");
         envVars.put("GST_PLUGIN_FEATURE_RANK", "ximagesink:3000");
         envVars.put("ALSA_CONFIG_PATH", rootDir.getPath() + "/usr/share/alsa/alsa.conf" + ":" + rootDir.getPath() + "/usr/etc/alsa/conf.d/android_aserver.conf");
         envVars.put("ALSA_PLUGIN_DIR", rootDir.getPath() + "/usr/lib/alsa-lib");
         envVars.put("OPENSSL_CONF", rootDir.getPath() + "/usr/etc/tls/openssl.cnf");
         envVars.put("SSL_CERT_FILE", rootDir.getPath() + "/usr/etc/tls/cert.pem");
         envVars.put("SSL_CERT_DIR", rootDir.getPath() + "/usr/etc/tls/certs");
+        // Wine's crypt32 imports this bundle into the Windows ROOT certificate store. Without it
+        // the store only holds Wine's built-in Microsoft roots: Android 14+ moved the system CAs
+        // to an APEX path Wine does not scan, so TLS verification fails for anything that trusts
+        // via the Windows store (e.g. the EOS SDK's websockets, winhttp/wininet callers).
+        envVars.put("WINE_ADDITIONAL_CERTS_DIR", rootDir.getPath() + "/usr/etc/tls/cert.pem");
         envVars.put("WINE_X11FORCEGLX", "1");
         envVars.put("WINE_GST_NO_GL", "1");
         envVars.put("SteamGameId", "0");
@@ -299,7 +315,14 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
             // Check if the dnsServers list is not empty before getting an item
             if (!dnsServers.isEmpty()) {
-                primaryDNS = dnsServers.get(0).toString().substring(1);
+                InetAddress selectedDNS = dnsServers.get(0);
+                for (InetAddress dnsServer : dnsServers) {
+                    if (dnsServer instanceof Inet4Address) {
+                        selectedDNS = dnsServer;
+                        break;
+                    }
+                }
+                primaryDNS = selectedDNS.getHostAddress();
             }
         }
         envVars.put("ANDROID_RESOLV_DNS", primaryDNS);
@@ -308,17 +331,40 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         String ld_preload = "";
         String sysvPath = imageFs.getLibDir() + "/libandroid-sysvshm.so";
         String evshimPath = context.getApplicationInfo().nativeLibraryDir + "/libevshim.so";
-        String replacePath = imageFs.getLibDir() + "/" + BuildConfig.PRELOAD_BIONIC_SO;
+        String replacePath = resolveLibredirectPreload(imageFs);
 
         if (new File(sysvPath).exists()) ld_preload += sysvPath;
 
 
         ld_preload += ":" + evshimPath;
-        ld_preload += ":" + replacePath;
+        String dnsV4MappedPath = context.getApplicationInfo().nativeLibraryDir + "/libgamenative_dns_v4mapped.so";
+        if (new File(dnsV4MappedPath).exists()) {
+            ld_preload += ":" + dnsV4MappedPath;
+        }
+        if (replacePath != null) ld_preload += ":" + replacePath;
 
         envVars.put("LD_PRELOAD", ld_preload);
         envVars.put("EVSHIM_WINE", 1);
         envVars.put("EVSHIM_SHM_NAME", "controller-shm0");
+
+        if (container != null && container.isFasterExternalLoading()) {
+            String ffpGameDir = null;
+            for (String[] drive : Container.drivesIterator(container.getDrives())) {
+                if (drive[0].equals("A")) {
+                    try {
+                        ffpGameDir = new File(drive[1]).getCanonicalPath();
+                    } catch (IOException e) {
+                        ffpGameDir = drive[1];
+                    }
+                    break;
+                }
+            }
+            if (ffpGameDir != null && ffpGameDir.startsWith("/storage/")
+                    && !ffpGameDir.startsWith("/storage/emulated/")) {
+                envVars.put("FFP_ENABLE", "1");
+                envVars.put("FFP_MARKERS", "/steamapps/common/;/dosdevices/a:");
+            }
+        }
 
         // Check for specific shared memory libraries
 //        if ((new File(imageFs.getLibDir(), "libandroid-sysvshm.so")).exists()){
@@ -349,21 +395,26 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             }
         }
 
-        if (LsfgVkManager.isFrameGenerationRequested(container)) {
+        if (LsfgVkManager.isSupported(container)) {
             LsfgVkManager.ensureRuntimeInstalled(environment.getContext(), container);
             LsfgVkManager.writeConfig(container);
-            final boolean protectedAdrenoPresentation =
-                    renderer != null
-                    && renderer.toLowerCase(Locale.ENGLISH).contains("adreno");
-            LsfgVkManager.applyLaunchEnv(
-                    container, envVars, protectedAdrenoPresentation);
-        } else if (LsfgVkManager.isSupported(container)) {
-            // Keep the resident source-only path on the user's existing WSI
-            // policy. The Adreno FIFO override exists only while FG is active.
-            LsfgVkManager.applyLaunchEnv(container, envVars, false);
+            LsfgVkManager.applyLaunchEnv(container, envVars);
+            if (LsfgVkManager.isArmed(container)) {
+                final android.content.Context lsfgContext = environment.getContext();
+                new Thread(() -> LsfgVkManager.prepareNativeCache(lsfgContext, container),
+                    "lsfg-native-cache").start();
+            }
         }
 
-        Log.d("BionicProgramLauncherComponent", "env vars are " + envVars.toString());
+        try {
+            ContainerOverlay.applyBionicLaunchEnv(context, container, envVars);
+        }
+        catch (IllegalStateException e) {
+            Log.e("BionicProgramLauncherComponent", e.getMessage());
+            return -1;
+        }
+
+        Log.d("BionicProgramLauncherComponent", "env vars are " + EnvVarRedaction.redact(envVars));
 
         String emulator = container.getEmulator();
 
@@ -459,7 +510,7 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             contentsManager.applyContent(wowboxprofile);
         } else {
             Log.d("Extraction", "Extracting box64Version: " + wowbox64Version);
-            TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, environment.getContext(), "wowbox64/wowbox64-" + wowbox64Version + ".tzst", system32dir);
+            SharedComponents.extractAndLink(environment.getContext(), "wowbox64-" + wowbox64Version, TarCompressorUtils.Type.ZSTD, "wowbox64/wowbox64-" + wowbox64Version + ".tzst", system32dir, null);
         }
         container.putExtra("box64Version", wowbox64Version);
         containerDataChanged = true;
@@ -469,7 +520,7 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             contentsManager.applyContent(fexprofile);
         } else {
             Log.d("Extraction", "Extracting fexcoreVersion: " + fexcoreVersion);
-            TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, environment.getContext(), "fexcore/fexcore-" + fexcoreVersion + ".tzst", system32dir);
+            SharedComponents.extractAndLink(environment.getContext(), "fexcore-" + fexcoreVersion, TarCompressorUtils.Type.ZSTD, "fexcore/fexcore-" + fexcoreVersion + ".tzst", system32dir, null);
         }
         container.putExtra("fexcoreVersion", fexcoreVersion);
 
@@ -658,6 +709,10 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
     }
 
     public String execShellCommand(String command, boolean includeStderr) {
+        return execShellCommand(command, includeStderr, null, null);
+    }
+
+    public String execShellCommand(String command, boolean includeStderr, EnvVars extraEnv, String[] unsetEnv) {
         Context context = environment.getContext();
         ImageFs imageFs = ImageFs.find(context);
         File rootDir = imageFs.getRootDir();
@@ -687,16 +742,25 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         String ld_preload = "";
         String sysvPath = imageFs.getLibDir() + "/libandroid-sysvshm.so";
-        String replacePath = imageFs.getLibDir() + "/" + BuildConfig.PRELOAD_BIONIC_SO;
+        String replacePath = resolveLibredirectPreload(imageFs);
 
         if (new File(sysvPath).exists()) ld_preload += sysvPath;
 
-        ld_preload += ":" + replacePath;
+        if (replacePath != null) ld_preload += ":" + replacePath;
 
         envVars.put("LD_PRELOAD", ld_preload);
 
         String emulator = container.getEmulator();
         if (this.envVars != null) envVars.putAll(this.envVars);
+        try {
+            ContainerOverlay.applyBionicLaunchEnv(context, container, envVars);
+        }
+        catch (IllegalStateException e) {
+            Log.e("BionicProgramLauncherComponent", e.getMessage());
+            return "";
+        }
+        if (extraEnv != null) envVars.putAll(extraEnv);
+        if (unsetEnv != null) for (String name : unsetEnv) envVars.remove(name);
 
         String finalCommand = getFinalCommand(winePath, emulator, envVars, imageFs.getBinDir(), command);
 

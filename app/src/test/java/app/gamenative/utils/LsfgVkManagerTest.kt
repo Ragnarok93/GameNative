@@ -100,6 +100,22 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun writeConfig_serializesHostFrameQueueMetadataWithoutChangingFramegenMode() {
+        val container = container(armed = true, multiplier = "2")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_ENABLED, "false"))
+            .thenReturn("true")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_TARGET, "0"))
+            .thenReturn("2")
+
+        assertTrue(LsfgVkManager.writeConfig(container))
+
+        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
+        assertTrue(text.contains("multiplier = 2"))
+        assertTrue(text.contains("frame_queue_enabled = true"))
+        assertTrue(text.contains("frame_queue_target = 2"))
+    }
+
+    @Test
     fun publishRuntimePressure_usesSeparateAtomicSidecar() {
         val snapshot = MetricsSnapshot(
             timestampMs = 123456L,
@@ -631,6 +647,20 @@ class LsfgVkManagerTest {
             .thenReturn(armed.toString())
         whenever(container.getExtra(LsfgVkManager.EXTRA_MULTIPLIER, "2"))
             .thenReturn(multiplier)
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAMEGEN_MODE, LsfgVkManager.MODE_FIXED))
+            .thenReturn(LsfgVkManager.MODE_FIXED)
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FIXED_MULTIPLIER, "2"))
+            .thenReturn("2")
+        whenever(
+            container.getExtra(
+                LsfgVkManager.EXTRA_ADAPTIVE_TARGET_FPS,
+                LsfgVkManager.DEFAULT_ADAPTIVE_TARGET_FPS.toString(),
+            ),
+        ).thenReturn(LsfgVkManager.DEFAULT_ADAPTIVE_TARGET_FPS.toString())
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_ENABLED, "false"))
+            .thenReturn("false")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_TARGET, "0"))
+            .thenReturn("0")
         whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE, "0.80"))
             .thenReturn("0.80")
         whenever(container.getExtra(LsfgVkManager.EXTRA_FLOW_SCALE_MODE, LsfgVkManager.FLOW_MODE_FIXED))
@@ -645,12 +675,23 @@ class LsfgVkManagerTest {
             .thenReturn("true")
         whenever(container.getExtra(LsfgVkManager.EXTRA_PRESENT_MODE, "mailbox"))
             .thenReturn("mailbox")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_BACKEND, LsfgVkManager.BACKEND_LEGACY))
+            .thenReturn(LsfgVkManager.BACKEND_LEGACY)
         whenever(container.getExtra("fpsLimiterEnabled", "false"))
             .thenReturn("false")
         whenever(container.getExtra("fpsLimiterTarget", "0"))
             .thenReturn("0")
         return container
     }
+    @Test
+    fun backend_defaultsToLegacyAndRecognizesNative() {
+        val container = container(armed = true, multiplier = "2")
+        assertEquals(LsfgVkManager.BACKEND_LEGACY, LsfgVkManager.backend(container))
+        whenever(container.getExtra(LsfgVkManager.EXTRA_BACKEND, LsfgVkManager.BACKEND_LEGACY))
+            .thenReturn(LsfgVkManager.BACKEND_NATIVE)
+        assertTrue(LsfgVkManager.isNativeBackend(container))
+    }
+
     @Test
     fun readRuntimeState_rejectsGeneratingStateWhenNativeSupportVerdictFailed() {
         val container = container(armed = true, multiplier = "2")

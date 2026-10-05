@@ -194,6 +194,9 @@ class LsfgDiagnosticExporterTest {
             "09-26 I System.out: LSFG_EVENT runtime_session_id=9 config_revision=2",
             "09-26 I System.out: LSFG_FLOW runtime_session_id=9 config_revision=2",
             "09-26 I System.out: LSFG_PROVENANCE invoke name=vkQueuePresentKHR",
+            "09-26 I LSFG_FRAME_PROVENANCE: delivery_id=41 kind=generated",
+            "09-26 I LSFG_HOST_DISPLAY: delivery_id=41 host_display_confirmed=1",
+            "09-26 I LSFG_FRAME_QUEUE: event=enqueue target=1 queue_depth=1",
             "09-26 I System.out: lsfg-vk: init stage=swapchain-ready",
             "09-26 I LsfgVkManager: LSFG layer armed target=game.exe multiplier=2",
         )

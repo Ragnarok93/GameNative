@@ -216,6 +216,9 @@ import com.winlator.xserver.XServer
 import com.winlator.xserver.extensions.PresentExtension
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+private fun launchXServerIo(block: suspend CoroutineScope.() -> Unit): kotlinx.coroutines.Job =
+    CoroutineScope(Dispatchers.IO).launch(block = block)
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -1171,7 +1174,7 @@ fun XServerScreen(
         val targetExecutable = extractExecutableBasename(container.executablePath)
         if (!windowMatchesExecutable(window, targetExecutable)) return
 
-        exitWatchJob = CoroutineScope(Dispatchers.IO).launch {
+        exitWatchJob = launchXServerIo {
             val allowlist = buildEssentialProcessAllowlist()
             val previousListener = winHandler.getOnGetProcessInfoListener()
             val lock = Any()

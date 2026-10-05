@@ -1317,7 +1317,8 @@ object LsfgVkManager {
             val ok = writeConfigAtomic(configFile, configText)
             if (ok) {
                 Timber.tag(TAG).i(
-                    "LSFG runtime config published enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s frameQueue=%b frameQueueTarget=%d",
+                    "LSFG runtime config published backend=%s enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s frameQueue=%b frameQueueTarget=%d",
+                    backend(container),
                     frameGenActive,
                     if (frameGenActive) effectiveMultiplier else 1,
                     effectiveAdaptiveFramegen,

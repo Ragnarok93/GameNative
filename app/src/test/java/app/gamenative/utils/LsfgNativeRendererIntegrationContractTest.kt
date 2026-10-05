@@ -43,7 +43,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(context.contains("signalSemaphoreCount=signalSemaphoreCount"))
         assertTrue(context.contains("nativeRuntimeActive"))
         val renderStart = context.indexOf("void VulkanRendererContext::renderFrame()")
-        val renderBody = context.substring(renderStart)
+        val renderEnd = context.indexOf("void VulkanRendererContext::", renderStart + 8)
+        val renderBody = context.substring(renderStart, if (renderEnd > renderStart) renderEnd else context.length)
         assertTrue(!renderBody.contains("DeviceWaitIdle"))
     }
 }

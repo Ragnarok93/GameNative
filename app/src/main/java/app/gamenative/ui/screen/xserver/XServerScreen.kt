@@ -3123,6 +3123,7 @@ fun XServerScreen(
                 multiplier = lsfgMultiplier,
                 flowScale = lsfgFlowScale,
                 performanceMode = lsfgPerformanceMode,
+                backend = LsfgVkManager.backend(container),
                 runtimeStatus = lsfgRuntimeMode.label,
                 onMultiplierChanged = ::applyLsfgMultiplier,
                 onFlowScaleChanged = ::applyLsfgFlowScale,

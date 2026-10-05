@@ -345,6 +345,16 @@ public:
     void loadInstanceDispatch();
     void loadDeviceDispatch();
 
+    void armFrameGeneration();
+    void setFrameGenerationEnabled(bool enabled);
+    void setFrameGenerationShaders(const std::string& cachePath);
+    void setFrameGenerationRefreshRate(float hz);
+    void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct);
+    uint64_t getGeneratedFrameCount() const;
+    uint64_t getPresentedFrameCount() const;
+    uint64_t getRealFrameCount() const;
+    uint64_t getSourceFrameCount() const;
+
     void setFilterMode(int mode);
     void setSwapRB(bool enabled);
     void setEffect(int effectId, float sharpness, int effectMask, float brightness, float contrast, float gamma);
@@ -736,17 +746,6 @@ private:
     bool compositeFormatSupported();
     void blitCompositeToSwapchain(
         VkCommandBuffer cmd, const VkCompositeTarget& source, VkImage destination);
-    void setFrameGenerationEnabled(bool enabled);
-    bool isFrameGenerationSupported() const;
-    void setFrameGenerationShaders(const std::string& cachePath);
-    void setSourceFrameCount(uint64_t count);
-    void setFrameGenerationRefreshRate(float hz);
-    void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct);
-    uint64_t getGeneratedFrameCount() const;
-    uint64_t getPresentedFrameCount() const;
-    uint64_t getRealFrameCount() const;
-    uint64_t getSourceFrameCount() const;
-
     void initLsfgProvenanceSocket();
     void closeLsfgProvenanceSocket();
     void drainLsfgProvenance();

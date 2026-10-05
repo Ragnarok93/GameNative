@@ -345,7 +345,7 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                             }
                         },
                     ),
-                    ),
+                )
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     CompositionLocalProvider(LocalImmersiveSessionHooks provides immersiveHooks) {

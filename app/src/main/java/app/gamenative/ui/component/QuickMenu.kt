@@ -325,6 +325,7 @@ class LsfgQuickMenuState(
     val multiplier: Int = 2,
     val flowScale: Float = 0.80f,
     val performanceMode: Boolean = true,
+    val backend: String = "legacy",
     val runtimeStatus: String = "",
     val onMultiplierChanged: (Int) -> Unit = {},
     val onFlowScaleChanged: (Float) -> Unit = {},
@@ -370,6 +371,7 @@ fun QuickMenu(
     val lsfgMultiplier = lsfg.multiplier
     val lsfgFlowScale = lsfg.flowScale
     val lsfgPerformanceMode = lsfg.performanceMode
+    val lsfgBackend = lsfg.backend
     val lsfgRuntimeStatus = lsfg.runtimeStatus
     val onLsfgMultiplierChanged = lsfg.onMultiplierChanged
     val onLsfgFlowScaleChanged = lsfg.onFlowScaleChanged
@@ -492,6 +494,10 @@ fun QuickMenu(
             lsfgMultiplier >= 2 && lsfgFrameQueueEnabled,
             lsfgFrameQueueTarget.depth,
         )
+    }
+
+    LaunchedEffect(lsfgPresentMode, renderer) {
+        renderer?.setVkPresentMode(if (lsfgPresentMode == "mailbox") 1 else 2)
     }
 
     var selectedTab by rememberSaveable {
@@ -932,6 +938,8 @@ fun QuickMenu(
                                             multiplier = lsfgMultiplier,
                                             flowScale = lsfgFlowScale,
                                             performanceMode = lsfgPerformanceMode,
+                                            backend = lsfgBackend,
+                                            onBackendChanged = { backend -> container?.let { app.gamenative.utils.LsfgVkManager.setBackend(it, backend) } },
                                             runtimeStatus = lsfgRuntimeStatus,
                                             onMultiplierChanged = onLsfgMultiplierChanged,
                                             onFlowScaleChanged = onLsfgFlowScaleChanged,
@@ -963,6 +971,7 @@ fun QuickMenu(
                                             presentMode = lsfgPresentMode,
                                             onPresentModeChanged = { mode ->
                                                 lsfgPresentMode = mode
+                                                renderer?.setVkPresentMode(if (mode == "mailbox") 1 else 2)
                                                 container?.let { activeContainer ->
                                                     app.gamenative.utils.LsfgQuickMenuHelper.applyPresentMode(
                                                         activeContainer,
@@ -1685,6 +1694,8 @@ private fun LsfgQuickMenuTab(
     multiplier: Int,
     flowScale: Float,
     performanceMode: Boolean,
+    backend: String,
+    onBackendChanged: (String) -> Unit,
     runtimeStatus: String,
     onMultiplierChanged: (Int) -> Unit,
     onFlowScaleChanged: (Float) -> Unit,
@@ -2025,6 +2036,32 @@ private fun LsfgQuickMenuTab(
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))
+                QuickMenuSectionHeader(
+                    title = stringResource(R.string.lsfg_backend),
+                    subtitle = stringResource(R.string.lsfg_backend_desc),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(
+                        "legacy" to stringResource(R.string.lsfg_backend_legacy),
+                        "native" to stringResource(R.string.lsfg_backend_native),
+                    ).forEach { (value, label) ->
+                        QuickMenuChoiceChip(
+                            text = label,
+                            selected = backend == value,
+                            accentColor = accentColor,
+                            onClick = { onBackendChanged(value) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
                 QuickMenuSectionHeader(
                     title = stringResource(R.string.lsfg_present_mode),
                     subtitle = stringResource(R.string.lsfg_present_mode_desc),

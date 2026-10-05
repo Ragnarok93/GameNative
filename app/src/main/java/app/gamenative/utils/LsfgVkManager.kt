@@ -5,6 +5,7 @@ import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import java.util.concurrent.Executors
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
+import com.winlator.renderer.lsfg.LosslessScaling
 import com.winlator.core.FileUtils
 import com.winlator.core.envvars.EnvVars
 import java.io.File
@@ -74,6 +75,10 @@ object LsfgVkManager {
     const val EXTRA_FRAMEGEN_MODE = "lsfgFramegenMode"
     const val EXTRA_FIXED_MULTIPLIER = "lsfgFixedMultiplier"
     const val EXTRA_ADAPTIVE_TARGET_FPS = "lsfgAdaptiveTargetFps"
+    const val EXTRA_BACKEND = "lsfgBackend"
+
+    const val BACKEND_LEGACY = "legacy"
+    const val BACKEND_NATIVE = "native"
 
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
@@ -111,7 +116,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-bannerlator-engine-7a9ff6d2ad2452f83c3e2e8b42c7a94d430af034-r17"
+        "gamenative-bannerlator-engine-54545ff93a46ecf846b3ffb56c396d5874ed7de2-r19"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -264,6 +269,20 @@ object LsfgVkManager {
     fun presentMode(container: Container): String =
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
+
+    fun backend(container: Container): String =
+        container.getExtra(EXTRA_BACKEND, BACKEND_LEGACY)
+            .lowercase(Locale.US)
+            .takeIf { it == BACKEND_NATIVE } ?: BACKEND_LEGACY
+
+    fun isNativeBackend(container: Container): Boolean = backend(container) == BACKEND_NATIVE
+
+    fun setBackend(container: Container, backend: String) {
+        val sanitized = backend.lowercase(Locale.US).takeIf { it == BACKEND_NATIVE } ?: BACKEND_LEGACY
+        container.putExtra(EXTRA_BACKEND, sanitized)
+        container.saveData()
+        Timber.i("LSFG backend changed: backend=%s", sanitized)
+    }
 
     fun frameQueueEnabled(container: Container): Boolean =
         parseBool(container.getExtra(EXTRA_FRAME_QUEUE_ENABLED, "false"))
@@ -463,6 +482,22 @@ object LsfgVkManager {
         multiplier = 0,
         fresh = fresh,
     )
+
+    /**
+     * Warm the native renderer shader cache off the launch-critical path.
+     * Upstream 1.3 invokes this during Bionic startup; keep it best-effort so
+     * cache generation can never prevent the LSFG Vulkan layer from launching.
+     */
+    @JvmStatic
+    @Synchronized
+    fun prepareNativeCache(context: Context, container: Container): String? {
+        val dll = containerDllPath(container)?.let { File(it) } ?: findSteamDll()
+        if (dll == null || !dll.isFile) return null
+        return runCatching {
+            val driverName = LosslessScaling.getDriverName(container)
+            LosslessScaling.resolveOrBuildCache(context, dll, driverName)?.absolutePath
+        }.getOrNull()
+    }
 
     /**
      * Install the layer runtime + DLL into the container's filesystem.

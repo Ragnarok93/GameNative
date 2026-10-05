@@ -30,6 +30,7 @@ struct VkTable {
     PFN_vkAcquireNextImageKHR AcquireNextImageKHR;
     PFN_vkQueuePresentKHR QueuePresentKHR;
     PFN_vkGetPastPresentationTimingGOOGLE GetPastPresentationTimingGOOGLE;
+    PFN_vkGetRefreshCycleDurationGOOGLE GetRefreshCycleDurationGOOGLE;
     PFN_vkWaitForPresentKHR WaitForPresentKHR;
     PFN_vkQueueSubmit QueueSubmit;
     PFN_vkCreateRenderPass CreateRenderPass;
@@ -121,6 +122,10 @@ static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
 static constexpr uint64_t SMOOTH_PRESENT_STALL_NS = 8'000'000ULL;
 static constexpr uint32_t SMOOTH_PRESENT_STALL_STRIKES = 2;
+static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
+static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
+static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
+static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -189,6 +194,26 @@ struct LsfgFrameProvenance {
     uint32_t interpolationCount = 0;
     uint8_t interpolationIndex = 0;
     uint8_t kind = 0; // 0=source, 1=generated
+    uint64_t desiredPresentTimeNs = 0;
+    bool uniqueDelivery = false;
+};
+
+struct QueuedLsfgHostDelivery {
+    AHardwareBuffer* ahb = nullptr;
+    LsfgFrameProvenance provenance{};
+    uint64_t enqueuedAtNs = 0;
+};
+
+struct HostDesiredPresentDecision {
+    uint64_t provenanceDesiredPresentTimeNs = 0;
+    uint64_t submittedDesiredPresentTimeNs = 0;
+    uint64_t desiredStaleByNs = 0;
+    uint64_t desiredFutureByNs = 0;
+    uint64_t refreshPeriodNs = 0;
+    uint64_t phaseAdvanceCycles = 0;
+    uint64_t phaseAdvanceNs = 0;
+    bool temporalBacklog = false;
+    const char* fallbackReason = "none";
 };
 
 struct HostDisplayConfirmation {
@@ -197,6 +222,27 @@ struct HostDisplayConfirmation {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
+    uint64_t provenanceDesiredPresentTimeNs = 0;
+    uint64_t submittedDesiredPresentTimeNs = 0;
+    uint64_t wsiDesiredPresentTimeNs = 0;
+    uint64_t desiredStaleByNs = 0;
+    uint64_t desiredFutureByNs = 0;
+    uint64_t refreshPeriodNs = 0;
+    uint64_t phaseAdvanceCycles = 0;
+    uint64_t phaseAdvanceNs = 0;
+    bool temporalBacklog = false;
+    const char* desiredFallbackReason = "none";
+    uint64_t actualPresentTimeNs = 0;
+    uint64_t earliestPresentTimeNs = 0;
+    uint64_t presentMarginNs = 0;
+    uint64_t presentMarginRawNs = 0;
+    uint64_t enqueuedAtNs = 0;
+    uint64_t swapchainGeneration = 0;
+    uint64_t submissionSerial = 0;
+    uint64_t presentCallNs = 0;
+    uint64_t submitCallNs = 0;
+    uint32_t frameSlot = 0;
+    uint32_t gpuOutstandingAtSubmit = 0;
 };
 
 struct PendingHostPresent {
@@ -209,8 +255,21 @@ struct PendingHostPresent {
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
     std::vector<LsfgFrameProvenance> frameProvenance;
+    HostDesiredPresentDecision desiredDecision{};
+    bool hasUniqueLsfgDelivery = false;
     uint64_t acquireNs = 0;
+    uint64_t submitCallNs = 0;
+    uint64_t submissionSerial = 0;
+    uint64_t swapchainGeneration = 0;
     uint32_t gpuOutstanding = 0;
+    uint64_t hostPresentEnqueueWaitNs = 0;
+    uint32_t hostPresentQueueDepth = 0;
+};
+
+struct CompletedHostPresent {
+    PendingHostPresent present{};
+    VkResult result = VK_SUCCESS;
+    uint64_t presentCallNs = 0;
 };
 
 struct WindowPushConstants {
@@ -351,7 +410,15 @@ private:
     bool  cubicSupported          = false;
     VkPhysicalDeviceMemoryProperties memProperties{};
     VkPresentModeKHR requestedPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    // Updated only after a replacement swapchain is successfully created.
+    VkPresentModeKHR activePresentMode = VK_PRESENT_MODE_FIFO_KHR;
     uint32_t graphicsQueueFamilyIndex = 0;
+    uint32_t graphicsQueueFamilyQueueCount = 1;
+    uint32_t presentCapableQueueFamilyCount = 0;
+    bool alternatePresentQueueFamilyAvailable = false;
+    bool hostSplitPresentQueueEnabled_ = true;
+    bool hostSplitPresentQueueActive_ = false;
+    uint32_t hostPresentQueueIndex_ = 0;
     std::vector<VkPresentModeKHR> availablePresentModes;
 
     // Host-output confirmation remains telemetry-only. It never changes
@@ -363,13 +430,78 @@ private:
     uint64_t hostWsiAccepted_ = 0;
     uint64_t hostDisplayConfirmed_ = 0;
     uint64_t hostDisplayUnknown_ = 0;
+    uint64_t repeatedContentPresent_ = 0;
+    uint64_t uniquePhysicalPresent_ = 0;
+    uint64_t sourceUniquePhysicalPresent_ = 0;
+    uint64_t generatedUniquePhysicalPresent_ = 0;
+    uint64_t firstUniquePhysicalPresentNs_ = 0;
+    uint64_t lastUniquePhysicalPresentNs_ = 0;
+    uint64_t lastAcceptedDesiredPresentTimeNs_ = 0;
+    uint64_t hostRefreshPeriodNs_ = 0;
+    uint64_t sourceUniqueWsiAccepted_ = 0;
+    uint64_t generatedUniqueWsiAccepted_ = 0;
+    uint64_t sourcePhysicalUnknown_ = 0;
+    uint64_t generatedPhysicalUnknown_ = 0;
+    uint64_t hostPhaseRescheduledTotal_ = 0;
+    uint64_t hostTemporalBacklogTotal_ = 0;
+    uint64_t hostRefreshCycleQueryFailureTotal_ = 0;
+    uint64_t hostSwapchainGeneration_ = 0;
+    uint64_t hostPhysicalCadenceEpoch_ = 0;
+    uint64_t hostConfirmationPendingHighWater_ = 0;
+    uint64_t hostConfirmationExpiredTotal_ = 0;
+    uint64_t hostConfirmationOverflowTotal_ = 0;
+    uint64_t hostDisplayTimingQueryFailureTotal_ = 0;
+    uint64_t hostInvalidPresentMarginTotal_ = 0;
+    std::deque<uint64_t> physicalCadenceErrorsNs_;
+    std::deque<uint64_t> scheduledCadenceErrorsNs_;
+    std::unordered_set<uint64_t> consumedLsfgDeliveries_;
     std::deque<HostDisplayConfirmation> pendingHostDisplayConfirmations;
+
+    // Ordered LSFG deliveries are retained before host composition when Frame
+    // Queue is enabled. Queue references participate in the existing AHB import
+    // refcount so imported images cannot retire before their snapshot is consumed.
+    std::unordered_map<int64_t, std::deque<QueuedLsfgHostDelivery>>
+        pendingLsfgHostDeliveries_;
+    std::unordered_set<uint64_t> hostSnapshottedLsfgDeliveries_;
+    uint64_t hostDeliveryQueueContextEpoch_ = 0;
+    std::atomic<uint32_t> pendingLsfgHostDeliveryCount_{0};
+    std::atomic<uint64_t> hostDeliveryPendingHighWater_{0};
+    std::atomic<uint64_t> sourceDeliveryReceived_{0};
+    std::atomic<uint64_t> generatedDeliveryReceived_{0};
+    std::atomic<uint64_t> sourceSnapshotCreated_{0};
+    std::atomic<uint64_t> generatedSnapshotCreated_{0};
+    std::atomic<uint64_t> sourceCoalescedDrop_{0};
+    std::atomic<uint64_t> generatedCoalescedDrop_{0};
+    std::atomic<uint64_t> sourceBacklogDrop_{0};
+    std::atomic<uint64_t> generatedBacklogDrop_{0};
+    std::atomic<uint64_t> sourceStaleDrop_{0};
+    std::atomic<uint64_t> generatedStaleDrop_{0};
+    std::atomic<uint64_t> sourceAhbReuseDrop_{0};
+    std::atomic<uint64_t> generatedAhbReuseDrop_{0};
 
     // Frame Queue is retirement-aware final-compositor buffering. Presentation
     // stays on the render thread and WSI remains the natural pacing boundary.
     std::atomic<bool> lsfgFrameQueueEnabled_{false};
     std::atomic<uint32_t> lsfgFrameQueueTarget_{0};
     std::mutex graphicsQueueMutex_;
+    std::mutex presentQueueMutex_;
+
+    std::mutex hostPresenterMutex_;
+    std::condition_variable hostPresenterCv_;
+    std::condition_variable hostPresenterSpaceCv_;
+    std::condition_variable hostPresenterDrainCv_;
+    std::deque<PendingHostPresent> pendingHostPresents_;
+    std::deque<CompletedHostPresent> completedHostPresents_;
+    std::thread hostPresenterThread_;
+    std::atomic<bool> hostPresenterRunning_{false};
+    std::atomic<bool> hostPresenterBusy_{false};
+    std::atomic<bool> hostPresentCompletionPending_{false};
+    bool hostAsyncPresenterEnabled_ = false;
+    bool hostAsyncPresenterActive_ = false;
+    std::atomic<uint64_t> hostPresentEnqueueWaitNsTotal_{0};
+    std::atomic<uint64_t> hostPresentEnqueueWaitCount_{0};
+    std::atomic<uint32_t> hostPresentQueueHighWater_{0};
+
     std::atomic<uint64_t> frameQueuePresentedTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitNsTotal_{0};
@@ -381,12 +513,14 @@ private:
     std::atomic<uint32_t> frameQueueSmoothPressureStrikes_{0};
     mutable std::atomic<bool> frameQueueSmoothFifoFallback_{false};
     std::atomic<uint64_t> frameQueueTelemetryEpoch_{0};
+    std::atomic<uint64_t> frameQueueConfigRequestSerial_{0};
 
     int lsfgProvenanceSocket = -1;
     std::string lsfgProvenanceSocketPath;
     uint64_t provenanceRxTotal_ = 0;
     uint64_t provenanceMatchTotal_ = 0;
     uint64_t provenanceMissTotal_ = 0;
+    uint64_t provenanceSupersededTotal_ = 0;
     uint64_t activeProvenanceContextEpoch_ = 0;
     uint64_t provenanceSocketOwnerGeneration_ = 0;
     bool provenanceFirstPacketLogged_ = false;
@@ -473,6 +607,7 @@ private:
     VkPhysicalDevice physicalDevice;
     VkDevice         device;
     VkQueue          graphicsQueue;
+    VkQueue          presentQueue = VK_NULL_HANDLE;
     VkSwapchainKHR   swapchain   = VK_NULL_HANDLE;
     VkFormat         swapchainFmt;
     VkExtent2D       swapchainExt;
@@ -555,11 +690,14 @@ private:
     void bindLsfgProvenance(AHardwareBuffer* ahb, WinTex& texture);
     uint64_t ahbIdentity(AHardwareBuffer* ahb) const;
     void pollHostDisplayConfirmations();
+    std::vector<LsfgFrameProvenance> classifyHostPresentProvenance(
+        const std::vector<DrawEntry>& draws) const;
+    HostDesiredPresentDecision validatedHostDesiredPresentTime(
+        const std::vector<LsfgFrameProvenance>& provenance);
     void recordHostPresent(
-        uint64_t hostPresentId,
-        uint32_t googlePresentId,
-        HostDisplayConfirmationBackend backend,
-        const std::vector<LsfgFrameProvenance>& frameProvenance);
+        const PendingHostPresent& present,
+        uint64_t presentCallNs);
+    void resetHostPhysicalCadenceTelemetry(const char* reason);
     void emitHostDisplayConfirmation(
         const HostDisplayConfirmation& confirmation,
         bool confirmed,
@@ -567,13 +705,35 @@ private:
         const char* reason);
     void flushHostDisplayConfirmationsUnknown(const char* reason);
     uint32_t effectiveFrameQueueTarget() const;
+    uint32_t hostDeliveryQueueCapacity() const;
+    bool isLsfgHostDeliveryStale(const LsfgFrameProvenance& provenance) const;
+    bool enqueueLsfgHostDelivery(
+        int64_t ownerId, AHardwareBuffer* ahb, WinTex& source);
+    bool selectQueuedLsfgHostDelivery(
+        const RenderEntry& renderEntry, DrawEntry& draw);
+    void consumeQueuedLsfgHostDeliveries(
+        const std::vector<DrawEntry>& draws);
+    void dropQueuedLsfgHostDeliveries(const char* reason);
+    void dropQueuedLsfgHostDeliveriesForWindow(
+        int64_t ownerId, const char* reason);
+    void emitHostDeliveryAccounting(
+        const char* reason,
+        const LsfgFrameProvenance* provenance = nullptr);
+    void recordHostSnapshotCreated(
+        const LsfgFrameProvenance& provenance);
     void resetFrameQueueTelemetry();
     uint32_t activeFrameSlotCount() const;
     uint32_t countOutstandingFrameSubmissions(bool observeCompleted);
     void enforceFrameQueueSubmissionBudget(uint32_t target);
     void updateSmoothQueuePressure(uint64_t presentNs);
     void drainFrameQueueSubmissions(const char* reason);
+    CompletedHostPresent executeHostPresent(PendingHostPresent present);
+    void finalizeHostPresent(CompletedHostPresent&& completed);
     VkResult presentHostFrame(const PendingHostPresent& present);
+    VkResult enqueueHostPresent(PendingHostPresent present);
+    void hostPresenterLoop();
+    void processHostPresentCompletions();
+    void drainHostPresenter(const char* reason);
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);

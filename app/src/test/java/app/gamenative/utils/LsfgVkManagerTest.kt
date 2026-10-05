@@ -675,12 +675,23 @@ class LsfgVkManagerTest {
             .thenReturn("true")
         whenever(container.getExtra(LsfgVkManager.EXTRA_PRESENT_MODE, "mailbox"))
             .thenReturn("mailbox")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_BACKEND, LsfgVkManager.BACKEND_LEGACY))
+            .thenReturn(LsfgVkManager.BACKEND_LEGACY)
         whenever(container.getExtra("fpsLimiterEnabled", "false"))
             .thenReturn("false")
         whenever(container.getExtra("fpsLimiterTarget", "0"))
             .thenReturn("0")
         return container
     }
+    @Test
+    fun backend_defaultsToLegacyAndRecognizesNative() {
+        val container = container(armed = true, multiplier = "2")
+        assertEquals(LsfgVkManager.BACKEND_LEGACY, LsfgVkManager.backend(container))
+        whenever(container.getExtra(LsfgVkManager.EXTRA_BACKEND, LsfgVkManager.BACKEND_LEGACY))
+            .thenReturn(LsfgVkManager.BACKEND_NATIVE)
+        assertTrue(LsfgVkManager.isNativeBackend(container))
+    }
+
     @Test
     fun readRuntimeState_rejectsGeneratingStateWhenNativeSupportVerdictFailed() {
         val container = container(armed = true, multiplier = "2")

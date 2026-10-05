@@ -219,3 +219,11 @@ Current deliberate limitation: native generation is bring-up-gated to a single g
 
 ## CI follow-up
 - 2026-10-05: Upgradeable Debug APK run `37269234025` failed during the native Vulkan renderer rebuild because `VulkanRendererContext.h` contained a duplicate `armFrameGeneration()` declaration. The duplicate was removed in commit `bfc4d9e6a9b6aea3461a2282b99bbad5573071a6`; subsequent native build fixes are being validated from the current branch head.
+
+
+## CI verification — 2026-10-05
+- Corrected the standalone Vulkan renderer CMake target so C++17 applies only to C++ sources; `vk_dispatch.c` now compiles as C.
+- Added the pinned `lsfg-vk-android/thirdparty/dxbc` target and its include path to the renderer, restoring the `dxbc_modinfo.h` dependency and DXBC translator linkage.
+- Added `lsfg_dll.c` to the renderer target so the existing shader-module loader/cache symbols (`lsfg_load_modules` / `lsfg_release_modules`) resolve at final link.
+- Fresh Upgradeable Debug run `37275238166` at commit `541dd163bf49a298e31ab9cdc0e19167a4b7e247` passed native renderer rebuild, all selected Legacy LSFG/FrameRating tests, `assembleLegacyDebug`, update-identity/native-provenance verification, and artifact upload.
+- Uploaded artifact: `GameNative-upgradeable-debug`; SHA-256 `34e1042cde7d0a90c82c85fbd64e0f3f913f7a9f168772c60af9cc7f33132058`.

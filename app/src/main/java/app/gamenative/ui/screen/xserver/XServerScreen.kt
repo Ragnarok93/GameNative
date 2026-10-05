@@ -246,6 +246,18 @@ import com.winlator.PrefManager as WinlatorPrefManager
 
 // Always re-extract drivers and DXVK on every launch to handle cases of container corruption
 // where games randomly stop working. Set to false once corruption issues are resolved.
+private fun toggleSoftInput(context: Context) {
+    val inputMethodManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    inputMethodManager.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+}
+
+private fun hideSoftInput(context: Context, view: View) {
+    val inputMethodManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    if (view.windowToken != null) {
+        inputMethodManager.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+}
+
 private const val ALWAYS_REEXTRACT = true
 
 // Guard to prevent duplicate game_exited events when multiple exit triggers fire simultaneously
@@ -452,10 +464,6 @@ fun XServerScreen(
     val kickPlayingSession = rememberKickPlayingSessionAction()
     val adaptiveCapGeneration = remember { AtomicLong(0L) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
-    val imm = remember(context) {
-        context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-    }
-
     // PluviaApp.events.emit(AndroidEvent.SetAppBarVisibility(false))
     PluviaApp.events.emit(AndroidEvent.SetSystemUIVisibility(false))
 
@@ -1389,7 +1397,7 @@ fun XServerScreen(
                         (anchor.display?.displayId ?: Display.DEFAULT_DISPLAY) != Display.DEFAULT_DISPLAY
 
                     if (isExternalDisplaySession) {
-                        imeInputReceiver?.showKeyboard() ?: imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                        imeInputReceiver?.showKeyboard() ?: toggleSoftInput(context)
                     } else {
                         imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
                     }
@@ -1662,8 +1670,7 @@ fun XServerScreen(
                 if (Build.VERSION.SDK_INT >= 30) {
                     view.windowInsetsController?.hide(WindowInsets.Type.ime())
                 } else {
-                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                    if (view.windowToken != null) imm.hideSoftInputFromWindow(view.windowToken, 0)
+                    hideSoftInput(context, view)
                 }
             }
             return@gameBack

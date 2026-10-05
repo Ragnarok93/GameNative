@@ -77,6 +77,7 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(manager.contains("event=backend_request"))
         assertTrue(manager.contains("event=backend_state_changed"))
         assertTrue(manager.contains("event=backend_runtime_applied"))
+        assertTrue(manager.contains("backend_apply_serial"))
         assertTrue(manager.contains("backend_apply_latency_ms"))
         assertTrue(manager.contains("backend_apply_result"))
         assertTrue(source.contains("runtimeBackend = LsfgVkManager.BACKEND_LEGACY"))

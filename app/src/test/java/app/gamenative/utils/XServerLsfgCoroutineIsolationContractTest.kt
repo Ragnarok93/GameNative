@@ -31,6 +31,8 @@ class XServerLsfgCoroutineIsolationContractTest {
         assertFalse(screenBody.contains("val scope = rememberCoroutineScope()"))
         assertFalse(screenBody.contains("scope.launch"))
         assertFalse(screenBody.contains("CoroutineScope("))
+        assertFalse(source.substring(screenStart, source.indexOf(") {", screenStart)).contains("immersiveHooks:"))
+        assertTrue(screenBody.contains("LocalImmersiveSessionHooks.current"))
         assertTrue(screenBody.contains("launchXServerIo"))
         assertTrue(screenBody.contains("LsfgRuntimeHandoffController("))
         assertTrue(screenBody.contains("lsfgRuntimeHandoffController.schedule("))

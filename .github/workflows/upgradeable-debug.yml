@@ -146,7 +146,7 @@ jobs:
           unzip -p "$staged_apk" 'lib/arm64-v8a/liblsfg-vk-layer.so' |
             grep -aFq "$expected_native_commit"
           unzip -p "$staged_apk" 'lib/arm64-v8a/libvulkan_renderer.so' |
-            grep -aFq 'gamenative-host-display-confirmation-v2'
+            grep -aFq 'gamenative-host-display-confirmation-v3-split-present-worker'
           unzip -p "$staged_apk" 'lib/arm64-v8a/libvulkan_renderer.so' |
             grep -aFq 'LSFG_FRAME_QUEUE'
 

@@ -1,0 +1,78 @@
+name: One-time upstream 1.3.0 prerelease merge
+
+on:
+  push:
+    branches:
+      - sync/upstream-v1.3.0-prerelease-merge
+
+permissions:
+  contents: write
+
+jobs:
+  merge-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch exact upstream prerelease
+        run: |
+          git remote add upstream https://github.com/utkarshdalal/GameNative.git
+          git fetch --no-tags upstream 231d1365cf1a09b7f1763cfaebd3906628ec1381
+          test "$(git rev-parse FETCH_HEAD)" = "231d1365cf1a09b7f1763cfaebd3906628ec1381"
+
+      - name: Merge prerelease while preserving custom conflict hunks
+        run: |
+          git merge --no-ff -X ours 231d1365cf1a09b7f1763cfaebd3906628ec1381 \
+            -m "merge: sync upstream v1.3.0 prerelease"
+          git rm .github/workflows/sync-upstream-once.yml
+          git commit --amend --no-edit
+          echo "MERGED_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "PARENTS=$(git show -s --format=%P HEAD)" >> "$GITHUB_ENV"
+          git status --short
+
+      - name: Verify merge ancestry
+        run: |
+          git merge-base --is-ancestor 0e1fe39cc705ab64d932701bc251de2f60c30708 HEAD
+          git merge-base --is-ancestor 231d1365cf1a09b7f1763cfaebd3906628ec1381 HEAD
+          test "$(git show -s --format=%P HEAD | wc -w)" -eq 2
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Run focused LSFG regression contracts
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:testLegacyDebugUnitTest \
+            --tests app.gamenative.utils.LsfgBuildWorkflowContractTest \
+            --tests com.winlator.renderer.VulkanRendererAhbCacheContractTest \
+            --tests com.winlator.renderer.VulkanRendererDisplayConfirmationContractTest \
+            --tests com.winlator.renderer.LsfgFrameQueueContractTest \
+            --tests app.gamenative.ui.component.FpsLimiterUtilsTest \
+            --tests app.gamenative.utils.LsfgQuickMenuHelperModeTest \
+            --tests app.gamenative.utils.LsfgVkManagerTest \
+            --tests com.winlator.widget.FrameRatingTest \
+            --tests com.winlator.widget.XServerFrameRatingRetargetContractTest \
+            --tests com.winlator.widget.XServerViewLsfgPacingContractTest \
+            --tests com.winlator.xserver.extensions.PresentExtensionUpstreamPacingContractTest
+
+      - name: Assemble LegacyDebug
+        run: ./gradlew :app:assembleLegacyDebug
+
+      - name: Push verified merge to feature branch
+        run: |
+          git push origin HEAD:fix/lsfg-frame-queue-temporal-pacing-20261002

@@ -2058,6 +2058,7 @@ private fun LsfgQuickMenuTab(
                             accentColor = accentColor,
                             onClick = { onBackendChanged(value) },
                             modifier = Modifier.weight(1f),
+                            singleLine = true,
                         )
                     }
                 }

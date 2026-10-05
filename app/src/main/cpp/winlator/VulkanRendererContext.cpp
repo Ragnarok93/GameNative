@@ -1445,6 +1445,194 @@ void VulkanRendererContext::drainFrameQueueSubmissions(const char* reason) {
         countOutstandingFrameSubmissions(true));
 }
 
+void VulkanRendererContext::hostPresenterLoop() {
+    for (;;) {
+        PendingHostPresent present{};
+        uint32_t pendingAfterDequeue = 0;
+        {
+            std::unique_lock<std::mutex> lock(hostPresenterMutex_);
+            hostPresenterCv_.wait(lock, [this] {
+                return !hostPresenterRunning_.load(std::memory_order_acquire)
+                    || !pendingHostPresents_.empty();
+            });
+            if (!hostPresenterRunning_.load(std::memory_order_acquire)
+                    && pendingHostPresents_.empty()) {
+                break;
+            }
+
+            present = std::move(pendingHostPresents_.front());
+            pendingHostPresents_.pop_front();
+            hostPresenterInFlight_ = true;
+            pendingAfterDequeue =
+                static_cast<uint32_t>(pendingHostPresents_.size());
+            hostPresenterCapacityCv_.notify_all();
+        }
+
+        const uint64_t dequeuedAtNs = monotonicTimeNs();
+        const uint64_t queueAgeNs =
+            present.presenterEnqueuedAtNs != 0
+                && dequeuedAtNs >= present.presenterEnqueuedAtNs
+            ? dequeuedAtNs - present.presenterEnqueuedAtNs
+            : 0;
+        const auto presenterCallStart = std::chrono::steady_clock::now();
+        const VkResult result = presentHostFrame(present);
+        const uint64_t presenterCallNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - presenterCallStart).count());
+
+        {
+            std::lock_guard<std::mutex> lock(hostPresenterMutex_);
+            if (present.frameSlot < MAX_FRAMES_IN_FLIGHT) {
+                presenterCompletedSubmissionSerialBySlot_[present.frameSlot].store(
+                    present.submissionSerial, std::memory_order_release);
+            }
+            hostPresenterInFlight_ = false;
+        }
+        hostPresenterCapacityCv_.notify_all();
+        hostPresenterDrainCv_.notify_all();
+
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_HOST_PRESENTER",
+            "event=present-complete present_async=1 host_present_id=%" PRIu64
+            " frame_slot=%u submission_serial=%" PRIu64
+            " result=%d presenter_queue_age_ms=%.3f presenter_call_ms=%.3f"
+            " presenter_queue_depth_after=%u presenter_queue_high_water=%u"
+            " presenter_backpressure_total=%" PRIu64
+            " presenter_backpressure_wait_ms_total=%.3f"
+            " presenter_slot_wait_total=%" PRIu64
+            " presenter_slot_wait_ms_total=%.3f",
+            present.hostPresentId,
+            present.frameSlot,
+            present.submissionSerial,
+            static_cast<int>(result),
+            static_cast<double>(queueAgeNs) / 1000000.0,
+            static_cast<double>(presenterCallNs) / 1000000.0,
+            pendingAfterDequeue,
+            hostPresenterPendingHighWater_.load(std::memory_order_relaxed),
+            hostPresenterBackpressureTotal_.load(std::memory_order_relaxed),
+            static_cast<double>(
+                hostPresenterBackpressureNsTotal_.load(std::memory_order_relaxed))
+                / 1000000.0,
+            hostPresenterSlotWaitTotal_.load(std::memory_order_relaxed),
+            static_cast<double>(
+                hostPresenterSlotWaitNsTotal_.load(std::memory_order_relaxed))
+                / 1000000.0);
+    }
+
+    hostPresenterCapacityCv_.notify_all();
+    hostPresenterDrainCv_.notify_all();
+}
+
+VkResult VulkanRendererContext::enqueueHostPresent(
+        PendingHostPresent&& present) {
+    if (!hostSplitPresentQueueActive_
+            || !hostPresenterRunning_.load(std::memory_order_acquire)) {
+        return presentHostFrame(present);
+    }
+
+    const auto waitStart = std::chrono::steady_clock::now();
+    bool backpressured = false;
+    {
+        std::unique_lock<std::mutex> lock(hostPresenterMutex_);
+        if (pendingHostPresents_.size() >= HOST_PRESENTER_QUEUE_CAPACITY) {
+            backpressured = true;
+            hostPresenterBackpressureTotal_.fetch_add(
+                1, std::memory_order_relaxed);
+            hostPresenterCapacityCv_.wait(lock, [this] {
+                return !hostPresenterRunning_.load(std::memory_order_acquire)
+                    || pendingHostPresents_.size()
+                        < HOST_PRESENTER_QUEUE_CAPACITY;
+            });
+        }
+
+        if (!hostPresenterRunning_.load(std::memory_order_acquire)) {
+            lock.unlock();
+            return presentHostFrame(present);
+        }
+
+        present.presentEnqueueWaitNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - waitStart).count());
+        if (backpressured) {
+            hostPresenterBackpressureNsTotal_.fetch_add(
+                present.presentEnqueueWaitNs, std::memory_order_relaxed);
+        }
+        present.presenterEnqueuedAtNs = monotonicTimeNs();
+        present.asyncPresent = true;
+        pendingHostPresents_.push_back(std::move(present));
+        pendingHostPresents_.back().presenterQueueDepth =
+            static_cast<uint32_t>(pendingHostPresents_.size());
+        const uint32_t depth =
+            static_cast<uint32_t>(pendingHostPresents_.size());
+        uint32_t highWater =
+            hostPresenterPendingHighWater_.load(std::memory_order_relaxed);
+        while (highWater < depth
+                && !hostPresenterPendingHighWater_.compare_exchange_weak(
+                    highWater, depth, std::memory_order_relaxed)) {}
+        const auto& queued = pendingHostPresents_.back();
+        if (queued.frameSlot < MAX_FRAMES_IN_FLIGHT) {
+            presenterEnqueuedSubmissionSerialBySlot_[queued.frameSlot].store(
+                queued.submissionSerial, std::memory_order_release);
+        }
+    }
+    hostPresenterCv_.notify_one();
+    return VK_SUCCESS;
+}
+
+void VulkanRendererContext::drainHostPresenter(const char* reason) {
+    if (!hostSplitPresentQueueActive_ || !hostPresenterThread_.joinable())
+        return;
+
+    const auto waitStart = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lock(hostPresenterMutex_);
+    hostPresenterDrainCv_.wait(lock, [this] {
+        return pendingHostPresents_.empty() && !hostPresenterInFlight_;
+    });
+    const uint64_t waitNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - waitStart).count());
+    lock.unlock();
+
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_HOST_PRESENTER",
+        "event=drain reason=%s wait_ms=%.3f presenter_queue_depth=0"
+        " presenter_backpressure_total=%" PRIu64,
+        reason ? reason : "unknown",
+        static_cast<double>(waitNs) / 1000000.0,
+        hostPresenterBackpressureTotal_.load(std::memory_order_relaxed));
+}
+
+void VulkanRendererContext::waitForHostPresenterSlot(uint32_t frameSlot) {
+    if (!hostSplitPresentQueueActive_
+            || !hostPresenterRunning_.load(std::memory_order_acquire)
+            || frameSlot >= MAX_FRAMES_IN_FLIGHT) {
+        return;
+    }
+
+    const uint64_t expected =
+        presenterEnqueuedSubmissionSerialBySlot_[frameSlot].load(
+            std::memory_order_acquire);
+    if (expected == 0
+            || presenterCompletedSubmissionSerialBySlot_[frameSlot].load(
+                std::memory_order_acquire) >= expected) {
+        return;
+    }
+
+    hostPresenterSlotWaitTotal_.fetch_add(1, std::memory_order_relaxed);
+    const auto waitStart = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lock(hostPresenterMutex_);
+    hostPresenterCapacityCv_.wait(lock, [this, frameSlot, expected] {
+        return !hostPresenterRunning_.load(std::memory_order_acquire)
+            || presenterCompletedSubmissionSerialBySlot_[frameSlot].load(
+                std::memory_order_acquire) >= expected;
+    });
+    const uint64_t waitNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - waitStart).count());
+    hostPresenterSlotWaitNsTotal_.fetch_add(
+        waitNs, std::memory_order_relaxed);
+}
+
 VkResult VulkanRendererContext::presentHostFrame(
         const PendingHostPresent& present) {
     VkPresentIdKHR presentIdInfo{};

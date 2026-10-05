@@ -215,3 +215,7 @@ Completed the first real native-renderer integration slice on this branch:
 - preserved the legacy path and avoided DeviceWaitIdle/QueueWaitIdle in renderFrame().
 
 Current deliberate limitation: native generation is bring-up-gated to a single generated frame (2x). 3x/4x scheduling remains a separate follow-up so the first runtime proof does not claim unsupported multiplier behavior.
+
+
+## CI follow-up
+- 2026-10-05: Upgradeable Debug APK run `37269234025` failed during the native Vulkan renderer rebuild because `VulkanRendererContext.h` contained a duplicate `armFrameGeneration()` declaration. The duplicate was removed in commit `bfc4d9e6a9b6aea3461a2282b99bbad5573071a6`; subsequent native build fixes are being validated from the current branch head.

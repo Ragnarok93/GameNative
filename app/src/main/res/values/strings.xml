@@ -2978,4 +2978,6 @@
     <string name="support_wait_stop">Stop</string>
     <string name="support_reply_ready_tap">Tap to read it.</string>
     <string name="support_notify_me">Notify me when the reply arrives</string>
+    <string name="copy_from">Copy From</string>
+    <string name="toast_controls_reset">Controls reset</string>
 </resources>

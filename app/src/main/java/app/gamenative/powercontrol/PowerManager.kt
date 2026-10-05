@@ -67,6 +67,8 @@ object PowerManager {
 
     private lateinit var appContext: Context
     private var containerDir: File? = null
+
+    internal fun activeContainerRootDir(): File? = containerDir
     private lateinit var driver: PerformanceDriver
     private var autoTuner: PerformanceAutoTuner? = null
     private var clusterTuner: ClusterTuner? = null

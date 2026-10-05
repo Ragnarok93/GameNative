@@ -262,6 +262,12 @@ struct PendingHostPresent {
     uint64_t submissionSerial = 0;
     uint64_t swapchainGeneration = 0;
     uint32_t gpuOutstanding = 0;
+    bool frameQueueEnabled = false;
+    uint32_t requestedFrameQueueTarget = 0;
+    uint32_t effectiveFrameQueueTarget = 0;
+    uint32_t activeFrameSlots = BASE_FRAMES_IN_FLIGHT;
+    VkPresentModeKHR requestedPresentModeSnapshot = VK_PRESENT_MODE_FIFO_KHR;
+    VkPresentModeKHR activePresentModeSnapshot = VK_PRESENT_MODE_FIFO_KHR;
     uint64_t presentEnqueueWaitNs = 0;
     uint64_t presenterEnqueuedAtNs = 0;
     uint32_t presenterQueueDepth = 0;
@@ -723,7 +729,11 @@ private:
     uint32_t activeFrameSlotCount() const;
     uint32_t countOutstandingFrameSubmissions(bool observeCompleted);
     void enforceFrameQueueSubmissionBudget(uint32_t target);
-    void updateSmoothQueuePressure(uint64_t presentNs);
+    void updateSmoothQueuePressure(
+        uint64_t presentNs,
+        bool frameQueueEnabled,
+        uint32_t requestedTarget,
+        VkPresentModeKHR presentMode);
     void drainFrameQueueSubmissions(const char* reason);
     void hostPresenterLoop();
     VkResult enqueueHostPresent(PendingHostPresent&& present);

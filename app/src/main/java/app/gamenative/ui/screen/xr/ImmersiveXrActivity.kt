@@ -279,43 +279,6 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                 Box(modifier = Modifier.fillMaxSize()) {
                 CompositionLocalProvider(
                     LocalImmersiveSessionHooks provides ImmersiveSessionHooks(
-                    appId = appId,
-                    bootToContainer = false,
-                    isOffline = isOffline,
-                    registerBackAction = { cb -> backAction = cb },
-                    navigateBack = { finish() },
-                    onExit = { onComplete ->
-                        viewModel.exitSteamApp(context, appId) {
-                            onComplete?.invoke()
-                            finish()
-                        }
-                    },
-                    onWindowMapped = { ctx, window ->
-                        // Same gate as MainViewModel: Wine's shell windows must not end the splash.
-                        if (!WineProcessSnapshotHelper.isSystemProcessName(window.className)) mappedWindowCount++
-                        viewModel.onWindowMapped(ctx, window, appId)
-                        showControlsOnboarding = true
-                    },
-                    onWindowUnmapped = { window ->
-                        if (!WineProcessSnapshotHelper.isSystemProcessName(window.className)) {
-                            mappedWindowCount = (mappedWindowCount - 1).coerceAtLeast(0)
-                        }
-                    },
-                    onGameLaunchError = { error ->
-                        viewModel.onGameLaunchError(error)
-                        val vrEnabled = if (immersiveSettingsLoaded) {
-                            windowsVrEnabled
-                        } else {
-                            (cachedContainer ?: runCatching { ContainerUtils.getContainer(this@ImmersiveXrActivity, appId) }.getOrNull())
-                                ?.let { app.gamenative.ui.screen.xr.windows.WindowsVrRuntimeConfig.from(it).enabled }
-                                ?: windowsVrEnabled
-                        }
-                        if (vrEnabled) {
-                            runOnUiThread { windowsVrStatus = "Guest stopped: $error" }
-                            windowsVrRuntimeService?.onGuestProcessError(error)
-                        }
-                        finish()
-                    },
                         windowsVr = windowsVrRuntimeService,
                         onQuickMenuVisibilityChanged = { visible ->
                             Timber.i("Immersive: quick menu visibility changed to %b", visible)
@@ -387,6 +350,49 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                     ),
                     ),
                 )
+                }
+
+                    ),
+                ) {
+                    XServerScreen(
+                    appId = appId,
+                    bootToContainer = false,
+                    isOffline = isOffline,
+                    registerBackAction = { cb -> backAction = cb },
+                    navigateBack = { finish() },
+                    onExit = { onComplete ->
+                        viewModel.exitSteamApp(context, appId) {
+                            onComplete?.invoke()
+                            finish()
+                        }
+                    },
+                    onWindowMapped = { ctx, window ->
+                        // Same gate as MainViewModel: Wine's shell windows must not end the splash.
+                        if (!WineProcessSnapshotHelper.isSystemProcessName(window.className)) mappedWindowCount++
+                        viewModel.onWindowMapped(ctx, window, appId)
+                        showControlsOnboarding = true
+                    },
+                    onWindowUnmapped = { window ->
+                        if (!WineProcessSnapshotHelper.isSystemProcessName(window.className)) {
+                            mappedWindowCount = (mappedWindowCount - 1).coerceAtLeast(0)
+                        }
+                    },
+                    onGameLaunchError = { error ->
+                        viewModel.onGameLaunchError(error)
+                        val vrEnabled = if (immersiveSettingsLoaded) {
+                            windowsVrEnabled
+                        } else {
+                            (cachedContainer ?: runCatching { ContainerUtils.getContainer(this@ImmersiveXrActivity, appId) }.getOrNull())
+                                ?.let { app.gamenative.ui.screen.xr.windows.WindowsVrRuntimeConfig.from(it).enabled }
+                                ?: windowsVrEnabled
+                        }
+                        if (vrEnabled) {
+                            runOnUiThread { windowsVrStatus = "Guest stopped: $error" }
+                            windowsVrRuntimeService?.onGuestProcessError(error)
+                        }
+                        finish()
+                    },
+                    )
                 }
 
                 val splashVisible = mainState.showBootingSplash && mappedWindowCount == 0 && !overlayPausedUi

@@ -41,8 +41,13 @@ class LsfgHostQueueTelemetryContractTest {
     }
 
     private fun sourcePath(relative: String): Path {
-        val modulePath = Paths.get("src/main/java").resolve(relative)
-        if (Files.isRegularFile(modulePath)) return modulePath
-        return Paths.get("app/src/main/java").resolve(relative)
+        val candidates = listOf(
+            Paths.get("src/main/java").resolve(relative),
+            Paths.get("app/src/main/java").resolve(relative),
+            Paths.get(relative),
+            Paths.get("app").resolve(relative),
+        )
+        return candidates.firstOrNull { Files.isRegularFile(it) }
+            ?: error("Unable to locate $relative from test working directory")
     }
 }

@@ -350,6 +350,7 @@ public:
     void setEffect(int effectId, float sharpness, int effectMask, float brightness, float contrast, float gamma);
     void setPresentMode(VkPresentModeKHR mode);
     void setLsfgFrameQueue(bool enabled, uint32_t target);
+    void armFrameGeneration();
     std::vector<int> getSupportedPresentModes() const;
 
 private:

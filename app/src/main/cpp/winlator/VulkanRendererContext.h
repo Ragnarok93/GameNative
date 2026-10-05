@@ -347,6 +347,7 @@ public:
 
     void armFrameGeneration();
     void setFrameGenerationEnabled(bool enabled);
+    bool isFrameGenerationSupported() const;
     void setFrameGenerationShaders(const std::string& cachePath);
     void setFrameGenerationRefreshRate(float hz);
     void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct);
@@ -354,6 +355,7 @@ public:
     uint64_t getPresentedFrameCount() const;
     uint64_t getRealFrameCount() const;
     uint64_t getSourceFrameCount() const;
+    void setSourceFrameCount(uint64_t count);
 
     void setFilterMode(int mode);
     void setSwapRB(bool enabled);

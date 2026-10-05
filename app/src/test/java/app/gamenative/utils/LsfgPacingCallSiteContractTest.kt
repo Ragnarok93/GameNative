@@ -40,6 +40,50 @@ class LsfgPacingCallSiteContractTest {
     }
 
     @Test
+    fun lsfgBackendSelectionCommitsUiStateFromSelectionCallback() {
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
+            Charsets.UTF_8,
+        )
+        val quickMenu = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/component/QuickMenu.kt")),
+            Charsets.UTF_8,
+        )
+
+        assertTrue(source.contains("var lsfgBackend by rememberSaveable(container.id)"))
+        assertTrue(source.contains("fun applyLsfgBackend(requestedBackend: String)"))
+        assertTrue(source.contains("lsfgBackend = request.backend"))
+        assertTrue(source.contains("LsfgVkManager.recordBackendRuntimeApplied("))
+        assertTrue(quickMenu.contains("onBackendChanged = onLsfgBackendChanged"))
+        assertTrue(quickMenu.contains("selected = backend == value"))
+        assertTrue(
+            "Renderer backend buttons must remain on one line",
+            quickMenu.contains("text = label") &&
+                quickMenu.contains("singleLine = true"),
+        )
+    }
+
+    @Test
+    fun backendTelemetryDistinguishesRequestedNativeFromActiveLegacy() {
+        val manager = String(
+            Files.readAllBytes(sourcePath("app/gamenative/utils/LsfgVkManager.kt")),
+            Charsets.UTF_8,
+        )
+        val source = String(
+            Files.readAllBytes(sourcePath("app/gamenative/ui/screen/xserver/XServerScreen.kt")),
+            Charsets.UTF_8,
+        )
+
+        assertTrue(manager.contains("event=backend_request"))
+        assertTrue(manager.contains("event=backend_state_changed"))
+        assertTrue(manager.contains("event=backend_runtime_applied"))
+        assertTrue(manager.contains("backend_apply_latency_ms"))
+        assertTrue(manager.contains("backend_apply_result"))
+        assertTrue(source.contains("runtimeBackend = LsfgVkManager.BACKEND_LEGACY"))
+        assertTrue(source.contains("runtime-bridge-unavailable"))
+    }
+
+    @Test
     fun quickMenuPresentModeChangeReappliesPresentationVoteWithoutChangingSourceCap() {
         val source = String(
             Files.readAllBytes(sourcePath("app/gamenative/ui/component/QuickMenu.kt")),

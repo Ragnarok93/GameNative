@@ -8,11 +8,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(WINLATOR_DIR "${CMAKE_CURRENT_LIST_DIR}/../winlator")
 set(LSFG_DIR "${CMAKE_CURRENT_LIST_DIR}/../lsfg")
+set(LSFG_VK_ANDROID_DIR "${CMAKE_CURRENT_LIST_DIR}/../lsfg-vk-android")
 set(ADRENOTOOLS_DIR "${CMAKE_CURRENT_LIST_DIR}/../extras/adrenotools")
 
 add_subdirectory(
     "${ADRENOTOOLS_DIR}"
     "${CMAKE_CURRENT_BINARY_DIR}/adrenotools"
+)
+
+# Reuse the same DXBC translator target that the pinned lsfg-vk-android
+# build uses. The LSFG native renderer compiles lsfg_dxbc.cpp directly, so
+# this dependency must be part of the standalone renderer target as well.
+add_subdirectory(
+    "${LSFG_VK_ANDROID_DIR}/thirdparty/dxbc"
+    "${CMAKE_CURRENT_BINARY_DIR}/dxbc"
+    EXCLUDE_FROM_ALL
 )
 
 find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
@@ -64,6 +74,7 @@ target_include_directories(
     PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
     "${LSFG_DIR}"
+    "${LSFG_VK_ANDROID_DIR}/thirdparty/dxbc/src/dxbc"
 )
 
 target_compile_options(
@@ -80,6 +91,7 @@ target_link_libraries(
     android
     vulkan
     adrenotools
+    dxbc
     dl
     atomic
 )

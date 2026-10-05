@@ -5,8 +5,6 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.view.Window
-import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.Stable
@@ -22,7 +20,6 @@ import app.gamenative.data.ShooterModeConfig
 import app.gamenative.data.TouchGestureConfig
 import app.gamenative.externaldisplay.IMEInputReceiver
 import app.gamenative.externaldisplay.SwapInputOverlayView
-import app.gamenative.inputcontrols.PhysicalControllerHandler
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.data.XServerState
@@ -38,6 +35,8 @@ import com.winlator.inputcontrols.TouchMouse
 import com.winlator.widget.FrameRating
 import com.winlator.widget.XServerRendererView
 import com.winlator.xserver.Keyboard
+import com.winlator.xserver.Window
+import com.winlator.xserver.WindowManager
 import kotlinx.coroutines.Job
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
@@ -79,12 +78,14 @@ internal class XServerScreenController(
     val activity: Activity?,
     val persistentState: XServerScreenPersistentState,
 ) {
+    val xServerState: MutableState<XServerState> get() = persistentState.xServerState
     val adaptiveCapGeneration = AtomicLong(0L)
     val mainHandler = Handler(Looper.getMainLooper())
     val suspendPolicy: String = container.suspendPolicy
     val neverSuspend = suspendPolicy.equals(Container.SUSPEND_POLICY_NEVER, ignoreCase = true)
     val manualResumeMode = suspendPolicy.equals(Container.SUSPEND_POLICY_MANUAL, ignoreCase = true)
 
+    var physicalControllerHandler: PhysicalControllerHandler? by mutableStateOf(null)
     var touchMouse by mutableStateOf<TouchMouse?>(null)
     var keyboard by mutableStateOf<Keyboard?>(null)
     var xServerView: XServerRendererView? by mutableStateOf(null)

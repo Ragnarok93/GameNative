@@ -125,6 +125,7 @@ static constexpr uint32_t SMOOTH_PRESENT_STALL_STRIKES = 2;
 static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
 static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
 static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
+static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -261,6 +262,14 @@ struct PendingHostPresent {
     uint64_t submissionSerial = 0;
     uint64_t swapchainGeneration = 0;
     uint32_t gpuOutstanding = 0;
+    uint64_t hostPresentEnqueueWaitNs = 0;
+    uint32_t hostPresentQueueDepth = 0;
+};
+
+struct CompletedHostPresent {
+    PendingHostPresent present{};
+    VkResult result = VK_SUCCESS;
+    uint64_t presentCallNs = 0;
 };
 
 struct WindowPushConstants {
@@ -476,6 +485,23 @@ private:
     std::atomic<uint32_t> lsfgFrameQueueTarget_{0};
     std::mutex graphicsQueueMutex_;
     std::mutex presentQueueMutex_;
+
+    std::mutex hostPresenterMutex_;
+    std::condition_variable hostPresenterCv_;
+    std::condition_variable hostPresenterSpaceCv_;
+    std::condition_variable hostPresenterDrainCv_;
+    std::deque<PendingHostPresent> pendingHostPresents_;
+    std::deque<CompletedHostPresent> completedHostPresents_;
+    std::thread hostPresenterThread_;
+    std::atomic<bool> hostPresenterRunning_{false};
+    std::atomic<bool> hostPresenterBusy_{false};
+    std::atomic<bool> hostPresentCompletionPending_{false};
+    bool hostAsyncPresenterEnabled_ = false;
+    bool hostAsyncPresenterActive_ = false;
+    std::atomic<uint64_t> hostPresentEnqueueWaitNsTotal_{0};
+    std::atomic<uint64_t> hostPresentEnqueueWaitCount_{0};
+    std::atomic<uint32_t> hostPresentQueueHighWater_{0};
+
     std::atomic<uint64_t> frameQueuePresentedTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitNsTotal_{0};
@@ -701,7 +727,13 @@ private:
     void enforceFrameQueueSubmissionBudget(uint32_t target);
     void updateSmoothQueuePressure(uint64_t presentNs);
     void drainFrameQueueSubmissions(const char* reason);
+    CompletedHostPresent executeHostPresent(PendingHostPresent present);
+    void finalizeHostPresent(CompletedHostPresent&& completed);
     VkResult presentHostFrame(const PendingHostPresent& present);
+    VkResult enqueueHostPresent(PendingHostPresent present);
+    void hostPresenterLoop();
+    void processHostPresentCompletions();
+    void drainHostPresenter(const char* reason);
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);

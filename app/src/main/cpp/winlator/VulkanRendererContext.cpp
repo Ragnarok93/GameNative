@@ -17,6 +17,7 @@
 #include <time.h>
 #include "window_vert.h"
 #include "window_frag.h"
+#include "../lsfg/vk_dispatch.h"
 
 extern "C" __attribute__((used, visibility("default")))
 const char gamenative_vulkan_renderer_build_marker[] =
@@ -238,6 +239,12 @@ VulkanRendererContext::~VulkanRendererContext() {
     vk_.DeviceWaitIdle(device);
     submissionTimeline.completeAllFrames();
     flushHostDisplayConfirmationsUnknown("renderer-destroy");
+    destroyLsfg();
+    destroyCompositeTargets();
+    if (compositePass != VK_NULL_HANDLE) {
+        vk_.DestroyRenderPass(device, compositePass, nullptr);
+        compositePass = VK_NULL_HANDLE;
+    }
     closeLsfgProvenanceSocket();
 
     for (auto& [id, wt] : texMap) {
@@ -281,6 +288,7 @@ VulkanRendererContext::~VulkanRendererContext() {
     }
     vk_.DestroyCommandPool(device, cmdPool, nullptr);
     vk_.DestroyRenderPass(device, renderPass, nullptr);
+    vkd_unload();
     vk_.DestroyDevice(device, nullptr);
     vk_.DestroySurfaceKHR(instance, surface, nullptr);
     vk_.DestroyInstance(instance, nullptr);
@@ -553,6 +561,11 @@ void VulkanRendererContext::createLogicalDevice() {
     if (deviceCreateResult != VK_SUCCESS) throw std::runtime_error("device");
     vk_.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)gipa(instance, "vkGetDeviceProcAddr");
     loadDeviceDispatch();
+    if (!vkd_load(instance, device, gipa)) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "VkrLsfg",
+            "native LSFG dispatch unavailable; native backend remains inert");
+    }
     if (!vk_.GetPastPresentationTimingGOOGLE)
         hostGoogleDisplayTimingEnabled = false;
     if (!vk_.WaitForPresentKHR)

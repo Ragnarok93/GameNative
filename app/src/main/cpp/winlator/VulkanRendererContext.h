@@ -120,6 +120,7 @@ struct VkTable {
 static constexpr uint32_t BASE_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
+static constexpr uint32_t HOST_PRESENTER_QUEUE_CAPACITY = MAX_FRAMES_IN_FLIGHT;
 static constexpr uint64_t SMOOTH_PRESENT_STALL_NS = 8'000'000ULL;
 static constexpr uint32_t SMOOTH_PRESENT_STALL_STRIKES = 2;
 static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
@@ -261,6 +262,10 @@ struct PendingHostPresent {
     uint64_t submissionSerial = 0;
     uint64_t swapchainGeneration = 0;
     uint32_t gpuOutstanding = 0;
+    uint64_t presentEnqueueWaitNs = 0;
+    uint64_t presenterEnqueuedAtNs = 0;
+    uint32_t presenterQueueDepth = 0;
+    bool asyncPresent = false;
 };
 
 struct WindowPushConstants {
@@ -470,12 +475,31 @@ private:
     std::atomic<uint64_t> sourceAhbReuseDrop_{0};
     std::atomic<uint64_t> generatedAhbReuseDrop_{0};
 
-    // Frame Queue is retirement-aware final-compositor buffering. Presentation
-    // stays on the render thread and WSI remains the natural pacing boundary.
+    // Frame Queue is retirement-aware final-compositor buffering. When the
+    // device exposes a second same-family present queue, the blocking WSI call
+    // is isolated on a bounded presenter worker. Single-queue devices retain
+    // the synchronous path.
     std::atomic<bool> lsfgFrameQueueEnabled_{false};
     std::atomic<uint32_t> lsfgFrameQueueTarget_{0};
     std::mutex graphicsQueueMutex_;
     std::mutex presentQueueMutex_;
+    std::thread hostPresenterThread_;
+    std::atomic<bool> hostPresenterRunning_{false};
+    std::mutex hostPresenterMutex_;
+    std::condition_variable hostPresenterCv_;
+    std::condition_variable hostPresenterCapacityCv_;
+    std::condition_variable hostPresenterDrainCv_;
+    std::deque<PendingHostPresent> pendingHostPresents_;
+    bool hostPresenterInFlight_ = false;
+    std::array<std::atomic<uint64_t>, MAX_FRAMES_IN_FLIGHT>
+        presenterEnqueuedSubmissionSerialBySlot_{};
+    std::array<std::atomic<uint64_t>, MAX_FRAMES_IN_FLIGHT>
+        presenterCompletedSubmissionSerialBySlot_{};
+    std::atomic<uint64_t> hostPresenterBackpressureTotal_{0};
+    std::atomic<uint64_t> hostPresenterBackpressureNsTotal_{0};
+    std::atomic<uint64_t> hostPresenterSlotWaitTotal_{0};
+    std::atomic<uint64_t> hostPresenterSlotWaitNsTotal_{0};
+    std::atomic<uint32_t> hostPresenterPendingHighWater_{0};
     std::atomic<uint64_t> frameQueuePresentedTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitTotal_{0};
     std::atomic<uint64_t> frameQueueRetirementWaitNsTotal_{0};
@@ -701,6 +725,10 @@ private:
     void enforceFrameQueueSubmissionBudget(uint32_t target);
     void updateSmoothQueuePressure(uint64_t presentNs);
     void drainFrameQueueSubmissions(const char* reason);
+    void hostPresenterLoop();
+    VkResult enqueueHostPresent(PendingHostPresent&& present);
+    void drainHostPresenter(const char* reason);
+    void waitForHostPresenterSlot(uint32_t frameSlot);
     VkResult presentHostFrame(const PendingHostPresent& present);
 
     bool  createWinTexResources(WinTex& wt, int w, int h);

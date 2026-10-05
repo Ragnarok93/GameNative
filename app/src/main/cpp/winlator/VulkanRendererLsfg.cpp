@@ -246,6 +246,10 @@ void VulkanRendererContext::blitCompositeToSwapchain(VkCommandBuffer cmd, const 
                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 }
 
+void VulkanRendererContext::armFrameGeneration() {
+    framegenArmed = true;
+}
+
 void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
     framegenArmed = true;
     if (framegenRequested == enabled) return;

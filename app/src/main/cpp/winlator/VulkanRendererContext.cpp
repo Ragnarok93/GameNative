@@ -20,6 +20,10 @@
 
 extern "C" __attribute__((used, visibility("default")))
 const char gamenative_vulkan_renderer_build_marker[] =
+    "gamenative-host-display-confirmation-v2";
+
+extern "C" __attribute__((used, visibility("default")))
+const char gamenative_vulkan_renderer_build_marker[] =
     "gamenative-host-display-confirmation-v3-split-present-worker";
 
 namespace {

@@ -50,7 +50,7 @@ class LsfgQuickMenuHelperModeTest {
 
         assertTrue(
             "Runtime acknowledgement timeout must pause while the guest is suspended by Quick Menu",
-            handoff.contains("PluviaApp.isOverlayPaused") &&
+            handoff.contains("isOverlayPaused()") &&
                 handoff.contains("activePollingElapsedMs"),
         )
     }

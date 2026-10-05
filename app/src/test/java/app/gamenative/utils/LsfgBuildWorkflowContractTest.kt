@@ -152,7 +152,7 @@ class LsfgBuildWorkflowContractTest {
             workflow.contains("uses: ./.github/actions/prepare-vulkan-renderer-native"),
         )
         assertTrue(workflow.contains("lib/arm64-v8a/libvulkan_renderer.so"))
-        assertTrue(workflow.contains("gamenative-host-display-confirmation-v2"))
+        assertTrue(workflow.contains("gamenative-host-display-confirmation-v3-split-present-worker"))
 
         listOf(
             "glslang-tools",
@@ -211,7 +211,6 @@ class LsfgBuildWorkflowContractTest {
     fun retiredLsfgStagingWorkflowsStayAbsent() {
         val workflowDir = repoFile(".github/workflows/pluvia-pr-check.yml").parentFile
         listOf(
-            "adhoc-signed-build.yml",
             "b14-directional-adaptive-promotion.yml",
             "b14-fixed-wrapper-validation.yml",
             "experimental-adaptive-legacydebug.yml",

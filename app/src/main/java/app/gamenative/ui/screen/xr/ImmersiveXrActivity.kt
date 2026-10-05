@@ -348,8 +348,9 @@ class ImmersiveXrActivity : androidx.activity.ComponentActivity() {
                             }
                         },
                         ),
-                    ) {
-                        XServerScreen(
+                    ),
+                ) {
+                    XServerScreen(
                     appId = appId,
                     bootToContainer = false,
                     isOffline = isOffline,

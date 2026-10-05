@@ -30,10 +30,6 @@ import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 data class CpuInfo(
     val currentGovernor: String,
@@ -70,7 +66,6 @@ object PowerManager {
     }
 
     private lateinit var appContext: Context
-    @Volatile
     private var containerDir: File? = null
     private lateinit var driver: PerformanceDriver
     private var autoTuner: PerformanceAutoTuner? = null
@@ -96,28 +91,24 @@ object PowerManager {
     private val _uiState = MutableStateFlow<PowerControlUiState>(PowerControlUiState.Loading)
     val uiState: StateFlow<PowerControlUiState> = _uiState.asStateFlow()
 
-    @Volatile
     var targetFps: Int = 0
         set(value) {
             // Enforce non-negative values and round/clamp if necessary
             field = value.coerceAtLeast(0)
         }
 
-    @Volatile
     var currentFps: Float = 0f
         set(value) {
             // Enforce non-negative values and round/clamp if necessary
             field = value.coerceAtLeast(0f)
         }
 
-    @Volatile
     var currentCpuUsage: Float = 0f
         set(value) {
             // Enforce 0-100% range
             field = value.coerceIn(0f, 100f)
         }
 
-    @Volatile
     var currentGpuUsage: Float = 0f
         set(value) {
             // Enforce 0-100% range
@@ -168,8 +159,6 @@ object PowerManager {
     @Volatile
     private var gamePinGeneration: Int = 0
 
-    internal fun activeContainerRootDir(): File? = containerDir
-
     /**
      * Autostart with contain dir and application context
      */
@@ -181,7 +170,7 @@ object PowerManager {
             startPowerControl()
         }
 
-        if (currentProfile.enableAdaptiveFpsCap) {
+        if (currentProfile.adaptiveFpsCapEnabled) {
             AdaptiveFpsCapController.start(containerDir, tunerLogDirectory())
         }
 
@@ -274,7 +263,11 @@ object PowerManager {
     fun stopPowerControl() {
         stopAutoTuning()
         FanController.stop()
-        driver.stop()
+        if (::driver.isInitialized) {
+            driver.stop()
+        } else {
+            Timber.tag("PowerManager").w("Driver not initialized, skipping stop")
+        }
     }
 
     /**
@@ -314,9 +307,11 @@ object PowerManager {
      */
     fun resume() {
         if (!isGameStarted) return
-        driver.start()
-        applyCurrentProfile()
-        if (currentProfile.enableAdaptiveFpsCap) {
+        if (isProfilePowerControlEnabled()) {
+            driver.start()
+            applyCurrentProfile()
+        }
+        if (currentProfile.adaptiveFpsCapEnabled) {
             AdaptiveFpsCapController.start(containerDir, tunerLogDirectory())
         }
         PerformanceMetricsCollector.resume()
@@ -429,7 +424,6 @@ object PowerManager {
             applyGpuMaxLevel = { level -> pserver.setMaxGpuPowerLevel(level) },
             metricsProvider = { latestMetrics },
             targetFpsProvider = { targetFps },
-            tuningFpsProvider = { sourceFps -> fpsForTuning(sourceFps) },
             fanSampleProvider = { FanController.latestSample },
             strategyProvider = { currentProfile.tuningStrategy },
             fpsCapProvider = { AdaptiveFpsCapController.snapshot() },
@@ -487,19 +481,14 @@ object PowerManager {
     @Volatile
     var fpsCapApplier: ((Int) -> Boolean)? = null
 
-    // Prevent a delayed fallback posted from a worker thread from applying an
-    // older cap after a newer request has already been issued.
-    private val fpsCapGeneration = AtomicLong(0L)
-
     /** Frame-ring timestamps per base frame (= LSFG multiplier while frame
      *  generation runs, 1 otherwise) so frame stats stay in base units. */
     @Volatile
     var frameSampleStride: Int = 1
 
     /**
-     * Selects the cadence used by FPS-based tuning. While LSFG is active, only the layer's
-     * fresh post-generation output cadence is valid; null tells callers to hold their FPS
-     * decision state instead of treating source cadence as displayed cadence.
+     * While LSFG is active, power tuning follows fresh post-generation output
+     * cadence instead of treating source cadence as displayed cadence.
      */
     internal fun fpsForTuning(sourceFps: Float): Float? = selectPowerTuningFps(
         sourceFps = sourceFps,
@@ -512,48 +501,24 @@ object PowerManager {
     )
 
     internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
-        val generation = fpsCapGeneration.incrementAndGet()
         fpsCapApplier?.let { if (it(limitFps)) return true }
         val xServerView = PluviaApp.xServerView ?: return false
         val presentExtension = xServerView.getxServer()
             ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
 
-        val applied = AtomicBoolean(false)
-        val completed = CountDownLatch(1)
         val apply = Runnable {
-            try {
-                if (generation != fpsCapGeneration.get()) return@Runnable
-                xServerView.setFrameRateLimit(limitFps)
-                presentExtension?.setFrameRateLimit(limitFps)
-                com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)
-                targetFps = limitFps
-                applied.set(true)
-            } catch (t: Throwable) {
-                Timber.tag("PowerManager").w(t, "Failed to apply FPS cap=%d", limitFps)
-            } finally {
-                completed.countDown()
-            }
+            xServerView.setFrameRateLimit(limitFps)
+            presentExtension?.setFrameRateLimit(limitFps)
+            com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
             apply.run()
         } else {
-            if (!Handler(Looper.getMainLooper()).post(apply)) {
-                fpsCapGeneration.compareAndSet(generation, generation + 1L)
-                return false
-            }
-            try {
-                if (!completed.await(750L, TimeUnit.MILLISECONDS)) {
-                    fpsCapGeneration.compareAndSet(generation, generation + 1L)
-                    return false
-                }
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                fpsCapGeneration.compareAndSet(generation, generation + 1L)
-                return false
-            }
+            Handler(Looper.getMainLooper()).post(apply)
         }
 
-        return applied.get()
+        targetFps = limitFps
+        return true
     }
 
     /**
@@ -606,12 +571,10 @@ object PowerManager {
             stopAutoTuning()
         }
 
-        if (previousProfile.enableAdaptiveFpsCap != profile.enableAdaptiveFpsCap) {
-            if (profile.enableAdaptiveFpsCap) {
-                AdaptiveFpsCapController.start(containerDir, tunerLogDirectory())
-            } else {
-                AdaptiveFpsCapController.stop()
-            }
+        if (profile.adaptiveFpsCapEnabled) {
+            AdaptiveFpsCapController.start(containerDir, tunerLogDirectory())
+        } else {
+            AdaptiveFpsCapController.stop()
         }
 
         if (isGameStarted) {
@@ -732,7 +695,7 @@ object PowerManager {
                 enablePowerControl = currentProfile.enablePowerControl,
                 enableAutoTuning = currentProfile.enableAutoTuning,
                 enablePerClusterTuning = currentProfile.enablePerClusterTuning,
-                enableAdaptiveFpsCap = currentProfile.enableAdaptiveFpsCap,
+                adaptiveFpsCapEnabled = currentProfile.adaptiveFpsCapEnabled,
                 enableFanControl = currentProfile.enableFanControl,
                 enableGamePinning = currentProfile.enableGamePinning,
                 tuningStrategy = currentProfile.tuningStrategy
@@ -785,6 +748,10 @@ object PowerManager {
      * Check if driver is supported
      */
     fun isDriverSupported(): Boolean = driver.isDriverSupported()
+
+    fun isGovernorSupported(): Boolean = driver.isGovernorSupported()
+
+    fun driverName(): String = driver::class.java.simpleName
 
     /**
      * Get display unit preference for frequency values
@@ -1299,12 +1266,14 @@ object PowerManager {
                         Timber.tag("PowerManager").d(
                             "$processName has not started yet, pin attempt $attempt of $maxRetries ($reason)"
                         )
-                    } else if (applied && verifyGameAffinity(pid, gameCores, "PowerManager")) {
+                    } else {
+                        if (!applied) applyAffinity(processName, pid, gameCores)
+                        val verified = verifyGameAffinity(pid, gameCores, "PowerManager")
                         pinnedGameProcessName = processName
                         pinnedGamePid = pid
                         pinnedGameCores = gameCores
                         Timber.tag("PowerManager").i(
-                            "Pinned $processName (PID: $pid) to CPUs ${gameCores.joinToString()} after $attempt attempts ($reason)"
+                            "Pinned $processName (PID: $pid) to CPUs ${gameCores.joinToString()} after $attempt attempts, verified=$verified ($reason)"
                         )
                         return@Thread
                     }
@@ -1370,12 +1339,9 @@ object PowerManager {
         if (!processName.endsWith(".exe", ignoreCase = true)) {
             return pserver.getProcessId(processName)
         }
+        val exe = Regex("""(^|[\\/ "])""" + Regex.escape(processName) + """("|\s|$)""", RegexOption.IGNORE_CASE)
         return pserver.findRunningProcesses(processName).find {
-            !it.second.contains("winhandler.exe") &&
-                (
-                    it.second.endsWith(processName, ignoreCase = true) ||
-                        it.second.startsWith("A:\\$processName", ignoreCase = true)
-                    )
+            !it.second.contains("winhandler.exe") && exe.containsMatchIn(it.second)
         }?.first
     }
 

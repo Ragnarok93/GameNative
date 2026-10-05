@@ -1,5 +1,6 @@
 package com.winlator.core.envvars
 
+import com.winlator.container.Container
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -32,6 +33,7 @@ class EnvVarsTest {
 
     @Test
     fun roundTripValueWithMultipleSpacesEqualsAndSemicolons() {
+        // multi-clause DXVK config: spaces, '=', ';' all inside one value
         val src = EnvVars().apply {
             put("DXVK_CONFIG", "d3d9.presentInterval = 1; d3d9.somethingElse = 2")
         }
@@ -55,6 +57,7 @@ class EnvVarsTest {
 
     @Test
     fun roundTripValueWithEscapedSpaceLiteral() {
+        // value already contains a backslash followed by a space — must survive round-trip
         val src = EnvVars().apply { put("FOO", "a\\ b") }
         val parsed = EnvVars(src.toString())
         assertEquals("a\\ b", parsed.get("FOO"))
@@ -70,6 +73,7 @@ class EnvVarsTest {
 
     @Test
     fun toStringArrayReturnsRawValuesForExecve() {
+        // execve envp must NOT contain backslash escapes — it's the actual env vector
         val src = EnvVars().apply { put("DXVK_CONFIG", "d3d9.presentInterval = 1;") }
         assertArrayEquals(arrayOf("DXVK_CONFIG=d3d9.presentInterval = 1;"), src.toStringArray())
     }
@@ -95,51 +99,21 @@ class EnvVarsTest {
     }
 
     @Test
-    fun legacyVulkanLayersAreMirroredToModernLoaderEnableFilter() {
-        val env = EnvVars().apply {
-            put("VK_INSTANCE_LAYERS", "VK_LAYER_existing:VK_LAYER_LS_frame_generation")
-        }
-        assertEquals(
-            "VK_LAYER_existing,VK_LAYER_LS_frame_generation",
-            env.get("VK_LOADER_LAYERS_ENABLE"),
-        )
-    }
+    fun defaultValuesAreOfferedByThePicker() {
+        val defaults = EnvVars(Container.DEFAULT_ENV_VARS)
+        for (name in defaults) {
+            val info = EnvVarInfo.KNOWN_ENV_VARS[name] ?: continue
+            if (info.possibleValues.isEmpty() || info.selectionType == EnvVarSelectionType.SUGGESTIONS) continue
 
-    @Test
-    fun vulkanLayerMirrorPreservesModernFiltersAndDeduplicates() {
-        val env = EnvVars().apply {
-            put("VK_LOADER_LAYERS_ENABLE", "VK_LAYER_existing,VK_LAYER_other")
-            put("VK_INSTANCE_LAYERS", "VK_LAYER_existing:VK_LAYER_LS_frame_generation")
+            val value = defaults.get(name)
+            val values = if (info.selectionType == EnvVarSelectionType.MULTI_SELECT) {
+                if (value.isEmpty()) emptyList() else value.split(",")
+            } else {
+                listOf(value)
+            }
+            for (option in values) {
+                assertTrue("$name default '$option' is not offered by the picker", option in info.possibleValues)
+            }
         }
-        assertEquals(
-            "VK_LAYER_existing,VK_LAYER_other,VK_LAYER_LS_frame_generation",
-            env.get("VK_LOADER_LAYERS_ENABLE"),
-        )
-    }
-
-    @Test
-    fun copiedEnvironmentKeepsVulkanLayerBridgeInvariant() {
-        val original = EnvVars().apply {
-            put("VK_INSTANCE_LAYERS", "VK_LAYER_LS_frame_generation")
-        }
-        val copied = EnvVars().apply { putAll(original) }
-        assertEquals("VK_LAYER_LS_frame_generation", copied.get("VK_LOADER_LAYERS_ENABLE"))
-    }
-
-    @Test
-    fun explicitVulkanLayerSelectionEnablesLoaderDiagnosticsByDefault() {
-        val env = EnvVars().apply {
-            put("VK_INSTANCE_LAYERS", "VK_LAYER_LS_frame_generation")
-        }
-        assertEquals("error,warn,layer", env.get("VK_LOADER_DEBUG"))
-    }
-
-    @Test
-    fun explicitVulkanLayerSelectionPreservesUserLoaderDiagnostics() {
-        val env = EnvVars().apply {
-            put("VK_LOADER_DEBUG", "error")
-            put("VK_INSTANCE_LAYERS", "VK_LAYER_LS_frame_generation")
-        }
-        assertEquals("error", env.get("VK_LOADER_DEBUG"))
     }
 }

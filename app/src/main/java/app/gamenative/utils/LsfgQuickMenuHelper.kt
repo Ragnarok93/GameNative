@@ -40,6 +40,7 @@ object LsfgQuickMenuHelper {
         val flowScaleMode: FlowScaleMode,
         val adaptiveFlowPreset: AdaptiveFlowPreset,
         val presentMode: String,
+        val backend: String,
         val frameQueueEnabled: Boolean,
         val frameQueueTarget: FrameQueueTarget,
     )
@@ -215,6 +216,7 @@ object LsfgQuickMenuHelper {
         flowScaleMode = flowScaleMode(container),
         adaptiveFlowPreset = adaptiveFlowPreset(container),
         presentMode = presentMode(container),
+        backend = LsfgVkManager.backend(container),
         frameQueueEnabled = frameQueueEnabled(container),
         frameQueueTarget = frameQueueTarget(container),
     )
@@ -250,7 +252,8 @@ object LsfgQuickMenuHelper {
         }
 
         Timber.i(
-            "LSFG runtime snapshot generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
+            "LSFG runtime snapshot backend=%s generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
+            snapshot.backend,
             snapshot.generationMode,
             effectiveMultiplier,
             snapshot.adaptiveTargetFps,

@@ -2696,10 +2696,15 @@ ok=true;}catch(...){}
     const HostDesiredPresentDecision desiredDecision =
         validatedHostDesiredPresentTime(frameProvenance);
 
-    VkSemaphore wSem[]={imgAvailSems[currentFrame]};
+    std::array<VkSemaphore, 2> wSem{};
+    std::array<VkSemaphore, 2> sSem{};
+    uint32_t waitSemaphoreCount = 0;
+    uint32_t signalSemaphoreCount = 0;
     VkSemaphore signalSemaphore = renderDoneSems[currentFrame];
+
     const bool useFrameQueuePresentSemaphore =
         !toXr && (
+            nativeRuntimeActive ||
             hostAsyncPresenterActive_
             || (frameQueueEnabled && hasUniqueLsfgDelivery
                 && activeFrameSlotCount() > BASE_FRAMES_IN_FLIGHT));
@@ -2711,12 +2716,30 @@ ok=true;}catch(...){}
         }
         signalSemaphore = frameQueuePresentSems_[imgIdx];
     }
-    VkSemaphore sSem[]={signalSemaphore};
-    VkPipelineStageFlags wStage[]={VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    if (!toXr) {
+        wSem[waitSemaphoreCount++] = imgAvailSems[currentFrame];
+        sSem[signalSemaphoreCount++] = signalSemaphore;
+        if (nativeRuntimeActive && nativeGenerations > 0) {
+            if (nativeGeneratedImgIdx >= frameQueuePresentSems_.size()
+                    || frameQueuePresentSems_[nativeGeneratedImgIdx] == VK_NULL_HANDLE) {
+                fbResized.store(true, std::memory_order_release);
+                return;
+            }
+            wSem[waitSemaphoreCount++] = nativeGeneratedAcquireSemaphore;
+            sSem[signalSemaphoreCount++] = frameQueuePresentSems_[nativeGeneratedImgIdx];
+        }
+    }
+    VkPipelineStageFlags wStage[2] = {
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+    };
     VkSubmitInfo si{}; si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
     if (!toXr) {
-        si.waitSemaphoreCount=1; si.pWaitSemaphores=wSem; si.pWaitDstStageMask=wStage;
-        si.signalSemaphoreCount=1; si.pSignalSemaphores=sSem;
+        si.waitSemaphoreCount=waitSemaphoreCount;
+        si.pWaitSemaphores=wSem.data();
+        si.pWaitDstStageMask=wStage;
+        si.signalSemaphoreCount=signalSemaphoreCount;
+        si.pSignalSemaphores=sSem.data();
     }
     si.commandBufferCount=1; si.pCommandBuffers=&cmdBufs[currentFrame];
 
@@ -2821,6 +2844,59 @@ ok=true;}catch(...){}
         });
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR)
             fbResized.store(true);
+
+        if (res == VK_SUCCESS && nativeRuntimeActive && nativeGenerations > 0) {
+            uint64_t generatedHostPresentId = hostPresentId_++;
+            if (generatedHostPresentId == 0) {
+                generatedHostPresentId = 1;
+                hostPresentId_ = 2;
+            }
+            uint32_t generatedGooglePresentId = hostGooglePresentId_++;
+            if (generatedGooglePresentId == 0) {
+                generatedGooglePresentId = 1;
+                hostGooglePresentId_ = 2;
+            }
+
+            LsfgFrameProvenance generatedProvenance{};
+            generatedProvenance.valid = true;
+            generatedProvenance.contextEpoch = hostSwapchainGeneration_;
+            generatedProvenance.swapchainImageIndex = nativeGeneratedImgIdx;
+            generatedProvenance.interpolationCount = nativeGenerations;
+            generatedProvenance.interpolationIndex = 1;
+            generatedProvenance.kind = 1;
+
+            std::vector<LsfgFrameProvenance> generatedProvenanceList{
+                generatedProvenance
+            };
+            const uint32_t generatedGpuOutstanding =
+                countOutstandingFrameSubmissions(true);
+            const VkResult generatedPresentResult = enqueueHostPresent(PendingHostPresent{
+                .frameSlot = currentFrame,
+                .imageIndex = nativeGeneratedImgIdx,
+                .swapchain = swapchain,
+                .waitSemaphore = frameQueuePresentSems_[nativeGeneratedImgIdx],
+                .hostPresentId = generatedHostPresentId,
+                .googlePresentId = generatedGooglePresentId,
+                .backend = confirmationBackend,
+                .frameProvenance = std::move(generatedProvenanceList),
+                .desiredDecision = HostDesiredPresentDecision{},
+                .hasUniqueLsfgDelivery = false,
+                .acquireNs = 0,
+                .submitCallNs = submitCallNs,
+                .submissionSerial = submissionSerial,
+                .swapchainGeneration = hostSwapchainGeneration_,
+                .gpuOutstanding = generatedGpuOutstanding,
+            });
+            if (generatedPresentResult == VK_ERROR_OUT_OF_DATE_KHR ||
+                generatedPresentResult == VK_ERROR_SURFACE_LOST_KHR) {
+                fbResized.store(true);
+            }
+            if (generatedPresentResult == VK_SUCCESS) {
+                presentedFrames.fetch_add(1, std::memory_order_relaxed);
+                RLOG("LSFG_NATIVE: event=generated_present_queued generation=%u image=%u submission_serial=%" PRIu64,
+                    nativeGenerations, nativeGeneratedImgIdx, submissionSerial);
+            }
+        }
     } else {
         // The XR session samples xrAhb from its own GL context with no fence handoff;
         // blocking here means the buffer is fully written whenever this thread is idle,

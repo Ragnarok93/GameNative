@@ -284,6 +284,10 @@ VulkanRendererContext::~VulkanRendererContext() {
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vk_.DestroySemaphore(device, renderDoneSems[i], nullptr);
         vk_.DestroySemaphore(device, imgAvailSems[i], nullptr);
+        for (auto semaphore : nativeExtraAcquireSems_[i]) {
+            if (semaphore != VK_NULL_HANDLE)
+                vk_.DestroySemaphore(device, semaphore, nullptr);
+        }
         vk_.DestroyFence(device, inFlightFences[i], nullptr);
     }
     vk_.DestroyCommandPool(device, cmdPool, nullptr);
@@ -669,6 +673,11 @@ void VulkanRendererContext::createSwapchain() {
     ci.surface=surface; ci.minImageCount=imgCount; ci.imageFormat=swapchainFmt;
     ci.imageColorSpace=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR; ci.imageExtent=swapchainExt;
     ci.imageArrayLayers=1; ci.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    nativeSwapchainTransferSupported_ =
+        (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0 &&
+        (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
+    if (nativeSwapchainTransferSupported_)
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ci.imageSharingMode=VK_SHARING_MODE_EXCLUSIVE; ci.preTransform=pre;
     ci.compositeAlpha=compositeAlpha; ci.presentMode=presentMode; ci.clipped=VK_TRUE;
     ci.oldSwapchain=oldSwapchain;
@@ -891,6 +900,10 @@ void VulkanRendererContext::createSyncObjects() {
         if (vk_.CreateSemaphore(device,&si,nullptr,&imgAvailSems[i])!=VK_SUCCESS||
             vk_.CreateSemaphore(device,&si,nullptr,&renderDoneSems[i])!=VK_SUCCESS||
             vk_.CreateFence(device,&fi,nullptr,&inFlightFences[i])!=VK_SUCCESS) throw std::runtime_error("sync");
+        for (auto& semaphore : nativeExtraAcquireSems_[i]) {
+            if (vk_.CreateSemaphore(device,&si,nullptr,&semaphore) != VK_SUCCESS)
+                throw std::runtime_error("native-lsfg-acquire-sync");
+        }
     }
     createFrameQueuePresentSemaphores();
 }
@@ -2047,7 +2060,7 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
     VkBuffer cursorUpload, bool hasCursorUpload,
     float ox, float oy, float sx, float sy, float cw, float ch,
     short ptrX, short ptrY, short curHotX, short curHotY,
-    short curW, short curH, bool curVis)
+    short curW, short curH, bool curVis, bool keepOpen)
 {
     VkCommandBufferBeginInfo bi{}; bi.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     if (vk_.BeginCommandBuffer(cb,&bi)!=VK_SUCCESS) throw std::runtime_error("begin cb");
@@ -2184,6 +2197,9 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
         vk_.CmdDraw(cb, 4, 1, 0, 0);
     }
     vk_.CmdEndRenderPass(cb);
+
+    if (keepOpen)
+        return;
 
     VkResult endStatus = vk_.EndCommandBuffer(cb);
     if (endStatus!=VK_SUCCESS) {

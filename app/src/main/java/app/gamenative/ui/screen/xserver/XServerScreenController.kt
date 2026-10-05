@@ -13,6 +13,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.LifecycleOwner
 import app.gamenative.PluviaApp
@@ -39,6 +40,7 @@ import com.winlator.widget.XServerRendererView
 import com.winlator.xserver.Keyboard
 import kotlinx.coroutines.Job
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 
 @Stable
 internal class XServerScreenPersistentState(
@@ -57,7 +59,6 @@ internal class XServerScreenPersistentState(
     val playingBlockedRemoteName: MutableState<String?>,
 )
 
-@Stable
 internal class XServerScreenController(
     val context: Context,
     val view: View,
@@ -127,6 +128,8 @@ internal class XServerScreenController(
     var detectedMaxRefreshRateHz by mutableIntStateOf(60)
     var lastLsfgPacingActive by mutableStateOf(false)
     var lastLoggedOutputBudget by mutableStateOf<String?>(null)
+    val clickHighlightPoints = mutableStateListOf<app.gamenative.ui.component.HighlightPoint>()
+    val shouldTrackDisplayedFrames = AtomicBoolean(false)
     var performanceHudConfig by mutableStateOf(loadPerformanceHudConfigForScreen())
     var performanceHudView by mutableStateOf<PerformanceHudView?>(null)
     var performanceHudHost by mutableStateOf<FrameLayout?>(null)

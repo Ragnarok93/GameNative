@@ -827,6 +827,12 @@ fun XServerScreen(
             container,
             LsfgQuickMenuHelper.Settings(lsfgMultiplier, lsfgFlowScale, lsfgPerformanceMode),
         )
+        // Native LSFG is host-renderer state, not an implicit-layer config.
+        // Re-push it only when the authoritative backend is native; legacy keeps
+        // the protected lsfg-vk path unchanged.
+        if (LsfgVkManager.isNativeBackend(container)) {
+            LsfgVkManager.refreshNativeRuntime(container)
+        }
     }
 
     fun scheduleLsfgRuntimeHandoff(active: Boolean, multiplier: Int) {
@@ -956,24 +962,34 @@ fun XServerScreen(
 
     fun applyLsfgBackend(requestedBackend: String) {
         val request = LsfgVkManager.setBackend(container, requestedBackend)
-        // Commit UI/authoritative state immediately; menu dismissal must not be
-        // responsible for making the selected renderer look active.
         lsfgBackend = request.backend
 
-        // The current branch has no runtime JNI bridge that can safely activate
-        // the unfinished native-LSFG implementation. Record that boundary
-        // explicitly rather than falsely claiming the runtime switched.
-        LsfgVkManager.recordBackendRuntimeApplied(
-            request = request,
-            // The native LSFG implementation is not runtime-wired on this branch,
-            // so a native request must not be reported as applied.
-            runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
-            result = if (request.backend == LsfgVkManager.BACKEND_NATIVE) {
-                "runtime-bridge-unavailable"
-            } else {
-                "legacy-state-committed"
-            },
-        )
+        val renderer = xServerView?.renderer as? VulkanRenderer
+        if (request.backend == LsfgVkManager.BACKEND_NATIVE && renderer != null) {
+            LsfgVkManager.applyNativeRuntime(
+                renderer = renderer,
+                container = container,
+                context = renderer.context,
+            )
+            LsfgVkManager.recordBackendRuntimeApplied(
+                request = request,
+                runtimeBackend = LsfgVkManager.BACKEND_NATIVE,
+                result = "runtime-applied",
+            )
+        } else if (request.backend == LsfgVkManager.BACKEND_NATIVE) {
+            LsfgVkManager.recordBackendRuntimeApplied(
+                request = request,
+                runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
+                result = "runtime-bridge-unavailable",
+            )
+        } else {
+            renderer?.setFrameGenerationEnabled(false)
+            LsfgVkManager.recordBackendRuntimeApplied(
+                request = request,
+                runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
+                result = "legacy-state-committed",
+            )
+        }
     }
 
     fun applyAdaptiveFpsCapOnMain(capFps: Int): Boolean {

@@ -68,6 +68,7 @@ class LsfgFrameQueueContractTest {
         assertTrue(enqueueStart >= 0 && enqueueEnd > enqueueStart)
         val enqueue = implementation.substring(enqueueStart, enqueueEnd)
         assertTrue(enqueue.contains("!hostSplitPresentQueueActive_"))
+        assertTrue(enqueue.contains("!present.hasUniqueLsfgDelivery"))
         assertTrue(enqueue.contains("return presentHostFrame(present)"))
         assertFalse(enqueue.contains("pop_front(); // drop"))
     }

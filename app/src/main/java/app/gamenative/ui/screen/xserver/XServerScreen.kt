@@ -260,14 +260,10 @@ private const val DEFAULT_FPS_LIMITER_TARGET_HZ = 60
 private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
 private const val FPS_LIMITER_TARGET_EXTRA = "fpsLimiterTarget"
 
-private class XServerCoroutineScope(
-    private val delegate: CoroutineScope
-) : CoroutineScope by delegate
-
 @Composable
-private fun rememberXServerCoroutineScope(): XServerCoroutineScope {
+private fun rememberKeyboardEscMenuHandler(): KeyboardEscMenuHandler {
     val scope = rememberCoroutineScope()
-    return remember(scope) { XServerCoroutineScope(scope) }
+    return remember(scope) { KeyboardEscMenuHandler(scope) }
 }
 
 private fun initialFpsLimiterEnabled(container: Container): Boolean =
@@ -459,7 +455,6 @@ fun XServerScreen(
     Timber.i("Starting up XServerScreen")
     val context = LocalContext.current
     val view = LocalView.current
-    val scope = rememberCoroutineScope()
     val adaptiveCapGeneration = remember { AtomicLong(0L) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val imm = remember(context) {
@@ -581,7 +576,7 @@ fun XServerScreen(
     var win32AppWorkarounds: Win32AppWorkarounds? by remember { mutableStateOf(null) }
     var physicalControllerHandler: PhysicalControllerHandler? by remember { mutableStateOf(null) }
     var exitWatchJob: Job? by remember { mutableStateOf(null) }
-    val keyboardEscMenuHandler = remember(scope) { KeyboardEscMenuHandler(scope) }
+    val keyboardEscMenuHandler = rememberKeyboardEscMenuHandler()
     val lsfgRuntimeHandoffController = remember(container.id) {
         LsfgRuntimeHandoffController(container) { PluviaApp.isOverlayPaused }
     }
@@ -3219,7 +3214,7 @@ fun XServerScreen(
                     showPlayingBlockedDialog = false
                     playingBlockedRemoteName = null
                     SteamService.clearPlayingConflict()
-                    scope.launch {
+                    rememberCoroutineScope().launch {
                         SteamService.kickPlayingSession(onlyGame = true)
                     }
                 }) {

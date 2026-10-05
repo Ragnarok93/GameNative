@@ -2483,7 +2483,7 @@ ok=true;}catch(...){}
     }
 
     uint32_t imgIdx = 0;
-    uint32_t nativeGeneratedImgIdx = VK_NULL_HANDLE;
+    uint32_t nativeGeneratedImgIdx = 0;
     VkSemaphore nativeGeneratedAcquireSemaphore = VK_NULL_HANDLE;
     uint64_t acquireNs = 0;
     VkResult res = VK_SUCCESS;
@@ -2684,6 +2684,11 @@ ok=true;}catch(...){}
 
         framegenSourceFrames.store(nativeSourceFrame, std::memory_order_release);
         framegenRealFrames++;
+        const VkResult endStatus = vk_.EndCommandBuffer(cb);
+        if (endStatus != VK_SUCCESS) {
+            RLOG_E("Native LSFG command buffer end failed: status=%d", (int)endStatus);
+            return;
+        }
     }
 
     std::vector<LsfgFrameProvenance> frameProvenance =

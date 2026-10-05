@@ -969,7 +969,7 @@ fun XServerScreen(
             LsfgVkManager.applyNativeRuntime(
                 renderer = renderer,
                 container = container,
-                context = renderer.context,
+                context = xServerView!!.context,
             )
             LsfgVkManager.recordBackendRuntimeApplied(
                 request = request,

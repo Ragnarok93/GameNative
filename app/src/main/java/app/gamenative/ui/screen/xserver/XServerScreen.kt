@@ -552,8 +552,6 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     fun applyMouseCursorVisibility() {
         xServerView?.renderer?.setCursorVisible(shouldShowMouseCursor())
     }
-    val clickHighlightPoints = remember { mutableStateListOf<app.gamenative.ui.component.HighlightPoint>() }
-    val shouldTrackDisplayedFrames = remember { AtomicBoolean(false) }
 
     // LSFG tab in QuickMenu only visible when enabled in container settings
     // Backend selection is an authoritative Quick Menu state, not a persisted-state

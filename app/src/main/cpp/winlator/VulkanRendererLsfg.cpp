@@ -173,6 +173,7 @@ void VulkanRendererContext::destroyLsfg() {
     lsfg = nullptr;
     framegenRealFrames = 0;
     framegenMadeFrames = 0;
+    framegenSupported = false;
 }
 
 void VulkanRendererContext::createLsfg() {
@@ -183,6 +184,14 @@ void VulkanRendererContext::createLsfg() {
         RLOG_E("LSFG shaders unavailable at %s; frame generation stays off", lsfgCachePath.c_str());
         return;
     }
+    framegenSupported = compositeFormatSupported() && nativeSwapchainTransferSupported_;
+    RLOG("Native LSFG capability: supported=%d composite_format=%d swapchain_transfer=%d",
+         framegenSupported ? 1 : 0,
+         compositeFormatSupported() ? 1 : 0,
+         nativeSwapchainTransferSupported_ ? 1 : 0);
+    if (!framegenSupported)
+        return;
+
     vkr_lsfg_configure(lsfg, framegenMultiplier ? framegenMultiplier : 2u,
                        framegenTargetRate,
                        framegenFlowScale > 0.0f ? framegenFlowScale : 0.7f,
@@ -238,6 +247,7 @@ void VulkanRendererContext::blitCompositeToSwapchain(VkCommandBuffer cmd, const 
 }
 
 void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
+    framegenArmed = true;
     if (!framegenArmed) {
         if (enabled && !framegenArmWarned) {
             framegenArmWarned = true;

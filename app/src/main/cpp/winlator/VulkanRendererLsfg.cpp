@@ -274,6 +274,8 @@ bool VulkanRendererContext::isFrameGenerationSupported() const {
 
 void VulkanRendererContext::setFrameGenerationShaders(const std::string& cachePath) {
     if (!framegenArmed) return;
+    if (!cachePath.empty() && cachePath == lsfgCachePath && lsfg != nullptr)
+        return;
     std::unique_lock<std::shared_mutex> fl(frameMutex);
     std::lock_guard<std::mutex> lk(renderMutex);
     if (device) vk_.DeviceWaitIdle(device);

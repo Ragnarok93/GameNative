@@ -248,13 +248,6 @@ void VulkanRendererContext::blitCompositeToSwapchain(VkCommandBuffer cmd, const 
 
 void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
     framegenArmed = true;
-    if (!framegenArmed) {
-        if (enabled && !framegenArmWarned) {
-            framegenArmWarned = true;
-            RLOG("Frame generation requested but renderer was not armed at launch; ignoring");
-        }
-        return;
-    }
     if (framegenRequested == enabled) return;
     std::unique_lock<std::shared_mutex> fl(frameMutex);
     std::lock_guard<std::mutex> lk(renderMutex);
@@ -294,8 +287,9 @@ void VulkanRendererContext::setSourceFrameCount(uint64_t count) {
 }
 
 void VulkanRendererContext::setFrameGenerationRefreshRate(float hz) {
-    const int32_t mhz = hz > 0.0f ? (int32_t)(hz * 1000.0f + 0.5f) : 0;
-    framegenRefreshMhz.store(mhz, std::memory_order_relaxed);
+    framegenRefreshRate = hz > 1.0f ? hz : 60.0f;
+    if (lsfg)
+        vkr_lsfg_set_refresh_rate(lsfg, framegenRefreshRate);
 }
 
 void VulkanRendererContext::setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {

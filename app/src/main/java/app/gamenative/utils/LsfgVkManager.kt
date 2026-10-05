@@ -5,6 +5,7 @@ import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import java.util.concurrent.Executors
 import app.gamenative.service.SteamService
 import com.winlator.container.Container
+import com.winlator.renderer.lsfg.LosslessScaling
 import com.winlator.core.FileUtils
 import com.winlator.core.envvars.EnvVars
 import java.io.File
@@ -463,6 +464,22 @@ object LsfgVkManager {
         multiplier = 0,
         fresh = fresh,
     )
+
+    /**
+     * Warm the native renderer shader cache off the launch-critical path.
+     * Upstream 1.3 invokes this during Bionic startup; keep it best-effort so
+     * cache generation can never prevent the LSFG Vulkan layer from launching.
+     */
+    @JvmStatic
+    @Synchronized
+    fun prepareNativeCache(context: Context, container: Container): String? {
+        val dll = containerDllPath(container)?.let { File(it) } ?: findSteamDll()
+        if (dll == null || !dll.isFile) return null
+        return runCatching {
+            val driverName = LosslessScaling.getDriverName(container)
+            LosslessScaling.resolveOrBuildCache(context, dll, driverName)?.absolutePath
+        }.getOrNull()
+    }
 
     /**
      * Install the layer runtime + DLL into the container's filesystem.

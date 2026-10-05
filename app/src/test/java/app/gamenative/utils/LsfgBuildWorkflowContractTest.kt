@@ -159,7 +159,7 @@ class LsfgBuildWorkflowContractTest {
             "cmake --build",
             "--target vulkan_renderer",
             "libvulkan_renderer.so",
-            "gamenative-host-display-confirmation-v2",
+            "gamenative-host-display-confirmation-v3-split-present-worker",
         ).forEach { token ->
             assertTrue("Vulkan renderer preparation action is missing $token", action.contains(token))
         }

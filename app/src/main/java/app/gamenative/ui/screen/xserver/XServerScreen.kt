@@ -216,11 +216,9 @@ import com.winlator.xserver.XServer
 import com.winlator.xserver.extensions.PresentExtension
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-private fun launchXServerIo(block: suspend CoroutineScope.() -> Unit): kotlinx.coroutines.Job =
-    CoroutineScope(Dispatchers.IO).launch(block = block)
-
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -246,6 +244,9 @@ import kotlin.io.path.name
 import kotlin.math.roundToInt
 import kotlin.text.lowercase
 import com.winlator.PrefManager as WinlatorPrefManager
+
+private fun launchXServerIo(block: suspend () -> Unit): Job =
+    CoroutineScope(Dispatchers.IO).launch(start = CoroutineStart.DEFAULT) { block() }
 
 // Always re-extract drivers and DXVK on every launch to handle cases of container corruption
 // where games randomly stop working. Set to false once corruption issues are resolved.

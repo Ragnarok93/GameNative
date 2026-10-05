@@ -75,6 +75,10 @@ object LsfgVkManager {
     const val EXTRA_FRAMEGEN_MODE = "lsfgFramegenMode"
     const val EXTRA_FIXED_MULTIPLIER = "lsfgFixedMultiplier"
     const val EXTRA_ADAPTIVE_TARGET_FPS = "lsfgAdaptiveTargetFps"
+    const val EXTRA_BACKEND = "lsfgBackend"
+
+    const val BACKEND_LEGACY = "legacy"
+    const val BACKEND_NATIVE = "native"
 
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
@@ -265,6 +269,20 @@ object LsfgVkManager {
     fun presentMode(container: Container): String =
         container.getExtra(EXTRA_PRESENT_MODE, "mailbox")
             .takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
+
+    fun backend(container: Container): String =
+        container.getExtra(EXTRA_BACKEND, BACKEND_LEGACY)
+            .lowercase(Locale.US)
+            .takeIf { it == BACKEND_NATIVE } ?: BACKEND_LEGACY
+
+    fun isNativeBackend(container: Container): Boolean = backend(container) == BACKEND_NATIVE
+
+    fun setBackend(container: Container, backend: String) {
+        val sanitized = backend.lowercase(Locale.US).takeIf { it == BACKEND_NATIVE } ?: BACKEND_LEGACY
+        container.putExtra(EXTRA_BACKEND, sanitized)
+        container.saveData()
+        Timber.i("LSFG backend changed: backend=%s", sanitized)
+    }
 
     fun frameQueueEnabled(container: Container): Boolean =
         parseBool(container.getExtra(EXTRA_FRAME_QUEUE_ENABLED, "false"))

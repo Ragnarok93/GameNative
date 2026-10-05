@@ -1399,7 +1399,7 @@ fun XServerScreen(
                     if (isExternalDisplaySession) {
                         imeInputReceiver?.showKeyboard() ?: toggleSoftInput(context)
                     } else {
-                        imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                        toggleSoftInput(context)
                     }
                 }
                 if (Build.VERSION.SDK_INT > 29) {
@@ -2242,9 +2242,9 @@ fun XServerScreen(
                             (anchor.display?.displayId ?: android.view.Display.DEFAULT_DISPLAY) != android.view.Display.DEFAULT_DISPLAY
                         if (isExternalDisplaySession) {
                             imeInputReceiver?.showKeyboard()
-                                ?: imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                                ?: toggleSoftInput(context)
                         } else {
-                            imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                            toggleSoftInput(context)
                         }
                     }
                 }

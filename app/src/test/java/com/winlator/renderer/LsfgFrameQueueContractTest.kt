@@ -307,9 +307,13 @@ class LsfgFrameQueueContractTest {
             quickMenu.indexOf("onPresentModeChanged = { mode ->"),
             quickMenu.indexOf("scrollState = lsfgScrollState"),
         )
-        assertTrue(callback.contains("renderer?.setVkPresentMode"))
-        assertTrue(callback.contains("mode == \"mailbox\""))
-        assertTrue(quickMenu.contains("LaunchedEffect(lsfgPresentMode, renderer)"))
+        assertTrue(callback.contains("applyPresentMode"))
+        assertTrue(callback.contains("applyFrameQueueToRenderer"))
+        assertTrue(
+            "Quick Menu must not bypass Native present-mode ownership",
+            !callback.contains("renderer?.setVkPresentMode"),
+        )
+        assertTrue(quickMenu.contains("applyFrameQueueToRenderer"))
     }
 
     @Test
@@ -322,8 +326,12 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("hostSuboptimalLastRequeryNs_ = 0"))
         assertTrue(implementation.contains("hostSuboptimalConsecutive_ = 0"))
         assertTrue(implementation.contains("hostSuboptimalWindow_.clear()"))
-        assertTrue(implementation.contains("transformChanged"))
-        assertTrue(implementation.contains("caps.currentTransform != swapchainPreTransform_"))
+        assertTrue(implementation.contains("const bool transformChanged = false"))
+        assertTrue(
+            implementation.contains(
+                "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",
+            ),
+        )
     }
 
     @Test

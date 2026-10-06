@@ -595,6 +595,35 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun nativeReusesSharedHostPresenterInsteadOfCreatingASecondFrameQueue() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("pendingHostPresents_"))
+        assertTrue(header.contains("hostPresenterThread_"))
+        assertFalse(header.contains("nativePendingHostPresents_"))
+        assertFalse(header.contains("NativeFrameQueueTarget"))
+
+        val admissionStart =
+            implementation.indexOf("uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity")
+        val admissionEnd =
+            implementation.indexOf("void VulkanRendererContext::emitNativeLsfgPipelineTelemetry", admissionStart)
+        assertTrue(admissionStart >= 0 && admissionEnd > admissionStart)
+        val admission = implementation.substring(admissionStart, admissionEnd)
+        assertTrue(admission.contains("pendingHostPresents_"))
+        assertTrue(admission.contains("hostPresenterBusy_"))
+        assertTrue(admission.contains("MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH"))
+
+        val presenterStart =
+            implementation.indexOf("void VulkanRendererContext::hostPresenterLoop")
+        val presenterEnd =
+            implementation.indexOf("void VulkanRendererContext::processHostPresentCompletions", presenterStart)
+        val presenter = implementation.substring(presenterStart, presenterEnd)
+        assertTrue(presenter.contains("executeHostPresent"))
+        assertFalse(presenter.contains("nativeHostPresenterLoop"))
+    }
+
+    @Test
     fun nativeOwnsLiveQueuePolicyWithoutOverwritingLegacyPreference() {
         val renderer =
             repoSource("app/src/main/java/com/winlator/renderer/VulkanRenderer.java")

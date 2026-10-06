@@ -17,7 +17,6 @@ constexpr float SOURCE_SMOOTHING = 0.15f;
 constexpr float SOURCE_STALE_SECONDS = 0.5f;
 constexpr float DISCONTINUITY_SECONDS = 0.25f;
 constexpr float HEADROOM_EPSILON = 0.02f;
-constexpr float CREDIT_EPSILON = 1.0e-4f;
 constexpr float SOURCE_ACCUM_FLOOR = 0.01f;
 constexpr uint32_t MIN_RATE_SAMPLES = 12;
 

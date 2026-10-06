@@ -549,7 +549,7 @@ void VulkanRendererContext::setFrameGenerationPressure(
         float frameTimeP95Ms, float slowFrameRatio) {
     // High-frequency control-plane telemetry is intentionally lock-free.
     // renderFrame snapshots these atomics immediately before vkr_lsfg_plan(),
-    // so JNI never waits for the frame-wide shared frameMutex.
+    // so JNI never waits for the frame-wide renderer lock.
     framegenGpuUsagePercent_.store(gpuUsagePercent, std::memory_order_relaxed);
     framegenThermalStatus_.store(thermalStatus, std::memory_order_relaxed);
     framegenSourceFps_.store(sourceFps, std::memory_order_relaxed);

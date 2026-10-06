@@ -1,7 +1,6 @@
 package app.gamenative.utils
 
 import com.winlator.container.Container
-import com.winlator.renderer.VulkanRenderer
 import java.util.Locale
 import java.util.concurrent.Executors
 import timber.log.Timber
@@ -177,30 +176,6 @@ object LsfgQuickMenuHelper {
     fun setFrameQueueTarget(container: Container, target: FrameQueueTarget) {
         container.putExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_TARGET, target.depth.toString())
         container.saveData()
-    }
-
-    fun applyFrameQueueToRenderer(container: Container, renderer: VulkanRenderer?) {
-        renderer ?: return
-        renderer.setVkPresentMode(
-            if (LsfgVkManager.isNativeBackend(container) &&
-                LsfgVkManager.isArmed(container) &&
-                sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2
-            ) {
-                // Native timed presentation prefers Mailbox; native Vulkan
-                // capability selection falls back to FIFO if unsupported.
-                1
-            } else if (presentMode(container) == "mailbox") {
-                1
-            } else {
-                2
-            },
-        )
-        renderer.setLsfgFrameQueue(
-            frameQueueEnabled(container) &&
-                LsfgVkManager.isArmed(container) &&
-                sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2,
-            frameQueueTarget(container).depth,
-        )
     }
 
     fun applyPresentMode(container: Container, mode: String) {

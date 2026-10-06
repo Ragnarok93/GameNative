@@ -71,6 +71,34 @@ int main() {
         assert(pacer.Stats().rates_settled);
         assert(pacer.Stats().source_rate > 59 && pacer.Stats().source_rate < 61);
     }
+    // Acceptance targets on a 120-Hz panel: with a 30-Hz source the
+    // fractional-credit scheduler converges to 60/55/45 output Hz without a
+    // source governor. Only the actually selected slot is constructed.
+    for (unsigned target : {60u, 55u, 45u}) {
+        LsfgPacer pacer;
+        pacer.SetConfig({4, target, 120});
+        size_t measuredOutputs = 0;
+        constexpr unsigned settleFrames = 60;
+        constexpr unsigned measuredFrames = 240;
+        for (unsigned frame = 0; frame < settleFrames + measuredFrames; ++frame) {
+            auto plan = pacer.PlanAt(
+                3, frame + 1, timestamp(static_cast<double>(frame) / 30.0));
+            assert(plan.generations <= 1);
+            if (plan.generations == 1) {
+                const auto slots = BuildPresentationSlots(plan.generations);
+                assert(slots.generated_count == 1);
+                assert(near(slots.generated[0], 0.5));
+            }
+            if (frame >= settleFrames)
+                measuredOutputs += 1 + plan.generations;
+        }
+        const double measuredSeconds =
+            static_cast<double>(measuredFrames) / 30.0;
+        const double measuredFps =
+            static_cast<double>(measuredOutputs) / measuredSeconds;
+        assert(std::abs(measuredFps - static_cast<double>(target)) <= 1.0);
+    }
+
     // Native output must not crowd out a source already filling the panel.
     LsfgPacer panelFull;
     panelFull.SetConfig({4, 120, 120});

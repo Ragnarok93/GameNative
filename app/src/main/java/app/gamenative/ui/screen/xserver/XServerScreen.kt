@@ -3443,7 +3443,10 @@ private fun initializeXServerViewRuntime(
         if (renderer is ASurfaceRenderer) {
             renderer.setSfCompatMode(container.sfCompatMode)
         }
-        renderer.setCursorVisible(\n            !container.isDisableMouseInput &&\n                (!container.isTouchscreenMode || currentGestureConfig.showCursorInTouchscreenMode),\n        )
+        renderer.setCursorVisible(
+            !container.isDisableMouseInput &&
+                (!container.isTouchscreenMode || currentGestureConfig.showCursorInTouchscreenMode),
+        )
         renderer.setOnFrameRenderedListener {
             if (shouldTrackDisplayedFrames.get()) {
                 (context as? Activity)?.runOnUiThread {
@@ -3466,11 +3469,13 @@ private fun initializeXServerViewRuntime(
                 if (anchor.windowToken == null) return@post
                 val isExternalDisplaySession =
                     (anchor.display?.displayId ?: android.view.Display.DEFAULT_DISPLAY) != android.view.Display.DEFAULT_DISPLAY
+                val inputMethodManager =
+                    context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 if (isExternalDisplaySession) {
                     imeInputReceiver?.showKeyboard()
-                        ?: imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                        ?: inputMethodManager.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
                 } else {
-                    imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                    inputMethodManager.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
                 }
             }
         }

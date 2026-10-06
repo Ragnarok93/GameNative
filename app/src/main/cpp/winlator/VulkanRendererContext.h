@@ -365,6 +365,7 @@ public:
     void armFrameGeneration();
     void setFrameGenerationEnabled(bool enabled);
     void beginLsfgBackendTransition(uint64_t transactionId, uint64_t revision);
+    void commitLsfgBackendTransitionPolicy(uint64_t transactionId);
     void completeLsfgBackendTransition(uint64_t transactionId, const char* reason);
     bool isFrameGenerationSupported() const;
     void setFrameGenerationShaders(const std::string& cachePath);
@@ -495,6 +496,8 @@ private:
     uint32_t lsfgBackendTransitionRecreationAttempts_ = 0;
     uint32_t lsfgBackendTransitionRecreationCount_ = 0;
     bool lsfgBackendTransitionFirstRecreationFailed_ = false;
+    bool lsfgBackendTransitionRebuildPending_ = false;
+    bool lsfgBackendTransitionPolicyCommitted_ = false;
     uint64_t hostPhysicalCadenceEpoch_ = 0;
     uint64_t legacyGeneratedSlotContextEpoch_ = 0;
     std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
@@ -967,6 +970,7 @@ private:
         bool generated, bool confirmed, bool unobserved, bool wsiAccepted,
         bool wsiRejected, uint64_t nowNs);
     void updateNativePresentationPressure(uint64_t nowNs);
+    void requestLsfgSwapchainRebuild(const char* reason);
     void observeHostPresentResult(VkResult result);
     void emitNativeLsfgPipelineTelemetry(const char* reason);
 

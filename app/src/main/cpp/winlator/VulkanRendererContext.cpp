@@ -3300,8 +3300,12 @@ ok=true;}catch(...){}
     // QueueSubmit, the acquired swapchain image is the immutable composite snapshot
     // whose render-complete semaphore owns the final handoff to WSI.
     bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
+    const bool backendPolicyReady =
+        lsfgBackendTransitionId_ == 0
+        || lsfgBackendTransitionPolicyCommitted_;
     const bool nativeLsfgContentPending =
         !toXr
+        && backendPolicyReady
         && framegenArmed.load(std::memory_order_acquire)
         && framegenRequested.load(std::memory_order_acquire)
         && framegenSupported.load(std::memory_order_acquire)
@@ -3399,7 +3403,8 @@ ok=true;}catch(...){}
     std::array<uint32_t, VKR_LSFG_MAX_GENERATIONS> nativeGeneratedImgIndices{};
     uint64_t acquireNs = 0;
     VkResult res = VK_SUCCESS;
-    bool nativeRuntimeActive = !toXr && framegenArmed && framegenRequested
+    bool nativeRuntimeActive =
+        !toXr && backendPolicyReady && framegenArmed && framegenRequested
         && lsfg != nullptr && framegenSupported;
     const uint32_t nativeCapacity = nativeRuntimeActive && swapchainImages.size() > nativeMinImageCount_
         ? std::min<uint32_t>(VKR_LSFG_MAX_GENERATIONS,
@@ -6281,8 +6286,7 @@ void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {
     frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);
     frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
     frameQueueSmoothFifoFallback_.store(false, std::memory_order_release);
-    fbResized.store(true, std::memory_order_release);
-    dirtyCV.notify_one();
+    requestLsfgSwapchainRebuild("present-mode-transition");
 }
 
 std::vector<int> VulkanRendererContext::getSupportedPresentModes() const {

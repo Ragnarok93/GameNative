@@ -403,10 +403,54 @@ void VulkanRendererContext::beginLsfgBackendTransition(
     lsfgBackendTransitionRecreationAttempts_ = 0;
     lsfgBackendTransitionRecreationCount_ = 0;
     lsfgBackendTransitionFirstRecreationFailed_ = false;
+    // Coalesce any not-yet-consumed rebuild into this ownership transaction.
+    // frameMutex guarantees a render already processing fbResized has finished.
+    lsfgBackendTransitionRebuildPending_ =
+        fbResized.exchange(false, std::memory_order_acq_rel);
+    lsfgBackendTransitionPolicyCommitted_ = false;
     RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_begin transaction_id=%llu "
-         "revision=%llu generation_before=%llu",
+         "revision=%llu generation_before=%llu absorbed_pending_rebuild=%d",
          (unsigned long long)transactionId, (unsigned long long)revision,
-         (unsigned long long)hostSwapchainGeneration_);
+         (unsigned long long)hostSwapchainGeneration_,
+         lsfgBackendTransitionRebuildPending_ ? 1 : 0);
+}
+
+void VulkanRendererContext::requestLsfgSwapchainRebuild(const char* reason) {
+    if (lsfgBackendTransitionId_ != 0
+            && !lsfgBackendTransitionPolicyCommitted_) {
+        lsfgBackendTransitionRebuildPending_ = true;
+        RLOG("LSFG_BACKEND_TX: event=rebuild_deferred transaction_id=%llu "
+             "revision=%llu reason=%s generation=%llu",
+             (unsigned long long)lsfgBackendTransitionId_,
+             (unsigned long long)lsfgBackendTransitionRevision_,
+             reason ? reason : "unknown",
+             (unsigned long long)hostSwapchainGeneration_);
+        return;
+    }
+    fbResized.store(true, std::memory_order_release);
+    dirtyCV.notify_one();
+}
+
+void VulkanRendererContext::commitLsfgBackendTransitionPolicy(
+        uint64_t transactionId) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
+    if (lsfgBackendTransitionId_ != transactionId
+            || lsfgBackendTransitionPolicyCommitted_) {
+        return;
+    }
+    lsfgBackendTransitionPolicyCommitted_ = true;
+    const bool rebuild = lsfgBackendTransitionRebuildPending_;
+    lsfgBackendTransitionRebuildPending_ = false;
+    RLOG("LSFG_BACKEND_TX: event=presentation_policy_committed transaction_id=%llu "
+         "revision=%llu generation=%llu rebuild_pending=%d",
+         (unsigned long long)transactionId,
+         (unsigned long long)lsfgBackendTransitionRevision_,
+         (unsigned long long)hostSwapchainGeneration_,
+         rebuild ? 1 : 0);
+    if (rebuild) {
+        fbResized.store(true, std::memory_order_release);
+        dirtyCV.notify_one();
+    }
 }
 
 void VulkanRendererContext::completeLsfgBackendTransition(
@@ -416,10 +460,13 @@ void VulkanRendererContext::completeLsfgBackendTransition(
     const bool invariantOk =
         lsfgBackendTransitionRecreationCount_ <= 1
         || lsfgBackendTransitionFirstRecreationFailed_;
+    const bool policyOk =
+        lsfgBackendTransitionPolicyCommitted_
+        || !lsfgBackendTransitionRebuildPending_;
     RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_complete transaction_id=%llu "
          "revision=%llu generation_before=%llu generation_after=%llu "
          "recreation_attempts=%u recreation_count=%u first_recreation_failed=%d "
-         "invariant_ok=%d completion_reason=%s",
+         "policy_committed=%d rebuild_pending=%d invariant_ok=%d completion_reason=%s",
          (unsigned long long)transactionId,
          (unsigned long long)lsfgBackendTransitionRevision_,
          (unsigned long long)lsfgBackendTransitionStartGeneration_,
@@ -427,9 +474,12 @@ void VulkanRendererContext::completeLsfgBackendTransition(
          lsfgBackendTransitionRecreationAttempts_,
          lsfgBackendTransitionRecreationCount_,
          lsfgBackendTransitionFirstRecreationFailed_ ? 1 : 0,
+         lsfgBackendTransitionPolicyCommitted_ ? 1 : 0,
+         lsfgBackendTransitionRebuildPending_ ? 1 : 0,
          invariantOk ? 1 : 0, reason ? reason : "unknown");
 #ifndef NDEBUG
     assert(invariantOk && "one LSFG backend transition caused multiple swapchain generations");
+    assert(policyOk && "LSFG backend transition completed with uncommitted presentation policy");
 #endif
     lsfgBackendTransitionId_ = 0;
     lsfgBackendTransitionRevision_ = 0;
@@ -437,6 +487,8 @@ void VulkanRendererContext::completeLsfgBackendTransition(
     lsfgBackendTransitionRecreationAttempts_ = 0;
     lsfgBackendTransitionRecreationCount_ = 0;
     lsfgBackendTransitionFirstRecreationFailed_ = false;
+    lsfgBackendTransitionRebuildPending_ = false;
+    lsfgBackendTransitionPolicyCommitted_ = false;
 }
 
 void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
@@ -453,8 +505,7 @@ void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
     } else if (device && !lsfgCachePath.empty()) {
         createLsfg();
     }
-    fbResized.store(true);
-    dirtyCV.notify_one();
+    requestLsfgSwapchainRebuild("frame-generation-enabled-state");
     RLOG("Frame generation composite path %s (supported=%d)",
          enabled ? "enabled" : "disabled", (int)framegenSupported);
 }
@@ -482,8 +533,7 @@ void VulkanRendererContext::setFrameGenerationShaders(const std::string& cachePa
     if (framegenRequested && device && !lsfgCachePath.empty()) {
         createLsfg();
     }
-    fbResized.store(true);
-    dirtyCV.notify_one();
+    requestLsfgSwapchainRebuild("frame-generation-shader-cache");
 }
 
 void VulkanRendererContext::setSourceFrameCount(uint64_t count) {
@@ -563,7 +613,7 @@ void VulkanRendererContext::setFrameGenerationMode(
     // LSFG history. Growing from 2x/3x to a denser mode can still require more
     // WSI images; recreate only the swapchain/composite capacity in that case.
     if (swapchainCapacityIncrease) {
-        fbResized.store(true, std::memory_order_release);
+        requestLsfgSwapchainRebuild("swapchain-capacity-increase");
         RLOG(
             "LSFG_NATIVE_CONTEXT: event=surface_rebuild_requested "
             "reason=swapchain-capacity-increase previous_extra_images=%u "

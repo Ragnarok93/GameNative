@@ -672,30 +672,26 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             lsfgMultiplier,
             lsfgPerformanceMode,
         )
+        // Persistence + debounced publication are the only setting path.
+        // Backend transitions themselves are exclusively manager-owned.
         LsfgQuickMenuHelper.applySettings(
             container,
             LsfgQuickMenuHelper.Settings(lsfgMultiplier, lsfgFlowScale, lsfgPerformanceMode),
         )
-        // Native LSFG is host-renderer state, not an implicit-layer config.
-        // Re-push it only when the authoritative backend is native; legacy keeps
-        // the protected lsfg-vk path unchanged.
-        if (LsfgVkManager.isNativeBackend(container)) {
-            val renderer = xServerView?.renderer as? VulkanRenderer
-            if (renderer != null) {
-                LsfgVkManager.applyNativeRuntime(
-                    renderer = renderer,
-                    container = container,
-                    context = xServerView!!.context,
-                )
-            }
-        }
     }
 
-    fun scheduleLsfgRuntimeHandoff(active: Boolean, multiplier: Int) {
+    fun scheduleLsfgRuntimeHandoff(
+        active: Boolean,
+        multiplier: Int,
+        backend: String = lsfgBackend,
+        transition: LsfgVkManager.BackendTransitionRequest? = null,
+    ) {
         lsfgRuntimeMode = if (active) LsfgRuntimeMode.TURNING_ON else LsfgRuntimeMode.TURNING_OFF
         lsfgRuntimeHandoffController.schedule(
             active = active,
             multiplier = multiplier,
+            backend = backend,
+            transition = transition,
             onStateChanged = { generationActive, runtimeMultiplier, mode ->
                 isLsfgGenerationActive = generationActive
                 lsfgRuntimeMultiplier = runtimeMultiplier
@@ -755,42 +751,22 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyLsfgBackend(requestedBackend: String) {
-        val request = LsfgVkManager.setBackend(container, requestedBackend)
-        lsfgBackend = request.backend
-
-        val renderer = xServerView?.renderer as? VulkanRenderer
-        if (request.backend == LsfgVkManager.BACKEND_LEGACY) renderer?.setFrameGenerationEnabled(false)
-        LsfgVkManager.updateConfigAtRuntime(container, lsfgMultiplier >= 2,
-            lsfgMultiplier, lsfgFlowScale, lsfgPerformanceMode)
-        if (request.backend == LsfgVkManager.BACKEND_NATIVE && renderer != null) {
-            LsfgVkManager.applyNativeRuntime(
-                renderer = renderer,
-                container = container,
-                context = xServerView!!.context,
-                onApplied = { result ->
-                    LsfgVkManager.recordBackendRuntimeApplied(
-                        request = request,
-                        runtimeBackend = LsfgVkManager.BACKEND_NATIVE,
-                        result = result,
-                    )
-                },
-            )
-        } else if (request.backend == LsfgVkManager.BACKEND_NATIVE) {
-            LsfgVkManager.recordBackendRuntimeApplied(
-                request = request,
-                runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
-                result = "runtime-bridge-unavailable",
-            )
-        } else {
-            if (renderer != null) {
-                LsfgVkManager.applyNativeRuntime(renderer, container, xServerView!!.context)
-            }
-            LsfgVkManager.recordBackendRuntimeApplied(
-                request = request,
-                runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
-                result = "legacy-state-committed",
-            )
-        }
+        val requestedActive = isLsfgAvailable && lsfgMultiplier >= 2
+        val transition = LsfgVkManager.submitBackendTransition(
+            container = container,
+            requestedBackend = requestedBackend,
+            enabled = requestedActive,
+            multiplier = lsfgMultiplier,
+            flowScale = lsfgFlowScale,
+            performanceMode = lsfgPerformanceMode,
+        )
+        lsfgBackend = transition.backend
+        scheduleLsfgRuntimeHandoff(
+            active = requestedActive,
+            multiplier = transition.effectiveMultiplier,
+            backend = transition.backend,
+            transition = transition,
+        )
     }
 
     fun applyAdaptiveFpsCapOnMain(capFps: Int): Boolean {

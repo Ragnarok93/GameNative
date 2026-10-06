@@ -32,8 +32,6 @@ object LsfgQuickMenuHelper {
     )
 
     internal data class RuntimeConfigSnapshot(
-        val revision: Long,
-        val backendGeneration: Long,
         val armed: Boolean,
         val multiplier: Int,
         val flowScale: Float,
@@ -43,7 +41,6 @@ object LsfgQuickMenuHelper {
         val flowScaleMode: FlowScaleMode,
         val adaptiveFlowPreset: AdaptiveFlowPreset,
         val presentMode: String,
-        val backend: String,
         val frameQueueEnabled: Boolean,
         val frameQueueTarget: FrameQueueTarget,
     )
@@ -229,11 +226,8 @@ object LsfgQuickMenuHelper {
     private fun snapshotRuntimeConfig(
         container: Container,
         settings: Settings = readSettings(container),
-    ): RuntimeConfigSnapshot {
-        val request = LsfgVkManager.reserveRuntimeRequest(container)
-        return RuntimeConfigSnapshot(
-        revision = request.revision,
-        backendGeneration = request.backendGeneration,
+    ): RuntimeConfigSnapshot =
+        RuntimeConfigSnapshot(
         armed = LsfgVkManager.isArmed(container),
         multiplier = sanitizeMultiplier(settings.multiplier),
         flowScale = sanitizeFlowScale(settings.flowScale),
@@ -243,17 +237,17 @@ object LsfgQuickMenuHelper {
         flowScaleMode = flowScaleMode(container),
         adaptiveFlowPreset = adaptiveFlowPreset(container),
         presentMode = presentMode(container),
-        backend = request.backend,
         frameQueueEnabled = frameQueueEnabled(container),
         frameQueueTarget = frameQueueTarget(container),
     )
-    }
 
     private fun scheduleRuntimeConfig(container: Container) {
         // Capture every coupled LSFG mode before entering the debounce queue.
         // A Flow-only update must not reread framegen mode later and vice versa.
         val snapshot = snapshotRuntimeConfig(container)
         runtimeConfigDebouncer.submit {
+            // The winning debounced operation allocates the revision at commit,
+            // so canceled slider updates never create stale revisions.
             publishRuntimeConfig(container, snapshot)
         }
     }
@@ -262,6 +256,7 @@ object LsfgQuickMenuHelper {
         container: Container,
         snapshot: RuntimeConfigSnapshot,
     ) {
+        val request = LsfgVkManager.reserveRuntimeRequest(container)
         val enabled = snapshot.armed && snapshot.multiplier >= 2
         val adaptive =
             enabled && snapshot.generationMode == FrameGenerationMode.ADAPTIVE
@@ -281,9 +276,9 @@ object LsfgQuickMenuHelper {
 
         Timber.i(
             "LSFG runtime snapshot revision=%d backend_generation=%d backend=%s generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
-            snapshot.revision,
-            snapshot.backendGeneration,
-            snapshot.backend,
+            request.revision,
+            request.backendGeneration,
+            request.backend,
             snapshot.generationMode,
             effectiveMultiplier,
             snapshot.adaptiveTargetFps,
@@ -305,11 +300,7 @@ object LsfgQuickMenuHelper {
             presentMode = snapshot.presentMode,
             frameQueueEnabled = enabled && snapshot.frameQueueEnabled,
             frameQueueTarget = snapshot.frameQueueTarget.depth,
-            requestToken = LsfgVkManager.RuntimeRequestToken(
-                revision = snapshot.revision,
-                backendGeneration = snapshot.backendGeneration,
-                backend = snapshot.backend,
-            ),
+            requestToken = request,
         )
     }
 }

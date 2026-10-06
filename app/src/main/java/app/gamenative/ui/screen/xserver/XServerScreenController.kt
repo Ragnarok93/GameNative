@@ -27,6 +27,7 @@ import app.gamenative.ui.widget.PerformanceHudView
 import app.gamenative.utils.LsfgQuickMenuHelper
 import app.gamenative.utils.LsfgRuntimeHandoffController
 import app.gamenative.utils.LsfgRuntimeMode
+import app.gamenative.utils.LsfgVkManager
 import com.winlator.container.Container
 import com.winlator.winhandler.OnGetProcessInfoListener
 import com.winlator.winhandler.ProcessInfo
@@ -177,6 +178,11 @@ internal class XServerScreenController(
     val initialLsfgSettings = LsfgQuickMenuHelper.readSettings(container)
     val isLsfgRequested: Boolean get() = isLsfgAvailable && lsfgMultiplier >= 2
     val lsfgRuntimeHandoffController = LsfgRuntimeHandoffController(container) { PluviaApp.isOverlayPaused }
+    init {
+        LsfgVkManager.registerGuestSuspensionProbe(container) {
+            PluviaApp.isOverlayPaused
+        }
+    }
     var windowModificationListener: WindowManager.OnWindowModificationListener? = null
 
     fun installWindowModificationListener(
@@ -408,6 +414,7 @@ internal class XServerScreenController(
         exitWatchJob?.cancel()
         exitWatchJob = null
         lsfgRuntimeHandoffController.cancel()
+        LsfgVkManager.unregisterGuestSuspensionProbe(container)
     }
 }
 

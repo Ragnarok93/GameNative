@@ -41,6 +41,8 @@ class LsfgRuntimeHandoffController(
     fun schedule(
         active: Boolean,
         multiplier: Int,
+        backend: String = LsfgVkManager.backend(container),
+        transition: LsfgVkManager.BackendTransitionRequest? = null,
         onStateChanged: (active: Boolean, multiplier: Int, mode: LsfgRuntimeMode) -> Unit,
         applyFpsLimiter: () -> Unit,
     ) {
@@ -90,7 +92,8 @@ class LsfgRuntimeHandoffController(
                 val runtimeState = withContext(Dispatchers.IO) {
                     LsfgVkManager.readRuntimeState(container)
                 }
-                observed = if (active) {
+                val backendMatches = LsfgVkManager.backend(container) == backend
+                observed = backendMatches && if (active) {
                     runtimeState.readyForGeneration
                 } else {
                     runtimeState.readyForSourceOnly
@@ -121,15 +124,32 @@ class LsfgRuntimeHandoffController(
                     generation,
                     multiplier,
                 )
+                transition?.let {
+                    LsfgVkManager.completeBackendTransition(
+                        it,
+                        completionReason = "$backend-activation-timeout",
+                        effectiveMultiplier = 1,
+                    )
+                }
                 applyFpsLimiter()
                 return@launch
             }
 
+            val effectiveMultiplier = if (active) multiplier.coerceIn(2, 4) else 1
             onStateChanged(
                 active,
-                if (active) multiplier.coerceIn(2, 4) else 1,
+                effectiveMultiplier,
                 if (active) LsfgRuntimeMode.GENERATING else LsfgRuntimeMode.SOURCE_ONLY_RESIDENT,
             )
+            transition?.let {
+                LsfgVkManager.completeBackendTransition(
+                    it,
+                    completionReason =
+                        if (active) "$backend-activation-ready"
+                        else "$backend-source-only-ready",
+                    effectiveMultiplier = effectiveMultiplier,
+                )
+            }
             applyFpsLimiter()
         }
     }

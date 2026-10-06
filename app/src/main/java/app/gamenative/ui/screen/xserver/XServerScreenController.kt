@@ -110,7 +110,6 @@ internal class XServerScreenController(
     var isDisableMouseInput by mutableStateOf(container.isDisableMouseInput)
     var isEditMode by mutableStateOf(false)
     var gameRoot by mutableStateOf<View?>(null)
-    var windowModificationListener by mutableStateOf<WindowManager.OnWindowModificationListener?>(null)
     var elementPositionsSnapshot by mutableStateOf<Map<ControlElement, Pair<Int, Int>>>(emptyMap())
     var showElementEditor by mutableStateOf(false)
     var elementToEdit by mutableStateOf<ControlElement?>(null)
@@ -247,7 +246,7 @@ internal class XServerScreenController(
 
             override fun onModifyWindowProperty(window: Window, property: Property) {
                 if (window.id == frameRatingWindowId || window.isApplicationWindow()) {
-                    refreshFrameRatingTracking("property:${property.nameAsString}")
+                    refreshFrameRatingTracking("property:${property.nameAsString()}")
                 }
             }
 

@@ -59,6 +59,7 @@ class LsfgQuickMenuHelperModeTest {
         assertTrue(helper.contains("renderer.setLsfgFrameQueue("))
         assertTrue(helper.contains("frameQueueEnabled(container) &&"))
         assertTrue(helper.contains("LsfgVkManager.isArmed(container)"))
+        assertTrue(helper.contains("sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2"))
         assertTrue(!helper.contains("!LsfgVkManager.isNativeBackend(container) && frameQueueEnabled"))
     }
 

@@ -2028,6 +2028,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             }
             val touchpadHost = if (isPortrait) gameHost else frameLayout
             touchpadHost.addView(PluviaApp.touchpadView)
+            installTouchpadInteractionCallbacks()
 
             PluviaApp.inputControlsManager = InputControlsManager(context)
             RadialMenuCoordinator.install(

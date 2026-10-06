@@ -83,7 +83,7 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("applied_revision"))
         assertTrue(manager.contains("discarded_stale_revision"))
         assertTrue(manager.contains("LSFG_LEGACY_CONFIG: event=legacy_layer_state"))
-        assertTrue(manager.contains("reason=native-backend"))
+        assertTrue(manager.contains("reason = \"native-backend\""))
         assertTrue(manager.contains("LSFG_NATIVE_CONFIG: event=%s"))
         assertTrue(manager.contains("present_policy=%s queue_policy=%s legacy_present_policy=%s"))
         assertTrue(manager.contains("native-bounded-shallow"))

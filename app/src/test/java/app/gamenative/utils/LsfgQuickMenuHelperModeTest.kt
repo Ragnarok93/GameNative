@@ -43,6 +43,22 @@ class LsfgQuickMenuHelperModeTest {
     }
 
     @Test
+    fun fixedModeSnapshotsUseDedicatedFixedMultiplierAndNativeMailboxRefresh() {
+        val helper = repoFile(
+            "app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt",
+        ).readText()
+        val manager = repoFile(
+            "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt",
+        ).readText()
+
+        assertTrue(helper.contains("LsfgVkManager.fixedMultiplier(container)"))
+        assertTrue(helper.contains("if (generationMode(container) == FrameGenerationMode.FIXED)"))
+        assertTrue(manager.contains("else fixedMultiplier(container)"))
+        assertTrue(helper.contains("Native timed presentation prefers Mailbox"))
+        assertTrue(helper.contains("renderer.setVkPresentMode("))
+    }
+
+    @Test
     fun suspendedQuickMenuDoesNotTimeoutLsfgRuntimeHandoff() {
         val handoff = repoFile(
             "app/src/main/java/app/gamenative/utils/LsfgRuntimeHandoffController.kt",

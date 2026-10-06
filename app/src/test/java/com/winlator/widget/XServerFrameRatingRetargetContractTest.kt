@@ -6,25 +6,39 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class XServerFrameRatingRetargetContractTest {
-    private fun source(): String {
+    private fun source(path: String): String {
         val candidates = listOf(
-            File("src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt"),
-            File("app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt"),
+            File(path),
+            File("../$path"),
         )
         return candidates.firstOrNull { it.isFile }?.readText()
-            ?: error("Unable to locate XServerScreen.kt from test working directory")
+            ?: error("Unable to locate $path from test working directory")
     }
 
     @Test
     fun trackedWindowChangeResetsOnlySamplingEpoch() {
-        val source = source()
+        val controller = source(
+            "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreenController.kt",
+        )
+        val screen = source(
+            "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreen.kt",
+        )
+
         assertTrue(
             "FrameRating retarget must clear inherited short-term timing/frame count",
-            source.contains("rating.resetSamplingEpoch()"),
+            controller.contains("rating.resetSamplingEpoch()"),
+        )
+        assertTrue(
+            "XServer window lifecycle listener must remain installed after screen decomposition",
+            controller.contains("addOnWindowModificationListener(wmListener)"),
+        )
+        assertTrue(
+            "XServerScreen must delegate window lifecycle ownership to its controller",
+            screen.contains("installWindowModificationListener("),
         )
         assertFalse(
             "Window retarget must not erase accumulated session statistics",
-            source.contains("rating.reset()\n                                rating.visibility = View.VISIBLE"),
+            controller.contains("rating.reset()"),
         )
     }
 }

@@ -25,6 +25,8 @@ methods = "\n".join(method(s) for s in (
     "public void setFrameGenerationShaders(String cachePath)",
     "public void setFrameGenerationRefreshRate(float hz)",
     "public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct)",
+    "public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct,\n            int flowMode, int flowPreset, long configRevision)",
+    "public void setFrameGenerationPressure(float gpuUsagePercent, int thermalStatus,",
     "public boolean applyFrameGenerationSettings(",
     "public boolean isFrameGenerationSupported()",
     "public boolean hasNativeSurface()",
@@ -38,8 +40,17 @@ public class NativeBridgeTest {
     long nativeHandle = 0;
     boolean pendingFramegenArmed = false, pendingFramegenEnabled = false;
     String pendingFramegenShaders = "";
+    static final int LSFG_FLOW_FIXED = 0, LSFG_FLOW_ADAPTIVE = 1;
+    static final int LSFG_FLOW_PRESET_QUALITY = 0, LSFG_FLOW_PRESET_BALANCED = 1;
+    static final int LSFG_FLOW_PRESET_LOW = 2, LSFG_FLOW_PRESET_AUTO = 3;
     int pendingFramegenMultiplier = 2, pendingFramegenTargetRate = 0, pendingFramegenFlowScale = 70;
+    int pendingFramegenFlowMode = LSFG_FLOW_FIXED;
+    int pendingFramegenFlowPreset = LSFG_FLOW_PRESET_QUALITY;
+    long pendingFramegenConfigRevision = 0;
     float pendingFramegenRefreshRate = 60;
+    float pendingFramegenGpuUsage = -1, pendingFramegenSourceFps = 0;
+    float pendingFramegenOutputFps = 0, pendingFramegenP95Ms = 0, pendingFramegenSlowRatio = 0;
+    int pendingFramegenThermalStatus = -1;
     static final int EFFECT_NONE = 0;
     int pendingEffectId = 0, pendingEffectMask = 0, pendingFilterMode = 0, outputScalingMode = 0;
     float pendingSharpness = 0, pendingBrightness = 0, pendingContrast = 0, pendingGamma = 1;
@@ -58,8 +69,14 @@ public class NativeBridgeTest {
     void setVkPresentMode(int mode) { calls.add("present:" + mode); }
     void setLsfgFrameQueue(boolean enabled, int depth) { calls.add("queue:" + enabled); }
     void nativeArmFrameGeneration(long handle) { calls.add("arm:" + handle); }
-    void nativeSetFrameGenerationMode(long handle, int m, int t, int f) {
-        calls.add("mode:" + handle + ":" + m + ":" + t + ":" + f);
+    void nativeSetFrameGenerationMode(long handle, int m, int t, int f, int flowMode,
+            int flowPreset, long revision) {
+        calls.add("mode:" + handle + ":" + m + ":" + t + ":" + f + ":" + flowMode
+            + ":" + flowPreset + ":" + revision);
+    }
+    void nativeSetFrameGenerationPressure(long handle, float gpu, int thermal, float source,
+            float output, float p95, float slow) {
+        calls.add("pressure:" + handle + ":" + gpu + ":" + thermal);
     }
     void nativeSetFrameGenerationRefreshRate(long handle, float hz) { calls.add("refresh:" + handle + ":" + hz); }
     void nativeSetFrameGenerationShaders(long handle, String path) { calls.add("cache:" + handle + ":" + path); }
@@ -73,13 +90,17 @@ public class NativeBridgeTest {
     public static void main(String[] args) {
         NativeBridgeTest bridge = new NativeBridgeTest();
         // Persist settings before a surface exists without claiming initialization.
-        require(!bridge.applyFrameGenerationSettings("/cache/native", 4, 120, 80, 120, () -> true));
+        require(!bridge.applyFrameGenerationSettings(
+            "/cache/native", 4, 120, 80,
+            LSFG_FLOW_ADAPTIVE, LSFG_FLOW_PRESET_AUTO, 17L, 120, () -> true));
         require(bridge.pendingFramegenEnabled && bridge.compositorRequired);
         require(!bridge.isFrameGenerationSupported());
         bridge.calls.clear();
         bridge.nativeHandle = 1;
         bridge.replayFrameGenerationLocked();
-        require(bridge.calls.equals(Arrays.asList("arm:1", "mode:1:4:120:80", "refresh:1:120.0", "cache:1:/cache/native", "enabled:1:true")));
+        require(bridge.calls.equals(Arrays.asList(
+            "arm:1", "mode:1:4:120:80:1:3:17", "refresh:1:120.0",
+            "pressure:1:-1.0:-1", "cache:1:/cache/native", "enabled:1:true")));
         require(bridge.isFrameGenerationSupported());
         // Shader readiness does not manufacture an accepted generated frame.
         require(bridge.getGeneratedPresentedFrameCount() == 0);
@@ -88,7 +109,9 @@ public class NativeBridgeTest {
         // A superseded request cannot re-enable Native after a backend switch.
         bridge.setFrameGenerationEnabled(false);
         bridge.calls.clear();
-        require(!bridge.applyFrameGenerationSettings("/stale", 3, 90, 60, 90, () -> false));
+        require(!bridge.applyFrameGenerationSettings(
+            "/stale", 3, 90, 60,
+            LSFG_FLOW_FIXED, LSFG_FLOW_PRESET_QUALITY, 18L, 90, () -> false));
         require(bridge.calls.isEmpty() && !bridge.pendingFramegenEnabled);
         require(!bridge.compositorRequired);
         // Surface recreation replays disabled state too, preserving Legacy.

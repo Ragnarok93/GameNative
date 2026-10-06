@@ -1325,6 +1325,8 @@ bool VulkanRendererContext::assignLegacyGeneratedOutputSlot(
             && hostRefreshPeriodNs_ <= 10000000ULL
             && hostRefreshPeriodNs_ <= UINT64_MAX / 2ULL
         ? hostRefreshPeriodNs_ * 2ULL : 0ULL;
+    if (periodNs == 0 && highRefreshGeneratedSlotFloorNs != 0)
+        periodNs = highRefreshGeneratedSlotFloorNs;
     uint64_t stepCount = 1;
     if (lastRawNs != 0 && rawDesiredNs > lastRawNs) {
         const uint64_t rawDeltaNs = rawDesiredNs - lastRawNs;

@@ -2968,7 +2968,9 @@ ok=true;}catch(...){}
 
     // Frame Queue depth belongs to unique LSFG content only. Native and Legacy
     // share this final-output policy; Native contributes unique content directly
-    // from the host compositor instead of through the AHB delivery queue.
+    // from the host compositor instead of through the AHB delivery queue. After
+    // QueueSubmit, the acquired swapchain image is the immutable composite snapshot
+    // whose render-complete semaphore owns the final handoff to WSI.
     bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
     const bool nativeLsfgContentPending =
         !toXr

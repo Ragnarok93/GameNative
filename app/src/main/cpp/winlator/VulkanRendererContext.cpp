@@ -1222,6 +1222,204 @@ uint32_t VulkanRendererContext::hostDeliveryQueueCapacity() const {
         MIN_HOST_DELIVERY_QUEUE_CAPACITY + requestedTarget);
 }
 
+void VulkanRendererContext::resetLegacyGeneratedOutputSlotClock(
+        const char* reason) {
+    legacyGeneratedSlotContextEpoch_ = 0;
+    legacyGeneratedSlotLastRawDesiredNs_.fill(0);
+    legacyGeneratedSlotPeriodNs_.fill(0);
+    legacyGeneratedSlotNextNs_.fill(0);
+    legacyGeneratedSlotIndex_.fill(0);
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+        "event=legacy-output-slot-reset swapchain_generation=%" PRIu64
+        " cadence_epoch=%" PRIu64 " reason=%s",
+        hostSwapchainGeneration_, hostPhysicalCadenceEpoch_,
+        reason ? reason : "unknown");
+}
+
+bool VulkanRendererContext::legacyGeneratedOutputSlotMissed(
+        const LsfgFrameProvenance& provenance, uint64_t nowNs) const {
+    if (!provenance.valid || provenance.nativeImplementation
+            || provenance.kind != 1
+            || provenance.outputSlotIntendedPresentTimeNs == 0
+            || nowNs == 0) {
+        return false;
+    }
+    const uint64_t leadNs = hostRefreshPeriodNs_ != 0
+        ? std::max<uint64_t>(500000ULL, hostRefreshPeriodNs_ / 2ULL)
+        : 500000ULL;
+    const uint64_t latestUsableArrival =
+        provenance.outputSlotIntendedPresentTimeNs > leadNs
+            ? provenance.outputSlotIntendedPresentTimeNs - leadNs : 0;
+    return nowNs >= latestUsableArrival;
+}
+
+bool VulkanRendererContext::assignLegacyGeneratedOutputSlot(
+        LsfgFrameProvenance& provenance) {
+    if (!provenance.valid || provenance.nativeImplementation
+            || provenance.kind != 1
+            || provenance.desiredPresentTimeNs == 0
+            || provenance.interpolationIndex == 0
+            || provenance.interpolationIndex > VKR_LSFG_MAX_GENERATIONS) {
+        return true;
+    }
+
+    if (provenance.contextEpoch != 0
+            && legacyGeneratedSlotContextEpoch_ != 0
+            && provenance.contextEpoch != legacyGeneratedSlotContextEpoch_) {
+        resetLegacyGeneratedOutputSlotClock("legacy-context-epoch-change");
+    }
+    if (provenance.contextEpoch != 0)
+        legacyGeneratedSlotContextEpoch_ = provenance.contextEpoch;
+
+    const std::size_t lane =
+        static_cast<std::size_t>(provenance.interpolationIndex - 1);
+    const uint64_t rawDesiredNs = provenance.desiredPresentTimeNs;
+    uint64_t& lastRawNs = legacyGeneratedSlotLastRawDesiredNs_[lane];
+    uint64_t& periodNs = legacyGeneratedSlotPeriodNs_[lane];
+    uint64_t& nextNs = legacyGeneratedSlotNextNs_[lane];
+    uint64_t& slotCounter = legacyGeneratedSlotIndex_[lane];
+
+    uint64_t stepCount = 1;
+    if (lastRawNs != 0 && rawDesiredNs > lastRawNs) {
+        const uint64_t rawDeltaNs = rawDesiredNs - lastRawNs;
+        uint64_t candidatePeriodNs = rawDeltaNs;
+        if (hostRefreshPeriodNs_ != 0) {
+            const uint64_t cycles = std::max<uint64_t>(
+                1, static_cast<uint64_t>(std::llround(
+                    static_cast<double>(rawDeltaNs)
+                        / static_cast<double>(hostRefreshPeriodNs_))));
+            candidatePeriodNs = cycles * hostRefreshPeriodNs_;
+        }
+        if (candidatePeriodNs >= 4000000ULL
+                && candidatePeriodNs <= 250000000ULL) {
+            if (periodNs == 0) {
+                periodNs = candidatePeriodNs;
+            } else {
+                const uint64_t estimatedSteps = std::max<uint64_t>(
+                    1, static_cast<uint64_t>(std::llround(
+                        static_cast<double>(rawDeltaNs)
+                            / static_cast<double>(periodNs))));
+                const uint64_t expectedDeltaNs =
+                    estimatedSteps <= UINT64_MAX / periodNs
+                        ? estimatedSteps * periodNs : UINT64_MAX;
+                const uint64_t errorNs = expectedDeltaNs > rawDeltaNs
+                    ? expectedDeltaNs - rawDeltaNs
+                    : rawDeltaNs - expectedDeltaNs;
+                const uint64_t toleranceNs = hostRefreshPeriodNs_ != 0
+                    ? std::max<uint64_t>(1000000ULL, hostRefreshPeriodNs_ / 2ULL)
+                    : std::max<uint64_t>(1000000ULL, periodNs / 8ULL);
+                if (errorNs <= toleranceNs) {
+                    stepCount = estimatedSteps;
+                } else {
+                    // A material cadence/configuration change rebases once;
+                    // ordinary lateness never moves the clock.
+                    periodNs = candidatePeriodNs;
+                    nextNs = 0;
+                    stepCount = 1;
+                }
+            }
+        }
+    }
+
+    uint64_t intendedNs = rawDesiredNs;
+    if (periodNs != 0 && nextNs != 0) {
+        intendedNs = nextNs;
+        if (stepCount > 1 && periodNs <= UINT64_MAX / (stepCount - 1)) {
+            const uint64_t skipNs = periodNs * (stepCount - 1);
+            if (intendedNs <= UINT64_MAX - skipNs)
+                intendedNs += skipNs;
+        }
+    }
+    if (periodNs != 0 && intendedNs <= UINT64_MAX - periodNs)
+        nextNs = intendedNs + periodNs;
+    else
+        nextNs = 0;
+
+    lastRawNs = rawDesiredNs;
+    slotCounter += stepCount;
+    provenance.outputSlotIndex = slotCounter;
+    provenance.outputSlotIntendedPresentTimeNs = intendedNs;
+    provenance.desiredPresentTimeNs = intendedNs;
+
+    const uint64_t nowNs = monotonicTimeNs();
+    const bool missed = legacyGeneratedOutputSlotMissed(provenance, nowNs);
+    const double latenessMs =
+        nowNs != 0 && intendedNs != 0
+            ? static_cast<double>(
+                static_cast<int64_t>(nowNs)
+                    - static_cast<int64_t>(intendedNs)) / 1000000.0
+            : 0.0;
+    if (missed || slotCounter <= 8 || slotCounter % 120 == 0) {
+        __android_log_print(
+            missed ? ANDROID_LOG_WARN : ANDROID_LOG_INFO,
+            "LSFG_HOST_DISPLAY",
+            "event=legacy-output-slot output_slot_index=%" PRIu64
+            " interpolation_index=%u source_index=%" PRIu64
+            " raw_desired_ns=%" PRIu64 " intended_present_ns=%" PRIu64
+            " slot_period_ns=%" PRIu64 " refresh_period_ns=%" PRIu64
+            " arrival_ns=%" PRIu64 " lateness_ms=%.3f action=%s"
+            " generated_frame_drop_reason=%s",
+            provenance.outputSlotIndex,
+            static_cast<unsigned>(provenance.interpolationIndex),
+            provenance.sourceIndex, rawDesiredNs, intendedNs, periodNs,
+            hostRefreshPeriodNs_, nowNs, latenessMs,
+            missed ? "drop" : "enqueue",
+            missed ? "missed-usable-output-slot" : "none");
+    }
+    return !missed;
+}
+
+bool VulkanRendererContext::pruneMissedLegacyGeneratedOutputSlots(
+        uint64_t nowNs) {
+    if (nowNs == 0) return false;
+    bool droppedAny = false;
+    for (auto qit = pendingLsfgHostDeliveries_.begin();
+            qit != pendingLsfgHostDeliveries_.end();) {
+        const int64_t ownerId = qit->first;
+        auto& queue = qit->second;
+        for (auto it = queue.begin(); it != queue.end();) {
+            if (!legacyGeneratedOutputSlotMissed(it->provenance, nowNs)) {
+                ++it;
+                continue;
+            }
+            const QueuedLsfgHostDelivery dropped = *it;
+            it = queue.erase(it);
+            droppedAny = true;
+            generatedStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+            pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+            releaseWindowAhbReference(dropped.ahb);
+            const auto texture = texMap.find(ownerId);
+            if (texture != texMap.end()
+                    && texture->second.frameProvenance.deliveryId
+                        == dropped.provenance.deliveryId) {
+                texture->second.frameProvenance = {};
+            }
+            const double latenessMs =
+                static_cast<double>(
+                    static_cast<int64_t>(nowNs)
+                        - static_cast<int64_t>(
+                            dropped.provenance.outputSlotIntendedPresentTimeNs))
+                    / 1000000.0;
+            __android_log_print(
+                ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                "event=legacy-output-slot-drop output_slot_index=%" PRIu64
+                " intended_present_ns=%" PRIu64 " drop_observed_ns=%" PRIu64
+                " lateness_ms=%.3f generated_frame_drop_reason=%s",
+                dropped.provenance.outputSlotIndex,
+                dropped.provenance.outputSlotIntendedPresentTimeNs,
+                nowNs, latenessMs, "missed-usable-output-slot");
+            emitHostDeliveryAccounting(
+                "legacy-generated-output-slot-missed", &dropped.provenance);
+        }
+        if (queue.empty())
+            qit = pendingLsfgHostDeliveries_.erase(qit);
+        else
+            ++qit;
+    }
+    return droppedAny;
+}
+
 bool VulkanRendererContext::isLsfgHostDeliveryStale(
         const LsfgFrameProvenance& provenance) const {
     if (!provenance.valid || provenance.deliveryId == 0)
@@ -1234,6 +1432,8 @@ bool VulkanRendererContext::isLsfgHostDeliveryStale(
     if (provenance.desiredPresentTimeNs == 0)
         return false;
     const uint64_t nowNs = monotonicTimeNs();
+    if (legacyGeneratedOutputSlotMissed(provenance, nowNs))
+        return true;
     return nowNs != 0
         && nowNs > provenance.desiredPresentTimeNs
         && nowNs - provenance.desiredPresentTimeNs
@@ -1362,7 +1562,7 @@ void VulkanRendererContext::dropQueuedLsfgHostDeliveries(const char* reason) {
 
 bool VulkanRendererContext::enqueueLsfgHostDelivery(
         int64_t ownerId, AHardwareBuffer* ahb, WinTex& source) {
-    const LsfgFrameProvenance provenance = source.frameProvenance;
+    LsfgFrameProvenance provenance = source.frameProvenance;
     if (!provenance.valid || provenance.deliveryId == 0)
         return true;
 
@@ -1379,6 +1579,15 @@ bool VulkanRendererContext::enqueueLsfgHostDelivery(
     }
     if (provenance.contextEpoch != 0)
         hostDeliveryQueueContextEpoch_ = provenance.contextEpoch;
+
+    if (!assignLegacyGeneratedOutputSlot(provenance)) {
+        generatedStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+        emitHostDeliveryAccounting(
+            "legacy-generated-output-slot-missed", &provenance);
+        source.frameProvenance = {};
+        return false;
+    }
+    source.frameProvenance = provenance;
 
     if (isLsfgHostDeliveryStale(provenance)) {
         if (provenance.kind == 1)
@@ -3022,8 +3231,20 @@ void VulkanRendererContext::renderFrame() {
 
     processHostPresentCompletions();
     drainLsfgProvenance();
+    bool prunedMissedLegacyOutput = false;
+    {
+        std::lock_guard<std::mutex> lk(renderMutex);
+        prunedMissedLegacyOutput =
+            pruneMissedLegacyGeneratedOutputSlots(monotonicTimeNs());
+    }
     needsRender.store(false,std::memory_order_relaxed);
     cursorMoved.store(false,std::memory_order_relaxed);
+    if (prunedMissedLegacyOutput
+            && pendingLsfgHostDeliveryCount_.load(std::memory_order_acquire) == 0) {
+        // Do not snapshot/present the stale AHB as latest-content fallback.
+        // The next source/generated delivery will request rendering again.
+        return;
+    }
 
     if (surfaceDetached.load(std::memory_order_acquire)) return;
     if (scanoutActive.load()) {
@@ -4912,6 +5133,7 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
 void VulkanRendererContext::resetHostPhysicalCadenceTelemetry(
         const char* reason) {
     ++hostPhysicalCadenceEpoch_;
+    resetLegacyGeneratedOutputSlotClock(reason);
     uniquePhysicalPresent_ = 0;
     sourceUniquePhysicalPresent_ = 0;
     generatedUniquePhysicalPresent_ = 0;
@@ -4938,9 +5160,14 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
         const std::vector<LsfgFrameProvenance>& provenance) {
     HostDesiredPresentDecision decision{};
     uint64_t desired = 0;
+    bool stableLegacyGeneratedSlot = false;
     for (const auto& frame : provenance) {
         if (!frame.uniqueDelivery || frame.desiredPresentTimeNs == 0)
             continue;
+        if (!frame.nativeImplementation && frame.kind == 1
+                && frame.outputSlotIntendedPresentTimeNs != 0) {
+            stableLegacyGeneratedSlot = true;
+        }
         if (desired != 0 && desired != frame.desiredPresentTimeNs) {
             decision.provenanceDesiredPresentTimeNs = desired;
             decision.fallbackReason = "mixed-temporal-intent";
@@ -4997,6 +5224,15 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
 
     uint64_t scheduled = desired;
     if (desired < earliestAllowedNs) {
+        if (stableLegacyGeneratedSlot) {
+            // The generated lane clock owns phase. Never repair a missed
+            // Legacy slot by advancing it one display refresh; doing so creates
+            // the observed short/long 8.3/24.9-ms cadence pair.
+            decision.temporalBacklog = true;
+            ++hostTemporalBacklogTotal_;
+            decision.fallbackReason = "legacy-output-slot-missed-no-phase-repair";
+            return decision;
+        }
         if (hostRefreshPeriodNs_ == 0) {
             decision.fallbackReason =
                 desired <= nowNs ? "stale-no-refresh-cycle" : "regression";
@@ -5169,6 +5405,30 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         }
         publishLsfgHostDisplayFeedback(
             confirmation, provenance, confirmed);
+
+        if (!provenance.nativeImplementation && provenance.kind == 1
+                && provenance.outputSlotIndex != 0) {
+            const double slotLatenessMs =
+                confirmation.actualPresentTimeNs != 0
+                    && provenance.outputSlotIntendedPresentTimeNs != 0
+                ? static_cast<double>(
+                    static_cast<int64_t>(confirmation.actualPresentTimeNs)
+                        - static_cast<int64_t>(
+                            provenance.outputSlotIntendedPresentTimeNs))
+                    / 1000000.0
+                : 0.0;
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+                "event=legacy-output-slot-confirmation output_slot_index=%" PRIu64
+                " intended_present_ns=%" PRIu64
+                " actual_confirmation_ns=%" PRIu64
+                " lateness_ms=%.3f confirmed=%d unknown=%d"
+                " generated_frame_drop_reason=none",
+                provenance.outputSlotIndex,
+                provenance.outputSlotIntendedPresentTimeNs,
+                confirmation.actualPresentTimeNs,
+                slotLatenessMs, confirmed ? 1 : 0, unknown ? 1 : 0);
+        }
 
         __android_log_print(
             ANDROID_LOG_INFO,

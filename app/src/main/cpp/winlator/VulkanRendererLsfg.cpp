@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <string>
+#include <cassert>
 
 void VulkanRendererContext::createCompositePass() {
     VkAttachmentDescription att{};

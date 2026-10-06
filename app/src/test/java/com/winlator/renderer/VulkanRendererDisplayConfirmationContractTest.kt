@@ -206,6 +206,22 @@ class VulkanRendererDisplayConfirmationContractTest {
     }
 
     @Test
+    fun legacyGeneratedCadenceUsesStableOutputSlotsInsteadOfPhaseRepair() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("outputSlotIndex"))
+        assertTrue(header.contains("outputSlotIntendedPresentTimeNs"))
+        assertTrue(header.contains("legacyGeneratedSlotNextNs_"))
+        assertTrue(implementation.contains("assignLegacyGeneratedOutputSlot"))
+        assertTrue(implementation.contains("missed-usable-output-slot"))
+        assertTrue(implementation.contains("legacy-output-slot-missed-no-phase-repair"))
+        assertTrue(implementation.contains("event=legacy-output-slot-confirmation"))
+        assertTrue(implementation.contains("generated_frame_drop_reason="))
+        assertTrue(implementation.contains("pruneMissedLegacyGeneratedOutputSlots"))
+    }
+
+    @Test
     fun persistentSuboptimalRevalidatesSurfaceBeforeDebouncedRecreation() {
         val implementation = source("VulkanRendererContext.cpp")
 

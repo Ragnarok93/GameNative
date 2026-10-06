@@ -208,6 +208,10 @@ struct LsfgFrameProvenance {
     uint8_t interpolationIndex = 0;
     uint8_t kind = 0; // 0=source, 1=generated
     uint64_t desiredPresentTimeNs = 0;
+    // Host-owned Legacy cadence identity. These fields are assigned after
+    // provenance transport and are not part of the guest socket ABI.
+    uint64_t outputSlotIndex = 0;
+    uint64_t outputSlotIntendedPresentTimeNs = 0;
     bool uniqueDelivery = false;
 };
 
@@ -492,6 +496,15 @@ private:
     uint32_t lsfgBackendTransitionRecreationCount_ = 0;
     bool lsfgBackendTransitionFirstRecreationFailed_ = false;
     uint64_t hostPhysicalCadenceEpoch_ = 0;
+    uint64_t legacyGeneratedSlotContextEpoch_ = 0;
+    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
+        legacyGeneratedSlotLastRawDesiredNs_{};
+    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
+        legacyGeneratedSlotPeriodNs_{};
+    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
+        legacyGeneratedSlotNextNs_{};
+    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
+        legacyGeneratedSlotIndex_{};
     uint64_t hostConfirmationPendingHighWater_ = 0;
     uint64_t hostConfirmationExpiredTotal_ = 0;
     uint64_t hostConfirmationOverflowTotal_ = 0;
@@ -907,6 +920,11 @@ private:
     void flushHostDisplayConfirmationsUnknown(const char* reason);
     uint32_t effectiveFrameQueueTarget() const;
     uint32_t hostDeliveryQueueCapacity() const;
+    void resetLegacyGeneratedOutputSlotClock(const char* reason);
+    bool assignLegacyGeneratedOutputSlot(LsfgFrameProvenance& provenance);
+    bool legacyGeneratedOutputSlotMissed(
+        const LsfgFrameProvenance& provenance, uint64_t nowNs) const;
+    bool pruneMissedLegacyGeneratedOutputSlots(uint64_t nowNs);
     bool isLsfgHostDeliveryStale(const LsfgFrameProvenance& provenance) const;
     bool enqueueLsfgHostDelivery(
         int64_t ownerId, AHardwareBuffer* ahb, WinTex& source);

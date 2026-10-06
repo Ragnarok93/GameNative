@@ -369,9 +369,10 @@ object LsfgVkManager {
 
     @Synchronized
     fun setBackend(container: Container, backend: String): BackendRequest {
-        // Backend generation invalidates older applies; the transaction owns
-        // the single runtime revision for this switch.
-        nativeApplyGeneration.incrementAndGet()
+        // The backend transaction owns the single apply generation for this
+        // switch. Do not invalidate an apply here: setBackend only records the
+        // requested identity and the manager's runtime publication advances
+        // nativeApplyGeneration exactly once.
         val sanitized = sanitizeBackend(backend)
         val previous = this.backend(container)
         val request = BackendRequest(
@@ -1557,6 +1558,58 @@ object LsfgVkManager {
                 }
             }
         }
+    }
+
+    /**
+     * Attach the live renderer to the manager and publish its current policy.
+     * UI/lifecycle code must not apply renderer state directly: this is the
+     * single entry point that establishes the manager-owned runtime handoff.
+     */
+    @JvmStatic
+    @Synchronized
+    fun attachRenderer(
+        renderer: VulkanRenderer,
+        container: Container,
+        context: Context,
+    ) {
+        nativeRendererRef = WeakReference(renderer)
+        nativeRendererContext = context.applicationContext
+        nativeRendererContainer = container
+        applyNativeRuntime(
+            renderer = renderer,
+            container = container,
+            context = context,
+            snapshot = captureNativeRuntimeSnapshot(container, context),
+        )
+    }
+
+    /** Apply the manager-owned present/frame-queue policy to the live renderer. */
+    @JvmStatic
+    fun applyFrameQueuePolicy(
+        container: Container,
+        enabledOverride: Boolean? = null,
+        targetOverride: Int? = null,
+    ) {
+        val renderer = nativeRendererRef?.get() ?: return
+        if (nativeRendererContainer !== container) return
+        val nativeActive =
+            isNativeBackend(container) &&
+                isArmed(container) &&
+                sanitizeMultiplier(multiplier(container)) >= 2
+        val selectedPresentMode = if (nativeActive || presentMode(container) == "mailbox") {
+            1 // VK_PRESENT_MODE_MAILBOX_KHR; Vulkan falls back when unsupported.
+        } else {
+            2 // VK_PRESENT_MODE_FIFO_KHR.
+        }
+        renderer.setVkPresentMode(selectedPresentMode)
+        renderer.setLsfgFrameQueue(
+            enabledOverride ?: (
+                frameQueueEnabled(container) &&
+                    isArmed(container) &&
+                    sanitizeMultiplier(multiplier(container)) >= 2
+                ),
+            (targetOverride ?: frameQueueTarget(container)).coerceIn(0, 2),
+        )
     }
 
     @JvmStatic

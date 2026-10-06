@@ -1321,7 +1321,14 @@ object LsfgVkManager {
             val dllPath = containerDllPath(container)
             val processExecutable = targetExecutable(container)
             val savedMultiplier = multiplier(container)
-            val frameGenActive = frameGenerationActive(container) && processExecutable != null
+            // The implicit layer remains resident under Native so a later
+            // Native -> Legacy handoff is cheap, but it must start source-only.
+            // Native owns generation only after its separate handoff succeeds.
+            val legacyGenerationAllowed = !isNativeBackend(container)
+            val frameGenActive =
+                legacyGenerationAllowed &&
+                    frameGenerationActive(container) &&
+                    processExecutable != null
             val adaptive = frameGenActive && generationMode(container) == MODE_ADAPTIVE
             val runtimeMultiplier = if (adaptive) 4 else savedMultiplier
             val adaptiveTarget = if (adaptive) adaptiveTargetFps(container) else 0
@@ -1341,7 +1348,18 @@ object LsfgVkManager {
                 frameQueueEnabled = frameQueueEnabled(container),
                 frameQueueTarget = frameQueueTarget(container),
             )
-            writeConfigAtomic(configFile, configText)
+            val ok = writeConfigAtomic(configFile, configText)
+            Timber.i(
+                "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=%s reason=launch-config " +
+                    "backend=%s enabled=%d multiplier=%d adaptive_framegen=%d target_fps=%d",
+                if (frameGenActive) "generating" else "source-only",
+                backend(container),
+                if (frameGenActive) 1 else 0,
+                if (frameGenActive) runtimeMultiplier else 1,
+                if (adaptive) 1 else 0,
+                if (adaptive) adaptiveTarget else 0,
+            )
+            ok
         } catch (t: Throwable) {
             Timber.tag(TAG).e(t, "Failed to write LSFG conf.toml")
             false

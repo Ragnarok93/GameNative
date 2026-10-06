@@ -32,6 +32,9 @@ object LsfgQuickMenuHelper {
     )
 
     internal data class RuntimeConfigSnapshot(
+        val revision: Long,
+        val backendGeneration: Long,
+        val armed: Boolean,
         val multiplier: Int,
         val flowScale: Float,
         val performanceMode: Boolean,
@@ -207,7 +210,12 @@ object LsfgQuickMenuHelper {
     private fun snapshotRuntimeConfig(
         container: Container,
         settings: Settings = readSettings(container),
-    ): RuntimeConfigSnapshot = RuntimeConfigSnapshot(
+    ): RuntimeConfigSnapshot {
+        val request = LsfgVkManager.reserveRuntimeRequest(container)
+        return RuntimeConfigSnapshot(
+        revision = request.revision,
+        backendGeneration = request.backendGeneration,
+        armed = LsfgVkManager.isArmed(container),
         multiplier = sanitizeMultiplier(settings.multiplier),
         flowScale = sanitizeFlowScale(settings.flowScale),
         performanceMode = settings.performanceMode,
@@ -216,10 +224,11 @@ object LsfgQuickMenuHelper {
         flowScaleMode = flowScaleMode(container),
         adaptiveFlowPreset = adaptiveFlowPreset(container),
         presentMode = presentMode(container),
-        backend = LsfgVkManager.backend(container),
+        backend = request.backend,
         frameQueueEnabled = frameQueueEnabled(container),
         frameQueueTarget = frameQueueTarget(container),
     )
+    }
 
     private fun scheduleRuntimeConfig(container: Container) {
         // Capture every coupled LSFG mode before entering the debounce queue.
@@ -234,7 +243,7 @@ object LsfgQuickMenuHelper {
         container: Container,
         snapshot: RuntimeConfigSnapshot,
     ) {
-        val enabled = snapshot.multiplier >= 2
+        val enabled = snapshot.armed && snapshot.multiplier >= 2
         val adaptive =
             enabled && snapshot.generationMode == FrameGenerationMode.ADAPTIVE
         val effectiveMultiplier = when {
@@ -252,7 +261,9 @@ object LsfgQuickMenuHelper {
         }
 
         Timber.i(
-            "LSFG runtime snapshot backend=%s generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
+            "LSFG runtime snapshot revision=%d backend_generation=%d backend=%s generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
+            snapshot.revision,
+            snapshot.backendGeneration,
             snapshot.backend,
             snapshot.generationMode,
             effectiveMultiplier,
@@ -262,7 +273,7 @@ object LsfgQuickMenuHelper {
             snapshot.flowScale,
             enabled,
         )
-        LsfgVkManager.updateConfigAtRuntime(
+        LsfgVkManager.updateConfigAtRuntimeCaptured(
             container = container,
             enabled = enabled,
             multiplier = effectiveMultiplier,
@@ -275,6 +286,11 @@ object LsfgQuickMenuHelper {
             presentMode = snapshot.presentMode,
             frameQueueEnabled = enabled && snapshot.frameQueueEnabled,
             frameQueueTarget = snapshot.frameQueueTarget.depth,
+            requestToken = LsfgVkManager.RuntimeRequestToken(
+                revision = snapshot.revision,
+                backendGeneration = snapshot.backendGeneration,
+                backend = snapshot.backend,
+            ),
         )
     }
 }

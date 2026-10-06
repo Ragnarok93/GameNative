@@ -90,6 +90,12 @@ object LsfgVkManager {
         val requestedAtNs: Long,
     )
 
+    data class RuntimeRequestToken(
+        val revision: Long,
+        val backendGeneration: Long,
+        val backend: String,
+    )
+
     data class NativeRuntimeConfigSnapshot(
         val revision: Long,
         val backendGeneration: Long,
@@ -318,6 +324,7 @@ object LsfgVkManager {
 
     fun isNativeBackend(container: Container): Boolean = backend(container) == BACKEND_NATIVE
 
+    @Synchronized
     fun setBackend(container: Container, backend: String): BackendRequest {
         nativeApplyGeneration.incrementAndGet()
         nativeConfigRevision.incrementAndGet()
@@ -346,6 +353,14 @@ object LsfgVkManager {
         )
         return request
     }
+
+    @Synchronized
+    internal fun reserveRuntimeRequest(container: Container): RuntimeRequestToken =
+        RuntimeRequestToken(
+            revision = nativeConfigRevision.incrementAndGet(),
+            backendGeneration = backendRequestSerial.get(),
+            backend = backend(container),
+        )
 
     fun recordBackendRuntimeApplied(
         request: BackendRequest,
@@ -739,12 +754,13 @@ object LsfgVkManager {
         presentMode: String,
         frameQueueEnabled: Boolean,
         frameQueueTarget: Int,
+        requestToken: RuntimeRequestToken = reserveRuntimeRequest(container),
     ): NativeRuntimeConfigSnapshot {
         val context = nativeRendererContext
         return NativeRuntimeConfigSnapshot(
-            revision = nativeConfigRevision.incrementAndGet(),
-            backendGeneration = backendRequestSerial.get(),
-            backend = backend(container),
+            revision = requestToken.revision,
+            backendGeneration = requestToken.backendGeneration,
+            backend = requestToken.backend,
             enabled = enabled && multiplier >= 2,
             generationMode = if (adaptiveFramegen) MODE_ADAPTIVE else MODE_FIXED,
             multiplier = if (adaptiveFramegen) 4 else multiplier.coerceIn(2, 4),
@@ -1878,8 +1894,53 @@ object LsfgVkManager {
         presentMode: String,
         frameQueueEnabled: Boolean,
         frameQueueTarget: Int,
+    ): Boolean = updateConfigAtRuntimeCaptured(
+        container = container,
+        enabled = enabled,
+        multiplier = multiplier,
+        flowScale = flowScale,
+        performanceMode = performanceMode,
+        adaptiveFramegen = adaptiveFramegen,
+        fpsLimit = fpsLimit,
+        adaptiveFlowScale = adaptiveFlowScale,
+        adaptiveFlowPreset = adaptiveFlowPreset,
+        presentMode = presentMode,
+        frameQueueEnabled = frameQueueEnabled,
+        frameQueueTarget = frameQueueTarget,
+        requestToken = reserveRuntimeRequest(container),
+    )
+
+    @Synchronized
+    internal fun updateConfigAtRuntimeCaptured(
+        container: Container,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        presentMode: String,
+        frameQueueEnabled: Boolean,
+        frameQueueTarget: Int,
+        requestToken: RuntimeRequestToken,
     ): Boolean {
         if (!isSupported(container)) return false
+        if (requestToken.revision != nativeConfigRevision.get()
+            || requestToken.backendGeneration != backendRequestSerial.get()
+        ) {
+            Timber.i(
+                "LSFG_NATIVE_CONFIG: event=discarded_stale_revision requested_revision=%d " +
+                    "current_revision=%d backend_generation=%d current_backend_generation=%d " +
+                    "stage=before-legacy-publication",
+                requestToken.revision,
+                nativeConfigRevision.get(),
+                requestToken.backendGeneration,
+                backendRequestSerial.get(),
+            )
+            return true
+        }
 
         val snapshot = captureNativeRuntimeSnapshot(
             container = container,
@@ -1894,6 +1955,7 @@ object LsfgVkManager {
             presentMode = presentMode,
             frameQueueEnabled = frameQueueEnabled,
             frameQueueTarget = frameQueueTarget,
+            requestToken = requestToken,
         )
         if (!configFile(container).exists()) {
             Timber.tag(TAG).w("conf.toml not found, cannot hot-reload")

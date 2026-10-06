@@ -1051,7 +1051,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             LSFG_FLOW_PRESET_QUALITY, Math.min(LSFG_FLOW_PRESET_AUTO, flowPreset));
         pendingFramegenConfigRevision = Math.max(0L, configRevision);
         pendingFramegenRefreshRate = refreshRate;
-        pendingPresentMode = 2;
 
         // applyFrameGenerationSettings used to route through
         // setFrameGenerationEnabled(), whose post also forces compositor
@@ -1069,7 +1068,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         try {
             if (!stillRequested.getAsBoolean() || nativeHandle == 0) return false;
             final long handle = nativeHandle;
-            nativeSetPresentMode(handle, 2);
+            // Native and Legacy share the same configured present-mode policy.
+            // The caller updates pendingPresentMode before this atomic Native
+            // apply, so do not silently force FIFO here.
+            nativeSetPresentMode(handle, pendingPresentMode);
             // Native and Legacy share the same GameNative Frame Queue policy.
             // Native adds only pre-acquire stale-slot admission; it does not
             // substitute a second buffering state machine.

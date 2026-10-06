@@ -16,6 +16,7 @@ class LsfgNativeRendererIntegrationContractTest {
 
     @Test
     fun nativeTimedPresentationPrefersMailboxAndLegacyRestoreIsRevisionSafe() {
+        val root = repoRoot()
         val manager =
             File(root, "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt").readText()
         val context =

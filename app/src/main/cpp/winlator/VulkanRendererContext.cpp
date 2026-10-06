@@ -2214,6 +2214,7 @@ VkResult VulkanRendererContext::enqueueHostPresent(
 void VulkanRendererContext::hostPresenterLoop() {
     for (;;) {
         PendingHostPresent present{};
+        uint64_t presenterNowNs = 0;
         {
             std::unique_lock<std::mutex> lock(hostPresenterMutex_);
             hostPresenterCv_.wait(lock, [this] {
@@ -2225,7 +2226,7 @@ void VulkanRendererContext::hostPresenterLoop() {
                 break;
             present = std::move(pendingHostPresents_.front());
             pendingHostPresents_.pop_front();
-            const uint64_t presenterNowNs = monotonicTimeNs();
+            presenterNowNs = monotonicTimeNs();
             if (present.enqueuedAtNs != 0
                     && presenterNowNs > present.enqueuedAtNs) {
                 present.presenterQueueAgeNs =
@@ -2234,6 +2235,46 @@ void VulkanRendererContext::hostPresenterLoop() {
             hostPresenterBusy_.store(true, std::memory_order_release);
         }
         hostPresenterSpaceCv_.notify_all();
+
+        const auto generatedIt = std::find_if(
+            present.frameProvenance.begin(), present.frameProvenance.end(),
+            [](const LsfgFrameProvenance& provenance) {
+                return provenance.nativeImplementation
+                    && provenance.uniqueDelivery
+                    && provenance.kind == 1;
+            });
+        if (generatedIt != present.frameProvenance.end()) {
+            const uint64_t desiredNs =
+                present.desiredDecision.submittedDesiredPresentTimeNs != 0
+                    ? present.desiredDecision.submittedDesiredPresentTimeNs
+                    : present.desiredDecision.provenanceDesiredPresentTimeNs;
+            const uint64_t refreshNs =
+                present.desiredDecision.refreshPeriodNs;
+            if (presenterNowNs != 0 && desiredNs != 0 && refreshNs != 0
+                    && presenterNowNs > desiredNs + refreshNs) {
+                const uint64_t lateNs = presenterNowNs - desiredNs;
+                nativeGeneratedStale_.fetch_add(1, std::memory_order_relaxed);
+                const uint64_t latestSource =
+                    framegenSourceFrames.load(std::memory_order_acquire);
+                const bool superseded =
+                    latestSource > generatedIt->sourceIndex;
+                if (superseded)
+                    nativeGeneratedSuperseded_.fetch_add(
+                        1, std::memory_order_relaxed);
+                __android_log_print(
+                    ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
+                    "event=present-slot-miss stage=presenter kind=generated "
+                    "source_index=%" PRIu64 " latest_source_index=%" PRIu64
+                    " desired_ns=%" PRIu64 " presenter_now_ns=%" PRIu64
+                    " late_ms=%.3f queue_age_ms=%.3f superseded=%d "
+                    "action=submit-acquired-for-wsi-ownership",
+                    generatedIt->sourceIndex, latestSource,
+                    desiredNs, presenterNowNs,
+                    static_cast<double>(lateNs) / 1000000.0,
+                    static_cast<double>(present.presenterQueueAgeNs) / 1000000.0,
+                    superseded ? 1 : 0);
+            }
+        }
 
         auto completed = executeHostPresent(std::move(present));
 
@@ -3127,6 +3168,15 @@ ok=true;}catch(...){}
                         rejected, std::memory_order_relaxed);
                     nativeGeneratedBacklogRejected_.fetch_add(
                         rejected, std::memory_order_relaxed);
+                    if (nativeLastAdmissionReason_ == "predicted-temporal-stale") {
+                        nativeGeneratedStale_.fetch_add(
+                            rejected, std::memory_order_relaxed);
+                        RLOG(
+                            "LSFG_NATIVE_GENERATION: event=stale-retirement "
+                            "stage=pre-acquire source_index=%llu count=%u "
+                            "action=drop-before-generation reason=predicted-temporal-stale",
+                            (unsigned long long)nativeSourceFrame, rejected);
+                    }
                     vkr_lsfg_note_admission(
                         lsfg, nativeRequestedGenerations, nativeGenerations);
                     RLOG(
@@ -4799,11 +4849,6 @@ void VulkanRendererContext::resetHostPhysicalCadenceTelemetry(
 HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTime(
         const std::vector<LsfgFrameProvenance>& provenance) {
     HostDesiredPresentDecision decision{};
-    if (!hostGoogleDisplayTimingEnabled) {
-        decision.fallbackReason = "google-display-timing-unavailable";
-        return decision;
-    }
-
     uint64_t desired = 0;
     for (const auto& frame : provenance) {
         if (!frame.uniqueDelivery || frame.desiredPresentTimeNs == 0)
@@ -4819,6 +4864,13 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
     decision.refreshPeriodNs = hostRefreshPeriodNs_;
     if (desired == 0) {
         decision.fallbackReason = "no-temporal-intent";
+        return decision;
+    }
+    if (!hostGoogleDisplayTimingEnabled) {
+        // Keep the explicit Native temporal intent visible to telemetry and
+        // physical-confirmation accounting even when WSI cannot accept a
+        // desired timestamp. No CPU pacing is introduced here.
+        decision.fallbackReason = "google-display-timing-unavailable";
         return decision;
     }
 

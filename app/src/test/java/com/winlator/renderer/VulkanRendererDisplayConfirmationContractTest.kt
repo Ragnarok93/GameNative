@@ -154,6 +154,20 @@ class VulkanRendererDisplayConfirmationContractTest {
         assertTrue(implementation.contains("\"swapchain-recreated\""))
         assertTrue(implementation.contains("\"surface-detached\""))
         assertTrue(pacer.contains("static_cast<double>(i + 1) / denominator"))
+
+        val validator =
+            implementation.substring(
+                implementation.indexOf("HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTime"),
+                implementation.indexOf("void VulkanRendererContext::emitHostDisplayConfirmation"),
+            )
+        val provenanceAssignment =
+            validator.indexOf("decision.provenanceDesiredPresentTimeNs = desired")
+        val googleFallback =
+            validator.indexOf("google-display-timing-unavailable")
+        assertTrue(
+            "Temporal intent must remain observable without GOOGLE timing",
+            provenanceAssignment >= 0 && googleFallback > provenanceAssignment,
+        )
     }
 
     @Test
@@ -214,6 +228,11 @@ class VulkanRendererDisplayConfirmationContractTest {
         assertTrue(admissionStart >= 0 && acquireStart > admissionStart)
         assertTrue(implementation.contains("present_call_p95_ms="))
         assertTrue(implementation.contains("presenter_queue_age_p95_ms="))
+        assertTrue(implementation.contains("event=stale-retirement"))
+        assertTrue(implementation.contains("stage=pre-acquire"))
+        assertTrue(implementation.contains("event=present-slot-miss"))
+        assertTrue(implementation.contains("action=submit-acquired-for-wsi-ownership"))
+        assertTrue(implementation.contains("nativeGeneratedSuperseded_"))
     }
 
     private fun source(name: String): String {

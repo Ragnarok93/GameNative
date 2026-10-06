@@ -1741,6 +1741,12 @@ bool VulkanRendererContext::selectQueuedLsfgHostDelivery(
             hostDeliveryQueueContextEpoch_ != 0
             && queued.provenance.contextEpoch != 0
             && queued.provenance.contextEpoch != hostDeliveryQueueContextEpoch_;
+        const uint64_t staleObservedNs = monotonicTimeNs();
+        const bool missedLegacyOutputSlot =
+            !wrongEpoch
+            && queued.provenance.kind == 1
+            && legacyGeneratedOutputSlotMissed(
+                queued.provenance, staleObservedNs);
         if (wrongEpoch || isLsfgHostDeliveryStale(queued.provenance)) {
             queue.pop_front();
             droppedStaleDelivery = true;
@@ -1755,6 +1761,18 @@ bool VulkanRendererContext::selectQueuedLsfgHostDelivery(
                     && texture->second.frameProvenance.deliveryId
                         == queued.provenance.deliveryId) {
                 texture->second.frameProvenance = {};
+            }
+            if (missedLegacyOutputSlot) {
+                __android_log_print(
+                    ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                    "event=legacy-output-slot-drop output_slot_index=%" PRIu64
+                    " intended_present_ns=%" PRIu64
+                    " drop_observed_ns=%" PRIu64
+                    " generated_frame_drop_reason=%s",
+                    queued.provenance.outputSlotIndex,
+                    queued.provenance.outputSlotIntendedPresentTimeNs,
+                    staleObservedNs,
+                    "missed-usable-output-slot");
             }
             emitHostDeliveryAccounting(
                 wrongEpoch ? "provenance-epoch-reset" : "queued-delivery-stale",

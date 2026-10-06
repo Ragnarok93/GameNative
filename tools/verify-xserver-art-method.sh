@@ -22,7 +22,13 @@ for dex in "$work"/classes*.dex; do
   dump="$work/$(basename "$dex").dump"
   "$dexdump" -d "$dex" > "$dump"
 
-  if ! grep -qF "$target_class" "$dump"; then
+  class_descriptor_line="$(awk -v target="$target_class" '
+    /Class descriptor/ && index($0, target) != 0 {
+      print NR
+      exit
+    }
+  ' "$dump")"
+  if [[ -z "$class_descriptor_line" ]]; then
     continue
   fi
 

@@ -342,7 +342,7 @@ private val CORE_WINE_PROCESSES = setOf(
     "svchost",
 )
 
-private fun normalizeProcessName(name: String): String {
+internal fun normalizeProcessName(name: String): String {
     val trimmed = name.trim().trim('"')
     val base = trimmed.substringAfterLast('/').substringAfterLast('\\')
     val lower = base.lowercase(Locale.getDefault())
@@ -413,12 +413,12 @@ private fun updatePortraitGameHostHeight(
     }
 }
 
-private fun extractExecutableBasename(path: String): String {
+internal fun extractExecutableBasename(path: String): String {
     if (path.isBlank()) return ""
     return normalizeProcessName(path)
 }
 
-private fun windowMatchesExecutable(window: Window, targetExecutable: String): Boolean {
+internal fun windowMatchesExecutable(window: Window, targetExecutable: String): Boolean {
     if (targetExecutable.isBlank()) return false
     val normalizedTarget = normalizeProcessName(targetExecutable)
     val candidates = listOf(window.name, window.className)
@@ -430,7 +430,7 @@ private fun windowMatchesExecutable(window: Window, targetExecutable: String): B
     }
 }
 
-private fun buildEssentialProcessAllowlist(): Set<String> {
+internal fun buildEssentialProcessAllowlist(): Set<String> {
     val essentialServices = WineUtils.getEssentialServiceNames()
         .map { normalizeProcessName(it) }
     return (essentialServices + CORE_WINE_PROCESSES).toSet()
@@ -1004,83 +1004,6 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             runtimeConfigRevision,
             PluviaApp.isOverlayPaused,
         )
-    }
-
-    fun startExitWatchForUnmappedGameWindow(window: Window) {
-        val winHandler = xServerView?.getxServer()?.winHandler ?: return
-        if (exitWatchJob?.isActive == true) return
-        val targetExecutable = extractExecutableBasename(container.executablePath)
-        if (!windowMatchesExecutable(window, targetExecutable)) return
-
-        exitWatchJob = launchXServerIo {
-            val allowlist = buildEssentialProcessAllowlist()
-            val previousListener = winHandler.getOnGetProcessInfoListener()
-            val lock = Any()
-            var pendingSnapshot: CompletableDeferred<List<ProcessInfo>?>? = null
-            var currentList = mutableListOf<ProcessInfo>()
-            var expectedCount = 0
-
-            val listener = OnGetProcessInfoListener { index, count, processInfo ->
-                previousListener?.onGetProcessInfo(index, count, processInfo)
-                synchronized(lock) {
-                    val deferred = pendingSnapshot ?: return@synchronized
-                    if (count == 0 && processInfo == null) {
-                        if (!deferred.isCompleted) deferred.complete(null)
-                        return@synchronized
-                    }
-                    if (index == 0) {
-                        currentList = mutableListOf()
-                        expectedCount = count
-                    }
-                    if (processInfo != null) {
-                        currentList.add(processInfo)
-                    }
-                    if (currentList.size >= expectedCount && !deferred.isCompleted) {
-                        deferred.complete(currentList.toList())
-                    }
-                }
-            }
-
-            winHandler.setOnGetProcessInfoListener(listener)
-            try {
-                val startTime = System.currentTimeMillis()
-                while (System.currentTimeMillis() - startTime < EXIT_PROCESS_TIMEOUT_MS) {
-                    val deferred = CompletableDeferred<List<ProcessInfo>?>()
-                    synchronized(lock) {
-                        pendingSnapshot = deferred
-                    }
-                    winHandler.listProcesses()
-                    val snapshot = withTimeoutOrNull(EXIT_PROCESS_RESPONSE_TIMEOUT_MS) {
-                        deferred.await()
-                    }
-                    if (snapshot != null) {
-                        val hasNonEssential = snapshot.any {
-                            !allowlist.contains(normalizeProcessName(it.name))
-                        }
-                        if (!hasNonEssential) {
-                            withContext(Dispatchers.Main) {
-                                exit(
-                                    winHandler,
-                                    frameRating,
-                                    currentAppInfo,
-                                    container,
-                                    appId,
-                                    onExit,
-                                    navigateBack,
-                                )
-                            }
-                            break
-                        }
-                    }
-                    delay(EXIT_PROCESS_POLL_INTERVAL_MS)
-                }
-            } finally {
-                winHandler.setOnGetProcessInfoListener(previousListener)
-                synchronized(lock) {
-                    pendingSnapshot = null
-                }
-            }
-        }
     }
 
     val tryCapturePointer: () -> Boolean = {
@@ -2048,6 +1971,25 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             }
             PluviaApp.xServerView = xServerView
 
+            val windowModificationListener = installWindowModificationListener(
+                xServerViewInstance,
+            ) {
+                exit(
+                    xServerViewInstance.getxServer().winHandler,
+                    frameRating,
+                    currentAppInfo,
+                    container,
+                    appId,
+                    onExit,
+                    navigateBack,
+                )
+            }
+            mainRoot.tag = XServerViewReleaseBinding(
+                xServerView = xServerViewInstance,
+                windowModificationListener = windowModificationListener,
+                screenWidth = screenWidth,
+            )
+
             val gameHost = FrameLayout(context).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2356,7 +2298,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             releaseBinding?.let { binding ->
                 // Remove the WindowManager listener associated with the released AndroidView.
                 binding.xServerView.renderer.setOnFrameRenderedListener(null)
-                binding.xServerView.getxServer().windowManager.removeOnWindowModificationListener(binding.windowModificationListener)
+                removeWindowModificationListener(binding.xServerView)
                 binding.gameHostLayoutListener?.let { listener ->
                     (binding.gameHost?.parent as? View)?.removeOnLayoutChangeListener(listener)
                 }

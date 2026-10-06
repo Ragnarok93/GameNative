@@ -2163,7 +2163,9 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         "output_target_deficit_ratio=%.3f presentation_pressure=%d "
         "present_call_p50_ms=%.3f present_call_p95_ms=%.3f "
         "presenter_queue_age_p50_ms=%.3f presenter_queue_age_p95_ms=%.3f "
-        "suboptimal_streak=%u suboptimal_total=%" PRIu64 " queue_depth=%u queue_high_water=%u",
+        "suboptimal_streak=%u suboptimal_total=%" PRIu64 " queue_depth=%u queue_high_water=%u "
+        "admission_present_p50_ms=%.3f admission_present_p95_ms=%.3f "
+        "admission_service_estimate_ms=%.3f admission_source_interval_ms=%.3f",
         reason ? reason : "periodic",
         (unsigned long long)nativeSourceWsiSubmitted_.load(std::memory_order_relaxed),
         (unsigned long long)sourceWsiAccepted,
@@ -2199,7 +2201,11 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         hostSuboptimalConsecutive_,
         hostSuboptimalTotal_,
         hostPresentQueueDepth,
-        hostPresentQueueHighWater_.load(std::memory_order_relaxed));
+        hostPresentQueueHighWater_.load(std::memory_order_relaxed),
+        static_cast<double>(nativeLastAdmissionP50PresentNs_) / 1000000.0,
+        static_cast<double>(nativeLastAdmissionP95PresentNs_) / 1000000.0,
+        static_cast<double>(nativeLastAdmissionServiceEstimateNs_) / 1000000.0,
+        static_cast<double>(nativeLastAdmissionSourceIntervalNs_) / 1000000.0);
 }
 
 VkResult VulkanRendererContext::enqueueHostPresent(

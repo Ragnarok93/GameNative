@@ -600,8 +600,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
         when (val renderer = xServerView?.renderer) {
             is VulkanRenderer -> {
                 applyScreenEffectsConfig(renderer, screenEffectsConfig)
-                LsfgQuickMenuHelper.applyFrameQueueToRenderer(container, renderer)
-                LsfgVkManager.applyNativeRuntime(renderer, container, context)
+                LsfgVkManager.attachRenderer(renderer, container, context)
             }
             is GLRenderer -> applyScreenEffectsConfig(renderer, screenEffectsConfig)
         }

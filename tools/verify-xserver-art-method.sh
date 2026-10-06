@@ -40,18 +40,19 @@ for dex in "$work"/classes*.dex; do
     }
     in_target &&
       $0 ~ /^[[:space:]]*name[[:space:]]*:/ &&
-      $0 ~ /'XServerScreen'[[:space:]]*$/ {
+      $0 ~ /'XServerScreen([^']*)'[[:space:]]*$/ {
       in_method = 1
       next
     }
-    in_target && in_method && $0 ~ /registers_size[[:space:]]*:/ {
+    in_target && in_method &&
+      $0 ~ /(registers_size|registers)[[:space:]]*:/ {
       print $0
       exit
     }
   ' "$dump")"
 
   if [[ -z "$regs_line" ]]; then
-    echo "ERROR: found $target_class in $(basename "$dex"), but could not locate XServerScreen registers_size" >&2
+    echo "ERROR: found $target_class in $(basename "$dex"), but could not locate XServerScreen register count" >&2
     echo "DEX method names present in target class:" >&2
     awk -v target="$target_class" '
       /Class descriptor/ { in_target = index($0, target) != 0 }
@@ -60,7 +61,7 @@ for dex in "$work"/classes*.dex; do
     exit 1
   fi
 
-  regs="$(sed -E 's/.*registers_size[[:space:]]*:[[:space:]]*(0x[0-9a-fA-F]+|[0-9]+).*/\1/' <<<"$regs_line")"
+  regs="$(sed -E 's/.*(registers_size|registers)[[:space:]]*:[[:space:]]*(0x[0-9a-fA-F]+|[0-9]+).*/\2/' <<<"$regs_line")"
   if [[ -z "$regs" || "$regs" == "$regs_line" ]]; then
     echo "ERROR: unable to parse registers_size from: $regs_line" >&2
     exit 1

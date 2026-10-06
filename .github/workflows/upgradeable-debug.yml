@@ -112,6 +112,7 @@ jobs:
           --tests com.winlator.renderer.VulkanRendererAhbCacheContractTest
           --tests com.winlator.renderer.VulkanRendererDisplayConfirmationContractTest
           --tests com.winlator.renderer.LsfgFrameQueueContractTest
+          --tests com.winlator.xenvironment.components.PulseAudioAssetContractTest
           --tests app.gamenative.ui.component.FpsLimiterUtilsTest
           --tests app.gamenative.powercontrol.metrics.FrameTimeRingTest
           --tests com.winlator.widget.FrameRatingTest

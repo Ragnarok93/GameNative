@@ -4362,9 +4362,10 @@ void trimEvidence(std::deque<uint64_t>& events, uint64_t cutoffNs) {
 
 } // namespace
 void VulkanRendererContext::resetNativePresentationTimeline(const char* reason) {
+    nativeSourceTimeline_.reset();
+    nativeSourceTimelineSample_ = {};
     nativeTimelineLastSourceArrivalNs_ = 0;
     nativeTimelineSourceIntervalNs_ = 0;
-    nativeTimelineLastSourceBoundaryNs_ = 0;
     nativeTimelineGeneration_ = hostSwapchainGeneration_;
     nativeLastAdmissionReason_ = "none";
     nativePresentationEvidenceStartNs_ = 0;
@@ -4389,16 +4390,38 @@ void VulkanRendererContext::resetNativePresentationTimeline(const char* reason) 
 
 void VulkanRendererContext::noteNativeSourceArrival(uint64_t nowNs) {
     if (nowNs == 0) return;
+
+    uint64_t intervalNs = 0;
     if (nativeTimelineLastSourceArrivalNs_ != 0
             && nowNs > nativeTimelineLastSourceArrivalNs_) {
         const uint64_t raw = nowNs - nativeTimelineLastSourceArrivalNs_;
-        if (raw >= 2000000ULL && raw <= 250000000ULL) {
-            nativeTimelineSourceIntervalNs_ =
-                nativeTimelineSourceIntervalNs_ == 0
-                    ? raw
-                    : (nativeTimelineSourceIntervalNs_ * 4ULL + raw) / 5ULL;
+        if (raw >= 2000000ULL && raw <= 250000000ULL)
+            intervalNs = raw;
+    }
+    if (intervalNs == 0) {
+        const float sourceFps =
+            framegenSourceFps_.load(std::memory_order_relaxed);
+        if (sourceFps > 1.0f) {
+            intervalNs = static_cast<uint64_t>(
+                std::llround(
+                    1000000000.0 / static_cast<double>(sourceFps)));
+        } else if (hostRefreshPeriodNs_ != 0) {
+            const uint32_t fallbackCycles =
+                framegenTargetRate == 0
+                    ? std::max<uint32_t>(2, framegenMultiplier)
+                    : 2U;
+            intervalNs =
+                hostRefreshPeriodNs_ * static_cast<uint64_t>(fallbackCycles);
+        } else {
+            intervalNs = 16666667ULL;
         }
     }
+
+    nativeSourceTimelineSample_ = nativeSourceTimeline_.observe(
+        nowNs, std::chrono::nanoseconds(intervalNs));
+    if (nativeSourceTimelineSample_.valid)
+        nativeTimelineSourceIntervalNs_ =
+            nativeSourceTimelineSample_.intervalNs;
     nativeTimelineLastSourceArrivalNs_ = nowNs;
 }
 
@@ -4427,112 +4450,71 @@ VulkanRendererContext::buildNativePresentationSchedule(
         std::min<uint32_t>(generations, VKR_LSFG_MAX_GENERATIONS);
     schedule.refreshPeriodNs = hostRefreshPeriodNs_;
 
-    uint64_t interval = nativeTimelineSourceIntervalNs_;
-    const float sourceFps =
-        framegenSourceFps_.load(std::memory_order_relaxed);
-    if (interval == 0 && sourceFps > 1.0f)
-        interval = static_cast<uint64_t>(
-            std::llround(1000000000.0 / static_cast<double>(sourceFps)));
-    if (interval == 0 && schedule.refreshPeriodNs != 0) {
-        const uint32_t fallbackCycles =
-            framegenTargetRate == 0
-                ? std::max<uint32_t>(2, framegenMultiplier)
-                : std::max<uint32_t>(2, schedule.generatedCount + 1);
-        interval = schedule.refreshPeriodNs * fallbackCycles;
-    }
-    if (interval == 0)
-        interval = 16666667ULL;
-    schedule.sourceIntervalNs = interval;
-
-    uint64_t sourceCycles = 0;
-    if (schedule.refreshPeriodNs != 0) {
-        sourceCycles = std::max<uint64_t>(
-            schedule.generatedCount + 1,
-            static_cast<uint64_t>(std::llround(
-                static_cast<double>(interval)
-                    / static_cast<double>(schedule.refreshPeriodNs))));
-        schedule.sourceRefreshCycles = static_cast<uint32_t>(
-            std::min<uint64_t>(sourceCycles, UINT32_MAX));
-        schedule.sourceIntervalNs = sourceCycles * schedule.refreshPeriodNs;
-    }
-
-    const uint64_t nowNs = monotonicTimeNs();
-    uint64_t baseBoundary = nativeTimelineLastSourceBoundaryNs_;
-    if (baseBoundary == 0) {
-        if (schedule.refreshPeriodNs != 0) {
-            const uint64_t lead =
-                std::max<uint64_t>(500000ULL, schedule.refreshPeriodNs / 2ULL);
-            const uint64_t target = nowNs + lead;
-            baseBoundary =
-                ((target + schedule.refreshPeriodNs - 1)
-                    / schedule.refreshPeriodNs)
-                * schedule.refreshPeriodNs;
-        } else {
-            baseBoundary = nowNs;
+    SourceTimelineSample sample = nativeSourceTimelineSample_;
+    if (!sample.valid) {
+        const uint64_t nowNs = monotonicTimeNs();
+        uint64_t fallbackIntervalNs = nativeTimelineSourceIntervalNs_;
+        if (fallbackIntervalNs == 0) {
+            const float sourceFps =
+                framegenSourceFps_.load(std::memory_order_relaxed);
+            if (sourceFps > 1.0f) {
+                fallbackIntervalNs = static_cast<uint64_t>(
+                    std::llround(
+                        1000000000.0 / static_cast<double>(sourceFps)));
+            }
+        }
+        if (fallbackIntervalNs != 0 && nowNs != 0) {
+            sample = nativeSourceTimeline_.observe(
+                nowNs, std::chrono::nanoseconds(fallbackIntervalNs));
+            nativeSourceTimelineSample_ = sample;
         }
     }
 
-    schedule.sourceDesiredNs =
-        baseBoundary + schedule.sourceIntervalNs;
+    if (!sample.valid) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
+            "event=timeline source_index=%" PRIu64
+            " generations=%u shared_timeline=source-protected"
+            " valid=0 reason=source-timeline-unavailable",
+            sourceIndex, schedule.generatedCount);
+        return schedule;
+    }
+
+    schedule.sourceIntervalNs = sample.intervalNs;
+    schedule.sourceDesiredNs = sample.sourceDesiredTimeNs;
+    nativeTimelineSourceIntervalNs_ = sample.intervalNs;
+    if (schedule.refreshPeriodNs != 0) {
+        schedule.sourceRefreshCycles = static_cast<uint32_t>(
+            std::min<uint64_t>(
+                UINT32_MAX,
+                std::max<uint64_t>(
+                    1,
+                    static_cast<uint64_t>(std::llround(
+                        static_cast<double>(sample.intervalNs)
+                        / static_cast<double>(schedule.refreshPeriodNs))))));
+    }
+
     const auto slots =
         lsfg::BuildPresentationSlots(schedule.generatedCount);
-    uint64_t previous = baseBoundary;
     for (uint32_t g = 0; g < schedule.generatedCount; ++g) {
-        uint64_t desired = 0;
-        if (schedule.refreshPeriodNs != 0) {
-            uint64_t cycle = static_cast<uint64_t>(std::llround(
-                slots.generated[g] * static_cast<double>(sourceCycles)));
-            cycle = std::max<uint64_t>(g + 1, cycle);
-            const uint64_t maxCycle =
-                sourceCycles - (schedule.generatedCount - g);
-            cycle = std::min(cycle, maxCycle);
-            desired = baseBoundary + cycle * schedule.refreshPeriodNs;
-        } else {
-            desired = baseBoundary + static_cast<uint64_t>(
-                std::llround(
-                    slots.generated[g]
-                    * static_cast<double>(schedule.sourceIntervalNs)));
-        }
-        if (desired <= previous)
-            desired = previous + 1;
-        schedule.generatedDesiredNs[g] = desired;
-        previous = desired;
+        schedule.generatedDesiredNs[g] =
+            nativeSourceTimeline_.syntheticDesiredTimeNs(
+                sample, slots.generated[g]);
     }
 
-    const uint64_t firstDesired =
-        schedule.generatedCount != 0
-            ? schedule.generatedDesiredNs[0]
-            : schedule.sourceDesiredNs;
-    if (schedule.refreshPeriodNs != 0 && nowNs != 0) {
-        const uint64_t lead =
-            std::max<uint64_t>(500000ULL, schedule.refreshPeriodNs / 2ULL);
-        const uint64_t earliest =
-            nowNs <= UINT64_MAX - lead ? nowNs + lead : UINT64_MAX;
-        if (firstDesired < earliest) {
-            const uint64_t delta = earliest - firstDesired;
-            schedule.phaseAdvanceCycles =
-                (delta + schedule.refreshPeriodNs - 1)
-                    / schedule.refreshPeriodNs;
-            const uint64_t advance =
-                schedule.phaseAdvanceCycles * schedule.refreshPeriodNs;
-            for (uint32_t g = 0; g < schedule.generatedCount; ++g)
-                schedule.generatedDesiredNs[g] += advance;
-            schedule.sourceDesiredNs += advance;
-        }
-    }
-
-    nativeTimelineLastSourceBoundaryNs_ = schedule.sourceDesiredNs;
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
         "event=timeline source_index=%" PRIu64
-        " generations=%u source_interval_ns=%" PRIu64
-        " refresh_period_ns=%" PRIu64 " source_refresh_cycles=%u"
-        " phase_advance_cycles=%" PRIu64
+        " generations=%u shared_timeline=source-protected"
+        " source_interval_ns=%" PRIu64
+        " refresh_period_ns=%" PRIu64
+        " source_refresh_cycles=%u rebased=%d source_deadline_error_ns=%" PRId64
         " generated_0=%" PRIu64 " generated_1=%" PRIu64
         " generated_2=%" PRIu64 " source_desired=%" PRIu64,
         sourceIndex, schedule.generatedCount,
         schedule.sourceIntervalNs, schedule.refreshPeriodNs,
-        schedule.sourceRefreshCycles, schedule.phaseAdvanceCycles,
+        schedule.sourceRefreshCycles, sample.rebased ? 1 : 0,
+        sample.sourceDeadlineErrorNs,
         schedule.generatedDesiredNs[0],
         schedule.generatedDesiredNs[1],
         schedule.generatedDesiredNs[2],

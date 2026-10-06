@@ -250,6 +250,14 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(applyPresentBody.contains("nativeSetPresentMode(handle, pendingPresentMode)"))
         assertTrue(!applyPresentBody.contains("pendingPresentMode = 2"))
         assertTrue(!applyPresentBody.contains("nativeSetPresentMode(handle, 2)"))
+        val presentSetterStart =
+            javaRenderer.indexOf("public void setVkPresentMode(int mode)")
+        val presentSetterEnd =
+            javaRenderer.indexOf("private void replayFrameGenerationLocked()", presentSetterStart)
+        val presentSetter =
+            javaRenderer.substring(presentSetterStart, presentSetterEnd)
+        assertTrue(presentSetter.contains("nativeLifetimeLock.readLock().lock()"))
+        assertTrue(!presentSetter.contains("synchronized (lock)"))
         assertTrue(manager.contains("renderer.setVkPresentMode("))
         assertTrue(manager.contains("if (snapshot.presentMode == \"mailbox\") 1 else 2"))
 

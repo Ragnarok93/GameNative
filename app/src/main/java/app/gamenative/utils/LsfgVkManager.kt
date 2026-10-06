@@ -1054,6 +1054,7 @@ object LsfgVkManager {
                         ADAPTIVE_FLOW_PRESET_AUTO -> VulkanRenderer.LSFG_FLOW_PRESET_AUTO
                         else -> VulkanRenderer.LSFG_FLOW_PRESET_QUALITY
                     },
+                    snapshot.revision,
                     snapshot.displayRefresh,
                 ) { snapshotIsCurrent(snapshot, generation) }
 

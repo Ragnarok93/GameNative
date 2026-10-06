@@ -112,6 +112,7 @@ struct VkrLsfg {
     float active_flow_scale{1.0f};
     bool adaptive_flow{};
     uint32_t flow_preset_code{VKR_LSFG_FLOW_PRESET_QUALITY};
+    uint64_t config_revision{};
     AdaptiveFlowController flow_controller{};
 
     struct RuntimePressure {
@@ -178,7 +179,7 @@ void vkr_lsfg_destroy(VkrLsfg* lsfg) {
 
 void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate,
                         float flow_scale, uint32_t flow_mode, uint32_t flow_preset,
-                        float refresh_rate) {
+                        float refresh_rate, uint64_t config_revision) {
     if (!lsfg) return;
 
     lsfg::LsfgPacerConfig config = lsfg->pacer.Config();
@@ -199,6 +200,7 @@ void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate
         || std::fabs(requested - lsfg->requested_flow_scale) > 0.0005f;
 
     lsfg->requested_flow_scale = requested;
+    lsfg->config_revision = config_revision;
     lsfg->adaptive_flow = adaptive;
     lsfg->flow_preset_code = preset_code;
     lsfg->flow_controller.configure(adaptive, preset);
@@ -222,9 +224,10 @@ void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate
 
     const auto& telemetry = lsfg->flow_controller.telemetry();
     LSFG_FLOW_LOG(
-        "event=config mode=%s preset=%s requested_scale=%.2f active_scale=%.2f "
+        "event=config revision=%llu mode=%s preset=%s requested_scale=%.2f active_scale=%.2f "
         "target_scale=%.2f minimum_scale=%.2f state_index=%zu state_count=%zu "
         "multiplier=%u target_fps=%u refresh=%.2f",
+        (unsigned long long)lsfg->config_revision,
         adaptive ? "adaptive" : "fixed",
         AdaptiveFlowController::presetName(preset),
         static_cast<double>(requested),

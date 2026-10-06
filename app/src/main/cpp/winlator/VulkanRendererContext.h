@@ -353,7 +353,7 @@ public:
     void setFrameGenerationShaders(const std::string& cachePath);
     void setFrameGenerationRefreshRate(float hz);
     void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct,
-                                int flowMode, int flowPreset);
+                                int flowMode, int flowPreset, uint64_t configRevision);
     void setFrameGenerationPressure(float gpuUsagePercent, int thermalStatus,
                                     float sourceFps, float outputFps,
                                     float frameTimeP95Ms, float slowFrameRatio);
@@ -701,6 +701,7 @@ private:
     float framegenFlowScale = 0.7f;
     uint32_t framegenFlowMode = VKR_LSFG_FLOW_FIXED;
     uint32_t framegenFlowPreset = VKR_LSFG_FLOW_PRESET_QUALITY;
+    uint64_t framegenConfigRevision = 0;
     float framegenRefreshRate = 60.0f;
     float framegenGpuUsagePercent_ = -1.0f;
     int framegenThermalStatus_ = -1;

@@ -42,7 +42,7 @@ void vkr_lsfg_destroy(VkrLsfg* lsfg);
 
 void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate,
                         float flow_scale, uint32_t flow_mode, uint32_t flow_preset,
-                        float refresh_rate);
+                        float refresh_rate, uint64_t config_revision);
 
 void vkr_lsfg_set_refresh_rate(VkrLsfg* lsfg, float refresh_rate);
 

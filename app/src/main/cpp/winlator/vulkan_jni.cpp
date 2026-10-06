@@ -337,11 +337,11 @@ Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationRefreshRate(
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationMode(
         JNIEnv*, jobject, jlong handle, jint multiplier, jint targetRate, jint flowScalePct,
-        jint flowMode, jint flowPreset) {
+        jint flowMode, jint flowPreset, jlong configRevision) {
     if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
         renderer->setFrameGenerationMode(
             (int)multiplier, (int)targetRate, (int)flowScalePct,
-            (int)flowMode, (int)flowPreset);
+            (int)flowMode, (int)flowPreset, (uint64_t)configRevision);
 }
 
 extern "C" JNIEXPORT void JNICALL

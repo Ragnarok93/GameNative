@@ -60,6 +60,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private int pendingFramegenMultiplier = 2, pendingFramegenTargetRate = 0, pendingFramegenFlowScale = 70;
     private int pendingFramegenFlowMode = LSFG_FLOW_FIXED;
     private int pendingFramegenFlowPreset = LSFG_FLOW_PRESET_QUALITY;
+    private long pendingFramegenConfigRevision = 0L;
     private float pendingFramegenRefreshRate = 60.0f;
     private float pendingFramegenGpuUsage = -1.0f, pendingFramegenSourceFps = 0.0f;
     private float pendingFramegenOutputFps = 0.0f, pendingFramegenP95Ms = 0.0f;
@@ -202,7 +203,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
     private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
     private native void nativeSetFrameGenerationMode(long handle, int multiplier, int targetRate,
-        int flowScalePct, int flowMode, int flowPreset);
+        int flowScalePct, int flowMode, int flowPreset, long configRevision);
     private native void nativeSetFrameGenerationPressure(long handle, float gpuUsagePercent,
         int thermalStatus, float sourceFps, float outputFps, float frameTimeP95Ms,
         float slowFrameRatio);
@@ -893,7 +894,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         nativeArmFrameGeneration(nativeHandle);
         nativeSetFrameGenerationMode(nativeHandle, pendingFramegenMultiplier,
             pendingFramegenTargetRate, pendingFramegenFlowScale, pendingFramegenFlowMode,
-            pendingFramegenFlowPreset);
+            pendingFramegenFlowPreset, pendingFramegenConfigRevision);
         nativeSetFrameGenerationRefreshRate(nativeHandle, pendingFramegenRefreshRate);
         nativeSetFrameGenerationPressure(nativeHandle, pendingFramegenGpuUsage,
             pendingFramegenThermalStatus, pendingFramegenSourceFps, pendingFramegenOutputFps,
@@ -943,14 +944,15 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     /** Apply one native request atomically against surface teardown/backend disable. */
     public boolean applyFrameGenerationSettings(String cachePath, int multiplier, int targetRate,
-            int flowScalePct, int flowMode, int flowPreset, float refreshRate,
+            int flowScalePct, int flowMode, int flowPreset, long configRevision, float refreshRate,
             java.util.function.BooleanSupplier stillRequested) {
         synchronized (lock) {
             if (!stillRequested.getAsBoolean()) return false;
             setVkPresentMode(2);
             setLsfgFrameQueue(false, 0);
             armFrameGeneration();
-            setFrameGenerationMode(multiplier, targetRate, flowScalePct, flowMode, flowPreset);
+            setFrameGenerationMode(multiplier, targetRate, flowScalePct, flowMode, flowPreset,
+                configRevision);
             setFrameGenerationRefreshRate(refreshRate);
             setFrameGenerationShaders(cachePath);
             setFrameGenerationEnabled(true);
@@ -975,11 +977,19 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {
         setFrameGenerationMode(
-            multiplier, targetRate, flowScalePct, pendingFramegenFlowMode, pendingFramegenFlowPreset);
+            multiplier, targetRate, flowScalePct, pendingFramegenFlowMode,
+            pendingFramegenFlowPreset, pendingFramegenConfigRevision);
     }
 
     public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct,
             int flowMode, int flowPreset) {
+        setFrameGenerationMode(
+            multiplier, targetRate, flowScalePct, flowMode, flowPreset,
+            pendingFramegenConfigRevision);
+    }
+
+    public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct,
+            int flowMode, int flowPreset, long configRevision) {
         synchronized (lock) {
             pendingFramegenMultiplier = Math.max(2, Math.min(4, multiplier));
             pendingFramegenTargetRate = Math.max(0, targetRate);
@@ -988,10 +998,12 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 flowMode == LSFG_FLOW_ADAPTIVE ? LSFG_FLOW_ADAPTIVE : LSFG_FLOW_FIXED;
             pendingFramegenFlowPreset = Math.max(
                 LSFG_FLOW_PRESET_QUALITY, Math.min(LSFG_FLOW_PRESET_AUTO, flowPreset));
+            pendingFramegenConfigRevision = Math.max(0L, configRevision);
             if (nativeHandle != 0) {
                 nativeSetFrameGenerationMode(nativeHandle, pendingFramegenMultiplier,
                     pendingFramegenTargetRate, pendingFramegenFlowScale,
-                    pendingFramegenFlowMode, pendingFramegenFlowPreset);
+                    pendingFramegenFlowMode, pendingFramegenFlowPreset,
+                    pendingFramegenConfigRevision);
             }
         }
     }

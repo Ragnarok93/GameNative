@@ -221,7 +221,7 @@ void VulkanRendererContext::createLsfg() {
                        framegenTargetRate,
                        framegenFlowScale > 0.0f ? framegenFlowScale : 0.7f,
                        framegenFlowMode, framegenFlowPreset,
-                       framegenRefreshRate);
+                       framegenRefreshRate, framegenConfigRevision);
     vkr_lsfg_set_pressure(lsfg, framegenGpuUsagePercent_, framegenThermalStatus_,
                           framegenSourceFps_, framegenOutputFps_,
                           framegenFrameTimeP95Ms_, framegenSlowFrameRatio_);
@@ -378,7 +378,8 @@ void VulkanRendererContext::setFrameGenerationRefreshRate(float hz) {
 }
 
 void VulkanRendererContext::setFrameGenerationMode(
-        int multiplier, int targetRate, int flowScalePct, int flowMode, int flowPreset) {
+        int multiplier, int targetRate, int flowScalePct, int flowMode, int flowPreset,
+        uint64_t configRevision) {
     std::unique_lock<std::shared_mutex> fl(frameMutex);
     if (!framegenArmed) return;
     std::lock_guard<std::mutex> lk(renderMutex);
@@ -398,7 +399,8 @@ void VulkanRendererContext::setFrameGenerationMode(
             && nextTarget == framegenTargetRate
             && nextFlow == framegenFlowScale
             && nextFlowMode == framegenFlowMode
-            && nextFlowPreset == framegenFlowPreset) {
+            && nextFlowPreset == framegenFlowPreset
+            && configRevision == framegenConfigRevision) {
         return;
     }
 
@@ -411,20 +413,22 @@ void VulkanRendererContext::setFrameGenerationMode(
     framegenFlowScale = nextFlow;
     framegenFlowMode = nextFlowMode;
     framegenFlowPreset = nextFlowPreset;
+    framegenConfigRevision = configRevision;
     if (lsfg) {
         vkr_lsfg_configure(lsfg, framegenMultiplier, framegenTargetRate,
                            framegenFlowScale, framegenFlowMode, framegenFlowPreset,
-                           framegenRefreshRate);
+                           framegenRefreshRate, framegenConfigRevision);
     }
 
     // Multiplier and target-FPS changes are scheduler scalars. They must not
     // drain fences, reset history or recreate LSFG resources. A Flow contract
     // change is rebuilt later at the render thread's existing safe boundary.
     RLOG(
-        "LSFG_NATIVE_CONTEXT: event=config_update context_epoch=%llu rebuild_required=%d "
-        "rebuild_reason=%s multiplier=%u target_fps=%u flow_mode=%s "
+        "LSFG_NATIVE_CONTEXT: event=config_update context_epoch=%llu revision=%llu "
+        "rebuild_required=%d rebuild_reason=%s multiplier=%u target_fps=%u flow_mode=%s "
         "flow_preset=%u requested_scale=%.2f",
         (unsigned long long)nativeLsfgContextEpoch_,
+        (unsigned long long)framegenConfigRevision,
         flowContractChanged ? 1 : 0,
         flowContractChanged ? "flow-contract-change" : "none",
         framegenMultiplier,
@@ -433,9 +437,7 @@ void VulkanRendererContext::setFrameGenerationMode(
         framegenFlowPreset,
         (double)framegenFlowScale);
 
-    if (framegenExtraImages() != previous_images) {
-        fbResized.store(true);
-    }
+    (void)previous_images;
     dirtyCV.notify_one();
 }
 

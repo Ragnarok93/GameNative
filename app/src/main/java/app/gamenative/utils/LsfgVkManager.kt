@@ -929,7 +929,7 @@ object LsfgVkManager {
             snapshot.requestedFlowScale,
             snapshot.displayRefresh,
             if (nativeEnabled) "fifo" else "disabled",
-            if (nativeEnabled) "native-bounded-shallow" else "disabled",
+            if (nativeEnabled) "shared-host-frame-queue+native-admission" else "disabled",
             snapshot.presentMode,
             if (snapshot.frameQueueEnabled) 1 else 0,
             snapshot.frameQueueTarget,
@@ -1106,7 +1106,6 @@ object LsfgVkManager {
                 val enabled = requested && snapshot.enabled && snapshot.multiplier >= 2
                 if (!requested || !enabled) {
                     renderer.setFrameGenerationEnabled(false)
-                    renderer.setNativeFrameQueuePolicyOwned(false)
                     renderer.setVkPresentMode(if (snapshot.presentMode == "mailbox") 1 else 2)
                     renderer.setLsfgFrameQueue(
                         !requested && snapshot.frameQueueEnabled && snapshot.enabled,
@@ -1204,8 +1203,14 @@ object LsfgVkManager {
                     return@execute
                 }
 
-                // FIFO retains every Native output in temporal order. The
-                // Legacy layer's present preference remains in its own config.
+                // Native reuses the same GameNative Frame Queue policy as Legacy.
+                // FIFO still makes Smooth fall back through the shared renderer's
+                // existing compatibility path; Native stale-slot admission is an
+                // additional pre-acquire safety guard, not a replacement queue.
+                renderer.setLsfgFrameQueue(
+                    snapshot.frameQueueEnabled,
+                    snapshot.frameQueueTarget,
+                )
                 val initialized = renderer.applyFrameGenerationSettings(
                     cache,
                     snapshot.multiplier,

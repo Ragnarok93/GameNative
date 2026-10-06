@@ -1971,4 +1971,4 @@ object LsfgVkManager {
             refreshNativeRuntime(container, snapshot)
         }
         return published
-    }}
+    }

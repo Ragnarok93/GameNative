@@ -1597,7 +1597,7 @@ object LsfgVkManager {
         val nativeActive =
             isNativeBackend(container) &&
                 isArmed(container) &&
-                sanitizeMultiplier(multiplier(container)) >= 2
+                multiplier(container) >= 2
         val selectedPresentMode = if (nativeActive || presentMode(container) == "mailbox") {
             1 // VK_PRESENT_MODE_MAILBOX_KHR; Vulkan falls back when unsupported.
         } else {
@@ -1608,7 +1608,7 @@ object LsfgVkManager {
             enabledOverride ?: (
                 frameQueueEnabled(container) &&
                     isArmed(container) &&
-                    sanitizeMultiplier(multiplier(container)) >= 2
+                    multiplier(container) >= 2
                 ),
             (targetOverride ?: frameQueueTarget(container)).coerceIn(0, 2),
         )

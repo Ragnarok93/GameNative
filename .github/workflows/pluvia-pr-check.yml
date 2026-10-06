@@ -41,6 +41,9 @@ jobs:
       - name: Prepare GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
 
+      - name: Rebuild Native LSFG Vulkan renderer
+        uses: ./.github/actions/prepare-vulkan-renderer-native
+
       - name: Inject credentials
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -73,6 +76,8 @@ jobs:
           --tests app.gamenative.utils.LsfgAdaptiveFlowUiContractTest
           --tests app.gamenative.utils.LsfgBuildWorkflowContractTest
           --tests app.gamenative.utils.LsfgNativeRendererIntegrationContractTest
+          --tests app.gamenative.utils.LsfgPacingCallSiteContractTest
+          --tests app.gamenative.utils.LsfgRuntimeUpdateDebouncerTest
           --tests app.gamenative.utils.XServerLaunchBootstrapContractTest
           --tests com.winlator.renderer.VulkanRendererAhbCacheContractTest
           --tests com.winlator.renderer.VulkanRendererDisplayConfirmationContractTest
@@ -96,6 +101,7 @@ jobs:
           mkdir -p /tmp/gamenative-legacy-debug
           apk=/tmp/gamenative-legacy-debug/gamenative-legacy-debug.apk
           cp "${apks[0]}" "$apk"
+          bash tools/verify-native-lsfg-apk.sh "$apk"
           expected_native_commit="$(git rev-parse HEAD:app/src/main/cpp/lsfg-vk-android)"
           unzip -p "$apk" 'lib/arm64-v8a/liblsfg-vk-layer.so' \
             | grep -aFq "$expected_native_commit"

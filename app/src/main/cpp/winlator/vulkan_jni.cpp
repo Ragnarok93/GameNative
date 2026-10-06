@@ -295,11 +295,94 @@ Java_com_winlator_renderer_VulkanRenderer_nativeArmFrameGeneration(
         renderer->armFrameGeneration();
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeIsFrameGenerationSupported(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer && renderer->isFrameGenerationSupported() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetGeneratedPresentedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? static_cast<jlong>(renderer->getGeneratedPresentedFrameCount()) : 0;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetDisplayConfirmedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? static_cast<jlong>(renderer->getDisplayConfirmedFrameCount()) : 0;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetGeneratedDisplayConfirmedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer
+        ? static_cast<jlong>(renderer->getGeneratedDisplayConfirmedFrameCount()) : 0;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetSourceDisplayConfirmedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer
+        ? static_cast<jlong>(renderer->getSourceDisplayConfirmedFrameCount()) : 0;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeIsDisplayConfirmationAvailable(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer && renderer->isDisplayConfirmationAvailable()
+        ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationEnabled(
         JNIEnv*, jobject, jlong handle, jboolean enabled) {
     if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
         renderer->setFrameGenerationEnabled(enabled == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeBeginLsfgBackendTransition(
+        JNIEnv*, jobject, jlong handle, jlong transactionId, jlong revision) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->beginLsfgBackendTransition(
+            static_cast<uint64_t>(transactionId),
+            static_cast<uint64_t>(revision));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeCommitLsfgBackendTransitionPolicy(
+        JNIEnv*, jobject, jlong handle, jlong transactionId) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->commitLsfgBackendTransitionPolicy(
+            static_cast<uint64_t>(transactionId));
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeIsLsfgBackendTransitionPolicyApplied(
+        JNIEnv*, jobject, jlong handle, jlong transactionId) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return !renderer
+        || renderer->isLsfgBackendTransitionPolicyApplied(
+            static_cast<uint64_t>(transactionId))
+        ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeCompleteLsfgBackendTransition(
+        JNIEnv* env, jobject, jlong handle, jlong transactionId, jstring reason) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    if (!renderer) return;
+    const char* chars = reason ? env->GetStringUTFChars(reason, nullptr) : nullptr;
+    renderer->completeLsfgBackendTransition(
+        static_cast<uint64_t>(transactionId), chars ? chars : "unknown");
+    if (chars) env->ReleaseStringUTFChars(reason, chars);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -322,10 +405,22 @@ Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationRefreshRate(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationMode(
-        JNIEnv*, jobject, jlong handle, jint multiplier, jint targetRate, jint flowScalePct) {
+        JNIEnv*, jobject, jlong handle, jint multiplier, jint targetRate, jint flowScalePct,
+        jint flowMode, jint flowPreset, jlong configRevision) {
     if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
         renderer->setFrameGenerationMode(
-            (int)multiplier, (int)targetRate, (int)flowScalePct);
+            (int)multiplier, (int)targetRate, (int)flowScalePct,
+            (int)flowMode, (int)flowPreset, (uint64_t)configRevision);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationPressure(
+        JNIEnv*, jobject, jlong handle, jfloat gpuUsagePercent, jint thermalStatus,
+        jfloat sourceFps, jfloat outputFps, jfloat frameTimeP95Ms, jfloat slowFrameRatio) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->setFrameGenerationPressure(
+            (float)gpuUsagePercent, (int)thermalStatus, (float)sourceFps,
+            (float)outputFps, (float)frameTimeP95Ms, (float)slowFrameRatio);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -399,3 +494,11 @@ Java_com_winlator_renderer_VulkanRenderer_nativeReattachSurface(JNIEnv* env, job
     }
     return (jboolean)ok;
 }
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeHasPresentationSurface(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer && renderer->hasPresentationSurface() ? JNI_TRUE : JNI_FALSE;
+}
+

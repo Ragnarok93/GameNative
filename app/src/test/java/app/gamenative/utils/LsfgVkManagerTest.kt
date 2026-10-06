@@ -100,6 +100,25 @@ class LsfgVkManagerTest {
     }
 
     @Test
+    fun writeConfig_nativeBackendKeepsResidentLegacyLayerSourceOnlyAtLaunch() {
+        val container = container(armed = true, multiplier = "4")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_BACKEND, LsfgVkManager.BACKEND_LEGACY))
+            .thenReturn(LsfgVkManager.BACKEND_NATIVE)
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_ENABLED, "false"))
+            .thenReturn("true")
+        whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_TARGET, "0"))
+            .thenReturn("2")
+
+        assertTrue(LsfgVkManager.writeConfig(container))
+
+        val text = File(rootDir, ".config/lsfg-vk/conf.toml").readText()
+        assertTrue(text.contains("multiplier = 1"))
+        assertTrue(text.contains("adaptive_framegen = false"))
+        assertTrue(text.contains("fps_limit = 0"))
+        assertTrue(text.contains("frame_queue_enabled = false"))
+    }
+
+    @Test
     fun writeConfig_serializesHostFrameQueueMetadataWithoutChangingFramegenMode() {
         val container = container(armed = true, multiplier = "2")
         whenever(container.getExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_ENABLED, "false"))

@@ -17,10 +17,32 @@ constexpr float SOURCE_SMOOTHING = 0.15f;
 constexpr float SOURCE_STALE_SECONDS = 0.5f;
 constexpr float DISCONTINUITY_SECONDS = 0.25f;
 constexpr float HEADROOM_EPSILON = 0.02f;
-constexpr float CREDIT_EPSILON = 1.0e-4f;
 constexpr float SOURCE_ACCUM_FLOOR = 0.01f;
 constexpr uint32_t MIN_RATE_SAMPLES = 12;
 
+}
+
+void LsfgPacer::SetConfig(const LsfgPacerConfig& config_) {
+    config = config_;
+    uint32_t adaptiveTarget = config.target_rate;
+    if (adaptiveTarget != 0 && config.refresh_rate > 1.0f) {
+        adaptiveTarget = std::min<uint32_t>(
+            adaptiveTarget,
+            static_cast<uint32_t>(std::llround(config.refresh_rate)));
+    }
+    adaptive_scheduler.configure(
+        adaptiveTarget,
+        config.target_rate != 0 ? LSFG_MAX_MULTIPLIER - 1 : 0);
+    adaptive_scheduler.setGenerationFirst(false);
+}
+
+LsfgPresentationSlots BuildPresentationSlots(size_t generations) {
+    LsfgPresentationSlots slots{};
+    slots.generated_count = std::min(generations, LSFG_MAX_MULTIPLIER - 1);
+    const double denominator = static_cast<double>(slots.generated_count + 1);
+    for (size_t i = 0; i < slots.generated_count; ++i)
+        slots.generated[i] = static_cast<double>(i + 1) / denominator;
+    return slots;
 }
 
 size_t LsfgPacer::MaxGenerations() const {
@@ -85,61 +107,43 @@ size_t LsfgPacer::HeadroomLimit() const {
 }
 
 LsfgPlan LsfgPacer::Plan(size_t capacity, uint64_t source_frames) {
-    const size_t ceiling = std::min(capacity, MaxGenerations());
-    if (ceiling == 0) {
-        Reset();
-        return {};
-    }
+    return PlanAt(capacity, source_frames, Clock::now());
+}
 
-    const Clock::time_point now = Clock::now();
+LsfgPlan LsfgPacer::PlanAt(size_t capacity, uint64_t source_frames, Clock::time_point now) {
     TrackSourceRate(now, source_frames);
     if (!last_frame) {
         last_frame = now;
         return {};
     }
 
-    const float interval_seconds = std::chrono::duration<float>(now - *last_frame).count();
+    const float interval_seconds =
+        std::chrono::duration<float>(now - *last_frame).count();
     last_frame = now;
-
-    if (interval_seconds <= 0.0f || interval_seconds > DISCONTINUITY_SECONDS) {
-        output_credit = 0.0f;
-        return LsfgPlan{0, true};
-    }
+    if (interval_seconds <= 0.0f)
+        return {};
 
     TrackLoopRate(interval_seconds);
+    const size_t ceiling = std::min(capacity, MaxGenerations());
 
-    float target_rate = static_cast<float>(config.target_rate);
-    if (target_rate > 0.0f && config.refresh_rate > 0.0f) {
-        target_rate = std::min(target_rate, config.refresh_rate);
-    }
-
-    if (target_rate == 0.0f) {
-        output_credit = 0.0f;
+    if (config.target_rate == 0) {
+        if (interval_seconds > DISCONTINUITY_SECONDS) {
+            limit = 0;
+            return LsfgPlan{0, true};
+        }
+        // Fixed 2x/3x/4x remains authoritative exactly as in Legacy.
         limit = ceiling;
         return LsfgPlan{limit, true};
     }
 
-    const size_t allowed = std::min(ceiling, HeadroomLimit());
-    const float desired_outputs = loop_interval * target_rate;
-    if (allowed == 0 || desired_outputs <= 1.0f) {
-        output_credit = 0.0f;
-        limit = 0;
-        return {};
-    }
-
-    output_credit += (desired_outputs - 1.0f);
-    const size_t available = static_cast<size_t>(std::floor(output_credit + CREDIT_EPSILON));
-    const size_t generations = std::min(available, allowed);
-
-    output_credit -= static_cast<float>(generations);
-    if (output_credit < 0.0f) {
-        output_credit = 0.0f;
-    } else if (generations == allowed && output_credit >= 1.0f) {
-        output_credit = std::fmod(output_credit, 1.0f);
-    }
-
-    limit = generations;
-    return LsfgPlan{generations, true};
+    const auto sourceInterval =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<float>(interval_seconds));
+    // Adaptive target density is owned by the exact same scheduler as Legacy.
+    // Native applies only hard backend capacity after the policy decision.
+    const size_t scheduled = adaptive_scheduler.plan(sourceInterval);
+    limit = std::min(scheduled, ceiling);
+    return LsfgPlan{limit, true};
 }
 
 LsfgPacerStats LsfgPacer::Stats() const {
@@ -169,7 +173,7 @@ void LsfgPacer::Reset() {
     loop_samples = 0;
     last_drawn = 0;
     last_elapsed = 0.0f;
-    output_credit = 0.0f;
+    adaptive_scheduler.reset();
     limit = 0;
 }
 

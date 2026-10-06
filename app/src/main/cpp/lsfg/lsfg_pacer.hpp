@@ -3,10 +3,13 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+
+#include "adaptive_scheduler.hpp"
 
 namespace lsfg {
 
@@ -23,6 +26,14 @@ struct LsfgPlan {
     bool warm{};
 };
 
+struct LsfgPresentationSlots {
+    std::array<double, LSFG_MAX_MULTIPLIER - 1> generated{};
+    size_t generated_count{};
+    double source{1.0};
+};
+
+[[nodiscard]] LsfgPresentationSlots BuildPresentationSlots(size_t generations);
+
 struct LsfgPacerStats {
     float source_rate{};
     float loop_rate{};
@@ -38,9 +49,7 @@ struct LsfgPacerStats {
 
 class LsfgPacer {
 public:
-    void SetConfig(const LsfgPacerConfig& config_) {
-        config = config_;
-    }
+    void SetConfig(const LsfgPacerConfig& config_);
 
     [[nodiscard]] const LsfgPacerConfig& Config() const {
         return config;
@@ -49,6 +58,10 @@ public:
     [[nodiscard]] size_t MaxGenerations() const;
 
     [[nodiscard]] LsfgPlan Plan(size_t capacity, uint64_t source_frames);
+    // Explicit monotonic timestamp lets regression tests exercise rate changes
+    // and discontinuities without sleeps or scheduler-dependent outcomes.
+    [[nodiscard]] LsfgPlan PlanAt(size_t capacity, uint64_t source_frames,
+                                std::chrono::steady_clock::time_point now);
 
     [[nodiscard]] LsfgPacerStats Stats() const;
 
@@ -75,7 +88,7 @@ private:
     uint32_t loop_samples{};
     uint64_t last_drawn{};
     float last_elapsed{};
-    float output_credit{};
+    AdaptiveFrameScheduler adaptive_scheduler;
     size_t limit{};
 };
 

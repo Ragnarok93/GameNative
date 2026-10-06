@@ -3,7 +3,10 @@
 #include "../lsfg/vkr_lsfg.h"
 
 #include <cstring>
+#include <algorithm>
+#include <chrono>
 #include <string>
+#include <cassert>
 
 void VulkanRendererContext::createCompositePass() {
     VkAttachmentDescription att{};
@@ -106,7 +109,10 @@ bool VulkanRendererContext::createOneComposite(VkCompositeTarget& c, uint32_t w,
         c.image = VK_NULL_HANDLE;
         return false;
     }
-    vk_.BindImageMemory(device, c.image, c.memory, 0);
+    if (vk_.BindImageMemory(device, c.image, c.memory, 0) != VK_SUCCESS) {
+        destroyOneComposite(c);
+        return false;
+    }
 
     VkImageViewCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -170,15 +176,59 @@ bool VulkanRendererContext::createCompositeTargets(uint32_t w, uint32_t h, uint3
 
 void VulkanRendererContext::destroyLsfg() {
     if (!lsfg) return;
+    emitNativeLsfgPipelineTelemetry("runtime-destroy");
     vkr_lsfg_destroy(lsfg);
     lsfg = nullptr;
     framegenRealFrames = 0;
     framegenMadeFrames = 0;
+    nativeGeneratedPresentedFrames_.store(0);
+    presentedFrames.store(0);
+    nativeSourceReceived_.store(0);
+    nativeSourceWsiSubmitted_.store(0);
+    nativeSourceWsiAccepted_.store(0);
+    nativeSourceDisplayConfirmed_.store(0);
+    nativeGeneratedRequested_.store(0);
+    nativeGeneratedAdmitted_.store(0);
+    nativeGeneratedDispatched_.store(0);
+    nativeGeneratedCompleted_.store(0);
+    nativeGeneratedWsiSubmitted_.store(0);
+    nativeGeneratedWsiAccepted_.store(0);
+    nativeGeneratedDisplayConfirmed_.store(0);
+    nativeGeneratedDisplayConfirmedEpoch_.store(0);
+    nativeSourceDisplayConfirmedEpoch_.store(0);
+    nativeGeneratedDroppedBefore_.store(0);
+    nativeGeneratedDroppedAfter_.store(0);
+    nativeGeneratedSuperseded_.store(0);
+    nativeGeneratedStale_.store(0);
+    nativeGeneratedDeadlineRejected_.store(0);
+    nativeGeneratedWsiRejected_.store(0);
+    nativeGeneratedBacklogRejected_.store(0);
+    nativeGpuCompletionLatencyNsTotal_.store(0);
+    nativeGpuCompletionSamples_.store(0);
+    nativeHostWaitNsTotal_.store(0);
+    nativeHostWaitSamples_.store(0);
+    nativePresentRateSampleNs_ = 0;
+    nativePresentRateSourceAccepted_ = 0;
+    nativePresentRateGeneratedAccepted_ = 0;
+    nativePresentRateSourceConfirmed_ = 0;
+    nativePresentRateGeneratedConfirmed_ = 0;
+    nativeSourceWsiFps_ = 0.0;
+    nativeGeneratedWsiFps_ = 0.0;
+    nativeOutputWsiFps_ = 0.0;
+    nativeOutputConfirmedFps_ = 0.0;
+    nativeGeneratedSubmittedByFrame_.fill(0);
+    nativeSubmissionStartedNs_.fill(0);
+    nativeLastContextReuseRevision_ = UINT64_MAX;
     framegenSupported = false;
+    nativeLsfgReady_.store(false, std::memory_order_release);
 }
 
 void VulkanRendererContext::createLsfg() {
     if (lsfg || lsfgCachePath.empty() || !device || !physicalDevice) return;
+    if (!nativeComputeSupported_) {
+        RLOG_E("LSFG_NATIVE: event=initialization_failed reason=required-device-features");
+        return;
+    }
 
     if (!nativeVulkanDispatchLoaded_) {
         if (!vkd_load(instance, device, gipa)) {
@@ -197,18 +247,43 @@ void VulkanRendererContext::createLsfg() {
         RLOG_E("LSFG shaders unavailable at %s; frame generation stays off", lsfgCachePath.c_str());
         return;
     }
-    framegenSupported = compositeFormatSupported() && nativeSwapchainTransferSupported_;
-    RLOG("Native LSFG capability: supported=%d composite_format=%d swapchain_transfer=%d",
-         framegenSupported ? 1 : 0,
-         compositeFormatSupported() ? 1 : 0,
-         nativeSwapchainTransferSupported_ ? 1 : 0);
-    if (!framegenSupported)
+    const bool formatSupported = compositeFormatSupported();
+    framegenSupported = formatSupported && nativeSwapchainTransferSupported_;
+    nativeRuntimeSessionId_ = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    VkPhysicalDeviceProperties nativeProps{};
+    vkd.GetPhysicalDeviceProperties(physicalDevice, &nativeProps);
+    RLOG(
+        "LSFG_NATIVE_CONTEXT: event=capability_probe surface=%d vulkan_device=%d compute=%d "
+        "compute_pipeline=%d composite_format=%d swapchain_transfer=%d sync=binary-semaphore+fence "
+        "vendor_id=0x%04x device_id=0x%04x driver_version=%u api_version=%u "
+        "cache_path_present=%d supported=%d",
+        surface != VK_NULL_HANDLE ? 1 : 0,
+        physicalDevice != VK_NULL_HANDLE && device != VK_NULL_HANDLE ? 1 : 0,
+        nativeComputeSupported_ ? 1 : 0,
+        vkd.CreateComputePipelines ? 1 : 0,
+        formatSupported ? 1 : 0,
+        nativeSwapchainTransferSupported_ ? 1 : 0,
+        nativeProps.vendorID,
+        nativeProps.deviceID,
+        nativeProps.driverVersion,
+        nativeProps.apiVersion,
+        !lsfgCachePath.empty() ? 1 : 0,
+        framegenSupported ? 1 : 0);
+    if (!framegenSupported) {
+        nativeLsfgReady_.store(false, std::memory_order_release);
         return;
+    }
+    nativeLsfgReady_.store(true, std::memory_order_release);
 
     vkr_lsfg_configure(lsfg, framegenMultiplier ? framegenMultiplier : 2u,
                        framegenTargetRate,
                        framegenFlowScale > 0.0f ? framegenFlowScale : 0.7f,
-                       framegenRefreshRate);
+                       framegenFlowMode, framegenFlowPreset,
+                       framegenRefreshRate, framegenConfigRevision);
+    vkr_lsfg_set_pressure(lsfg, framegenGpuUsagePercent_, framegenThermalStatus_,
+                          framegenSourceFps_, framegenOutputFps_,
+                          framegenFrameTimeP95Ms_, framegenSlowFrameRatio_);
 }
 
 uint32_t VulkanRendererContext::framegenExtraImages() const {
@@ -259,49 +334,246 @@ void VulkanRendererContext::blitCompositeToSwapchain(VkCommandBuffer cmd, const 
                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 }
 
+void VulkanRendererContext::waitNativeResources() {
+    const auto waitStart = std::chrono::steady_clock::now();
+    drainHostPresenter("native-lsfg-resource-change");
+    for (auto fence : inFlightFences) {
+        if (fence != VK_NULL_HANDLE
+                && vk_.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS) {
+            completeObservedFence(fence);
+        }
+    }
+    const uint64_t hostWaitNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - waitStart).count());
+    nativeHostWaitNsTotal_.fetch_add(hostWaitNs, std::memory_order_relaxed);
+    nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+    RLOG(
+        "LSFG_NATIVE_SYNC: event=resource_retirement reason=native-lsfg-resource-change "
+        "host_wait_ms=%.3f steady_state=0",
+        (double)hostWaitNs / 1000000.0);
+}
+
+void VulkanRendererContext::recoverNativeAcquiredFrame() {
+    // Match upstream's failed-submit recovery: acquired binary semaphores may
+    // still be signalled, so they cannot be reused by the next frame.
+    const VkFence stale = inFlightFences[currentFrame];
+    for (auto& fence : imgInFlight) if (fence == stale) fence = VK_NULL_HANDLE;
+    if (stale) vk_.DestroyFence(device, stale, nullptr);
+    VkFenceCreateInfo fi{};
+    fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    inFlightFences[currentFrame] = VK_NULL_HANDLE;
+    bool ok = vk_.CreateFence(device, &fi, nullptr, &inFlightFences[currentFrame]) == VK_SUCCESS;
+    VkSemaphoreCreateInfo sci{};
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    auto replaceSemaphore = [&](VkSemaphore& semaphore) {
+        if (semaphore) vk_.DestroySemaphore(device, semaphore, nullptr);
+        semaphore = VK_NULL_HANDLE;
+        if (vk_.CreateSemaphore(device, &sci, nullptr, &semaphore) != VK_SUCCESS) ok = false;
+    };
+    replaceSemaphore(imgAvailSems[currentFrame]);
+    for (auto& semaphore : nativeExtraAcquireSems_[currentFrame]) {
+        if (semaphore != VK_NULL_HANDLE) replaceSemaphore(semaphore);
+    }
+    if (lsfg) {
+        waitNativeResources();
+        vkr_lsfg_reset(lsfg);
+    }
+    nativeLastSourceFrame_ = 0;
+    if (!ok) {
+        RLOG_E("LSFG_NATIVE: event=recovery_failed reason=sync-allocation");
+        isRunning.store(false);
+        dirtyCV.notify_all();
+    }
+    fbResized.store(ok);
+}
+
 void VulkanRendererContext::armFrameGeneration() {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
     framegenArmed = true;
 }
 
+void VulkanRendererContext::beginLsfgBackendTransition(
+        uint64_t transactionId, uint64_t revision) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
+    lsfgBackendTransitionId_ = transactionId;
+    lsfgBackendTransitionRevision_ = revision;
+    lsfgBackendTransitionStartGeneration_ = hostSwapchainGeneration_;
+    lsfgBackendTransitionRecreationAttempts_ = 0;
+    lsfgBackendTransitionRecreationCount_ = 0;
+    lsfgBackendTransitionFirstRecreationFailed_ = false;
+    // Coalesce any not-yet-consumed rebuild into this ownership transaction.
+    // frameMutex guarantees a render already processing fbResized has finished.
+    lsfgBackendTransitionRebuildPending_ =
+        fbResized.exchange(false, std::memory_order_acq_rel);
+    lsfgBackendTransitionPolicyDirty_ = false;
+    lsfgBackendTransitionPolicyCommitted_ = false;
+    lsfgBackendTransitionPolicyApplied_ = false;
+    lsfgBackendTransitionExpectedGeneration_ = hostSwapchainGeneration_;
+    RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_begin transaction_id=%llu "
+         "revision=%llu generation_before=%llu absorbed_pending_rebuild=%d",
+         (unsigned long long)transactionId, (unsigned long long)revision,
+         (unsigned long long)hostSwapchainGeneration_,
+         lsfgBackendTransitionRebuildPending_ ? 1 : 0);
+}
+
+void VulkanRendererContext::requestLsfgSwapchainRebuild(const char* reason) {
+    if (lsfgBackendTransitionId_ != 0
+            && !lsfgBackendTransitionPolicyCommitted_) {
+        lsfgBackendTransitionRebuildPending_ = true;
+        lsfgBackendTransitionPolicyDirty_ = true;
+        RLOG("LSFG_BACKEND_TX: event=rebuild_deferred transaction_id=%llu "
+             "revision=%llu reason=%s generation=%llu",
+             (unsigned long long)lsfgBackendTransitionId_,
+             (unsigned long long)lsfgBackendTransitionRevision_,
+             reason ? reason : "unknown",
+             (unsigned long long)hostSwapchainGeneration_);
+        return;
+    }
+    fbResized.store(true, std::memory_order_release);
+    dirtyCV.notify_one();
+}
+
+void VulkanRendererContext::commitLsfgBackendTransitionPolicy(
+        uint64_t transactionId) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
+    if (lsfgBackendTransitionId_ != transactionId
+            || lsfgBackendTransitionPolicyCommitted_) {
+        return;
+    }
+    lsfgBackendTransitionPolicyCommitted_ = true;
+    const bool rebuild = lsfgBackendTransitionRebuildPending_;
+    lsfgBackendTransitionRebuildPending_ = false;
+    lsfgBackendTransitionPolicyApplied_ = !rebuild;
+    lsfgBackendTransitionExpectedGeneration_ = rebuild
+        && hostSwapchainGeneration_ != UINT64_MAX
+        ? hostSwapchainGeneration_ + 1 : hostSwapchainGeneration_;
+    RLOG("LSFG_BACKEND_TX: event=presentation_policy_committed transaction_id=%llu "
+         "revision=%llu generation=%llu expected_generation=%llu rebuild_pending=%d "
+         "policy_applied=%d",
+         (unsigned long long)transactionId,
+         (unsigned long long)lsfgBackendTransitionRevision_,
+         (unsigned long long)hostSwapchainGeneration_,
+         (unsigned long long)lsfgBackendTransitionExpectedGeneration_,
+         rebuild ? 1 : 0,
+         lsfgBackendTransitionPolicyApplied_ ? 1 : 0);
+    if (rebuild) {
+        fbResized.store(true, std::memory_order_release);
+        dirtyCV.notify_one();
+    }
+}
+
+bool VulkanRendererContext::isLsfgBackendTransitionPolicyApplied(
+        uint64_t transactionId) const {
+    std::shared_lock<std::shared_mutex> fl(frameMutex);
+    if (lsfgBackendTransitionId_ == 0
+            || lsfgBackendTransitionId_ != transactionId) {
+        return true;
+    }
+    return lsfgBackendTransitionPolicyCommitted_
+        && lsfgBackendTransitionPolicyApplied_;
+}
+
+void VulkanRendererContext::completeLsfgBackendTransition(
+        uint64_t transactionId, const char* reason) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
+    if (lsfgBackendTransitionId_ != transactionId) return;
+    const bool invariantOk =
+        lsfgBackendTransitionRecreationCount_ <= 1
+        || lsfgBackendTransitionFirstRecreationFailed_;
+    const bool policyOk =
+        lsfgBackendTransitionPolicyCommitted_
+        || !lsfgBackendTransitionPolicyDirty_;
+    const bool releaseInheritedRebuild =
+        lsfgBackendTransitionRebuildPending_
+        && !lsfgBackendTransitionPolicyCommitted_;
+    RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_complete transaction_id=%llu "
+         "revision=%llu generation_before=%llu generation_after=%llu "
+         "recreation_attempts=%u recreation_count=%u first_recreation_failed=%d "
+         "policy_dirty=%d policy_committed=%d policy_applied=%d "
+         "expected_generation=%llu rebuild_pending=%d "
+         "policy_ok=%d invariant_ok=%d completion_reason=%s",
+         (unsigned long long)transactionId,
+         (unsigned long long)lsfgBackendTransitionRevision_,
+         (unsigned long long)lsfgBackendTransitionStartGeneration_,
+         (unsigned long long)hostSwapchainGeneration_,
+         lsfgBackendTransitionRecreationAttempts_,
+         lsfgBackendTransitionRecreationCount_,
+         lsfgBackendTransitionFirstRecreationFailed_ ? 1 : 0,
+         lsfgBackendTransitionPolicyDirty_ ? 1 : 0,
+         lsfgBackendTransitionPolicyCommitted_ ? 1 : 0,
+         lsfgBackendTransitionPolicyApplied_ ? 1 : 0,
+         (unsigned long long)lsfgBackendTransitionExpectedGeneration_,
+         lsfgBackendTransitionRebuildPending_ ? 1 : 0,
+         policyOk ? 1 : 0,
+         invariantOk ? 1 : 0, reason ? reason : "unknown");
+#ifndef NDEBUG
+    assert(invariantOk && "one LSFG backend transition caused multiple swapchain generations");
+    assert(policyOk && "LSFG backend transition completed with uncommitted presentation policy");
+#endif
+    lsfgBackendTransitionId_ = 0;
+    lsfgBackendTransitionRevision_ = 0;
+    lsfgBackendTransitionStartGeneration_ = hostSwapchainGeneration_;
+    lsfgBackendTransitionRecreationAttempts_ = 0;
+    lsfgBackendTransitionRecreationCount_ = 0;
+    lsfgBackendTransitionFirstRecreationFailed_ = false;
+    lsfgBackendTransitionRebuildPending_ = false;
+    lsfgBackendTransitionPolicyDirty_ = false;
+    lsfgBackendTransitionPolicyCommitted_ = false;
+    lsfgBackendTransitionPolicyApplied_ = false;
+    lsfgBackendTransitionExpectedGeneration_ = hostSwapchainGeneration_;
+    if (releaseInheritedRebuild) {
+        // A switch that aborts before touching WSI policy must not swallow an
+        // unrelated surface resize that was pending when the transaction began.
+        fbResized.store(true, std::memory_order_release);
+        dirtyCV.notify_one();
+    }
+}
+
 void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
     framegenArmed = true;
     if (framegenRequested == enabled) return;
-    std::unique_lock<std::shared_mutex> fl(frameMutex);
     std::lock_guard<std::mutex> lk(renderMutex);
     framegenRequested = enabled;
     if (!enabled) {
-        if (device) vk_.DeviceWaitIdle(device);
+        if (device) waitNativeResources();
         destroyLsfg();
+        destroyCompositeTargets();
+        nativeLastSourceFrame_ = 0;
     } else if (device && !lsfgCachePath.empty()) {
         createLsfg();
     }
-    fbResized.store(true);
-    dirtyCV.notify_one();
+    requestLsfgSwapchainRebuild("frame-generation-enabled-state");
     RLOG("Frame generation composite path %s (supported=%d)",
          enabled ? "enabled" : "disabled", (int)framegenSupported);
 }
 
 bool VulkanRendererContext::isFrameGenerationSupported() const {
-    return framegenArmed && framegenSupported;
+    return framegenRequested.load(std::memory_order_acquire)
+        && framegenArmed.load(std::memory_order_acquire)
+        && framegenSupported.load(std::memory_order_acquire)
+        && nativeLsfgReady_.load(std::memory_order_acquire)
+        && nativePresentationSurfaceReady_.load(std::memory_order_acquire)
+        && !surfaceDetached.load(std::memory_order_acquire);
 }
 
 void VulkanRendererContext::setFrameGenerationShaders(const std::string& cachePath) {
-    if (!framegenArmed) return;
-    if (!cachePath.empty() && cachePath == lsfgCachePath && lsfg != nullptr)
-        return;
     std::unique_lock<std::shared_mutex> fl(frameMutex);
+    if (!framegenArmed) return;
+    if (!cachePath.empty() && cachePath == lsfgCachePath && lsfg != nullptr) return;
     std::lock_guard<std::mutex> lk(renderMutex);
     // Cache-path changes before Native LSFG is created must not stall the
     // renderer. Only an existing native context can own GPU work that requires
     // a conservative teardown wait here.
-    if (lsfg != nullptr && device) vk_.DeviceWaitIdle(device);
+    if (lsfg != nullptr && device) waitNativeResources();
     destroyLsfg();
     lsfgCachePath = cachePath;
     if (framegenRequested && device && !lsfgCachePath.empty()) {
         createLsfg();
     }
-    fbResized.store(true);
-    dirtyCV.notify_one();
+    requestLsfgSwapchainRebuild("frame-generation-shader-cache");
 }
 
 void VulkanRendererContext::setSourceFrameCount(uint64_t count) {
@@ -309,39 +581,150 @@ void VulkanRendererContext::setSourceFrameCount(uint64_t count) {
 }
 
 void VulkanRendererContext::setFrameGenerationRefreshRate(float hz) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
     framegenRefreshRate = hz > 1.0f ? hz : 60.0f;
     if (lsfg)
         vkr_lsfg_set_refresh_rate(lsfg, framegenRefreshRate);
 }
 
-void VulkanRendererContext::setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {
-    if (!framegenArmed) return;
+void VulkanRendererContext::setFrameGenerationMode(
+        int multiplier, int targetRate, int flowScalePct, int flowMode, int flowPreset,
+        uint64_t configRevision) {
     std::unique_lock<std::shared_mutex> fl(frameMutex);
+    if (!framegenArmed) return;
     std::lock_guard<std::mutex> lk(renderMutex);
     const uint32_t previous_images = framegenExtraImages();
-    framegenMultiplier = multiplier < 2 ? 2u : (uint32_t)multiplier;
-    framegenTargetRate = targetRate < 0 ? 0u : (uint32_t)targetRate;
-    framegenFlowScale = flowScalePct <= 0 ? 0.7f : (float)flowScalePct / 100.0f;
+    const uint32_t nextMultiplier = static_cast<uint32_t>(std::clamp(multiplier, 2, 4));
+    const uint32_t nextTarget = static_cast<uint32_t>(std::max(targetRate, 0));
+    const float nextFlow = static_cast<float>(std::clamp(flowScalePct, 25, 100)) / 100.0f;
+    const uint32_t nextFlowMode =
+        flowMode == static_cast<int>(VKR_LSFG_FLOW_ADAPTIVE)
+            ? VKR_LSFG_FLOW_ADAPTIVE : VKR_LSFG_FLOW_FIXED;
+    const uint32_t nextFlowPreset =
+        static_cast<uint32_t>(std::clamp(
+            flowPreset,
+            static_cast<int>(VKR_LSFG_FLOW_PRESET_QUALITY),
+            static_cast<int>(VKR_LSFG_FLOW_PRESET_AUTO)));
+    if (configRevision != 0 && framegenConfigRevision != 0
+            && configRevision < framegenConfigRevision) {
+        RLOG(
+            "LSFG_NATIVE_CONFIG: event=discarded_stale_revision requested_revision=%llu "
+            "current_revision=%llu stage=native-renderer",
+            (unsigned long long)configRevision,
+            (unsigned long long)framegenConfigRevision);
+        return;
+    }
+    if (nextMultiplier == framegenMultiplier
+            && nextTarget == framegenTargetRate
+            && nextFlow == framegenFlowScale
+            && nextFlowMode == framegenFlowMode
+            && nextFlowPreset == framegenFlowPreset
+            && configRevision == framegenConfigRevision) {
+        return;
+    }
+
+    framegenMultiplier = nextMultiplier;
+    framegenTargetRate = nextTarget;
+    framegenFlowScale = nextFlow;
+    framegenFlowMode = nextFlowMode;
+    framegenFlowPreset = nextFlowPreset;
+    framegenConfigRevision = configRevision;
     if (lsfg) {
         vkr_lsfg_configure(lsfg, framegenMultiplier, framegenTargetRate,
-                           framegenFlowScale, framegenRefreshRate);
+                           framegenFlowScale, framegenFlowMode, framegenFlowPreset,
+                           framegenRefreshRate, framegenConfigRevision);
     }
-    if (framegenExtraImages() != previous_images) {
-        fbResized.store(true);
-        dirtyCV.notify_one();
+
+    const uint32_t nextImages = framegenExtraImages();
+    const bool swapchainCapacityIncrease =
+        framegenRequested && nextImages > previous_images;
+    const bool flowResourceRebuildRequired =
+        lsfg != nullptr
+        && swapchainFmt != VK_FORMAT_UNDEFINED
+        && swapchainExt.width > 0 && swapchainExt.height > 0
+        && vkr_lsfg_needs_rebuild(
+            lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt);
+    const char* flowRebuildReason = flowResourceRebuildRequired
+        ? vkr_lsfg_rebuild_reason(
+            lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt)
+        : "none";
+
+    // Multiplier and target-FPS changes are scheduler scalars and never reset
+    // LSFG history. Growing from 2x/3x to a denser mode can still require more
+    // WSI images; recreate only the swapchain/composite capacity in that case.
+    if (swapchainCapacityIncrease) {
+        requestLsfgSwapchainRebuild("swapchain-capacity-increase");
+        RLOG(
+            "LSFG_NATIVE_CONTEXT: event=surface_rebuild_requested "
+            "reason=swapchain-capacity-increase previous_extra_images=%u "
+            "requested_extra_images=%u revision=%llu",
+            previous_images,
+            nextImages,
+            (unsigned long long)framegenConfigRevision);
     }
+    RLOG(
+        "LSFG_NATIVE_CONTEXT: event=config_update context_epoch=%llu revision=%llu "
+        "rebuild_required=%d rebuild_reason=%s multiplier=%u target_fps=%u flow_mode=%s "
+        "flow_preset=%u requested_scale=%.2f swapchain_capacity_increase=%d",
+        (unsigned long long)nativeLsfgContextEpoch_,
+        (unsigned long long)framegenConfigRevision,
+        flowResourceRebuildRequired ? 1 : 0,
+        flowRebuildReason,
+        framegenMultiplier,
+        framegenTargetRate,
+        framegenFlowMode == VKR_LSFG_FLOW_ADAPTIVE ? "adaptive" : "fixed",
+        framegenFlowPreset,
+        (double)framegenFlowScale,
+        swapchainCapacityIncrease ? 1 : 0);
+
+    dirtyCV.notify_one();
+}
+
+void VulkanRendererContext::setFrameGenerationPressure(
+        float gpuUsagePercent, int thermalStatus, float sourceFps, float outputFps,
+        float frameTimeP95Ms, float slowFrameRatio) {
+    // High-frequency control-plane telemetry is intentionally lock-free.
+    // renderFrame snapshots these atomics immediately before vkr_lsfg_plan(),
+    // so JNI never waits for the frame-wide renderer lock.
+    framegenGpuUsagePercent_.store(gpuUsagePercent, std::memory_order_relaxed);
+    framegenThermalStatus_.store(thermalStatus, std::memory_order_relaxed);
+    framegenSourceFps_.store(sourceFps, std::memory_order_relaxed);
+    framegenOutputFps_.store(outputFps, std::memory_order_relaxed);
+    framegenFrameTimeP95Ms_.store(frameTimeP95Ms, std::memory_order_relaxed);
+    framegenSlowFrameRatio_.store(slowFrameRatio, std::memory_order_relaxed);
 }
 
 uint64_t VulkanRendererContext::getGeneratedFrameCount() const {
-    return framegenMadeFrames;
+    return framegenMadeFrames.load(std::memory_order_relaxed);
+}
+
+uint64_t VulkanRendererContext::getGeneratedPresentedFrameCount() const {
+    return nativeGeneratedPresentedFrames_.load(std::memory_order_relaxed);
 }
 
 uint64_t VulkanRendererContext::getPresentedFrameCount() const {
     return presentedFrames.load(std::memory_order_relaxed);
 }
 
+uint64_t VulkanRendererContext::getDisplayConfirmedFrameCount() const {
+    return nativeSourceDisplayConfirmedEpoch_.load(std::memory_order_relaxed)
+        + nativeGeneratedDisplayConfirmedEpoch_.load(std::memory_order_relaxed);
+}
+
+uint64_t VulkanRendererContext::getGeneratedDisplayConfirmedFrameCount() const {
+    return nativeGeneratedDisplayConfirmedEpoch_.load(std::memory_order_relaxed);
+}
+
+uint64_t VulkanRendererContext::getSourceDisplayConfirmedFrameCount() const {
+    return nativeSourceDisplayConfirmedEpoch_.load(std::memory_order_relaxed);
+}
+
+bool VulkanRendererContext::isDisplayConfirmationAvailable() const {
+    return hostGoogleDisplayTimingEnabled || hostPresentWaitEnabled;
+}
+
 uint64_t VulkanRendererContext::getRealFrameCount() const {
-    return framegenRealFrames;
+    return framegenRealFrames.load(std::memory_order_relaxed);
 }
 
 uint64_t VulkanRendererContext::getSourceFrameCount() const {

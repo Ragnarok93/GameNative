@@ -219,7 +219,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -601,7 +600,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
         when (val renderer = xServerView?.renderer) {
             is VulkanRenderer -> {
                 applyScreenEffectsConfig(renderer, screenEffectsConfig)
-                LsfgQuickMenuHelper.applyFrameQueueToRenderer(container, renderer)
+                LsfgVkManager.attachRenderer(renderer, container, context)
             }
             is GLRenderer -> applyScreenEffectsConfig(renderer, screenEffectsConfig)
         }
@@ -671,30 +670,26 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             lsfgMultiplier,
             lsfgPerformanceMode,
         )
+        // Persistence + debounced publication are the only setting path.
+        // Backend transitions themselves are exclusively manager-owned.
         LsfgQuickMenuHelper.applySettings(
             container,
             LsfgQuickMenuHelper.Settings(lsfgMultiplier, lsfgFlowScale, lsfgPerformanceMode),
         )
-        // Native LSFG is host-renderer state, not an implicit-layer config.
-        // Re-push it only when the authoritative backend is native; legacy keeps
-        // the protected lsfg-vk path unchanged.
-        if (LsfgVkManager.isNativeBackend(container)) {
-            val renderer = xServerView?.renderer as? VulkanRenderer
-            if (renderer != null) {
-                LsfgVkManager.applyNativeRuntime(
-                    renderer = renderer,
-                    container = container,
-                    context = xServerView!!.context,
-                )
-            }
-        }
     }
 
-    fun scheduleLsfgRuntimeHandoff(active: Boolean, multiplier: Int) {
+    fun scheduleLsfgRuntimeHandoff(
+        active: Boolean,
+        multiplier: Int,
+        backend: String = lsfgBackend,
+        transition: LsfgVkManager.BackendTransitionRequest? = null,
+    ) {
         lsfgRuntimeMode = if (active) LsfgRuntimeMode.TURNING_ON else LsfgRuntimeMode.TURNING_OFF
         lsfgRuntimeHandoffController.schedule(
             active = active,
             multiplier = multiplier,
+            backend = backend,
+            transition = transition,
             onStateChanged = { generationActive, runtimeMultiplier, mode ->
                 isLsfgGenerationActive = generationActive
                 lsfgRuntimeMultiplier = runtimeMultiplier
@@ -754,35 +749,22 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyLsfgBackend(requestedBackend: String) {
-        val request = LsfgVkManager.setBackend(container, requestedBackend)
-        lsfgBackend = request.backend
-
-        val renderer = xServerView?.renderer as? VulkanRenderer
-        if (request.backend == LsfgVkManager.BACKEND_NATIVE && renderer != null) {
-            LsfgVkManager.applyNativeRuntime(
-                renderer = renderer,
-                container = container,
-                context = xServerView!!.context,
-            )
-            LsfgVkManager.recordBackendRuntimeApplied(
-                request = request,
-                runtimeBackend = LsfgVkManager.BACKEND_NATIVE,
-                result = "runtime-applied",
-            )
-        } else if (request.backend == LsfgVkManager.BACKEND_NATIVE) {
-            LsfgVkManager.recordBackendRuntimeApplied(
-                request = request,
-                runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
-                result = "runtime-bridge-unavailable",
-            )
-        } else {
-            renderer?.setFrameGenerationEnabled(false)
-            LsfgVkManager.recordBackendRuntimeApplied(
-                request = request,
-                runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
-                result = "legacy-state-committed",
-            )
-        }
+        val requestedActive = isLsfgAvailable && lsfgMultiplier >= 2
+        val transition = LsfgVkManager.submitBackendTransition(
+            container = container,
+            requestedBackend = requestedBackend,
+            enabled = requestedActive,
+            multiplier = lsfgMultiplier,
+            flowScale = lsfgFlowScale,
+            performanceMode = lsfgPerformanceMode,
+        )
+        lsfgBackend = transition.backend
+        scheduleLsfgRuntimeHandoff(
+            active = requestedActive,
+            multiplier = transition.effectiveMultiplier,
+            backend = transition.backend,
+            transition = transition,
+        )
     }
 
     fun applyAdaptiveFpsCapOnMain(capFps: Int): Boolean {
@@ -5256,7 +5238,7 @@ private suspend fun applyGeneralPatches(
 
 private fun refreshComponentsFiles(context: Context) {
     val extractionPairs = listOf(
-        "pulseaudio-gamenative-20260612.tzst" to File(context.filesDir, "pulseaudio")
+        PulseAudioComponent.BUNDLED_ASSET_NAME to File(context.filesDir, "pulseaudio")
     )
 
     AssetUtils.extractComponentsWithVersionCheck(
@@ -6102,3 +6084,4 @@ private fun setImagefsContainerVariant(context: Context, container: Container) {
     val containerVariant = container.containerVariant
     imageFs.createVariantFile(containerVariant)
 }
+

@@ -15,11 +15,17 @@ runs:
       run: |
         set -euo pipefail
 
+        python3 tools/host_display_timing_test.py
+        python3 tools/native_lsfg_pacer_test.py
+        python3 tools/native_lsfg_bridge_test.py
+
         marker='gamenative-host-display-confirmation-v3-split-present-worker'
         native_root=app/src/main/cpp
         renderer_root="$native_root/vulkan-renderer-build"
-        adrenotools_dir="$native_root/extras/adrenotools"
+        extras_root="$native_root/extras"
+        adrenotools_dir="$extras_root/adrenotools"
         build_dir="$RUNNER_TEMP/gamenative-vulkan-renderer-arm64"
+        extras_build_dir="$RUNNER_TEMP/gamenative-extras-arm64"
 
         git submodule sync -- "$adrenotools_dir"
         git submodule update --init --recursive -- "$adrenotools_dir"
@@ -53,6 +59,8 @@ runs:
         test -n "${built:-}"
         test -s "$built"
 
+        bash tools/verify-native-lsfg-jni.sh "$built"
+
         if ! grep -aFq "$marker" "$built"; then
           echo "ERROR: rebuilt Vulkan renderer does not contain $marker" >&2
           exit 1
@@ -64,7 +72,35 @@ runs:
           cp "$built" "$destination"
           test -s "$destination"
           grep -aFq "$marker" "$destination"
+          bash tools/verify-native-lsfg-jni.sh "$destination"
         done
 
-        file "$built"
-        sha256sum "$built"
+        grep -aFq 'gamenative-native-lsfg-v1.3-complete' "$built"
+
+        rm -rf "$extras_build_dir"
+        cmake -S "$extras_root" -B "$extras_build_dir" -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-26 \
+          -DANDROID_STL=c++_shared
+        cmake --build "$extras_build_dir" --target extras -- -j2
+
+        extras_built="$extras_build_dir/libextras.so"
+        if [[ ! -s "$extras_built" ]]; then
+          extras_built="$(find "$extras_build_dir" -type f -name 'libextras.so' -print -quit)"
+        fi
+        test -n "${extras_built:-}"
+        test -s "$extras_built"
+        bash tools/verify-gpuimage-jni.sh "$extras_built"
+
+        for flavor in legacy modern; do
+          extras_destination="app/src/$flavor/jniLibs/arm64-v8a/libextras.so"
+          mkdir -p "$(dirname "$extras_destination")"
+          cp "$extras_built" "$extras_destination"
+          test -s "$extras_destination"
+          bash tools/verify-gpuimage-jni.sh "$extras_destination"
+        done
+
+        file "$built" "$extras_built"
+        sha256sum "$built" "$extras_built"

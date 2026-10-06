@@ -12,6 +12,7 @@
 #include <jni.h>
 #include <unistd.h>
 #include <string.h>
+#include <dlfcn.h>
 
 #define LOG_TAG "System.out"
 #define printf(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -69,14 +70,21 @@ EGLImageKHR createImageKHR(AHardwareBuffer* hardwareBuffer, int textureId) {
     return imageKHR;
 }
 
-// Function to create a hardware buffer
-AHardwareBuffer* createHardwareBuffer(int width, int height) {
+static AHardwareBuffer_Desc makeHardwareBufferDesc(int width, int height) {
     AHardwareBuffer_Desc buffDesc = {};
     buffDesc.width = width;
     buffDesc.height = height;
     buffDesc.layers = 1;
-    buffDesc.usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+    buffDesc.usage =
+        AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE
+        | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
     buffDesc.format = HAL_PIXEL_FORMAT_BGRA_8888;
+    return buffDesc;
+}
+
+// Function to create a hardware buffer
+AHardwareBuffer* createHardwareBuffer(int width, int height) {
+    AHardwareBuffer_Desc buffDesc = makeHardwareBufferDesc(width, height);
 
     AHardwareBuffer *hardwareBuffer = NULL;
     if (AHardwareBuffer_allocate(&buffDesc, &hardwareBuffer) != 0) {
@@ -105,6 +113,40 @@ Java_com_winlator_renderer_GPUImage_hardwareBufferFromSocket(JNIEnv *env, jclass
     }
 
     return (jlong)ahb;
+}
+
+// Query the platform's descriptor capability before the probe attempts an
+// allocation. AHardwareBuffer_isSupported was added after the base AHB API, so
+// resolve it dynamically and preserve the historical allocation fallback on
+// older Android releases where the symbol is unavailable.
+JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_GPUImage_isHardwareBufferConfigurationSupported(
+        JNIEnv *env, jclass obj, jshort width, jshort height) {
+    (void)env;
+    (void)obj;
+    if (width <= 0 || height <= 0)
+        return JNI_FALSE;
+
+    typedef int (*AhbIsSupportedFn)(const AHardwareBuffer_Desc*);
+    const AhbIsSupportedFn isSupportedFn =
+        (AhbIsSupportedFn)dlsym(RTLD_DEFAULT, "AHardwareBuffer_isSupported");
+    if (!isSupportedFn) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "GPUImageProbe",
+            "event=descriptor-capability size=%dx%d query_available=0 fallback=allocation",
+            (int)width, (int)height);
+        return JNI_TRUE;
+    }
+
+    AHardwareBuffer_Desc desc = makeHardwareBufferDesc(width, height);
+    const int supported = isSupportedFn(&desc);
+    __android_log_print(
+        ANDROID_LOG_INFO, "GPUImageProbe",
+        "event=descriptor-capability size=%dx%d query_available=1 supported=%d "
+        "format=%u usage=0x%llx",
+        (int)width, (int)height, supported ? 1 : 0,
+        desc.format, (unsigned long long)desc.usage);
+    return supported ? JNI_TRUE : JNI_FALSE;
 }
 
 // JNI method to create a hardware buffer

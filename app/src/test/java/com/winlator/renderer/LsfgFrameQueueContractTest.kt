@@ -307,9 +307,31 @@ class LsfgFrameQueueContractTest {
             quickMenu.indexOf("onPresentModeChanged = { mode ->"),
             quickMenu.indexOf("scrollState = lsfgScrollState"),
         )
-        assertTrue(callback.contains("renderer?.setVkPresentMode"))
-        assertTrue(callback.contains("mode == \"mailbox\""))
-        assertTrue(quickMenu.contains("LaunchedEffect(lsfgPresentMode, renderer)"))
+        assertTrue(callback.contains("applyPresentMode"))
+        assertTrue(callback.contains("applyFrameQueueToRenderer"))
+        assertTrue(
+            "Quick Menu must not bypass Native present-mode ownership",
+            !callback.contains("renderer?.setVkPresentMode"),
+        )
+        assertTrue(quickMenu.contains("applyFrameQueueToRenderer"))
+    }
+
+    @Test
+    fun persistentSuboptimalAuditIsDebouncedAndResetPerSwapchainEpoch() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("hostSuboptimalLastAuditGeneration_ == hostSwapchainGeneration_"))
+        assertTrue(implementation.contains("hostSuboptimalLastAuditGeneration_ = hostSwapchainGeneration_"))
+        assertTrue(implementation.contains("hostSuboptimalLastAuditGeneration_ = UINT64_MAX"))
+        assertTrue(implementation.contains("hostSuboptimalLastRequeryNs_ = 0"))
+        assertTrue(implementation.contains("hostSuboptimalConsecutive_ = 0"))
+        assertTrue(implementation.contains("hostSuboptimalWindow_.clear()"))
+        assertTrue(implementation.contains("const bool transformChanged = false"))
+        assertTrue(
+            implementation.contains(
+                "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",
+            ),
+        )
     }
 
     @Test
@@ -455,6 +477,26 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun frameQueueOffStillRetainsOneSourcePlusMaximumSyntheticBurst() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(
+            header.contains(
+                "MIN_HOST_DELIVERY_QUEUE_CAPACITY =\n    VKR_LSFG_MAX_GENERATIONS + 1"
+            )
+        )
+        val capacityStart =
+            implementation.indexOf("uint32_t VulkanRendererContext::hostDeliveryQueueCapacity")
+        val capacityEnd =
+            implementation.indexOf("bool VulkanRendererContext::isLsfgHostDeliveryStale", capacityStart)
+        val capacity = implementation.substring(capacityStart, capacityEnd)
+        assertTrue(capacity.contains("MIN_HOST_DELIVERY_QUEUE_CAPACITY + requestedTarget"))
+        assertTrue(capacity.contains("? std::min<uint32_t>("))
+        assertTrue(capacity.contains(": 0U"))
+    }
+
+    @Test
     fun hostDeliveryQueueDepthUsesRequestedModeNotSmoothFallbackDepth() {
         val implementation = source("VulkanRendererContext.cpp")
 
@@ -592,6 +634,67 @@ class LsfgFrameQueueContractTest {
         assertTrue(missing >= 0)
         val branch = select.substring((missing - 900).coerceAtLeast(0), (missing + 400).coerceAtMost(select.length))
         assertTrue(branch.contains("releaseWindowAhbReference(queued.ahb)"))
+    }
+
+    @Test
+    fun nativeReusesSharedHostPresenterInsteadOfCreatingASecondFrameQueue() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(header.contains("pendingHostPresents_"))
+        assertTrue(header.contains("hostPresenterThread_"))
+        assertFalse(header.contains("nativePendingHostPresents_"))
+        assertFalse(header.contains("NativeFrameQueueTarget"))
+
+        val admissionStart =
+            implementation.indexOf("uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity")
+        val admissionEnd =
+            implementation.indexOf("void VulkanRendererContext::emitNativeLsfgPipelineTelemetry", admissionStart)
+        assertTrue(admissionStart >= 0 && admissionEnd > admissionStart)
+        val admission = implementation.substring(admissionStart, admissionEnd)
+        assertTrue(admission.contains("pendingHostPresents_"))
+        assertTrue(admission.contains("hostPresenterBusy_"))
+        assertTrue(admission.contains("MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH"))
+
+        val presenterStart =
+            implementation.indexOf("void VulkanRendererContext::hostPresenterLoop")
+        val presenterEnd =
+            implementation.indexOf("void VulkanRendererContext::processHostPresentCompletions", presenterStart)
+        val presenter = implementation.substring(presenterStart, presenterEnd)
+        assertTrue(presenter.contains("executeHostPresent"))
+        assertFalse(presenter.contains("nativeHostPresenterLoop"))
+    }
+
+    @Test
+    fun nativeUsesTheSameLiveFrameQueuePolicyAsLegacy() {
+        val renderer =
+            repoSource("app/src/main/java/com/winlator/renderer/VulkanRenderer.java")
+        val manager =
+            repoSource("app/src/main/java/app/gamenative/utils/LsfgVkManager.kt")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertFalse(renderer.contains("nativeOwnsFrameQueuePolicy"))
+        assertFalse(renderer.contains("setNativeFrameQueuePolicyOwned"))
+        assertFalse(renderer.contains("legacy-policy-retained owner=native"))
+
+        val applyStart = renderer.indexOf("public boolean applyFrameGenerationSettings")
+        val applyEnd = renderer.indexOf("public void setFrameGenerationShaders", applyStart)
+        assertTrue(applyStart >= 0 && applyEnd > applyStart)
+        val apply = renderer.substring(applyStart, applyEnd)
+        assertTrue(apply.contains("pendingLsfgFrameQueueEnabled"))
+        assertTrue(apply.contains("pendingLsfgFrameQueueTarget"))
+        assertTrue(apply.contains("nativeSetLsfgFrameQueue("))
+        assertFalse(apply.contains("nativeSetLsfgFrameQueue(handle, false, 0)"))
+
+        assertTrue(manager.contains("renderer.setLsfgFrameQueue("))
+        assertTrue(manager.contains("snapshot.frameQueueEnabled"))
+        assertTrue(manager.contains("snapshot.frameQueueTarget"))
+        assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
+
+        assertTrue(implementation.contains("nativeLsfgContentPending"))
+        assertTrue(implementation.contains("activeFrameSlotCount()"))
+        assertTrue(implementation.contains("enforceFrameQueueSubmissionBudget(frameQueueTarget)"))
+        assertTrue(implementation.contains("effectiveFrameQueueTarget()"))
     }
 
     private fun source(name: String): String {

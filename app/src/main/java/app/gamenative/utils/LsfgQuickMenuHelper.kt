@@ -32,6 +32,7 @@ object LsfgQuickMenuHelper {
     )
 
     internal data class RuntimeConfigSnapshot(
+        val armed: Boolean,
         val multiplier: Int,
         val flowScale: Float,
         val performanceMode: Boolean,
@@ -40,7 +41,6 @@ object LsfgQuickMenuHelper {
         val flowScaleMode: FlowScaleMode,
         val adaptiveFlowPreset: AdaptiveFlowPreset,
         val presentMode: String,
-        val backend: String,
         val frameQueueEnabled: Boolean,
         val frameQueueTarget: FrameQueueTarget,
     )
@@ -51,7 +51,11 @@ object LsfgQuickMenuHelper {
     }
 
     fun readSettings(container: Container): Settings = Settings(
-        multiplier = LsfgVkManager.multiplier(container),
+        multiplier = if (generationMode(container) == FrameGenerationMode.FIXED) {
+            LsfgVkManager.fixedMultiplier(container)
+        } else {
+            LsfgVkManager.multiplier(container)
+        },
         flowScale = LsfgVkManager.flowScale(container),
         performanceMode = LsfgVkManager.performanceMode(container),
     )
@@ -177,9 +181,24 @@ object LsfgQuickMenuHelper {
 
     fun applyFrameQueueToRenderer(container: Container, renderer: VulkanRenderer?) {
         renderer ?: return
-        renderer.setVkPresentMode(if (presentMode(container) == "mailbox") 1 else 2)
+        renderer.setVkPresentMode(
+            if (LsfgVkManager.isNativeBackend(container) &&
+                LsfgVkManager.isArmed(container) &&
+                sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2
+            ) {
+                // Native timed presentation prefers Mailbox; native Vulkan
+                // capability selection falls back to FIFO if unsupported.
+                1
+            } else if (presentMode(container) == "mailbox") {
+                1
+            } else {
+                2
+            },
+        )
         renderer.setLsfgFrameQueue(
-            frameQueueEnabled(container) && sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2,
+            frameQueueEnabled(container) &&
+                LsfgVkManager.isArmed(container) &&
+                sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2,
             frameQueueTarget(container).depth,
         )
     }
@@ -207,7 +226,9 @@ object LsfgQuickMenuHelper {
     private fun snapshotRuntimeConfig(
         container: Container,
         settings: Settings = readSettings(container),
-    ): RuntimeConfigSnapshot = RuntimeConfigSnapshot(
+    ): RuntimeConfigSnapshot =
+        RuntimeConfigSnapshot(
+        armed = LsfgVkManager.isArmed(container),
         multiplier = sanitizeMultiplier(settings.multiplier),
         flowScale = sanitizeFlowScale(settings.flowScale),
         performanceMode = settings.performanceMode,
@@ -216,7 +237,6 @@ object LsfgQuickMenuHelper {
         flowScaleMode = flowScaleMode(container),
         adaptiveFlowPreset = adaptiveFlowPreset(container),
         presentMode = presentMode(container),
-        backend = LsfgVkManager.backend(container),
         frameQueueEnabled = frameQueueEnabled(container),
         frameQueueTarget = frameQueueTarget(container),
     )
@@ -226,6 +246,8 @@ object LsfgQuickMenuHelper {
         // A Flow-only update must not reread framegen mode later and vice versa.
         val snapshot = snapshotRuntimeConfig(container)
         runtimeConfigDebouncer.submit {
+            // The winning debounced operation allocates the revision at commit,
+            // so canceled slider updates never create stale revisions.
             publishRuntimeConfig(container, snapshot)
         }
     }
@@ -234,7 +256,8 @@ object LsfgQuickMenuHelper {
         container: Container,
         snapshot: RuntimeConfigSnapshot,
     ) {
-        val enabled = snapshot.multiplier >= 2
+        val request = LsfgVkManager.reserveRuntimeRequest(container)
+        val enabled = snapshot.armed && snapshot.multiplier >= 2
         val adaptive =
             enabled && snapshot.generationMode == FrameGenerationMode.ADAPTIVE
         val effectiveMultiplier = when {
@@ -252,8 +275,10 @@ object LsfgQuickMenuHelper {
         }
 
         Timber.i(
-            "LSFG runtime snapshot backend=%s generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
-            snapshot.backend,
+            "LSFG runtime snapshot revision=%d backend_generation=%d backend=%s generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
+            request.revision,
+            request.backendGeneration,
+            request.backend,
             snapshot.generationMode,
             effectiveMultiplier,
             snapshot.adaptiveTargetFps,
@@ -262,7 +287,7 @@ object LsfgQuickMenuHelper {
             snapshot.flowScale,
             enabled,
         )
-        LsfgVkManager.updateConfigAtRuntime(
+        LsfgVkManager.updateConfigAtRuntimeCaptured(
             container = container,
             enabled = enabled,
             multiplier = effectiveMultiplier,
@@ -275,6 +300,8 @@ object LsfgQuickMenuHelper {
             presentMode = snapshot.presentMode,
             frameQueueEnabled = enabled && snapshot.frameQueueEnabled,
             frameQueueTarget = snapshot.frameQueueTarget.depth,
+            requestToken = request,
         )
     }
 }
+

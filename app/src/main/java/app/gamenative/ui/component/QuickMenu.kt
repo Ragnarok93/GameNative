@@ -491,15 +491,20 @@ fun QuickMenu(
                 ?: app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED
         )
     }
-    LaunchedEffect(lsfgMultiplier, lsfgFrameQueueEnabled, lsfgFrameQueueTarget, renderer) {
-        renderer?.setLsfgFrameQueue(
-            lsfgMultiplier >= 2 && lsfgFrameQueueEnabled,
-            lsfgFrameQueueTarget.depth,
-        )
-    }
-
-    LaunchedEffect(lsfgPresentMode, renderer) {
-        renderer?.setVkPresentMode(if (lsfgPresentMode == "mailbox") 1 else 2)
+    LaunchedEffect(
+        lsfgMultiplier,
+        lsfgFrameQueueEnabled,
+        lsfgFrameQueueTarget,
+        lsfgPresentMode,
+        renderer,
+        container,
+    ) {
+        container?.let { activeContainer ->
+            app.gamenative.utils.LsfgQuickMenuHelper.applyFrameQueueToRenderer(
+                activeContainer,
+                renderer,
+            )
+        }
     }
 
     var selectedTab by rememberSaveable {
@@ -973,12 +978,16 @@ fun QuickMenu(
                                             presentMode = lsfgPresentMode,
                                             onPresentModeChanged = { mode ->
                                                 lsfgPresentMode = mode
-                                                renderer?.setVkPresentMode(if (mode == "mailbox") 1 else 2)
                                                 container?.let { activeContainer ->
                                                     app.gamenative.utils.LsfgQuickMenuHelper.applyPresentMode(
                                                         activeContainer,
                                                         mode,
                                                     )
+                                                    app.gamenative.utils.LsfgQuickMenuHelper
+                                                        .applyFrameQueueToRenderer(
+                                                            activeContainer,
+                                                            renderer,
+                                                        )
                                                     val view = app.gamenative.PluviaApp.xServerView
                                                     val vulkanView =
                                                         view as? com.winlator.widget.XServerView

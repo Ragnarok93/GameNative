@@ -13,7 +13,10 @@
 #include <cerrno>
 #include <cstddef>
 #include <chrono>
+#include <cmath>
+#include <cassert>
 #include <unordered_set>
+#include "../lsfg/lsfg_pacer.hpp"
 #include <time.h>
 #include "window_vert.h"
 #include "window_frag.h"
@@ -22,6 +25,8 @@
 extern "C" __attribute__((used, visibility("default")))
 const char gamenative_vulkan_renderer_build_marker[] =
     "gamenative-host-display-confirmation-v3-split-present-worker";
+extern "C" __attribute__((used, visibility("default")))
+const char gamenative_native_lsfg_build_marker[] = "gamenative-native-lsfg-v1.3-complete";
 
 namespace {
 constexpr char LSFG_PROVENANCE_SOCKET[] = "gamenative-lsfg-provenance-v1";
@@ -95,6 +100,9 @@ struct HostDisplayFeedbackPacket {
 };
 static_assert(sizeof(HostDisplayFeedbackPacket) == 64);
 
+uint64_t rollingPercentileNs(const std::deque<uint64_t>& samples, unsigned percentile);
+void trimEvidence(std::deque<uint64_t>& events, uint64_t cutoffNs);
+
 uint64_t monotonicTimeNs() noexcept {
     timespec ts{};
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
@@ -127,7 +135,7 @@ void publishLsfgHostDisplayFeedback(
         const HostDisplayConfirmation& confirmation,
         const LsfgFrameProvenance& provenance,
         bool confirmed) noexcept {
-    if (!provenance.uniqueDelivery || provenance.deliveryId == 0)
+    if (provenance.nativeImplementation || !provenance.uniqueDelivery || provenance.deliveryId == 0)
         return;
 
     static const int socketFd = []() noexcept {
@@ -210,8 +218,10 @@ VulkanRendererContext::VulkanRendererContext(
             __android_log_print(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
                 "event=present-worker-start host_present_worker=1 "
-                "present_queue_split=1 present_queue_index=%u max_queue_depth=%u",
-                hostPresentQueueIndex_, MAX_HOST_PRESENT_QUEUE_DEPTH);
+                "present_queue_split=1 present_queue_index=%u legacy_max_queue_depth=%u "
+                "native_max_queue_depth=%u",
+                hostPresentQueueIndex_, MAX_HOST_PRESENT_QUEUE_DEPTH,
+                MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH);
         } catch (...) {
             hostPresenterRunning_.store(false, std::memory_order_release);
             hostAsyncPresenterActive_ = false;
@@ -485,6 +495,10 @@ void VulkanRendererContext::createLogicalDevice() {
     bool googleDisplayTimingExtension = false;
     bool presentIdExtension = false;
     bool presentWaitExtension = false;
+    bool memoryModelExtension = false;
+    bool float16Extension = false;
+    VkPhysicalDeviceProperties nativeProperties{};
+    vk_.GetPhysicalDeviceProperties(physicalDevice, &nativeProperties);
     PFN_vkEnumerateDeviceExtensionProperties enumDevExts =
         (PFN_vkEnumerateDeviceExtensionProperties)gipa(instance, "vkEnumerateDeviceExtensionProperties");
     { uint32_t n=0; if(enumDevExts) enumDevExts(physicalDevice,nullptr,&n,nullptr);
@@ -493,6 +507,10 @@ void VulkanRendererContext::createLogicalDevice() {
       for (auto& e:av) {
           if (strcmp(e.extensionName,"VK_EXT_filter_cubic")==0
            || strcmp(e.extensionName,"VK_IMG_filter_cubic")==0) cubicSupported=true;
+          if (strcmp(e.extensionName, VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME)==0)
+              memoryModelExtension = true;
+          if (strcmp(e.extensionName, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)==0)
+              float16Extension = true;
           if (strcmp(e.extensionName, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)==0)
               googleDisplayTimingExtension = true;
           if (strcmp(e.extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME)==0)
@@ -516,6 +534,14 @@ void VulkanRendererContext::createLogicalDevice() {
         presentWaitFeatures.pNext = featureChain;
         featureChain = &presentWaitFeatures;
     }
+    VkPhysicalDeviceVulkanMemoryModelFeatures memoryModel{};
+    memoryModel.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
+    VkPhysicalDeviceShaderFloat16Int8Features float16{};
+    float16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+    const bool memoryModelAvailable = nativeProperties.apiVersion >= VK_API_VERSION_1_2 || memoryModelExtension;
+    const bool float16Available = nativeProperties.apiVersion >= VK_API_VERSION_1_2 || float16Extension;
+    if (memoryModelAvailable) { memoryModel.pNext = featureChain; featureChain = &memoryModel; }
+    if (float16Available) { float16.pNext = featureChain; featureChain = &float16; }
     features2.pNext = featureChain;
     if (featureChain && vk_.GetPhysicalDeviceFeatures2)
         vk_.GetPhysicalDeviceFeatures2(physicalDevice, &features2);
@@ -550,7 +576,42 @@ void VulkanRendererContext::createLogicalDevice() {
     VkDeviceCreateInfo ci{}; ci.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     ci.pQueueCreateInfos=&qi; ci.queueCreateInfoCount=1;
     ci.enabledExtensionCount=(uint32_t)extList.size(); ci.ppEnabledExtensionNames=extList.data();
-    ci.pNext = hostPresentWaitEnabled ? &enabledPresentWait : nullptr;
+    VkPhysicalDeviceVulkanMemoryModelFeatures enabledMemoryModel{};
+    enabledMemoryModel.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
+    enabledMemoryModel.vulkanMemoryModel = memoryModel.vulkanMemoryModel;
+    VkPhysicalDeviceShaderFloat16Int8Features enabledFloat16{};
+    enabledFloat16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+    enabledFloat16.shaderFloat16 = float16.shaderFloat16;
+    VkPhysicalDeviceFeatures enabledFeatures{};
+    enabledFeatures.shaderStorageImageWriteWithoutFormat = features2.features.shaderStorageImageWriteWithoutFormat;
+    enabledFeatures.shaderStorageImageExtendedFormats = features2.features.shaderStorageImageExtendedFormats;
+    void* enabledChain = hostPresentWaitEnabled ? &enabledPresentWait : nullptr;
+    if (memoryModelAvailable && enabledMemoryModel.vulkanMemoryModel) {
+        enabledMemoryModel.pNext = enabledChain; enabledChain = &enabledMemoryModel;
+        if (nativeProperties.apiVersion < VK_API_VERSION_1_2)
+            extList.push_back(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME);
+    }
+    if (float16Available && enabledFloat16.shaderFloat16) {
+        enabledFloat16.pNext = enabledChain; enabledChain = &enabledFloat16;
+        if (nativeProperties.apiVersion < VK_API_VERSION_1_2)
+            extList.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+    }
+    uint32_t familyCount = 0;
+    vk_.GetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    vk_.GetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, families.data());
+    nativeComputeSupported_ = enabledMemoryModel.vulkanMemoryModel && enabledFloat16.shaderFloat16
+        && enabledFeatures.shaderStorageImageWriteWithoutFormat
+        && enabledFeatures.shaderStorageImageExtendedFormats
+        && graphicsQueueFamilyIndex < families.size()
+        && (families[graphicsQueueFamilyIndex].queueFlags & VK_QUEUE_COMPUTE_BIT);
+    ci.pNext = enabledChain;
+    ci.pEnabledFeatures = &enabledFeatures;
+    ci.enabledExtensionCount = static_cast<uint32_t>(extList.size());
+    ci.ppEnabledExtensionNames = extList.data();
+    RLOG("LSFG_NATIVE: event=device_capability compute=%d memory_model=%d float16=%d storage_write=%d storage_extended=%d",
+        nativeComputeSupported_, enabledMemoryModel.vulkanMemoryModel, enabledFloat16.shaderFloat16,
+        enabledFeatures.shaderStorageImageWriteWithoutFormat, enabledFeatures.shaderStorageImageExtendedFormats);
     VkResult deviceCreateResult =
         vk_.CreateDevice(physicalDevice,&ci,nullptr,&device);
     if (deviceCreateResult != VK_SUCCESS && requestedHostQueueCount > 1) {
@@ -629,63 +690,239 @@ void VulkanRendererContext::createLogicalDevice() {
 }
 
 void VulkanRendererContext::createSwapchain() {
-    VkSurfaceCapabilitiesKHR caps;
-    vk_.GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice,surface,&caps);
-    swapchainExt=(caps.currentExtent.width!=0xFFFFFFFF)?caps.currentExtent:VkExtent2D{(uint32_t)surfaceWidth,(uint32_t)surfaceHeight};
-    uint32_t fmtN=0; vk_.GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice,surface,&fmtN,nullptr);
-    std::vector<VkSurfaceFormatKHR> fmts(fmtN); vk_.GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice,surface,&fmtN,fmts.data());
-    swapchainFmt = VK_FORMAT_R8G8B8A8_UNORM;
-    uint32_t imgCount=caps.minImageCount+1;
-    if (caps.maxImageCount>0&&imgCount>caps.maxImageCount) imgCount=caps.maxImageCount;
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vk_.GetPhysicalDeviceSurfaceCapabilitiesKHR(
+            physicalDevice, surface, &caps) != VK_SUCCESS) {
+        throw std::runtime_error("surface capabilities");
+    }
 
-    uint32_t pmCount=0;
-    vk_.GetPhysicalDeviceSurfacePresentModesKHR(physicalDevice,surface,&pmCount,nullptr);
+    uint32_t fmtN = 0;
+    vk_.GetPhysicalDeviceSurfaceFormatsKHR(
+        physicalDevice, surface, &fmtN, nullptr);
+    std::vector<VkSurfaceFormatKHR> fmts(fmtN);
+    if (fmtN != 0)
+        vk_.GetPhysicalDeviceSurfaceFormatsKHR(
+            physicalDevice, surface, &fmtN, fmts.data());
+    if (fmts.empty())
+        throw std::runtime_error("surface formats");
+
+    VkSurfaceFormatKHR chosen = fmts.front();
+    if (fmts.size() == 1 && fmts.front().format == VK_FORMAT_UNDEFINED) {
+        chosen.format = VK_FORMAT_R8G8B8A8_UNORM;
+        chosen.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    } else {
+        const VkFormat preferredFormats[] = {
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_FORMAT_B8G8R8A8_UNORM,
+        };
+        bool selected = false;
+        for (const VkFormat preferred : preferredFormats) {
+            auto it = std::find_if(
+                fmts.begin(), fmts.end(),
+                [preferred](const VkSurfaceFormatKHR& candidate) {
+                    return candidate.format == preferred
+                        && candidate.colorSpace
+                            == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+                });
+            if (it != fmts.end()) {
+                chosen = *it;
+                selected = true;
+                break;
+            }
+        }
+        if (!selected) chosen = fmts.front();
+    }
+    swapchainFmt = chosen.format;
+    swapchainColorSpace_ = chosen.colorSpace;
+
+    if (caps.currentExtent.width != UINT32_MAX) {
+        swapchainExt = caps.currentExtent;
+    } else {
+        swapchainExt.width = std::clamp(
+            static_cast<uint32_t>(std::max(surfaceWidth, 1)),
+            caps.minImageExtent.width, caps.maxImageExtent.width);
+        swapchainExt.height = std::clamp(
+            static_cast<uint32_t>(std::max(surfaceHeight, 1)),
+            caps.minImageExtent.height, caps.maxImageExtent.height);
+    }
+
+    nativeMinImageCount_ = caps.minImageCount;
+    uint32_t imgCount = caps.minImageCount + 1 + framegenExtraImages();
+    if (caps.maxImageCount > 0)
+        imgCount = std::min(imgCount, caps.maxImageCount);
+    imgCount = std::max(imgCount, caps.minImageCount);
+    swapchainRequestedImageCount_ = imgCount;
+
+    uint32_t pmCount = 0;
+    vk_.GetPhysicalDeviceSurfacePresentModesKHR(
+        physicalDevice, surface, &pmCount, nullptr);
     availablePresentModes.resize(pmCount);
-    vk_.GetPhysicalDeviceSurfacePresentModesKHR(physicalDevice,surface,&pmCount,availablePresentModes.data());
-    VkPresentModeKHR presentMode=VK_PRESENT_MODE_FIFO_KHR;
+    if (pmCount != 0)
+        vk_.GetPhysicalDeviceSurfacePresentModesKHR(
+            physicalDevice, surface, &pmCount, availablePresentModes.data());
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
     bool requestedModeSupported = false;
-    for (auto pm:availablePresentModes) {
-        if(pm==requestedPresentMode){
-            presentMode=pm;
+    for (const auto pm : availablePresentModes) {
+        if (pm == requestedPresentMode) {
+            presentMode = pm;
             requestedModeSupported = true;
             break;
         }
     }
-    if(verboseLog){
-        std::string pmList;
-        for(auto pm:availablePresentModes) pmList+=std::to_string((int)pm)+" ";
-        RLOG("createSwapchain: %dx%d fmt=%d supportedPresentModes=[%s] chosen=%d req=%d",
-            swapchainExt.width,swapchainExt.height,(int)swapchainFmt,pmList.c_str(),(int)presentMode,(int)requestedPresentMode);
+
+    // GameNative's compositor already renders in the Android surface's logical
+    // landscape orientation. Applying currentTransform (ROTATE_90 on phones)
+    // rotates that content a second time. Prefer IDENTITY whenever supported;
+    // only inherit currentTransform when the surface cannot accept identity.
+    VkSurfaceTransformFlagBitsKHR pre =
+        (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+            : caps.currentTransform;
+    if ((caps.supportedTransforms & pre) == 0) {
+        const VkSurfaceTransformFlagsKHR supported = caps.supportedTransforms;
+        pre = static_cast<VkSurfaceTransformFlagBitsKHR>(
+            supported & (~supported + 1U));
     }
+    swapchainPreTransform_ = pre;
 
-    VkSurfaceTransformFlagBitsKHR pre=
-        (caps.supportedTransforms&VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)?
-        VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:caps.currentTransform;
+    constexpr VkCompositeAlphaFlagBitsKHR alphaPreferences[] = {
+        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+        VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+        VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+    };
+    VkCompositeAlphaFlagBitsKHR compositeAlpha =
+        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    bool alphaFound = false;
+    for (const auto candidate : alphaPreferences) {
+        if (caps.supportedCompositeAlpha & candidate) {
+            compositeAlpha = candidate;
+            alphaFound = true;
+            break;
+        }
+    }
+    if (!alphaFound)
+        throw std::runtime_error("surface composite alpha");
+    swapchainCompositeAlpha_ = compositeAlpha;
 
-    VkCompositeAlphaFlagBitsKHR compositeAlpha=
-        (caps.supportedCompositeAlpha&VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)?
-        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR:VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
-
-    VkSwapchainKHR oldSwapchain=swapchain;
-    VkSwapchainCreateInfoKHR ci{}; ci.sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    ci.surface=surface; ci.minImageCount=imgCount; ci.imageFormat=swapchainFmt;
-    ci.imageColorSpace=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR; ci.imageExtent=swapchainExt;
-    ci.imageArrayLayers=1; ci.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) == 0)
+        throw std::runtime_error("surface color attachment usage");
+    swapchainImageUsage_ = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     nativeSwapchainTransferSupported_ =
-        (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0 &&
         (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
     if (nativeSwapchainTransferSupported_)
-        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    ci.imageSharingMode=VK_SHARING_MODE_EXCLUSIVE; ci.preTransform=pre;
-    ci.compositeAlpha=compositeAlpha; ci.presentMode=presentMode; ci.clipped=VK_TRUE;
-    ci.oldSwapchain=oldSwapchain;
-    if (vk_.CreateSwapchainKHR(device,&ci,nullptr,&swapchain)!=VK_SUCCESS) throw std::runtime_error("swapchain");
+        swapchainImageUsage_ |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+    VkSwapchainKHR oldSwapchain = swapchain;
+    VkSwapchainCreateInfoKHR ci{};
+    ci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    ci.surface = surface;
+    ci.minImageCount = imgCount;
+    ci.imageFormat = swapchainFmt;
+    ci.imageColorSpace = swapchainColorSpace_;
+    ci.imageExtent = swapchainExt;
+    ci.imageArrayLayers = 1;
+    ci.imageUsage = swapchainImageUsage_;
+    ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.preTransform = swapchainPreTransform_;
+    ci.compositeAlpha = swapchainCompositeAlpha_;
+    ci.presentMode = presentMode;
+    ci.clipped = VK_TRUE;
+    ci.oldSwapchain = oldSwapchain;
+
+    if (lsfgBackendTransitionId_ != 0)
+        ++lsfgBackendTransitionRecreationAttempts_;
+    const VkResult createResult =
+        vk_.CreateSwapchainKHR(device, &ci, nullptr, &swapchain);
+    if (createResult != VK_SUCCESS) {
+        if (lsfgBackendTransitionId_ != 0 &&
+            lsfgBackendTransitionRecreationAttempts_ == 1) {
+            lsfgBackendTransitionFirstRecreationFailed_ = true;
+            __android_log_print(
+                ANDROID_LOG_WARN, "LSFG_BACKEND_TX",
+                "event=swapchain_recreation_failed transaction_id=%" PRIu64
+                " revision=%" PRIu64 " result=%d generation=%" PRIu64,
+                lsfgBackendTransitionId_, lsfgBackendTransitionRevision_,
+                static_cast<int>(createResult), hostSwapchainGeneration_);
+        }
+        throw std::runtime_error("swapchain");
+    }
+
     if (oldSwapchain != VK_NULL_HANDLE) {
         flushHostDisplayConfirmationsUnknown("swapchain-recreated");
         resetHostPhysicalCadenceTelemetry("swapchain-recreated");
     }
     ++hostSwapchainGeneration_;
+    if (lsfgBackendTransitionId_ != 0) {
+        ++lsfgBackendTransitionRecreationCount_;
+        if (lsfgBackendTransitionPolicyCommitted_
+                && !lsfgBackendTransitionPolicyApplied_
+                && hostSwapchainGeneration_
+                    >= lsfgBackendTransitionExpectedGeneration_) {
+            lsfgBackendTransitionPolicyApplied_ = true;
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_BACKEND_TX",
+                "event=presentation_policy_applied transaction_id=%" PRIu64
+                " revision=%" PRIu64 " generation=%" PRIu64
+                " expected_generation=%" PRIu64,
+                lsfgBackendTransitionId_,
+                lsfgBackendTransitionRevision_,
+                hostSwapchainGeneration_,
+                lsfgBackendTransitionExpectedGeneration_);
+        }
+        const bool invariantOk =
+            lsfgBackendTransitionRecreationCount_ <= 1
+            || lsfgBackendTransitionFirstRecreationFailed_;
+        __android_log_print(
+            invariantOk ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            "LSFG_BACKEND_TX",
+            "event=swapchain_recreation transaction_id=%" PRIu64
+            " revision=%" PRIu64 " generation_before=%" PRIu64
+            " generation_after=%" PRIu64 " recreation_attempts=%u"
+            " recreation_count=%u first_recreation_failed=%d invariant_ok=%d",
+            lsfgBackendTransitionId_, lsfgBackendTransitionRevision_,
+            lsfgBackendTransitionStartGeneration_, hostSwapchainGeneration_,
+            lsfgBackendTransitionRecreationAttempts_,
+            lsfgBackendTransitionRecreationCount_,
+            lsfgBackendTransitionFirstRecreationFailed_ ? 1 : 0,
+            invariantOk ? 1 : 0);
+#ifndef NDEBUG
+        assert(invariantOk && "one LSFG backend transition caused multiple swapchain generations");
+#endif
+    }
+    nativePresentationSurfaceReady_.store(true, std::memory_order_release);
     lastAcceptedDesiredPresentTimeNs_ = 0;
+    if (hostSuboptimalActive_) {
+        const uint64_t episodeEndNs = monotonicTimeNs();
+        const double durationMs =
+            episodeEndNs != 0 && hostSuboptimalStartNs_ != 0
+                && episodeEndNs >= hostSuboptimalStartNs_
+            ? static_cast<double>(episodeEndNs - hostSuboptimalStartNs_)
+                / 1000000.0 : 0.0;
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+            "event=suboptimal-transition state=end reason=swapchain-recreated"
+            " episode=%" PRIu64 " duration_ms=%.3f"
+            " start_generation=%" PRIu64 " end_generation=%" PRIu64,
+            hostSuboptimalEpisodeCount_, durationMs,
+            hostSuboptimalStartGeneration_, hostSwapchainGeneration_);
+    }
+    hostSuboptimalActive_ = false;
+    hostSuboptimalStartNs_ = 0;
+    hostSuboptimalStartGeneration_ = 0;
+    hostSuboptimalConsecutive_ = 0;
+    hostSuboptimalWindow_.clear();
+    hostSuboptimalLastRequeryNs_ = 0;
+    hostSuboptimalLastAuditGeneration_ = UINT64_MAX;
+    hostPresentLatencySamplesNs_.clear();
+    hostPresenterQueueAgeSamplesNs_.clear();
+    nativeLastAdmissionP50PresentNs_ = 0;
+    nativeLastAdmissionP95PresentNs_ = 0;
+    nativeLastAdmissionServiceEstimateNs_ = 0;
+    nativeLastAdmissionSourceIntervalNs_ = 0;
+    resetNativePresentationTimeline(
+        oldSwapchain == VK_NULL_HANDLE ? "swapchain-created" : "swapchain-recreated");
+
     hostRefreshPeriodNs_ = 0;
     VkResult refreshCycleResult = VK_ERROR_EXTENSION_NOT_PRESENT;
     if (hostGoogleDisplayTimingEnabled && vk_.GetRefreshCycleDurationGOOGLE) {
@@ -702,17 +939,49 @@ void VulkanRendererContext::createSwapchain() {
             ++hostRefreshCycleQueryFailureTotal_;
         }
     }
+    if (hostRefreshPeriodNs_ == 0 && framegenRefreshRate > 1.0f) {
+        hostRefreshPeriodNs_ = static_cast<uint64_t>(
+            std::llround(1000000000.0 / static_cast<double>(framegenRefreshRate)));
+    }
+
+    uint32_t actualImageCount = 0;
+    vk_.GetSwapchainImagesKHR(device, swapchain, &actualImageCount, nullptr);
+    swapchainImages.resize(actualImageCount);
+    vk_.GetSwapchainImagesKHR(
+        device, swapchain, &actualImageCount, swapchainImages.data());
+    swapchainImages.resize(actualImageCount);
+
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
-        "event=refresh-cycle swapchain_generation=%" PRIu64
-        " refresh_period_ns=%" PRIu64 " refresh_hz=%.3f query_result=%d",
+        "event=swapchain-capabilities generation=%" PRIu64
+        " min_images=%u max_images=%u requested_images=%u actual_images=%u"
+        " current_extent=%ux%u min_extent=%ux%u max_extent=%ux%u chosen_extent=%ux%u"
+        " format=%d color_space=%d supported_transforms=0x%x current_transform=0x%x"
+        " chosen_transform=0x%x supported_composite_alpha=0x%x chosen_composite_alpha=0x%x"
+        " supported_usage=0x%x chosen_usage=0x%x requested_present_mode=%d"
+        " active_present_mode=%d requested_present_mode_supported=%d"
+        " refresh_period_ns=%" PRIu64 " refresh_hz=%.3f refresh_query_result=%d",
         hostSwapchainGeneration_,
+        caps.minImageCount, caps.maxImageCount,
+        swapchainRequestedImageCount_, actualImageCount,
+        caps.currentExtent.width, caps.currentExtent.height,
+        caps.minImageExtent.width, caps.minImageExtent.height,
+        caps.maxImageExtent.width, caps.maxImageExtent.height,
+        swapchainExt.width, swapchainExt.height,
+        static_cast<int>(swapchainFmt),
+        static_cast<int>(swapchainColorSpace_),
+        caps.supportedTransforms, caps.currentTransform,
+        swapchainPreTransform_,
+        caps.supportedCompositeAlpha, swapchainCompositeAlpha_,
+        caps.supportedUsageFlags, swapchainImageUsage_,
+        static_cast<int>(requestedPresentMode),
+        static_cast<int>(presentMode),
+        requestedModeSupported ? 1 : 0,
         hostRefreshPeriodNs_,
         hostRefreshPeriodNs_ != 0
             ? 1000000000.0 / static_cast<double>(hostRefreshPeriodNs_) : 0.0,
         static_cast<int>(refreshCycleResult));
-    RLOG("swapchain created: %dx%d format=%d presentMode=%d compositeAlpha=%d imgCount=%u",
-        swapchainExt.width,swapchainExt.height,(int)swapchainFmt,(int)presentMode,(int)compositeAlpha,imgCount);
+
     const VkPresentModeKHR previousActivePresentMode = activePresentMode;
     activePresentMode = presentMode;
     if (previousActivePresentMode != activePresentMode) {
@@ -720,37 +989,36 @@ void VulkanRendererContext::createSwapchain() {
         frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
         frameQueueSmoothFifoFallback_.store(false, std::memory_order_release);
         resetFrameQueueTelemetry();
-        __android_log_print(ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
             "event=active-present-mode-transition requested_present_mode=%d active_present_mode=%d "
-            "requested_supported=%d swapchain_generation=%llu",
-            static_cast<int>(requestedPresentMode), static_cast<int>(activePresentMode),
+            "requested_supported=%d swapchain_generation=%" PRIu64,
+            static_cast<int>(requestedPresentMode),
+            static_cast<int>(activePresentMode),
             requestedModeSupported ? 1 : 0,
-            static_cast<unsigned long long>(hostSwapchainGeneration_));
+            hostSwapchainGeneration_);
     }
-    __android_log_print(
-        ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
-        "event=swapchain-present-mode-activated requested_present_mode=%d active_present_mode=%d "
-        "requested_supported=%d fallback_to_fifo=%d swapchain_generation=%llu",
-        static_cast<int>(requestedPresentMode),
-        static_cast<int>(activePresentMode),
-        requestedModeSupported ? 1 : 0,
-        (!requestedModeSupported && requestedPresentMode != VK_PRESENT_MODE_FIFO_KHR) ? 1 : 0,
-        static_cast<unsigned long long>(hostSwapchainGeneration_));
-    if (oldSwapchain!=VK_NULL_HANDLE) vk_.DestroySwapchainKHR(device,oldSwapchain,nullptr);
-    vk_.GetSwapchainImagesKHR(device,swapchain,&imgCount,nullptr);
-    swapchainImages.resize(imgCount); vk_.GetSwapchainImagesKHR(device,swapchain,&imgCount,swapchainImages.data());
-    swapchainViews.resize(imgCount);
-    for (size_t i=0;i<imgCount;i++) {
-        VkImageViewCreateInfo vi{}; vi.sType=VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vi.image=swapchainImages[i]; vi.viewType=VK_IMAGE_VIEW_TYPE_2D; vi.format=swapchainFmt;
-        vi.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-        VkComponentMapping mapping{};
-        mapping.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-        mapping.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-        mapping.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-        mapping.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-        vi.components = mapping;
-        if (vk_.CreateImageView(device,&vi,nullptr,&swapchainViews[i])!=VK_SUCCESS) throw std::runtime_error("imgview");
+
+    if (oldSwapchain != VK_NULL_HANDLE)
+        vk_.DestroySwapchainKHR(device, oldSwapchain, nullptr);
+
+    swapchainViews.resize(actualImageCount);
+    for (size_t i = 0; i < actualImageCount; ++i) {
+        VkImageViewCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image = swapchainImages[i];
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = swapchainFmt;
+        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vi.components = {
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+        };
+        if (vk_.CreateImageView(device, &vi, nullptr, &swapchainViews[i])
+                != VK_SUCCESS)
+            throw std::runtime_error("imgview");
     }
 }
 
@@ -975,17 +1243,215 @@ uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
 
 
 uint32_t VulkanRendererContext::hostDeliveryQueueCapacity() const {
-    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
-        return MIN_HOST_DELIVERY_QUEUE_CAPACITY;
-
     // Pre-composition delivery retention is a correctness boundary, not a GPU
-    // submission-depth control. Keep the requested delivery depth even when
-    // Smooth falls back to Balanced WSI/GPU pacing after a present stall.
-    const uint32_t requestedTarget = std::min<uint32_t>(
-        2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
+    // submission-depth control. Always retain one source plus a full synthetic
+    // burst even when the user-facing Frame Queue setting is Off.
+    const uint32_t requestedTarget =
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+            ? std::min<uint32_t>(
+                2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
+            : 0U;
     return std::min<uint32_t>(
         MAX_HOST_DELIVERY_QUEUE_CAPACITY,
-        requestedTarget + MIN_HOST_DELIVERY_QUEUE_CAPACITY);
+        MIN_HOST_DELIVERY_QUEUE_CAPACITY + requestedTarget);
+}
+
+void VulkanRendererContext::resetLegacyGeneratedOutputSlotClock(
+        const char* reason) {
+    legacyGeneratedSlotContextEpoch_ = 0;
+    legacyGeneratedSlotLastRawDesiredNs_.fill(0);
+    legacyGeneratedSlotPeriodNs_.fill(0);
+    legacyGeneratedSlotNextNs_.fill(0);
+    legacyGeneratedSlotIndex_.fill(0);
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+        "event=legacy-output-slot-reset swapchain_generation=%" PRIu64
+        " cadence_epoch=%" PRIu64 " reason=%s",
+        hostSwapchainGeneration_, hostPhysicalCadenceEpoch_,
+        reason ? reason : "unknown");
+}
+
+bool VulkanRendererContext::legacyGeneratedOutputSlotMissed(
+        const LsfgFrameProvenance& provenance, uint64_t nowNs) const {
+    if (!provenance.valid || provenance.nativeImplementation
+            || provenance.kind != 1
+            || provenance.outputSlotIntendedPresentTimeNs == 0
+            || nowNs == 0) {
+        return false;
+    }
+    const uint64_t leadNs = hostRefreshPeriodNs_ != 0
+        ? std::max<uint64_t>(500000ULL, hostRefreshPeriodNs_ / 2ULL)
+        : 500000ULL;
+    const uint64_t latestUsableArrival =
+        provenance.outputSlotIntendedPresentTimeNs > leadNs
+            ? provenance.outputSlotIntendedPresentTimeNs - leadNs : 0;
+    return nowNs >= latestUsableArrival;
+}
+
+bool VulkanRendererContext::assignLegacyGeneratedOutputSlot(
+        LsfgFrameProvenance& provenance) {
+    if (!provenance.valid || provenance.nativeImplementation
+            || provenance.kind != 1
+            || provenance.desiredPresentTimeNs == 0
+            || provenance.interpolationIndex == 0
+            || provenance.interpolationIndex > VKR_LSFG_MAX_GENERATIONS) {
+        return true;
+    }
+
+    if (provenance.contextEpoch != 0
+            && legacyGeneratedSlotContextEpoch_ != 0
+            && provenance.contextEpoch != legacyGeneratedSlotContextEpoch_) {
+        resetLegacyGeneratedOutputSlotClock("legacy-context-epoch-change");
+    }
+    if (provenance.contextEpoch != 0)
+        legacyGeneratedSlotContextEpoch_ = provenance.contextEpoch;
+
+    const std::size_t lane =
+        static_cast<std::size_t>(provenance.interpolationIndex - 1);
+    const uint64_t rawDesiredNs = provenance.desiredPresentTimeNs;
+    uint64_t& lastRawNs = legacyGeneratedSlotLastRawDesiredNs_[lane];
+    uint64_t& periodNs = legacyGeneratedSlotPeriodNs_[lane];
+    uint64_t& nextNs = legacyGeneratedSlotNextNs_[lane];
+    uint64_t& slotCounter = legacyGeneratedSlotIndex_[lane];
+
+    uint64_t stepCount = 1;
+    if (lastRawNs != 0 && rawDesiredNs > lastRawNs) {
+        const uint64_t rawDeltaNs = rawDesiredNs - lastRawNs;
+        uint64_t candidatePeriodNs = rawDeltaNs;
+        if (hostRefreshPeriodNs_ != 0) {
+            const uint64_t cycles = std::max<uint64_t>(
+                1, static_cast<uint64_t>(std::llround(
+                    static_cast<double>(rawDeltaNs)
+                        / static_cast<double>(hostRefreshPeriodNs_))));
+            candidatePeriodNs = cycles * hostRefreshPeriodNs_;
+        }
+        if (candidatePeriodNs >= 4000000ULL
+                && candidatePeriodNs <= 250000000ULL) {
+            if (periodNs == 0) {
+                periodNs = candidatePeriodNs;
+            } else {
+                const uint64_t estimatedSteps = std::max<uint64_t>(
+                    1, static_cast<uint64_t>(std::llround(
+                        static_cast<double>(rawDeltaNs)
+                            / static_cast<double>(periodNs))));
+                const uint64_t expectedDeltaNs =
+                    estimatedSteps <= UINT64_MAX / periodNs
+                        ? estimatedSteps * periodNs : UINT64_MAX;
+                const uint64_t errorNs = expectedDeltaNs > rawDeltaNs
+                    ? expectedDeltaNs - rawDeltaNs
+                    : rawDeltaNs - expectedDeltaNs;
+                const uint64_t toleranceNs = hostRefreshPeriodNs_ != 0
+                    ? std::max<uint64_t>(1000000ULL, hostRefreshPeriodNs_ / 2ULL)
+                    : std::max<uint64_t>(1000000ULL, periodNs / 8ULL);
+                if (errorNs <= toleranceNs) {
+                    stepCount = estimatedSteps;
+                } else {
+                    // A material cadence/configuration change rebases once;
+                    // ordinary lateness never moves the clock.
+                    periodNs = candidatePeriodNs;
+                    nextNs = 0;
+                    stepCount = 1;
+                }
+            }
+        }
+    }
+
+    uint64_t intendedNs = rawDesiredNs;
+    if (periodNs != 0 && nextNs != 0) {
+        intendedNs = nextNs;
+        if (stepCount > 1 && periodNs <= UINT64_MAX / (stepCount - 1)) {
+            const uint64_t skipNs = periodNs * (stepCount - 1);
+            if (intendedNs <= UINT64_MAX - skipNs)
+                intendedNs += skipNs;
+        }
+    }
+    if (periodNs != 0 && intendedNs <= UINT64_MAX - periodNs)
+        nextNs = intendedNs + periodNs;
+    else
+        nextNs = 0;
+
+    lastRawNs = rawDesiredNs;
+    slotCounter += stepCount;
+    provenance.outputSlotIndex = slotCounter;
+    provenance.outputSlotIntendedPresentTimeNs = intendedNs;
+    provenance.desiredPresentTimeNs = intendedNs;
+
+    const uint64_t nowNs = monotonicTimeNs();
+    const bool missed = legacyGeneratedOutputSlotMissed(provenance, nowNs);
+    const double latenessMs =
+        nowNs != 0 && intendedNs != 0
+            ? static_cast<double>(
+                static_cast<int64_t>(nowNs)
+                    - static_cast<int64_t>(intendedNs)) / 1000000.0
+            : 0.0;
+    if (missed || slotCounter <= 8 || slotCounter % 120 == 0) {
+        __android_log_print(
+            missed ? ANDROID_LOG_WARN : ANDROID_LOG_INFO,
+            "LSFG_HOST_DISPLAY",
+            "event=legacy-output-slot output_slot_index=%" PRIu64
+            " interpolation_index=%u source_index=%" PRIu64
+            " raw_desired_ns=%" PRIu64 " intended_present_ns=%" PRIu64
+            " slot_period_ns=%" PRIu64 " refresh_period_ns=%" PRIu64
+            " arrival_ns=%" PRIu64 " lateness_ms=%.3f action=%s"
+            " generated_frame_drop_reason=%s",
+            provenance.outputSlotIndex,
+            static_cast<unsigned>(provenance.interpolationIndex),
+            provenance.sourceIndex, rawDesiredNs, intendedNs, periodNs,
+            hostRefreshPeriodNs_, nowNs, latenessMs,
+            missed ? "drop" : "enqueue",
+            missed ? "missed-usable-output-slot" : "none");
+    }
+    return !missed;
+}
+
+bool VulkanRendererContext::pruneMissedLegacyGeneratedOutputSlots(
+        uint64_t nowNs) {
+    if (nowNs == 0) return false;
+    bool droppedAny = false;
+    for (auto qit = pendingLsfgHostDeliveries_.begin();
+            qit != pendingLsfgHostDeliveries_.end();) {
+        const int64_t ownerId = qit->first;
+        auto& queue = qit->second;
+        for (auto it = queue.begin(); it != queue.end();) {
+            if (!legacyGeneratedOutputSlotMissed(it->provenance, nowNs)) {
+                ++it;
+                continue;
+            }
+            const QueuedLsfgHostDelivery dropped = *it;
+            it = queue.erase(it);
+            droppedAny = true;
+            generatedStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+            pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
+            releaseWindowAhbReference(dropped.ahb);
+            const auto texture = texMap.find(ownerId);
+            if (texture != texMap.end()
+                    && texture->second.frameProvenance.deliveryId
+                        == dropped.provenance.deliveryId) {
+                texture->second.frameProvenance = {};
+            }
+            const double latenessMs =
+                static_cast<double>(
+                    static_cast<int64_t>(nowNs)
+                        - static_cast<int64_t>(
+                            dropped.provenance.outputSlotIntendedPresentTimeNs))
+                    / 1000000.0;
+            __android_log_print(
+                ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                "event=legacy-output-slot-drop output_slot_index=%" PRIu64
+                " intended_present_ns=%" PRIu64 " drop_observed_ns=%" PRIu64
+                " lateness_ms=%.3f generated_frame_drop_reason=%s",
+                dropped.provenance.outputSlotIndex,
+                dropped.provenance.outputSlotIntendedPresentTimeNs,
+                nowNs, latenessMs, "missed-usable-output-slot");
+            emitHostDeliveryAccounting(
+                "legacy-generated-output-slot-missed", &dropped.provenance);
+        }
+        if (queue.empty())
+            qit = pendingLsfgHostDeliveries_.erase(qit);
+        else
+            ++qit;
+    }
+    return droppedAny;
 }
 
 bool VulkanRendererContext::isLsfgHostDeliveryStale(
@@ -1000,6 +1466,8 @@ bool VulkanRendererContext::isLsfgHostDeliveryStale(
     if (provenance.desiredPresentTimeNs == 0)
         return false;
     const uint64_t nowNs = monotonicTimeNs();
+    if (legacyGeneratedOutputSlotMissed(provenance, nowNs))
+        return true;
     return nowNs != 0
         && nowNs > provenance.desiredPresentTimeNs
         && nowNs - provenance.desiredPresentTimeNs
@@ -1128,7 +1596,7 @@ void VulkanRendererContext::dropQueuedLsfgHostDeliveries(const char* reason) {
 
 bool VulkanRendererContext::enqueueLsfgHostDelivery(
         int64_t ownerId, AHardwareBuffer* ahb, WinTex& source) {
-    const LsfgFrameProvenance provenance = source.frameProvenance;
+    LsfgFrameProvenance provenance = source.frameProvenance;
     if (!provenance.valid || provenance.deliveryId == 0)
         return true;
 
@@ -1145,6 +1613,15 @@ bool VulkanRendererContext::enqueueLsfgHostDelivery(
     }
     if (provenance.contextEpoch != 0)
         hostDeliveryQueueContextEpoch_ = provenance.contextEpoch;
+
+    if (!assignLegacyGeneratedOutputSlot(provenance)) {
+        generatedStaleDrop_.fetch_add(1, std::memory_order_relaxed);
+        emitHostDeliveryAccounting(
+            "legacy-generated-output-slot-missed", &provenance);
+        source.frameProvenance = {};
+        return false;
+    }
+    source.frameProvenance = provenance;
 
     if (isLsfgHostDeliveryStale(provenance)) {
         if (provenance.kind == 1)
@@ -1609,6 +2086,17 @@ void VulkanRendererContext::finalizeHostPresent(
     const VkResult result = completed.result;
     const uint64_t presentNs = completed.presentCallNs;
 
+    hostPresentLatencySamplesNs_.push_back(presentNs);
+    while (hostPresentLatencySamplesNs_.size() > 240)
+        hostPresentLatencySamplesNs_.pop_front();
+    if (present.presenterQueueAgeNs != 0) {
+        hostPresenterQueueAgeSamplesNs_.push_back(
+            present.presenterQueueAgeNs);
+        while (hostPresenterQueueAgeSamplesNs_.size() > 240)
+            hostPresenterQueueAgeSamplesNs_.pop_front();
+    }
+    observeHostPresentResult(result);
+
     frameQueueAcquireNsTotal_.fetch_add(present.acquireNs, std::memory_order_relaxed);
     frameQueuePresentNsTotal_.fetch_add(presentNs, std::memory_order_relaxed);
     const uint64_t sample =
@@ -1618,7 +2106,30 @@ void VulkanRendererContext::finalizeHostPresent(
             && !frameQueueMaxGpuOutstanding_.compare_exchange_weak(
                 observedMax, present.gpuOutstanding, std::memory_order_relaxed)) {}
 
+    bool nativeGeneratedPresent = false;
+    bool nativeSourcePresent = false;
+    for (const auto& provenance : present.frameProvenance) {
+        if (!provenance.nativeImplementation || !provenance.uniqueDelivery) continue;
+        if (provenance.kind == 1) nativeGeneratedPresent = true;
+        else nativeSourcePresent = true;
+    }
+    if (nativeGeneratedPresent)
+        nativeGeneratedWsiSubmitted_.fetch_add(1, std::memory_order_relaxed);
+    if (nativeSourcePresent)
+        nativeSourceWsiSubmitted_.fetch_add(1, std::memory_order_relaxed);
+
     if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+        if (nativeGeneratedPresent)
+            nativeGeneratedWsiAccepted_.fetch_add(1, std::memory_order_relaxed);
+        if (nativeSourcePresent)
+            nativeSourceWsiAccepted_.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t evidenceNowNs = monotonicTimeNs();
+        if (nativeGeneratedPresent)
+            recordNativePresentationEvidence(
+                true, false, false, true, false, evidenceNowNs);
+        if (nativeSourcePresent)
+            recordNativePresentationEvidence(
+                false, false, false, true, false, evidenceNowNs);
         const uint64_t presented =
             frameQueuePresentedTotal_.fetch_add(1, std::memory_order_relaxed) + 1;
         recordHostPresent(present, presentNs);
@@ -1704,6 +2215,23 @@ void VulkanRendererContext::finalizeHostPresent(
                     present.desiredDecision.phaseAdvanceNs) / 1000000.0,
                 present.desiredDecision.temporalBacklog ? 1 : 0);
         }
+    } else if (nativeGeneratedPresent) {
+        nativeGeneratedWsiRejected_.fetch_add(1, std::memory_order_relaxed);
+        nativeGeneratedDroppedAfter_.fetch_add(1, std::memory_order_relaxed);
+        recordNativePresentationEvidence(
+            true, false, false, false, true, monotonicTimeNs());
+        if (lsfg)
+            vkr_lsfg_note_presentation_drop(lsfg, 1);
+    }
+    if (nativeGeneratedPresent || nativeSourcePresent) {
+        const uint64_t accepted =
+            nativeGeneratedWsiAccepted_.load(std::memory_order_relaxed);
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR
+                || accepted <= 8 || (accepted % 120) == 0) {
+            emitNativeLsfgPipelineTelemetry(
+                result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR
+                    ? "wsi-accepted" : "wsi-rejected");
+        }
     }
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
         fbResized.store(true, std::memory_order_release);
@@ -1717,22 +2245,279 @@ VkResult VulkanRendererContext::presentHostFrame(
     return result;
 }
 
+uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
+    nativeLastAdmissionReason_ = "none";
+    const uint32_t temporalCapacity = nativeTemporalGenerationCapacity();
+    if (temporalCapacity == 0) {
+        nativeLastAdmissionReason_ = "source-interval-has-no-synthetic-slot";
+        return 0;
+    }
+    if (!hostAsyncPresenterActive_)
+        return temporalCapacity;
+
+    std::lock_guard<std::mutex> lock(hostPresenterMutex_);
+    const uint32_t queued = static_cast<uint32_t>(
+        std::min<std::size_t>(
+            pendingHostPresents_.size(), MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH));
+    const uint32_t occupied = std::min<uint32_t>(
+        MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH,
+        queued + (hostPresenterBusy_.load(std::memory_order_acquire) ? 1u : 0u));
+    if (occupied + 1 >= MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH) {
+        nativeLastAdmissionReason_ = "host-present-backlog";
+        return 0;
+    }
+
+    uint32_t capacity = std::min<uint32_t>(
+        temporalCapacity,
+        std::min<uint32_t>(
+            VKR_LSFG_MAX_GENERATIONS,
+            MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH - occupied - 1));
+
+    const uint64_t p50PresentNs =
+        rollingPercentileNs(hostPresentLatencySamplesNs_, 50);
+    const uint64_t p95PresentNs =
+        rollingPercentileNs(hostPresentLatencySamplesNs_, 95);
+    uint64_t sourceIntervalNs = nativeTimelineSourceIntervalNs_;
+    if (sourceIntervalNs == 0) {
+        const float sourceFps =
+            framegenSourceFps_.load(std::memory_order_relaxed);
+        if (sourceFps > 1.0f) {
+            sourceIntervalNs = static_cast<uint64_t>(
+                std::llround(
+                    1000000000.0 / static_cast<double>(sourceFps)));
+        }
+    }
+
+    // On Android FIFO, vkQueuePresentKHR wall time can include waiting for the
+    // presentation engine. Treating a blocked p95 tail as serial presenter
+    // service caused p95~=34 ms to zero admission for a ~=33 ms source period.
+    // Bound service cost to one refresh period while queue age/depth continue
+    // to protect against real backlog and stale synthetic output.
+    uint64_t serviceEstimateNs = p95PresentNs;
+    if (serviceEstimateNs != 0) {
+        const uint64_t refreshBoundNs =
+            hostRefreshPeriodNs_ != 0
+                ? hostRefreshPeriodNs_
+                : std::max<uint64_t>(p50PresentNs, 8'333'333ULL);
+        serviceEstimateNs = std::min(serviceEstimateNs, refreshBoundNs);
+        serviceEstimateNs = std::max(serviceEstimateNs, p50PresentNs);
+    }
+
+    nativeLastAdmissionP50PresentNs_ = p50PresentNs;
+    nativeLastAdmissionP95PresentNs_ = p95PresentNs;
+    nativeLastAdmissionServiceEstimateNs_ = serviceEstimateNs;
+    nativeLastAdmissionSourceIntervalNs_ = sourceIntervalNs;
+
+    if (serviceEstimateNs != 0 && sourceIntervalNs != 0) {
+        uint64_t oldestAgeNs = 0;
+        if (!pendingHostPresents_.empty()
+                && pendingHostPresents_.front().enqueuedAtNs != 0) {
+            const uint64_t nowNs = monotonicTimeNs();
+            if (nowNs > pendingHostPresents_.front().enqueuedAtNs)
+                oldestAgeNs =
+                    nowNs - pendingHostPresents_.front().enqueuedAtNs;
+        }
+        const uint64_t workAheadNs =
+            oldestAgeNs
+            + static_cast<uint64_t>(occupied) * serviceEstimateNs;
+        uint32_t timeCapacity = 0;
+        if (workAheadNs < sourceIntervalNs) {
+            const uint64_t availableNs = sourceIntervalNs - workAheadNs;
+            const uint64_t presentSlots =
+                availableNs / serviceEstimateNs;
+            // Always reserve one serial present slot for the real source.
+            if (presentSlots > 1) {
+                timeCapacity = static_cast<uint32_t>(
+                    std::min<uint64_t>(
+                        VKR_LSFG_MAX_GENERATIONS,
+                        presentSlots - 1));
+            }
+        }
+        if (timeCapacity < capacity) {
+            capacity = timeCapacity;
+            nativeLastAdmissionReason_ = "predicted-temporal-stale";
+        }
+    }
+
+    if (capacity == 0 && nativeLastAdmissionReason_ == "none")
+        nativeLastAdmissionReason_ = "host-present-backlog";
+    return capacity;
+}
+
+void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) {
+    uint32_t hostPresentQueueDepth = 0;
+    {
+        std::lock_guard<std::mutex> lock(hostPresenterMutex_);
+        hostPresentQueueDepth = static_cast<uint32_t>(pendingHostPresents_.size());
+    }
+    const uint64_t requested = nativeGeneratedRequested_.load(std::memory_order_relaxed);
+    const uint64_t admitted = nativeGeneratedAdmitted_.load(std::memory_order_relaxed);
+    const uint64_t dispatched = nativeGeneratedDispatched_.load(std::memory_order_relaxed);
+    const uint64_t completed = nativeGeneratedCompleted_.load(std::memory_order_relaxed);
+    const uint64_t wsiSubmitted = nativeGeneratedWsiSubmitted_.load(std::memory_order_relaxed);
+    const uint64_t wsiAccepted = nativeGeneratedWsiAccepted_.load(std::memory_order_relaxed);
+    const uint64_t displayConfirmed =
+        nativeGeneratedDisplayConfirmed_.load(std::memory_order_relaxed);
+    const uint64_t sourceWsiAccepted =
+        nativeSourceWsiAccepted_.load(std::memory_order_relaxed);
+    const uint64_t sourceDisplayConfirmed =
+        nativeSourceDisplayConfirmed_.load(std::memory_order_relaxed);
+    const uint64_t completionSamples =
+        nativeGpuCompletionSamples_.load(std::memory_order_relaxed);
+    const uint64_t hostWaitSamples =
+        nativeHostWaitSamples_.load(std::memory_order_relaxed);
+
+    const uint64_t nowNs = monotonicTimeNs();
+    if (nativePresentRateSampleNs_ == 0) {
+        nativePresentRateSampleNs_ = nowNs;
+        nativePresentRateSourceAccepted_ = sourceWsiAccepted;
+        nativePresentRateGeneratedAccepted_ = wsiAccepted;
+        nativePresentRateSourceConfirmed_ = sourceDisplayConfirmed;
+        nativePresentRateGeneratedConfirmed_ = displayConfirmed;
+    } else if (nowNs > nativePresentRateSampleNs_
+            && nowNs - nativePresentRateSampleNs_ >= 500000000ULL) {
+        const double seconds =
+            static_cast<double>(nowNs - nativePresentRateSampleNs_) / 1000000000.0;
+        const uint64_t sourceAcceptedDelta =
+            sourceWsiAccepted - nativePresentRateSourceAccepted_;
+        const uint64_t generatedAcceptedDelta =
+            wsiAccepted - nativePresentRateGeneratedAccepted_;
+        const uint64_t sourceConfirmedDelta =
+            sourceDisplayConfirmed - nativePresentRateSourceConfirmed_;
+        const uint64_t generatedConfirmedDelta =
+            displayConfirmed - nativePresentRateGeneratedConfirmed_;
+        nativeSourceWsiFps_ =
+            static_cast<double>(sourceAcceptedDelta) / seconds;
+        nativeGeneratedWsiFps_ =
+            static_cast<double>(generatedAcceptedDelta) / seconds;
+        nativeOutputWsiFps_ =
+            static_cast<double>(sourceAcceptedDelta + generatedAcceptedDelta) / seconds;
+        nativeOutputConfirmedFps_ =
+            static_cast<double>(sourceConfirmedDelta + generatedConfirmedDelta) / seconds;
+        nativePresentRateSampleNs_ = nowNs;
+        nativePresentRateSourceAccepted_ = sourceWsiAccepted;
+        nativePresentRateGeneratedAccepted_ = wsiAccepted;
+        nativePresentRateSourceConfirmed_ = sourceDisplayConfirmed;
+        nativePresentRateGeneratedConfirmed_ = displayConfirmed;
+    }
+
+    RLOG(
+        "LSFG_NATIVE_GENERATION: event=pipeline reason=%s source_received=%llu "
+        "generated_requested=%llu generated_admitted=%llu generated_dispatched=%llu "
+        "generated_completed=%llu dropped_before_generation=%llu dropped_after_generation=%llu "
+        "superseded=%llu stale=%llu deadline_rejected=%llu backlog_rejected=%llu",
+        reason ? reason : "periodic",
+        (unsigned long long)nativeSourceReceived_.load(std::memory_order_relaxed),
+        (unsigned long long)requested,
+        (unsigned long long)admitted,
+        (unsigned long long)dispatched,
+        (unsigned long long)completed,
+        (unsigned long long)nativeGeneratedDroppedBefore_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedDroppedAfter_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedSuperseded_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedStale_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedDeadlineRejected_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedBacklogRejected_.load(std::memory_order_relaxed));
+
+    RLOG(
+        "LSFG_NATIVE_SYNC: event=aggregate path=binary-semaphore-gpu-dependency+fence-retirement "
+        "dispatch_gpu_timing=unavailable-no-timestamp-query gpu_completion_avg_ms=%.3f "
+        "gpu_completion_samples=%llu host_wait_avg_ms=%.3f host_wait_total_ms=%.3f "
+        "host_wait_samples=%llu outstanding_submissions=%u present_queue_high_water=%u",
+        completionSamples > 0
+            ? (double)nativeGpuCompletionLatencyNsTotal_.load(std::memory_order_relaxed)
+                / (double)completionSamples / 1000000.0 : 0.0,
+        (unsigned long long)completionSamples,
+        hostWaitSamples > 0
+            ? (double)nativeHostWaitNsTotal_.load(std::memory_order_relaxed)
+                / (double)hostWaitSamples / 1000000.0 : 0.0,
+        (double)nativeHostWaitNsTotal_.load(std::memory_order_relaxed) / 1000000.0,
+        (unsigned long long)hostWaitSamples,
+        countOutstandingFrameSubmissions(false),
+        hostPresentQueueHighWater_.load(std::memory_order_relaxed));
+
+    RLOG(
+        "LSFG_NATIVE_PRESENT: event=pipeline reason=%s source_wsi_submitted=%llu "
+        "source_wsi_accepted=%llu source_display_confirmed=%llu "
+        "generated_wsi_submitted=%llu generated_wsi_accepted=%llu "
+        "generated_display_confirmed=%llu generated_wsi_rejected=%llu "
+        "source_fps=%.2f generated_fps=%.2f wsi_accepted_output_fps=%.2f "
+        "confirmed_output_fps=%.2f source_confirmed_fps=%.2f generated_confirmed_fps=%.2f "
+        "confirmed_available=%d generated_delivery_efficiency=%.3f "
+        "source_delivery_efficiency=%.3f confirmation_timeout_rate=%.3f "
+        "output_target_deficit_ratio=%.3f presentation_pressure=%d "
+        "present_call_p50_ms=%.3f present_call_p95_ms=%.3f "
+        "presenter_queue_age_p50_ms=%.3f presenter_queue_age_p95_ms=%.3f "
+        "suboptimal_streak=%u suboptimal_total=%" PRIu64 " queue_depth=%u queue_high_water=%u "
+        "admission_present_p50_ms=%.3f admission_present_p95_ms=%.3f "
+        "admission_service_estimate_ms=%.3f admission_source_interval_ms=%.3f",
+        reason ? reason : "periodic",
+        (unsigned long long)nativeSourceWsiSubmitted_.load(std::memory_order_relaxed),
+        (unsigned long long)sourceWsiAccepted,
+        (unsigned long long)sourceDisplayConfirmed,
+        (unsigned long long)wsiSubmitted,
+        (unsigned long long)wsiAccepted,
+        (unsigned long long)displayConfirmed,
+        (unsigned long long)nativeGeneratedWsiRejected_.load(std::memory_order_relaxed),
+        nativeSourceWsiFps_,
+        nativeGeneratedWsiFps_,
+        nativeOutputWsiFps_,
+        nativeOutputConfirmedFps_,
+        nativeSourceConfirmedFps_,
+        nativeGeneratedConfirmedFps_,
+        (hostPresentWaitEnabled || hostGoogleDisplayTimingEnabled) ? 1 : 0,
+        static_cast<double>(
+            nativePresentationPressure_.generated_delivery_efficiency),
+        static_cast<double>(
+            nativePresentationPressure_.source_delivery_efficiency),
+        static_cast<double>(
+            nativePresentationPressure_.confirmation_timeout_rate),
+        static_cast<double>(
+            nativePresentationPressure_.output_target_deficit_ratio),
+        nativePresentationPressureActive_ ? 1 : 0,
+        static_cast<double>(
+            rollingPercentileNs(hostPresentLatencySamplesNs_, 50)) / 1000000.0,
+        static_cast<double>(
+            rollingPercentileNs(hostPresentLatencySamplesNs_, 95)) / 1000000.0,
+        static_cast<double>(
+            rollingPercentileNs(hostPresenterQueueAgeSamplesNs_, 50)) / 1000000.0,
+        static_cast<double>(
+            rollingPercentileNs(hostPresenterQueueAgeSamplesNs_, 95)) / 1000000.0,
+        hostSuboptimalConsecutive_,
+        hostSuboptimalTotal_,
+        hostPresentQueueDepth,
+        hostPresentQueueHighWater_.load(std::memory_order_relaxed),
+        static_cast<double>(nativeLastAdmissionP50PresentNs_) / 1000000.0,
+        static_cast<double>(nativeLastAdmissionP95PresentNs_) / 1000000.0,
+        static_cast<double>(nativeLastAdmissionServiceEstimateNs_) / 1000000.0,
+        static_cast<double>(nativeLastAdmissionSourceIntervalNs_) / 1000000.0);
+}
+
 VkResult VulkanRendererContext::enqueueHostPresent(
         PendingHostPresent present) {
     if (!hostAsyncPresenterActive_)
         return presentHostFrame(present);
 
+    const bool nativePresent = std::any_of(
+        present.frameProvenance.begin(), present.frameProvenance.end(),
+        [](const LsfgFrameProvenance& provenance) {
+            return provenance.nativeImplementation;
+        });
+    const uint32_t queueLimit = nativePresent
+        ? MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH
+        : MAX_HOST_PRESENT_QUEUE_DEPTH;
     const auto waitStart = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lock(hostPresenterMutex_);
-    hostPresenterSpaceCv_.wait(lock, [this] {
+    hostPresenterSpaceCv_.wait(lock, [this, queueLimit] {
         return !hostPresenterRunning_.load(std::memory_order_acquire)
-            || pendingHostPresents_.size() < MAX_HOST_PRESENT_QUEUE_DEPTH;
+            || pendingHostPresents_.size() < queueLimit;
     });
     if (!hostPresenterRunning_.load(std::memory_order_acquire)) {
         lock.unlock();
         return presentHostFrame(present);
     }
 
+    present.enqueuedAtNs = monotonicTimeNs();
     present.hostPresentEnqueueWaitNs = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - waitStart).count());
@@ -1741,6 +2526,11 @@ VkResult VulkanRendererContext::enqueueHostPresent(
     hostPresentEnqueueWaitNsTotal_.fetch_add(
         present.hostPresentEnqueueWaitNs, std::memory_order_relaxed);
     hostPresentEnqueueWaitCount_.fetch_add(1, std::memory_order_relaxed);
+    if (nativePresent) {
+        nativeHostWaitNsTotal_.fetch_add(
+            present.hostPresentEnqueueWaitNs, std::memory_order_relaxed);
+        nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+    }
     uint32_t observed = hostPresentQueueHighWater_.load(std::memory_order_relaxed);
     while (observed < present.hostPresentQueueDepth
             && !hostPresentQueueHighWater_.compare_exchange_weak(
@@ -1756,6 +2546,7 @@ VkResult VulkanRendererContext::enqueueHostPresent(
 void VulkanRendererContext::hostPresenterLoop() {
     for (;;) {
         PendingHostPresent present{};
+        uint64_t presenterNowNs = 0;
         {
             std::unique_lock<std::mutex> lock(hostPresenterMutex_);
             hostPresenterCv_.wait(lock, [this] {
@@ -1767,9 +2558,55 @@ void VulkanRendererContext::hostPresenterLoop() {
                 break;
             present = std::move(pendingHostPresents_.front());
             pendingHostPresents_.pop_front();
+            presenterNowNs = monotonicTimeNs();
+            if (present.enqueuedAtNs != 0
+                    && presenterNowNs > present.enqueuedAtNs) {
+                present.presenterQueueAgeNs =
+                    presenterNowNs - present.enqueuedAtNs;
+            }
             hostPresenterBusy_.store(true, std::memory_order_release);
         }
         hostPresenterSpaceCv_.notify_all();
+
+        const auto generatedIt = std::find_if(
+            present.frameProvenance.begin(), present.frameProvenance.end(),
+            [](const LsfgFrameProvenance& provenance) {
+                return provenance.nativeImplementation
+                    && provenance.uniqueDelivery
+                    && provenance.kind == 1;
+            });
+        if (generatedIt != present.frameProvenance.end()) {
+            const uint64_t desiredNs =
+                present.desiredDecision.submittedDesiredPresentTimeNs != 0
+                    ? present.desiredDecision.submittedDesiredPresentTimeNs
+                    : present.desiredDecision.provenanceDesiredPresentTimeNs;
+            const uint64_t refreshNs =
+                present.desiredDecision.refreshPeriodNs;
+            if (presenterNowNs != 0 && desiredNs != 0 && refreshNs != 0
+                    && presenterNowNs > desiredNs + refreshNs) {
+                const uint64_t lateNs = presenterNowNs - desiredNs;
+                nativeGeneratedStale_.fetch_add(1, std::memory_order_relaxed);
+                const uint64_t latestSource =
+                    framegenSourceFrames.load(std::memory_order_acquire);
+                const bool superseded =
+                    latestSource > generatedIt->sourceIndex;
+                if (superseded)
+                    nativeGeneratedSuperseded_.fetch_add(
+                        1, std::memory_order_relaxed);
+                __android_log_print(
+                    ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
+                    "event=present-slot-miss stage=presenter kind=generated "
+                    "source_index=%" PRIu64 " latest_source_index=%" PRIu64
+                    " desired_ns=%" PRIu64 " presenter_now_ns=%" PRIu64
+                    " late_ms=%.3f queue_age_ms=%.3f superseded=%d "
+                    "action=submit-acquired-for-wsi-ownership",
+                    generatedIt->sourceIndex, latestSource,
+                    desiredNs, presenterNowNs,
+                    static_cast<double>(lateNs) / 1000000.0,
+                    static_cast<double>(present.presenterQueueAgeNs) / 1000000.0,
+                    superseded ? 1 : 0);
+            }
+        }
 
         auto completed = executeHostPresent(std::move(present));
 
@@ -1825,10 +2662,46 @@ void VulkanRendererContext::drainHostPresenter(const char* reason) {
 void VulkanRendererContext::cleanupSwapchain() {
     drainHostPresenter("swapchain-cleanup");
     retireFrameQueuePresentSemaphores();
+    if (lsfg) {
+        vkr_lsfg_forget_targets(lsfg);
+        vkr_lsfg_reset(lsfg);
+    }
+    // Readiness must be proven again for the new swapchain/surface epoch.
+    // Historical WSI acceptance from the old surface cannot keep Native in
+    // NATIVE_GENERATING before a new generated frame reaches presentation.
+    nativeGeneratedPresentedFrames_.store(0, std::memory_order_relaxed);
+    presentedFrames.store(0, std::memory_order_relaxed);
+    nativeGeneratedDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
+    nativeSourceDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
+    nativePresentRateSampleNs_ = 0;
+    nativePresentRateSourceAccepted_ =
+        nativeSourceWsiAccepted_.load(std::memory_order_relaxed);
+    nativePresentRateGeneratedAccepted_ =
+        nativeGeneratedWsiAccepted_.load(std::memory_order_relaxed);
+    nativePresentRateSourceConfirmed_ =
+        nativeSourceDisplayConfirmed_.load(std::memory_order_relaxed);
+    nativePresentRateGeneratedConfirmed_ =
+        nativeGeneratedDisplayConfirmed_.load(std::memory_order_relaxed);
+    nativeSourceWsiFps_ = 0.0;
+    nativeGeneratedWsiFps_ = 0.0;
+    nativeOutputWsiFps_ = 0.0;
+    nativeOutputConfirmedFps_ = 0.0;
+    RLOG(
+        "LSFG_NATIVE_STATE: event=presentation_evidence_reset reason=swapchain-recreate "
+        "context_epoch=%llu",
+        (unsigned long long)nativeLsfgContextEpoch_);
+    destroyCompositeTargets();
+    if (compositePass != VK_NULL_HANDLE) {
+        vk_.DestroyRenderPass(device, compositePass, nullptr);
+        compositePass = VK_NULL_HANDLE;
+    }
+    nativeLastSourceFrame_ = 0;
     flushHostDisplayConfirmationsUnknown("swapchain-recreate");
     if (swapchain != VK_NULL_HANDLE) {
         resetHostPhysicalCadenceTelemetry("swapchain-destroyed");
         lastAcceptedDesiredPresentTimeNs_ = 0;
+        nativePresentationSurfaceReady_.store(false, std::memory_order_release);
+        resetNativePresentationTimeline("swapchain-destroyed");
     }
     for (auto fb:swapchainFBs) vk_.DestroyFramebuffer(device,fb,nullptr); swapchainFBs.clear();
     for (auto iv:swapchainViews) vk_.DestroyImageView(device,iv,nullptr); swapchainViews.clear();
@@ -2070,7 +2943,8 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
     VkBuffer cursorUpload, bool hasCursorUpload,
     float ox, float oy, float sx, float sy, float cw, float ch,
     short ptrX, short ptrY, short curHotX, short curHotY,
-    short curW, short curH, bool curVis, bool keepOpen)
+    short curW, short curH, bool curVis, bool keepOpen,
+    const VkCompositeTarget* target)
 {
     VkCommandBufferBeginInfo bi{}; bi.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     if (vk_.BeginCommandBuffer(cb,&bi)!=VK_SUCCESS) throw std::runtime_error("begin cb");
@@ -2147,8 +3021,8 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
     bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
     VkExtent2D tgtExt = toXr ? xrExt : swapchainExt;
     VkRenderPassBeginInfo rpi{}; rpi.sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpi.renderPass = toXr ? xrRp : renderPass;
-    rpi.framebuffer = toXr ? xrFb : swapchainFBs[imgIdx];
+    rpi.renderPass = target ? compositePass : (toXr ? xrRp : renderPass);
+    rpi.framebuffer = target ? target->framebuffer : (toXr ? xrFb : swapchainFBs[imgIdx]);
     rpi.renderArea={{0,0},tgtExt};
     VkClearValue clr={{{0.f,0.f,0.f,1.f}}}; rpi.clearValueCount=1; rpi.pClearValues=&clr;
 
@@ -2391,8 +3265,20 @@ void VulkanRendererContext::renderFrame() {
 
     processHostPresentCompletions();
     drainLsfgProvenance();
+    bool prunedMissedLegacyOutput = false;
+    {
+        std::lock_guard<std::mutex> lk(renderMutex);
+        prunedMissedLegacyOutput =
+            pruneMissedLegacyGeneratedOutputSlots(monotonicTimeNs());
+    }
     needsRender.store(false,std::memory_order_relaxed);
     cursorMoved.store(false,std::memory_order_relaxed);
+    if (prunedMissedLegacyOutput
+            && pendingLsfgHostDeliveryCount_.load(std::memory_order_acquire) == 0) {
+        // Do not snapshot/present the stale AHB as latest-content fallback.
+        // The next source/generated delivery will request rendering again.
+        return;
+    }
 
     if (surfaceDetached.load(std::memory_order_acquire)) return;
     if (scanoutActive.load()) {
@@ -2424,12 +3310,25 @@ ok=true;}catch(...){}
         return;
     }
 
-    // Frame Queue depth belongs to unique LSFG content only. The raw imported
-    // AHB is never retained as queued storage: after QueueSubmit the acquired
-    // host swapchain image is the immutable composite snapshot, and its render
-    // completion semaphore owns the handoff to WSI.
+    // Frame Queue depth belongs to unique LSFG content only. Native and Legacy
+    // share this final-output policy; Native contributes unique content directly
+    // from the host compositor instead of through the AHB delivery queue. After
+    // QueueSubmit, the acquired swapchain image is the immutable composite snapshot
+    // whose render-complete semaphore owns the final handoff to WSI.
+    bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
+    const bool backendPolicyReady =
+        lsfgBackendTransitionId_ == 0
+        || lsfgBackendTransitionPolicyCommitted_;
+    const bool nativeLsfgContentPending =
+        !toXr
+        && backendPolicyReady
+        && framegenArmed.load(std::memory_order_acquire)
+        && framegenRequested.load(std::memory_order_acquire)
+        && framegenSupported.load(std::memory_order_acquire)
+        && lsfg != nullptr;
     bool uniqueLsfgContentPending =
-        pendingLsfgHostDeliveryCount_.load(std::memory_order_acquire) > 0;
+        nativeLsfgContentPending
+        || pendingLsfgHostDeliveryCount_.load(std::memory_order_acquire) > 0;
     if (!uniqueLsfgContentPending
             && lsfgFrameQueueEnabled_.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lk(renderMutex);
@@ -2452,7 +3351,6 @@ ok=true;}catch(...){}
     if (currentFrame >= activeSlots)
         currentFrame = 0;
     if (currentFrame >= cmdBufs.size() || cmdBufs[currentFrame] == VK_NULL_HANDLE) return;
-    bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
     bool currentFenceWaited = false;
     bool currentFenceComplete = false;
     if (toXr) {
@@ -2469,14 +3367,25 @@ ok=true;}catch(...){}
             ? vk_.GetFenceStatus(device, inFlightFences[currentFrame])
             : VK_NOT_READY;
         if (fenceStatus == VK_SUCCESS) {
-            submissionTimeline.completeFrame(currentFrame);
+            completeObservedFence(inFlightFences[currentFrame]);
             currentFenceWaited = true;
             currentFenceComplete = true;
-        } else if (vk_.WaitForFences(
-                device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX) == VK_SUCCESS) {
-            submissionTimeline.completeFrame(currentFrame);
-            currentFenceWaited = true;
-            currentFenceComplete = true;
+        } else {
+            const auto hostWaitStart = std::chrono::steady_clock::now();
+            const VkResult waitResult = vk_.WaitForFences(
+                device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX);
+            const uint64_t hostWaitNs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - hostWaitStart).count());
+            if (framegenRequested && lsfg != nullptr) {
+                nativeHostWaitNsTotal_.fetch_add(hostWaitNs, std::memory_order_relaxed);
+                nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (waitResult == VK_SUCCESS) {
+                completeObservedFence(inFlightFences[currentFrame]);
+                currentFenceWaited = true;
+                currentFenceComplete = true;
+            }
         }
     }
     if (!currentFenceComplete) return;
@@ -2489,43 +3398,172 @@ ok=true;}catch(...){}
             : 0;
     if (!toXr) {
         enforceFrameQueueSubmissionBudget(frameQueueTarget);
+        bool retiredAfterWait = false;
+        {
+            std::lock_guard<std::mutex> lk(renderMutex);
+            retiredAfterWait =
+                pruneMissedLegacyGeneratedOutputSlots(monotonicTimeNs());
+        }
+        if (retiredAfterWait
+                && pendingLsfgHostDeliveryCount_.load(
+                    std::memory_order_acquire) == 0) {
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+                "event=legacy-output-slot-pre-acquire action=skip-present"
+                " generated_frame_drop_reason=missed-after-host-wait");
+            return;
+        }
     }
 
     uint32_t imgIdx = 0;
-    uint32_t nativeGeneratedImgIdx = 0;
-    VkSemaphore nativeGeneratedAcquireSemaphore = VK_NULL_HANDLE;
+    std::array<uint32_t, VKR_LSFG_MAX_GENERATIONS> nativeGeneratedImgIndices{};
     uint64_t acquireNs = 0;
     VkResult res = VK_SUCCESS;
-
-    // Native LSFG is deliberately a narrow compositor path: 2x only for the
-    // first bring-up slice, with the source still rendered by the existing
-    // renderer and generated output copied into a second acquired WSI image.
     bool nativeRuntimeActive =
-        !toXr &&
-        framegenArmed &&
-        framegenRequested &&
-        lsfg != nullptr &&
-        framegenSupported &&
-        framegenMultiplier == 2 &&
-        swapchainImages.size() >= 2;
-
+        !toXr && backendPolicyReady && framegenArmed && framegenRequested
+        && lsfg != nullptr && framegenSupported;
+    const uint32_t nativeCapacity = nativeRuntimeActive && swapchainImages.size() > nativeMinImageCount_
+        ? std::min<uint32_t>(VKR_LSFG_MAX_GENERATIONS,
+            static_cast<uint32_t>(swapchainImages.size()) - nativeMinImageCount_) : 0;
     uint32_t nativeGenerations = 0;
-    uint64_t nativeSourceFrame = framegenSourceFrames.load(std::memory_order_relaxed) + 1;
-    if (nativeRuntimeActive) {
-        if (!ensureNativeExtraAcquireSemaphores()) {
-            nativeRuntimeActive = false;
-            RLOG_E("Native LSFG disabled for frame: generated-image acquire sync unavailable");
-        }
+    uint32_t nativeRequestedGenerations = 0;
+    NativePresentationSchedule nativePresentationSchedule{};
+    if (nativeRuntimeActive && nativeCapacity == 0) {
+        nativeRuntimeActive = false;
+        framegenSupported = false;
+        RLOG_E("LSFG_NATIVE: event=initialization_failed reason=insufficient-wsi-images images=%zu min_images=%u",
+            swapchainImages.size(), nativeMinImageCount_);
+    }
+    const uint64_t nativeSourceFrame = framegenSourceFrames.load(std::memory_order_acquire);
+    const bool nativeFreshSource = nativeSourceFrame != nativeLastSourceFrame_;
+    if (nativeRuntimeActive && !ensureNativeExtraAcquireSemaphores()) {
+        nativeRuntimeActive = false;
+        RLOG_E("LSFG_NATIVE: event=frame_fallback reason=acquire-sync-unavailable");
     }
     if (nativeRuntimeActive) {
         vkr_lsfg_set_guest_extent(lsfg, containerWidth, containerHeight);
-        vkr_lsfg_set_refresh_rate(lsfg, framegenRefreshRate);
-        if (!createCompositeTargets(swapchainExt.width, swapchainExt.height, 1) ||
-            !vkr_lsfg_prepare(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt)) {
+        const uint32_t targets = MAX_FRAMES_IN_FLIGHT + nativeCapacity;
+        const bool chainRebuild =
+            vkr_lsfg_needs_rebuild(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt);
+        const bool compositeRebuild =
+            !compositeBuilt || compositeCount != targets
+            || composite[0].width != swapchainExt.width
+            || composite[0].height != swapchainExt.height;
+        const bool rebuild = compositeRebuild || chainRebuild;
+        const char* nativeRebuildReason = "none";
+        if (chainRebuild) {
+            nativeRebuildReason =
+                vkr_lsfg_rebuild_reason(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt);
+        } else if (!compositeBuilt) {
+            nativeRebuildReason = "initial-create";
+        } else if (compositeCount != targets) {
+            nativeRebuildReason = "swapchain-capacity-change";
+        } else if (composite[0].width != swapchainExt.width
+                || composite[0].height != swapchainExt.height) {
+            nativeRebuildReason = "resolution-change";
+        }
+        const auto nativePrepareStart = std::chrono::steady_clock::now();
+        if (rebuild) {
+            waitNativeResources();
+            vkr_lsfg_forget_targets(lsfg);
+        }
+        if (!createCompositeTargets(swapchainExt.width, swapchainExt.height, targets)
+                || !vkr_lsfg_prepare(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt)) {
             nativeRuntimeActive = false;
-            RLOG_E("Native LSFG disabled for frame: target/chain preparation failed");
+            framegenSupported = false;
+            RLOG_E(
+                "LSFG_NATIVE_CONTEXT: event=context_build_failed rebuild_reason=%s "
+                "width=%u height=%u format=%d",
+                nativeRebuildReason, swapchainExt.width, swapchainExt.height, (int)swapchainFmt);
         } else {
-            nativeGenerations = vkr_lsfg_plan(lsfg, 1, nativeSourceFrame);
+            if (rebuild) {
+                ++nativeLsfgContextEpoch_;
+                const uint64_t prepareNs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - nativePrepareStart).count());
+                VkrLsfgFlowState flow{};
+                vkr_lsfg_get_flow_state(lsfg, &flow);
+                RLOG(
+                    "LSFG_NATIVE_CONTEXT: event=context_rebuild context_epoch=%llu action=%s "
+                    "rebuild_reason=%s init_ms=%.3f width=%u height=%u format=%d "
+                    "flow_mode=%s requested_scale=%.2f active_scale=%.2f "
+                    "effective_scale=%.2f transition=%d warm=%d",
+                    (unsigned long long)nativeLsfgContextEpoch_,
+                    nativeLsfgContextEpoch_ == 1 ? "create" : "rebuild",
+                    nativeRebuildReason,
+                    (double)prepareNs / 1000000.0,
+                    swapchainExt.width,
+                    swapchainExt.height,
+                    (int)swapchainFmt,
+                    flow.adaptive ? "adaptive" : "fixed",
+                    (double)flow.requested_scale,
+                    (double)flow.active_scale,
+                    (double)flow.effective_scale,
+                    flow.transition ? 1 : 0,
+                    flow.warm ? 1 : 0);
+                nativeLastContextReuseRevision_ = framegenConfigRevision;
+            } else if (nativeFreshSource
+                    && nativeLastContextReuseRevision_ != framegenConfigRevision) {
+                nativeLastContextReuseRevision_ = framegenConfigRevision;
+                RLOG(
+                    "LSFG_NATIVE_CONTEXT: event=context_reuse context_epoch=%llu "
+                    "revision=%llu rebuild_reason=none",
+                    (unsigned long long)nativeLsfgContextEpoch_,
+                    (unsigned long long)framegenConfigRevision);
+            }
+            if (nativeFreshSource) {
+                const uint64_t sourceArrivalNs = monotonicTimeNs();
+                noteNativeSourceArrival(sourceArrivalNs);
+                updateNativePresentationPressure(sourceArrivalNs);
+                vkr_lsfg_set_pressure(
+                    lsfg,
+                    framegenGpuUsagePercent_.load(std::memory_order_relaxed),
+                    framegenThermalStatus_.load(std::memory_order_relaxed),
+                    framegenSourceFps_.load(std::memory_order_relaxed),
+                    framegenOutputFps_.load(std::memory_order_relaxed),
+                    framegenFrameTimeP95Ms_.load(std::memory_order_relaxed),
+                    framegenSlowFrameRatio_.load(std::memory_order_relaxed));
+                vkr_lsfg_set_presentation_pressure(
+                    lsfg, &nativePresentationPressure_);
+                nativeSourceReceived_.fetch_add(1, std::memory_order_relaxed);
+                nativeGenerations = vkr_lsfg_plan(lsfg, nativeCapacity, nativeSourceFrame);
+                nativeRequestedGenerations = nativeGenerations;
+                nativeGeneratedRequested_.fetch_add(
+                    nativeRequestedGenerations, std::memory_order_relaxed);
+
+                const uint32_t hostCapacity =
+                    nativeHostSyntheticAdmissionCapacity();
+                if (nativeGenerations > hostCapacity) {
+                    const uint32_t rejected = nativeGenerations - hostCapacity;
+                    nativeGenerations = hostCapacity;
+                    nativeGeneratedDroppedBefore_.fetch_add(
+                        rejected, std::memory_order_relaxed);
+                    nativeGeneratedBacklogRejected_.fetch_add(
+                        rejected, std::memory_order_relaxed);
+                    if (nativeLastAdmissionReason_ == "predicted-temporal-stale") {
+                        nativeGeneratedStale_.fetch_add(
+                            rejected, std::memory_order_relaxed);
+                        RLOG(
+                            "LSFG_NATIVE_GENERATION: event=stale-retirement "
+                            "stage=pre-acquire source_index=%llu count=%u "
+                            "action=drop-before-generation reason=predicted-temporal-stale",
+                            (unsigned long long)nativeSourceFrame, rejected);
+                    }
+                    vkr_lsfg_note_admission(
+                        lsfg, nativeRequestedGenerations, nativeGenerations);
+                    RLOG(
+                        "LSFG_NATIVE_GENERATION: event=admission source_index=%llu "
+                        "requested_synthetic=%u admitted=%u rejected=%u "
+                        "rejection_reason=%s queue_capacity=%u",
+                        (unsigned long long)nativeSourceFrame,
+                        nativeRequestedGenerations,
+                        nativeGenerations,
+                        rejected,
+                        nativeLastAdmissionReason_.c_str(),
+                        hostCapacity);
+                    emitNativeLsfgPipelineTelemetry("pre-generation-backlog-reject");
+                }
+            }
         }
     }
 
@@ -2560,40 +3598,77 @@ ok=true;}catch(...){}
         }
         imgInFlight[imgIdx]=inFlightFences[currentFrame];
 
-        if (nativeRuntimeActive && nativeGenerations > 0) {
-            nativeGeneratedAcquireSemaphore = nativeExtraAcquireSems_[currentFrame][0];
-            res = vk_.AcquireNextImageKHR(
-                device, swapchain, UINT64_MAX, nativeGeneratedAcquireSemaphore,
-                VK_NULL_HANDLE, &nativeGeneratedImgIdx);
-            if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_ERROR_SURFACE_LOST_KHR) {
-                fbResized.store(true);
-                return;
+        const uint32_t plannedGenerations = nativeGenerations;
+        nativeGenerations = 0;
+        // Reserve the acquired source. Extra images are optional and bounded;
+        // an unavailable output must never strand the source or block indefinitely.
+        const uint64_t extraAcquireTimeout = std::clamp<uint64_t>(
+            static_cast<uint64_t>(1000000000.0 / std::max(1.0f, framegenRefreshRate)),
+            2000000ULL, 20000000ULL);
+        const uint64_t extraAcquireDeadline = monotonicTimeNs() + extraAcquireTimeout;
+        for (uint32_t g = 0; g < plannedGenerations; ++g) {
+            uint32_t generatedImage = 0;
+            const uint64_t extraAcquireNow = monotonicTimeNs();
+            const VkResult acquireResult = vk_.AcquireNextImageKHR(device, swapchain,
+                extraAcquireNow < extraAcquireDeadline ? extraAcquireDeadline - extraAcquireNow : 0,
+                nativeExtraAcquireSems_[currentFrame][g],
+                VK_NULL_HANDLE, &generatedImage);
+            if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+                if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR || acquireResult == VK_ERROR_SURFACE_LOST_KHR)
+                    fbResized.store(true);
+                RLOG("LSFG_NATIVE: event=generated_acquire_fallback planned=%u acquired=%u result=%d",
+                    plannedGenerations, nativeGenerations, acquireResult);
+                break;
             }
-            if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
-                return;
-            }
-            if (nativeGeneratedImgIdx >= swapchainImages.size() ||
-                nativeGeneratedImgIdx == imgIdx) {
-                RLOG_E("Native LSFG acquired invalid generated image index=%u source=%u images=%zu",
-                    nativeGeneratedImgIdx, imgIdx, swapchainImages.size());
-                return;
-            }
-            if (imgInFlight[nativeGeneratedImgIdx] != VK_NULL_HANDLE &&
-                imgInFlight[nativeGeneratedImgIdx] != inFlightFences[currentFrame]) {
-                VkResult imageFenceStatus = vk_.GetFenceStatus
-                    ? vk_.GetFenceStatus(device, imgInFlight[nativeGeneratedImgIdx])
-                    : VK_NOT_READY;
-                if (imageFenceStatus == VK_SUCCESS) {
-                    completeObservedFence(imgInFlight[nativeGeneratedImgIdx]);
-                } else if (vk_.WaitForFences(
-                        device,1,&imgInFlight[nativeGeneratedImgIdx],VK_TRUE,UINT64_MAX) != VK_SUCCESS) {
+            nativeGeneratedImgIndices[nativeGenerations++] = generatedImage;
+            if (imgInFlight[generatedImage] != VK_NULL_HANDLE
+                    && imgInFlight[generatedImage] != inFlightFences[currentFrame]) {
+                const auto generatedReuseWaitStart = std::chrono::steady_clock::now();
+                const VkResult generatedReuseWait = vk_.WaitForFences(
+                    device, 1, &imgInFlight[generatedImage], VK_TRUE, UINT64_MAX);
+                const uint64_t generatedReuseWaitNs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - generatedReuseWaitStart).count());
+                nativeHostWaitNsTotal_.fetch_add(
+                    generatedReuseWaitNs, std::memory_order_relaxed);
+                nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+                if (generatedReuseWait != VK_SUCCESS)
                     return;
-                } else {
-                    completeObservedFence(imgInFlight[nativeGeneratedImgIdx]);
-                }
+                completeObservedFence(imgInFlight[generatedImage]);
             }
-            imgInFlight[nativeGeneratedImgIdx] = inFlightFences[currentFrame];
+            imgInFlight[generatedImage] = inFlightFences[currentFrame];
         }
+        if (lsfg && nativeRequestedGenerations > 0) {
+            const uint32_t acquireRejected =
+                plannedGenerations > nativeGenerations
+                    ? plannedGenerations - nativeGenerations : 0;
+            if (acquireRejected > 0) {
+                nativeGeneratedDroppedBefore_.fetch_add(
+                    acquireRejected, std::memory_order_relaxed);
+                nativeGeneratedDeadlineRejected_.fetch_add(
+                    acquireRejected, std::memory_order_relaxed);
+            }
+            nativeGeneratedAdmitted_.fetch_add(
+                nativeGenerations, std::memory_order_relaxed);
+            vkr_lsfg_note_admission(
+                lsfg, nativeRequestedGenerations, nativeGenerations);
+            RLOG(
+                "LSFG_NATIVE_GENERATION: event=admission source_index=%llu "
+                "requested_synthetic=%u admitted=%u rejected=%u rejection_reason=%s",
+                (unsigned long long)nativeSourceFrame,
+                nativeRequestedGenerations,
+                nativeGenerations,
+                nativeRequestedGenerations - nativeGenerations,
+                acquireRejected > 0 ? "wsi-acquire-deadline"
+                    : (nativeGenerations < nativeRequestedGenerations
+                        ? "host-present-backlog" : "none"));
+        }
+    }
+
+    if (nativeRuntimeActive && nativeFreshSource) {
+        nativePresentationSchedule =
+            buildNativePresentationSchedule(
+                nativeGenerations, nativeSourceFrame);
     }
 
     vk_.ResetCommandBuffer(cmdBufs[currentFrame],0);
@@ -2664,60 +3739,67 @@ ok=true;}catch(...){}
         frameAhbTransitions,framePreUpload,framePostUpload,
         curUpload,hasCurUpload,
         ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis,
-        nativeRuntimeActive);
+        nativeRuntimeActive, nativeRuntimeActive ? &composite[currentFrame] : nullptr);
 
     if (nativeRuntimeActive) {
         VkCommandBuffer cb = cmdBufs[currentFrame];
-
-        // The existing render pass ends the source in PRESENT_SRC. Move it into
-        // the LSFG chain's expected GENERAL layout, feed history, and optionally
-        // generate one interpolated frame into the offscreen target.
-        transition(cb, swapchainImages[imgIdx],
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
-            0, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-
-        vkr_lsfg_process(
-            lsfg, cb, swapchainImages[imgIdx],
-            swapchainExt.width, swapchainExt.height, nativeGenerations);
-
-        if (nativeGenerations > 0) {
-            vkr_lsfg_generate_into(
-                lsfg, cb, 0, 0, composite[0].image, composite[0].view,
-                swapchainExt.width, swapchainExt.height);
-            blitCompositeToSwapchain(
-                cb, composite[0], swapchainImages[nativeGeneratedImgIdx]);
-            framegenMadeFrames += nativeGenerations;
+        if (nativeFreshSource) {
+            vkr_lsfg_process(lsfg, cb, composite[currentFrame].image,
+                swapchainExt.width, swapchainExt.height, nativeGenerations);
         }
-
-        transition(cb, swapchainImages[imgIdx],
-            VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT, 0,
-            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-
-        framegenSourceFrames.store(nativeSourceFrame, std::memory_order_release);
-        framegenRealFrames++;
+        for (uint32_t g = 0; g < nativeGenerations; ++g) {
+            const uint32_t target = MAX_FRAMES_IN_FLIGHT + g;
+            vkr_lsfg_generate_into(lsfg, cb, g, target, composite[target].image,
+                composite[target].view, swapchainExt.width, swapchainExt.height);
+            blitCompositeToSwapchain(cb, composite[target], swapchainImages[nativeGeneratedImgIndices[g]]);
+        }
+        blitCompositeToSwapchain(cb, composite[currentFrame], swapchainImages[imgIdx]);
         const VkResult endStatus = vk_.EndCommandBuffer(cb);
         if (endStatus != VK_SUCCESS) {
-            RLOG_E("Native LSFG command buffer end failed: status=%d", (int)endStatus);
+            if (nativeGenerations > 0) {
+                nativeGeneratedDroppedAfter_.fetch_add(
+                    nativeGenerations, std::memory_order_relaxed);
+                RLOG_E(
+                    "LSFG_NATIVE_GENERATION: event=post_generation_drop reason=command-buffer-end "
+                    "source_index=%llu count=%u result=%d",
+                    (unsigned long long)nativeSourceFrame,
+                    nativeGenerations,
+                    endStatus);
+            }
+            RLOG_E("LSFG_NATIVE: event=command_buffer_failed result=%d", endStatus);
+            recoverNativeAcquiredFrame();
             return;
         }
     }
 
     std::vector<LsfgFrameProvenance> frameProvenance =
         classifyHostPresentProvenance(frameDraws);
+    if (nativeRuntimeActive) {
+        LsfgFrameProvenance nativeSource{};
+        nativeSource.valid = true;
+        nativeSource.nativeImplementation = true;
+        nativeSource.runtimeSessionId = nativeRuntimeSessionId_;
+        nativeSource.contextEpoch = hostSwapchainGeneration_;
+        nativeSource.deliveryId = (1ULL << 63) | ++nativeDeliveryId_;
+        nativeSource.sourceIndex = nativeSourceFrame;
+        nativeSource.swapchainImageIndex = imgIdx;
+        nativeSource.uniqueDelivery = nativeFreshSource;
+        nativeSource.desiredPresentTimeNs =
+            nativeFreshSource
+                ? nativePresentationSchedule.sourceDesiredNs : 0;
+        frameProvenance = {nativeSource};
+    }
     const bool hasUniqueLsfgDelivery = std::any_of(
         frameProvenance.begin(), frameProvenance.end(),
         [](const LsfgFrameProvenance& provenance) {
             return provenance.uniqueDelivery;
         });
-    const HostDesiredPresentDecision desiredDecision =
-        validatedHostDesiredPresentTime(frameProvenance);
+    HostDesiredPresentDecision desiredDecision{};
+    if (!nativeRuntimeActive)
+        desiredDecision = validatedHostDesiredPresentTime(frameProvenance);
 
-    std::array<VkSemaphore, 2> wSem{};
-    std::array<VkSemaphore, 2> sSem{};
+    std::array<VkSemaphore, 1 + VKR_LSFG_MAX_GENERATIONS> wSem{};
+    std::array<VkSemaphore, 1 + VKR_LSFG_MAX_GENERATIONS> sSem{};
     uint32_t waitSemaphoreCount = 0;
     uint32_t signalSemaphoreCount = 0;
     VkSemaphore signalSemaphore = renderDoneSems[currentFrame];
@@ -2739,25 +3821,19 @@ ok=true;}catch(...){}
     if (!toXr) {
         wSem[waitSemaphoreCount++] = imgAvailSems[currentFrame];
         sSem[signalSemaphoreCount++] = signalSemaphore;
-        if (nativeRuntimeActive && nativeGenerations > 0) {
-            if (nativeGeneratedImgIdx >= frameQueuePresentSems_.size()
-                    || frameQueuePresentSems_[nativeGeneratedImgIdx] == VK_NULL_HANDLE) {
-                fbResized.store(true, std::memory_order_release);
-                return;
-            }
-            wSem[waitSemaphoreCount++] = nativeGeneratedAcquireSemaphore;
-            sSem[signalSemaphoreCount++] = frameQueuePresentSems_[nativeGeneratedImgIdx];
+        for (uint32_t g = 0; g < nativeGenerations; ++g) {
+            wSem[waitSemaphoreCount++] = nativeExtraAcquireSems_[currentFrame][g];
+            sSem[signalSemaphoreCount++] = frameQueuePresentSems_[nativeGeneratedImgIndices[g]];
         }
     }
-    VkPipelineStageFlags wStage[2] = {
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-    };
+    std::array<VkPipelineStageFlags, 1 + VKR_LSFG_MAX_GENERATIONS> wStage{};
+    wStage.fill(VK_PIPELINE_STAGE_TRANSFER_BIT);
+    if (!nativeRuntimeActive) wStage[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si{}; si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
     if (!toXr) {
         si.waitSemaphoreCount=waitSemaphoreCount;
         si.pWaitSemaphores=wSem.data();
-        si.pWaitDstStageMask=wStage;
+        si.pWaitDstStageMask=wStage.data();
         si.signalSemaphoreCount=signalSemaphoreCount;
         si.pSignalSemaphores=sSem.data();
     }
@@ -2781,6 +3857,16 @@ ok=true;}catch(...){}
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - submitStart).count());
     if (submitResult!=VK_SUCCESS) {
+        if (nativeRuntimeActive && nativeGenerations > 0) {
+            nativeGeneratedDroppedAfter_.fetch_add(
+                nativeGenerations, std::memory_order_relaxed);
+            RLOG_E(
+                "LSFG_NATIVE_GENERATION: event=post_generation_drop reason=queue-submit "
+                "source_index=%llu count=%u result=%d",
+                (unsigned long long)nativeSourceFrame,
+                nativeGenerations,
+                submitResult);
+        }
         __android_log_print(
             ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
             "event=graphics-queue-submit"
@@ -2795,10 +3881,25 @@ ok=true;}catch(...){}
             static_cast<double>(submitCallNs) / 1000000.0,
             static_cast<double>(graphicsQueueBlockedNs) / 1000000.0,
             submitResult);
+        if (nativeRuntimeActive) {
+            recoverNativeAcquiredFrame();
+            return;
+        }
         vk_.DestroyFence(device,inFlightFences[currentFrame],nullptr);
         VkFenceCreateInfo fi{}; fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; fi.flags=VK_FENCE_CREATE_SIGNALED_BIT;
         vk_.CreateFence(device,&fi,nullptr,&inFlightFences[currentFrame]);
         return;
+    }
+    if (nativeRuntimeActive && nativeFreshSource) {
+        nativeLastSourceFrame_ = nativeSourceFrame;
+        ++framegenRealFrames;
+        framegenMadeFrames += nativeGenerations;
+        nativeGeneratedDispatched_.fetch_add(
+            nativeGenerations, std::memory_order_relaxed);
+        if (currentFrame < nativeGeneratedSubmittedByFrame_.size()) {
+            nativeGeneratedSubmittedByFrame_[currentFrame] = nativeGenerations;
+            nativeSubmissionStartedNs_[currentFrame] = monotonicTimeNs();
+        }
     }
     submissionTimeline.submitFrame(currentFrame, submissionSerial);
     renderSubmissionSerial.store(submissionSerial, std::memory_order_release);
@@ -2845,6 +3946,70 @@ ok=true;}catch(...){}
 
         const uint32_t gpuOutstanding =
             countOutstandingFrameSubmissions(true);
+        const uint64_t nativeFirstHostPresentId = hostPresentId;
+        const uint32_t nativeFirstGooglePresentId = googlePresentId;
+        for (uint32_t g = 0; g < nativeGenerations; ++g) {
+            LsfgFrameProvenance generatedProvenance{};
+            generatedProvenance.valid = true;
+            generatedProvenance.nativeImplementation = true;
+            generatedProvenance.runtimeSessionId = nativeRuntimeSessionId_;
+            generatedProvenance.contextEpoch = hostSwapchainGeneration_;
+            generatedProvenance.deliveryId = (1ULL << 63) | ++nativeDeliveryId_;
+            generatedProvenance.sourceIndex = nativeSourceFrame;
+            generatedProvenance.batchId = submissionSerial;
+            generatedProvenance.swapchainImageIndex = nativeGeneratedImgIndices[g];
+            generatedProvenance.interpolationCount = nativeGenerations;
+            generatedProvenance.interpolationIndex = static_cast<uint8_t>(g + 1);
+            generatedProvenance.kind = 1;
+            generatedProvenance.uniqueDelivery = true;
+            generatedProvenance.desiredPresentTimeNs =
+                nativePresentationSchedule.generatedDesiredNs[g];
+            const HostDesiredPresentDecision generatedDesiredDecision =
+                validatedHostDesiredPresentTime({generatedProvenance});
+            const VkResult generatedPresentResult = enqueueHostPresent(PendingHostPresent{
+                .frameSlot = currentFrame,
+                .imageIndex = nativeGeneratedImgIndices[g],
+                .swapchain = swapchain,
+                .waitSemaphore = frameQueuePresentSems_[nativeGeneratedImgIndices[g]],
+                .hostPresentId = g == 0 ? nativeFirstHostPresentId : hostPresentId_++,
+                .googlePresentId = g == 0 ? nativeFirstGooglePresentId : hostGooglePresentId_++,
+                .backend = confirmationBackend,
+                .frameProvenance = {generatedProvenance},
+                .desiredDecision = generatedDesiredDecision,
+                .hasUniqueLsfgDelivery = true,
+                .acquireNs = 0,
+                .submitCallNs = submitCallNs,
+                .submissionSerial = submissionSerial,
+                .swapchainGeneration = hostSwapchainGeneration_,
+                .gpuOutstanding = gpuOutstanding,
+            });
+            if (generatedPresentResult == VK_ERROR_OUT_OF_DATE_KHR || generatedPresentResult == VK_ERROR_SURFACE_LOST_KHR)
+                fbResized.store(true);
+            if (generatedPresentResult == VK_SUCCESS) {
+                if (framegenMadeFrames <= 8 || framegenRealFrames % 120 == 0)
+                    RLOG("LSFG_NATIVE: event=generated_present_queued interpolation=%u count=%u image=%u submission_serial=%" PRIu64
+                        " delivery_id=%" PRIu64 " source_index=%" PRIu64
+                        " desired_present_ns=%" PRIu64 " submitted_desired_ns=%" PRIu64
+                        " multiplier=%u target_rate=%u capacity=%u",
+                        g + 1, nativeGenerations, nativeGeneratedImgIndices[g], submissionSerial,
+                        generatedProvenance.deliveryId, nativeSourceFrame,
+                        generatedProvenance.desiredPresentTimeNs,
+                        generatedDesiredDecision.submittedDesiredPresentTimeNs,
+                        framegenMultiplier, framegenTargetRate, nativeCapacity);
+            } else {
+                RLOG_E("LSFG_NATIVE: event=generated_present_failed result=%d", generatedPresentResult);
+            }
+        }
+        if (nativeGenerations > 0) {
+            hostPresentId = hostPresentId_++;
+            googlePresentId = hostGooglePresentId_++;
+        }
+        // Validate the real/source boundary only after every generated slot.
+        // validatedHostDesiredPresentTime() owns the monotonic WSI desired-time
+        // cursor, so validating source first would phase-shift earlier
+        // interpolation slots past their source boundary.
+        if (nativeRuntimeActive)
+            desiredDecision = validatedHostDesiredPresentTime(frameProvenance);
         res = enqueueHostPresent(PendingHostPresent{
             .frameSlot = currentFrame,
             .imageIndex = imgIdx,
@@ -2865,65 +4030,23 @@ ok=true;}catch(...){}
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR)
             fbResized.store(true);
 
-        if (res == VK_SUCCESS && nativeRuntimeActive && nativeGenerations > 0) {
-            uint64_t generatedHostPresentId = hostPresentId_++;
-            if (generatedHostPresentId == 0) {
-                generatedHostPresentId = 1;
-                hostPresentId_ = 2;
-            }
-            uint32_t generatedGooglePresentId = hostGooglePresentId_++;
-            if (generatedGooglePresentId == 0) {
-                generatedGooglePresentId = 1;
-                hostGooglePresentId_ = 2;
-            }
 
-            LsfgFrameProvenance generatedProvenance{};
-            generatedProvenance.valid = true;
-            generatedProvenance.contextEpoch = hostSwapchainGeneration_;
-            generatedProvenance.swapchainImageIndex = nativeGeneratedImgIdx;
-            generatedProvenance.interpolationCount = nativeGenerations;
-            generatedProvenance.interpolationIndex = 1;
-            generatedProvenance.kind = 1;
-
-            std::vector<LsfgFrameProvenance> generatedProvenanceList{
-                generatedProvenance
-            };
-            const uint32_t generatedGpuOutstanding =
-                countOutstandingFrameSubmissions(true);
-            const VkResult generatedPresentResult = enqueueHostPresent(PendingHostPresent{
-                .frameSlot = currentFrame,
-                .imageIndex = nativeGeneratedImgIdx,
-                .swapchain = swapchain,
-                .waitSemaphore = frameQueuePresentSems_[nativeGeneratedImgIdx],
-                .hostPresentId = generatedHostPresentId,
-                .googlePresentId = generatedGooglePresentId,
-                .backend = confirmationBackend,
-                .frameProvenance = std::move(generatedProvenanceList),
-                .desiredDecision = HostDesiredPresentDecision{},
-                .hasUniqueLsfgDelivery = false,
-                .acquireNs = 0,
-                .submitCallNs = submitCallNs,
-                .submissionSerial = submissionSerial,
-                .swapchainGeneration = hostSwapchainGeneration_,
-                .gpuOutstanding = generatedGpuOutstanding,
-            });
-            if (generatedPresentResult == VK_ERROR_OUT_OF_DATE_KHR ||
-                generatedPresentResult == VK_ERROR_SURFACE_LOST_KHR) {
-                fbResized.store(true);
-            }
-            if (generatedPresentResult == VK_SUCCESS) {
-                presentedFrames.fetch_add(1, std::memory_order_relaxed);
-                RLOG("LSFG_NATIVE: event=generated_present_queued generation=%u image=%u submission_serial=%" PRIu64,
-                    nativeGenerations, nativeGeneratedImgIdx, submissionSerial);
-            }
-        }
     } else {
         // The XR session samples xrAhb from its own GL context with no fence handoff;
         // blocking here means the buffer is fully written whenever this thread is idle,
         // leaving only the active write window unsynchronized (a tear, not stale data).
-        if (vk_.WaitForFences(
-                device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX) == VK_SUCCESS)
-            submissionTimeline.completeFrame(currentFrame);
+        const auto xrWaitStart = std::chrono::steady_clock::now();
+        const VkResult xrWait = vk_.WaitForFences(
+            device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX);
+        const uint64_t xrWaitNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - xrWaitStart).count());
+        if (framegenRequested && lsfg != nullptr) {
+            nativeHostWaitNsTotal_.fetch_add(xrWaitNs, std::memory_order_relaxed);
+            nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (xrWait == VK_SUCCESS)
+            completeObservedFence(inFlightFences[currentFrame]);
     }
     const uint32_t nextSlotCount = hasUniqueLsfgDelivery
         ? activeFrameSlotCount()
@@ -2939,6 +4062,15 @@ void VulkanRendererContext::onSurfaceResized(int w, int h) {
 
 void VulkanRendererContext::detachSurface() {
     surfaceDetached.store(true, std::memory_order_release);
+    nativeGeneratedPresentedFrames_.store(0, std::memory_order_relaxed);
+    presentedFrames.store(0, std::memory_order_relaxed);
+    nativeGeneratedDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
+    nativeSourceDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
+    nativePresentationSurfaceReady_.store(false, std::memory_order_release);
+    resetNativePresentationTimeline("surface-detached");
+    RLOG(
+        "LSFG_NATIVE_STATE: event=surface_state state=detached generation_ready=0 "
+        "generated_presented_reset=1");
     dirtyCV.notify_all();
 
     { std::unique_lock<std::shared_mutex> frameLock(frameMutex); }
@@ -2980,12 +4112,25 @@ bool VulkanRendererContext::reattachSurface(ANativeWindow* newWindow) {
             __android_log_print(ANDROID_LOG_ERROR, "Winlator_Renderer", "reattachSurface: swapchain recreate failed");
             return false;
         }
+        framegenSupported =
+            lsfg != nullptr && compositeFormatSupported() && nativeSwapchainTransferSupported_;
         surfaceDetached.store(false, std::memory_order_release);
+        RLOG(
+            "LSFG_NATIVE_STATE: event=surface_state state=attached generation_ready=0 "
+            "capability_supported=%d settings_replay=persistent-native-context",
+            framegenSupported.load(std::memory_order_relaxed) ? 1 : 0);
     }
     needsRender.store(true, std::memory_order_release);
     dirtyCV.notify_all();
     __android_log_print(ANDROID_LOG_DEBUG, "Winlator_Renderer", "reattachSurface: OK");
     return true;
+}
+
+bool VulkanRendererContext::hasPresentationSurface() const {
+    std::shared_lock<std::shared_mutex> frameLock(frameMutex);
+    return !surfaceDetached.load(std::memory_order_acquire)
+        && surface != VK_NULL_HANDLE
+        && swapchain != VK_NULL_HANDLE;
 }
 
 void VulkanRendererContext::setTransform(float ox, float oy, float sx, float sy) {
@@ -3040,7 +4185,10 @@ void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, s
     {
         std::lock_guard<std::mutex> lk(renderMutex);
         auto it=texMap.find(id);
-        if (it!=texMap.end()) it->second.dirty=true;
+        if (it!=texMap.end()) {
+            it->second.dirty=true;
+            framegenSourceFrames.fetch_add(1, std::memory_order_release);
+        }
     }
     needsRender.store(true); dirtyCV.notify_one();
 }
@@ -3208,6 +4356,21 @@ void VulkanRendererContext::completeObservedFence(VkFence fence) {
     for (std::size_t i = 0; i < inFlightFences.size(); ++i) {
         if (inFlightFences[i] == fence) {
             submissionTimeline.completeFrame(static_cast<uint32_t>(i));
+            if (i < nativeGeneratedSubmittedByFrame_.size()) {
+                const uint32_t generated = nativeGeneratedSubmittedByFrame_[i];
+                if (generated > 0) {
+                    nativeGeneratedCompleted_.fetch_add(generated, std::memory_order_relaxed);
+                    const uint64_t started = nativeSubmissionStartedNs_[i];
+                    const uint64_t now = monotonicTimeNs();
+                    if (started != 0 && now >= started) {
+                        nativeGpuCompletionLatencyNsTotal_.fetch_add(
+                            now - started, std::memory_order_relaxed);
+                        nativeGpuCompletionSamples_.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    nativeGeneratedSubmittedByFrame_[i] = 0;
+                    nativeSubmissionStartedNs_[i] = 0;
+                }
+            }
             return;
         }
     }
@@ -3551,9 +4714,573 @@ std::vector<LsfgFrameProvenance> VulkanRendererContext::classifyHostPresentProve
 }
 
 
+
+namespace {
+
+uint64_t rollingPercentileNs(const std::deque<uint64_t>& samples, unsigned percentile) {
+    if (samples.empty()) return 0;
+    std::vector<uint64_t> sorted(samples.begin(), samples.end());
+    std::sort(sorted.begin(), sorted.end());
+    const std::size_t index = std::min<std::size_t>(
+        sorted.size() - 1,
+        (sorted.size() * static_cast<std::size_t>(percentile)) / 100);
+    return sorted[index];
+}
+
+void trimEvidence(std::deque<uint64_t>& events, uint64_t cutoffNs) {
+    while (!events.empty() && events.front() < cutoffNs)
+        events.pop_front();
+}
+
+} // namespace
+void VulkanRendererContext::resetNativePresentationTimeline(const char* reason) {
+    nativeSourceTimeline_.reset();
+    nativeSourceTimelineSample_ = {};
+    nativeTimelineLastSourceArrivalNs_ = 0;
+    nativeTimelineSourceIntervalNs_ = 0;
+    nativeTimelineGeneration_ = hostSwapchainGeneration_;
+    nativeLastAdmissionReason_ = "none";
+    nativePresentationEvidenceStartNs_ = 0;
+    nativePresentationPressureStrikes_ = 0;
+    nativePresentationRecoveryStrikes_ = 0;
+    nativePresentationPressureActive_ = false;
+    nativePresentationPressure_ = {};
+    nativeSourceWsiEventNs_.clear();
+    nativeGeneratedWsiEventNs_.clear();
+    nativeSourceConfirmedEventNs_.clear();
+    nativeGeneratedConfirmedEventNs_.clear();
+    nativeSourceUnobservedEventNs_.clear();
+    nativeGeneratedUnobservedEventNs_.clear();
+    nativeGeneratedRejectedEventNs_.clear();
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
+        "event=timeline-reset reason=%s swapchain_generation=%" PRIu64
+        " refresh_period_ns=%" PRIu64,
+        reason ? reason : "unknown",
+        hostSwapchainGeneration_, hostRefreshPeriodNs_);
+}
+
+void VulkanRendererContext::noteNativeSourceArrival(uint64_t nowNs) {
+    if (nowNs == 0) return;
+
+    uint64_t intervalNs = 0;
+    if (nativeTimelineLastSourceArrivalNs_ != 0
+            && nowNs > nativeTimelineLastSourceArrivalNs_) {
+        const uint64_t raw = nowNs - nativeTimelineLastSourceArrivalNs_;
+        if (raw >= 2000000ULL && raw <= 250000000ULL)
+            intervalNs = raw;
+    }
+    if (intervalNs == 0) {
+        const float sourceFps =
+            framegenSourceFps_.load(std::memory_order_relaxed);
+        if (sourceFps > 1.0f) {
+            intervalNs = static_cast<uint64_t>(
+                std::llround(
+                    1000000000.0 / static_cast<double>(sourceFps)));
+        } else if (hostRefreshPeriodNs_ != 0) {
+            const uint32_t fallbackCycles =
+                framegenTargetRate == 0
+                    ? std::max<uint32_t>(2, framegenMultiplier)
+                    : 2U;
+            intervalNs =
+                hostRefreshPeriodNs_ * static_cast<uint64_t>(fallbackCycles);
+        } else {
+            intervalNs = 16666667ULL;
+        }
+    }
+
+    nativeSourceTimelineSample_ = nativeSourceTimeline_.observe(
+        nowNs, std::chrono::nanoseconds(intervalNs));
+    if (nativeSourceTimelineSample_.valid)
+        nativeTimelineSourceIntervalNs_ =
+            nativeSourceTimelineSample_.intervalNs;
+    nativeTimelineLastSourceArrivalNs_ = nowNs;
+}
+
+uint32_t VulkanRendererContext::nativeTemporalGenerationCapacity() const {
+    uint64_t interval = nativeTimelineSourceIntervalNs_;
+    const float sourceFps =
+        framegenSourceFps_.load(std::memory_order_relaxed);
+    if (interval == 0 && sourceFps > 1.0f)
+        interval = static_cast<uint64_t>(
+            std::llround(1000000000.0 / static_cast<double>(sourceFps)));
+    if (hostRefreshPeriodNs_ == 0 || interval == 0)
+        return VKR_LSFG_MAX_GENERATIONS;
+    const uint64_t cycles = std::max<uint64_t>(
+        1, static_cast<uint64_t>(std::llround(
+            static_cast<double>(interval)
+                / static_cast<double>(hostRefreshPeriodNs_))));
+    return static_cast<uint32_t>(std::min<uint64_t>(
+        VKR_LSFG_MAX_GENERATIONS, cycles > 0 ? cycles - 1 : 0));
+}
+
+VulkanRendererContext::NativePresentationSchedule
+VulkanRendererContext::buildNativePresentationSchedule(
+        uint32_t generations, uint64_t sourceIndex) {
+    NativePresentationSchedule schedule{};
+    schedule.generatedCount =
+        std::min<uint32_t>(generations, VKR_LSFG_MAX_GENERATIONS);
+    schedule.refreshPeriodNs = hostRefreshPeriodNs_;
+
+    SourceTimelineSample sample = nativeSourceTimelineSample_;
+    if (!sample.valid) {
+        const uint64_t nowNs = monotonicTimeNs();
+        uint64_t fallbackIntervalNs = nativeTimelineSourceIntervalNs_;
+        if (fallbackIntervalNs == 0) {
+            const float sourceFps =
+                framegenSourceFps_.load(std::memory_order_relaxed);
+            if (sourceFps > 1.0f) {
+                fallbackIntervalNs = static_cast<uint64_t>(
+                    std::llround(
+                        1000000000.0 / static_cast<double>(sourceFps)));
+            }
+        }
+        if (fallbackIntervalNs != 0 && nowNs != 0) {
+            sample = nativeSourceTimeline_.observe(
+                nowNs, std::chrono::nanoseconds(fallbackIntervalNs));
+            nativeSourceTimelineSample_ = sample;
+        }
+    }
+
+    if (!sample.valid) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
+            "event=timeline source_index=%" PRIu64
+            " generations=%u shared_timeline=source-protected"
+            " valid=0 reason=source-timeline-unavailable",
+            sourceIndex, schedule.generatedCount);
+        return schedule;
+    }
+
+    schedule.sourceIntervalNs = sample.intervalNs;
+    schedule.sourceDesiredNs = sample.sourceDesiredTimeNs;
+    nativeTimelineSourceIntervalNs_ = sample.intervalNs;
+    if (schedule.refreshPeriodNs != 0) {
+        schedule.sourceRefreshCycles = static_cast<uint32_t>(
+            std::min<uint64_t>(
+                UINT32_MAX,
+                std::max<uint64_t>(
+                    1,
+                    static_cast<uint64_t>(std::llround(
+                        static_cast<double>(sample.intervalNs)
+                        / static_cast<double>(schedule.refreshPeriodNs))))));
+    }
+
+    const auto slots =
+        lsfg::BuildPresentationSlots(schedule.generatedCount);
+    for (uint32_t g = 0; g < schedule.generatedCount; ++g) {
+        schedule.generatedDesiredNs[g] =
+            nativeSourceTimeline_.syntheticDesiredTimeNs(
+                sample, slots.generated[g]);
+    }
+
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
+        "event=timeline source_index=%" PRIu64
+        " generations=%u shared_timeline=source-protected"
+        " source_interval_ns=%" PRIu64
+        " refresh_period_ns=%" PRIu64
+        " source_refresh_cycles=%u rebased=%d source_deadline_error_ns=%" PRId64
+        " generated_0=%" PRIu64 " generated_1=%" PRIu64
+        " generated_2=%" PRIu64 " source_desired=%" PRIu64,
+        sourceIndex, schedule.generatedCount,
+        schedule.sourceIntervalNs, schedule.refreshPeriodNs,
+        schedule.sourceRefreshCycles, sample.rebased ? 1 : 0,
+        sample.sourceDeadlineErrorNs,
+        schedule.generatedDesiredNs[0],
+        schedule.generatedDesiredNs[1],
+        schedule.generatedDesiredNs[2],
+        schedule.sourceDesiredNs);
+    return schedule;
+}
+
+void VulkanRendererContext::recordNativePresentationEvidence(
+        bool generated, bool confirmed, bool unobserved, bool wsiAccepted,
+        bool wsiRejected, uint64_t nowNs) {
+    if (nowNs == 0) return;
+    if (nativePresentationEvidenceStartNs_ == 0)
+        nativePresentationEvidenceStartNs_ = nowNs;
+    if (generated) {
+        if (wsiAccepted) nativeGeneratedWsiEventNs_.push_back(nowNs);
+        if (confirmed) nativeGeneratedConfirmedEventNs_.push_back(nowNs);
+        if (unobserved) nativeGeneratedUnobservedEventNs_.push_back(nowNs);
+        if (wsiRejected) nativeGeneratedRejectedEventNs_.push_back(nowNs);
+    } else {
+        if (wsiAccepted) nativeSourceWsiEventNs_.push_back(nowNs);
+        if (confirmed) nativeSourceConfirmedEventNs_.push_back(nowNs);
+        if (unobserved) nativeSourceUnobservedEventNs_.push_back(nowNs);
+    }
+    updateNativePresentationPressure(nowNs);
+}
+
+void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
+    if (nowNs == 0) return;
+    constexpr uint64_t kWindowNs = 2000000000ULL;
+    const uint64_t cutoff =
+        nowNs > kWindowNs ? nowNs - kWindowNs : 0;
+    trimEvidence(nativeSourceWsiEventNs_, cutoff);
+    trimEvidence(nativeGeneratedWsiEventNs_, cutoff);
+    trimEvidence(nativeSourceConfirmedEventNs_, cutoff);
+    trimEvidence(nativeGeneratedConfirmedEventNs_, cutoff);
+    trimEvidence(nativeSourceUnobservedEventNs_, cutoff);
+    trimEvidence(nativeGeneratedUnobservedEventNs_, cutoff);
+    trimEvidence(nativeGeneratedRejectedEventNs_, cutoff);
+
+    const bool confirmationAvailable =
+        hostGoogleDisplayTimingEnabled || hostPresentWaitEnabled;
+    const std::size_t sourceResolved =
+        nativeSourceConfirmedEventNs_.size()
+        + nativeSourceUnobservedEventNs_.size();
+    const std::size_t generatedResolved =
+        nativeGeneratedConfirmedEventNs_.size()
+        + nativeGeneratedUnobservedEventNs_.size();
+    const double sourceEfficiency = sourceResolved != 0
+        ? static_cast<double>(nativeSourceConfirmedEventNs_.size())
+            / static_cast<double>(sourceResolved)
+        : 0.0;
+    const double generatedEfficiency = generatedResolved != 0
+        ? static_cast<double>(nativeGeneratedConfirmedEventNs_.size())
+            / static_cast<double>(generatedResolved)
+        : 0.0;
+    const double timeoutRate = generatedResolved != 0
+        ? static_cast<double>(nativeGeneratedUnobservedEventNs_.size())
+            / static_cast<double>(generatedResolved)
+        : 0.0;
+
+    const uint64_t evidenceSpanNs =
+        nativePresentationEvidenceStartNs_ != 0
+                && nowNs > nativePresentationEvidenceStartNs_
+            ? std::min<uint64_t>(
+                kWindowNs, nowNs - nativePresentationEvidenceStartNs_)
+            : 0;
+    const double evidenceSeconds =
+        evidenceSpanNs >= 500000000ULL
+            ? static_cast<double>(evidenceSpanNs) / 1000000000.0
+            : 0.0;
+    const double sourceConfirmedFps = evidenceSeconds > 0.0
+        ? static_cast<double>(nativeSourceConfirmedEventNs_.size())
+            / evidenceSeconds
+        : 0.0;
+    const double generatedConfirmedFps = evidenceSeconds > 0.0
+        ? static_cast<double>(nativeGeneratedConfirmedEventNs_.size())
+            / evidenceSeconds
+        : 0.0;
+    const double confirmedOutputFps =
+        sourceConfirmedFps + generatedConfirmedFps;
+    const double targetFps = framegenTargetRate != 0
+        ? static_cast<double>(framegenTargetRate)
+        : (sourceConfirmedFps > 0.0
+            ? sourceConfirmedFps * static_cast<double>(framegenMultiplier)
+            : 0.0);
+    const double deficitRatio =
+        targetFps > 1.0
+            ? std::clamp(
+                (targetFps - confirmedOutputFps) / targetFps, 0.0, 1.0)
+            : 0.0;
+
+    const bool generatedEvidence =
+        generatedResolved >= 4
+        || nativeGeneratedWsiEventNs_.size() >= 6
+        || nativeGeneratedRejectedEventNs_.size() >= 2;
+    const bool imbalance =
+        sourceResolved >= 4 && generatedResolved >= 4
+        && sourceEfficiency >= 0.80
+        && generatedEfficiency + 0.25 < sourceEfficiency;
+    const bool rawPressure =
+        confirmationAvailable && generatedEvidence
+        && ((generatedResolved >= 4
+                && (generatedEfficiency < 0.55
+                    || timeoutRate >= 0.40
+                    || imbalance))
+            || nativeGeneratedRejectedEventNs_.size() >= 2
+            || (targetFps > 1.0 && deficitRatio >= 0.15));
+
+    if (rawPressure) {
+        nativePresentationPressureStrikes_ =
+            std::min<uint32_t>(8, nativePresentationPressureStrikes_ + 1);
+        nativePresentationRecoveryStrikes_ = 0;
+        if (nativePresentationPressureStrikes_ >= 3)
+            nativePresentationPressureActive_ = true;
+    } else {
+        if (nativePresentationPressureStrikes_ > 0)
+            --nativePresentationPressureStrikes_;
+        if (nativePresentationPressureActive_) {
+            ++nativePresentationRecoveryStrikes_;
+            if (nativePresentationRecoveryStrikes_ >= 4) {
+                nativePresentationPressureActive_ = false;
+                nativePresentationRecoveryStrikes_ = 0;
+            }
+        }
+    }
+
+    nativePresentationPressure_.confirmation_available =
+        confirmationAvailable;
+    nativePresentationPressure_.pressure_active =
+        nativePresentationPressureActive_;
+    nativePresentationPressure_.source_delivery_healthy =
+        sourceResolved >= 4 && sourceEfficiency >= 0.85
+        && sourceConfirmedFps > 0.0;
+    nativePresentationPressure_.generated_delivery_efficiency =
+        static_cast<float>(generatedEfficiency);
+    nativePresentationPressure_.source_delivery_efficiency =
+        static_cast<float>(sourceEfficiency);
+    nativePresentationPressure_.confirmation_timeout_rate =
+        static_cast<float>(timeoutRate);
+    nativePresentationPressure_.output_target_deficit_ratio =
+        static_cast<float>(deficitRatio);
+    nativeSourceConfirmedFps_ = sourceConfirmedFps;
+    nativeGeneratedConfirmedFps_ = generatedConfirmedFps;
+
+    if (rawPressure || nativePresentationPressureActive_) {
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
+            "event=presentation-pressure active=%d raw=%d strikes=%u recovery=%u"
+            " confirmation_available=%d generated_delivery_efficiency=%.3f"
+            " source_delivery_efficiency=%.3f confirmation_timeout_rate=%.3f"
+            " output_target_deficit_ratio=%.3f source_confirmed_fps=%.2f"
+            " generated_confirmed_fps=%.2f generated_wsi_window=%zu"
+            " generated_resolved_window=%zu generated_rejected_window=%zu",
+            nativePresentationPressureActive_ ? 1 : 0,
+            rawPressure ? 1 : 0,
+            nativePresentationPressureStrikes_,
+            nativePresentationRecoveryStrikes_,
+            confirmationAvailable ? 1 : 0,
+            generatedEfficiency, sourceEfficiency, timeoutRate,
+            deficitRatio, sourceConfirmedFps, generatedConfirmedFps,
+            nativeGeneratedWsiEventNs_.size(),
+            generatedResolved, nativeGeneratedRejectedEventNs_.size());
+    }
+}
+
+void VulkanRendererContext::observeHostPresentResult(VkResult result) {
+    const bool suboptimal = result == VK_SUBOPTIMAL_KHR;
+    hostSuboptimalWindow_.push_back(suboptimal ? 1 : 0);
+    while (hostSuboptimalWindow_.size() > 120)
+        hostSuboptimalWindow_.pop_front();
+
+    const uint64_t nowNs = monotonicTimeNs();
+    const int bufferWidth = window ? ANativeWindow_getWidth(window) : 0;
+    const int bufferHeight = window ? ANativeWindow_getHeight(window) : 0;
+    const int bufferFormat = window ? ANativeWindow_getFormat(window) : 0;
+
+    if (!suboptimal) {
+        if (result == VK_SUCCESS) {
+            if (hostSuboptimalActive_) {
+                const double durationMs =
+                    nowNs != 0 && hostSuboptimalStartNs_ != 0
+                        && nowNs >= hostSuboptimalStartNs_
+                    ? static_cast<double>(nowNs - hostSuboptimalStartNs_)
+                        / 1000000.0 : 0.0;
+                __android_log_print(
+                    ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+                    "event=suboptimal-transition state=end reason=vk-success"
+                    " episode=%" PRIu64 " duration_ms=%.3f streak=%u"
+                    " start_generation=%" PRIu64 " end_generation=%" PRIu64
+                    " android_buffer=%dx%d format=%d surface=%dx%d",
+                    hostSuboptimalEpisodeCount_, durationMs,
+                    hostSuboptimalConsecutive_,
+                    hostSuboptimalStartGeneration_, hostSwapchainGeneration_,
+                    bufferWidth, bufferHeight, bufferFormat,
+                    surfaceWidth, surfaceHeight);
+            }
+            hostSuboptimalActive_ = false;
+            hostSuboptimalStartNs_ = 0;
+            hostSuboptimalStartGeneration_ = 0;
+            hostSuboptimalConsecutive_ = 0;
+        }
+        return;
+    }
+
+    ++hostSuboptimalTotal_;
+    ++hostSuboptimalConsecutive_;
+    if (!hostSuboptimalActive_) {
+        hostSuboptimalActive_ = true;
+        hostSuboptimalStartNs_ = nowNs;
+        hostSuboptimalStartGeneration_ = hostSwapchainGeneration_;
+        ++hostSuboptimalEpisodeCount_;
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "event=suboptimal-transition state=start episode=%" PRIu64
+            " generation=%" PRIu64 " surface=%dx%d android_buffer=%dx%d"
+            " buffer_format=%d swapchain_extent=%ux%u"
+            " requested_present_mode=%d selected_present_mode=%d"
+            " pre_transform=0x%x refresh_period_ns=%" PRIu64
+            " google_display_timing=%d present_wait=%d",
+            hostSuboptimalEpisodeCount_, hostSwapchainGeneration_,
+            surfaceWidth, surfaceHeight, bufferWidth, bufferHeight,
+            bufferFormat, swapchainExt.width, swapchainExt.height,
+            static_cast<int>(requestedPresentMode),
+            static_cast<int>(activePresentMode),
+            swapchainPreTransform_, hostRefreshPeriodNs_,
+            hostGoogleDisplayTimingEnabled ? 1 : 0,
+            hostPresentWaitEnabled ? 1 : 0);
+    }
+
+    if (hostSuboptimalConsecutive_ < 8 || nowNs == 0)
+        return;
+
+    const bool saturatedWindow =
+        hostSuboptimalWindow_.size() >= 120
+        && std::all_of(
+            hostSuboptimalWindow_.begin(), hostSuboptimalWindow_.end(),
+            [](uint8_t value) { return value != 0; });
+    const bool newGenerationAudit =
+        hostSuboptimalLastAuditGeneration_ != hostSwapchainGeneration_;
+    // A permanent 100% SUBOPTIMAL episode stays diagnostically active, but
+    // capability re-query is capped to once per 10s to avoid the vendor AHB
+    // probe churn previously caused by per-present revalidation.
+    const bool periodicSaturatedAudit =
+        saturatedWindow && hostSuboptimalLastRequeryNs_ != 0
+        && nowNs - hostSuboptimalLastRequeryNs_ >= 10000000000ULL;
+    if (!newGenerationAudit && !periodicSaturatedAudit)
+        return;
+
+    hostSuboptimalLastAuditGeneration_ = hostSwapchainGeneration_;
+    hostSuboptimalLastRequeryNs_ = nowNs;
+
+    VkSurfaceCapabilitiesKHR caps{};
+    const VkResult capsResult =
+        vk_.GetPhysicalDeviceSurfaceCapabilitiesKHR(
+            physicalDevice, surface, &caps);
+    if (capsResult != VK_SUCCESS) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "event=persistent-suboptimal action=requery-failed result=%d"
+            " streak=%u total=%" PRIu64 " episode=%" PRIu64
+            " generation=%" PRIu64 " android_buffer=%dx%d format=%d",
+            static_cast<int>(capsResult),
+            hostSuboptimalConsecutive_, hostSuboptimalTotal_,
+            hostSuboptimalEpisodeCount_, hostSwapchainGeneration_,
+            bufferWidth, bufferHeight, bufferFormat);
+        return;
+    }
+
+    const bool extentChanged =
+        caps.currentExtent.width != UINT32_MAX
+        && (caps.currentExtent.width != swapchainExt.width
+            || caps.currentExtent.height != swapchainExt.height);
+    const bool transformInvalid =
+        (caps.supportedTransforms & swapchainPreTransform_) == 0;
+    const bool transformChanged =
+        caps.currentTransform != swapchainPreTransform_;
+    const bool alphaInvalid =
+        (caps.supportedCompositeAlpha & swapchainCompositeAlpha_) == 0;
+    const bool usageInvalid =
+        (caps.supportedUsageFlags & swapchainImageUsage_)
+            != swapchainImageUsage_;
+    const uint32_t actualImages =
+        static_cast<uint32_t>(swapchainImages.size());
+    const bool imageCountInvalid =
+        actualImages < caps.minImageCount
+        || (caps.maxImageCount > 0 && actualImages > caps.maxImageCount);
+
+    uint32_t fmtN = 0;
+    vk_.GetPhysicalDeviceSurfaceFormatsKHR(
+        physicalDevice, surface, &fmtN, nullptr);
+    std::vector<VkSurfaceFormatKHR> fmts(fmtN);
+    if (fmtN != 0)
+        vk_.GetPhysicalDeviceSurfaceFormatsKHR(
+            physicalDevice, surface, &fmtN, fmts.data());
+    const bool formatInvalid = !fmts.empty()
+        && fmts.front().format != VK_FORMAT_UNDEFINED
+        && std::none_of(
+            fmts.begin(), fmts.end(),
+            [this](const VkSurfaceFormatKHR& candidate) {
+                return candidate.format == swapchainFmt
+                    && candidate.colorSpace == swapchainColorSpace_;
+            });
+
+    uint32_t modeCount = 0;
+    vk_.GetPhysicalDeviceSurfacePresentModesKHR(
+        physicalDevice, surface, &modeCount, nullptr);
+    std::vector<VkPresentModeKHR> modes(modeCount);
+    if (modeCount != 0)
+        vk_.GetPhysicalDeviceSurfacePresentModesKHR(
+            physicalDevice, surface, &modeCount, modes.data());
+    const bool modeInvalid = !modes.empty()
+        && std::find(modes.begin(), modes.end(), activePresentMode)
+            == modes.end();
+
+    // currentTransform differing from an explicitly selected supported
+    // preTransform is diagnostic by itself; only an unsupported transform is
+    // a recreate trigger. This keeps SUBOPTIMAL investigation separate from
+    // cadence and avoids speculative rebuild loops.
+    const bool incompatible =
+        extentChanged || transformInvalid
+        || alphaInvalid || usageInvalid || imageCountInvalid
+        || formatInvalid || modeInvalid;
+    const double suboptimalRate = hostSuboptimalWindow_.empty() ? 0.0
+        : static_cast<double>(std::count(
+            hostSuboptimalWindow_.begin(), hostSuboptimalWindow_.end(), 1))
+            / static_cast<double>(hostSuboptimalWindow_.size());
+    const bool recreateAllowed =
+        incompatible
+        && hostSuboptimalRecreateGeneration_ != hostSwapchainGeneration_
+        && (hostSuboptimalLastRecreateNs_ == 0
+            || nowNs - hostSuboptimalLastRecreateNs_ >= 1000000000ULL);
+    const double episodeDurationMs =
+        hostSuboptimalStartNs_ != 0 && nowNs >= hostSuboptimalStartNs_
+            ? static_cast<double>(nowNs - hostSuboptimalStartNs_)
+                / 1000000.0 : 0.0;
+    const char* action = recreateAllowed ? "recreate-debounced"
+        : incompatible ? "debounced"
+        : saturatedWindow ? "diagnostic-hold-100pct"
+        : "observe";
+
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+        "event=persistent-suboptimal action=%s streak=%u total=%" PRIu64
+        " rolling_rate=%.3f episode=%" PRIu64 " episode_duration_ms=%.3f"
+        " generation=%" PRIu64
+        " extent_changed=%d transform_invalid=%d transform_changed=%d alpha_invalid=%d"
+        " usage_invalid=%d image_count_invalid=%d format_invalid=%d"
+        " present_mode_invalid=%d current_extent=%ux%u active_extent=%ux%u"
+        " surface=%dx%d android_buffer=%dx%d buffer_format=%d"
+        " current_transform=0x%x pre_transform=0x%x supported_transforms=0x%x"
+        " requested_present_mode=%d selected_present_mode=%d"
+        " refresh_period_ns=%" PRIu64 " google_display_timing=%d present_wait=%d"
+        " supported_usage=0x%x active_usage=0x%x",
+        action, hostSuboptimalConsecutive_, hostSuboptimalTotal_, suboptimalRate,
+        hostSuboptimalEpisodeCount_, episodeDurationMs,
+        hostSwapchainGeneration_,
+        extentChanged ? 1 : 0, transformInvalid ? 1 : 0,
+        transformChanged ? 1 : 0,
+        alphaInvalid ? 1 : 0, usageInvalid ? 1 : 0,
+        imageCountInvalid ? 1 : 0, formatInvalid ? 1 : 0,
+        modeInvalid ? 1 : 0,
+        caps.currentExtent.width, caps.currentExtent.height,
+        swapchainExt.width, swapchainExt.height,
+        surfaceWidth, surfaceHeight, bufferWidth, bufferHeight, bufferFormat,
+        caps.currentTransform, swapchainPreTransform_, caps.supportedTransforms,
+        static_cast<int>(requestedPresentMode),
+        static_cast<int>(activePresentMode),
+        hostRefreshPeriodNs_,
+        hostGoogleDisplayTimingEnabled ? 1 : 0,
+        hostPresentWaitEnabled ? 1 : 0,
+        caps.supportedUsageFlags, swapchainImageUsage_);
+
+    if (saturatedWindow && !incompatible) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "event=permanent-suboptimal-observed episode=%" PRIu64
+            " generation=%" PRIu64 " rolling_rate=1.000"
+            " action=retain-swapchain-no-capability-mismatch"
+            " next_requery_after_ms=10000",
+            hostSuboptimalEpisodeCount_, hostSwapchainGeneration_);
+    }
+
+    if (recreateAllowed) {
+        hostSuboptimalRecreateGeneration_ = hostSwapchainGeneration_;
+        hostSuboptimalLastRecreateNs_ = nowNs;
+        fbResized.store(true, std::memory_order_release);
+        dirtyCV.notify_one();
+    }
+}
+
 void VulkanRendererContext::resetHostPhysicalCadenceTelemetry(
         const char* reason) {
     ++hostPhysicalCadenceEpoch_;
+    resetLegacyGeneratedOutputSlotClock(reason);
     uniquePhysicalPresent_ = 0;
     sourceUniquePhysicalPresent_ = 0;
     generatedUniquePhysicalPresent_ = 0;
@@ -3579,15 +5306,15 @@ void VulkanRendererContext::resetHostPhysicalCadenceTelemetry(
 HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTime(
         const std::vector<LsfgFrameProvenance>& provenance) {
     HostDesiredPresentDecision decision{};
-    if (!hostGoogleDisplayTimingEnabled) {
-        decision.fallbackReason = "google-display-timing-unavailable";
-        return decision;
-    }
-
     uint64_t desired = 0;
+    bool stableLegacyGeneratedSlot = false;
     for (const auto& frame : provenance) {
         if (!frame.uniqueDelivery || frame.desiredPresentTimeNs == 0)
             continue;
+        if (!frame.nativeImplementation && frame.kind == 1
+                && frame.outputSlotIntendedPresentTimeNs != 0) {
+            stableLegacyGeneratedSlot = true;
+        }
         if (desired != 0 && desired != frame.desiredPresentTimeNs) {
             decision.provenanceDesiredPresentTimeNs = desired;
             decision.fallbackReason = "mixed-temporal-intent";
@@ -3599,6 +5326,13 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
     decision.refreshPeriodNs = hostRefreshPeriodNs_;
     if (desired == 0) {
         decision.fallbackReason = "no-temporal-intent";
+        return decision;
+    }
+    if (!hostGoogleDisplayTimingEnabled) {
+        // Keep the explicit Native temporal intent visible to telemetry and
+        // physical-confirmation accounting even when WSI cannot accept a
+        // desired timestamp. No CPU pacing is introduced here.
+        decision.fallbackReason = "google-display-timing-unavailable";
         return decision;
     }
 
@@ -3637,6 +5371,15 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
 
     uint64_t scheduled = desired;
     if (desired < earliestAllowedNs) {
+        if (stableLegacyGeneratedSlot) {
+            // The generated lane clock owns phase. Never repair a missed
+            // Legacy slot by advancing it one display refresh; doing so creates
+            // the observed short/long 8.3/24.9-ms cadence pair.
+            decision.temporalBacklog = true;
+            ++hostTemporalBacklogTotal_;
+            decision.fallbackReason = "legacy-output-slot-missed-no-phase-repair";
+            return decision;
+        }
         if (hostRefreshPeriodNs_ == 0) {
             decision.fallbackReason =
                 desired <= nowNs ? "stale-no-refresh-cycle" : "regression";
@@ -3697,42 +5440,75 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         if (physicalDeliveryUnknown) {
             if (provenance.kind == 1) ++generatedPhysicalUnknown_;
             else ++sourcePhysicalUnknown_;
+            if (provenance.nativeImplementation) {
+                recordNativePresentationEvidence(
+                    provenance.kind == 1,
+                    false, true, false, false, nowNs);
+            }
         }
 
         uint64_t uniquePhysicalIntervalNs = 0;
-        if (confirmed && provenance.uniqueDelivery
-                && confirmation.actualPresentTimeNs != 0) {
-            if (firstUniquePhysicalPresentNs_ == 0)
-                firstUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
-            if (lastUniquePhysicalPresentNs_ != 0
-                    && confirmation.actualPresentTimeNs
-                        > lastUniquePhysicalPresentNs_) {
-                uniquePhysicalIntervalNs =
-                    confirmation.actualPresentTimeNs
-                    - lastUniquePhysicalPresentNs_;
-            }
-            if (confirmation.provenanceDesiredPresentTimeNs != 0) {
-                physicalCadenceErrorsNs_.push_back(
-                    static_cast<uint64_t>(std::llabs(
-                        static_cast<long long>(confirmation.actualPresentTimeNs)
-                        - static_cast<long long>(
-                            confirmation.provenanceDesiredPresentTimeNs))));
-                while (physicalCadenceErrorsNs_.size() > 240)
-                    physicalCadenceErrorsNs_.pop_front();
-            }
-            if (confirmation.submittedDesiredPresentTimeNs != 0) {
-                scheduledCadenceErrorsNs_.push_back(
-                    static_cast<uint64_t>(std::llabs(
-                        static_cast<long long>(confirmation.actualPresentTimeNs)
-                        - static_cast<long long>(
-                            confirmation.submittedDesiredPresentTimeNs))));
-                while (scheduledCadenceErrorsNs_.size() > 240)
-                    scheduledCadenceErrorsNs_.pop_front();
-            }
-            lastUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
+        if (confirmed && provenance.uniqueDelivery) {
+            // Confirmation truth is independent of timestamp availability.
+            // VK_KHR_present_wait proves physical delivery but does not expose
+            // actualPresentTime; only cadence-error math requires that value.
             ++uniquePhysicalPresent_;
-            if (provenance.kind == 1) ++generatedUniquePhysicalPresent_;
-            else ++sourceUniquePhysicalPresent_;
+            if (provenance.kind == 1) {
+                ++generatedUniquePhysicalPresent_;
+                if (provenance.nativeImplementation) {
+                    nativeGeneratedDisplayConfirmed_.fetch_add(
+                        1, std::memory_order_relaxed);
+                    nativeGeneratedDisplayConfirmedEpoch_.fetch_add(
+                        1, std::memory_order_relaxed);
+                    recordNativePresentationEvidence(
+                        true, true, false, false, false, nowNs);
+                }
+            } else {
+                ++sourceUniquePhysicalPresent_;
+                if (provenance.nativeImplementation) {
+                    nativeSourceDisplayConfirmed_.fetch_add(
+                        1, std::memory_order_relaxed);
+                    nativeSourceDisplayConfirmedEpoch_.fetch_add(
+                        1, std::memory_order_relaxed);
+                    recordNativePresentationEvidence(
+                        false, true, false, false, false, nowNs);
+                }
+            }
+
+            if (confirmation.actualPresentTimeNs != 0) {
+                if (firstUniquePhysicalPresentNs_ == 0)
+                    firstUniquePhysicalPresentNs_ =
+                        confirmation.actualPresentTimeNs;
+                if (lastUniquePhysicalPresentNs_ != 0
+                        && confirmation.actualPresentTimeNs
+                            > lastUniquePhysicalPresentNs_) {
+                    uniquePhysicalIntervalNs =
+                        confirmation.actualPresentTimeNs
+                        - lastUniquePhysicalPresentNs_;
+                }
+                if (confirmation.provenanceDesiredPresentTimeNs != 0) {
+                    physicalCadenceErrorsNs_.push_back(
+                        static_cast<uint64_t>(std::llabs(
+                            static_cast<long long>(
+                                confirmation.actualPresentTimeNs)
+                            - static_cast<long long>(
+                                confirmation.provenanceDesiredPresentTimeNs))));
+                    while (physicalCadenceErrorsNs_.size() > 240)
+                        physicalCadenceErrorsNs_.pop_front();
+                }
+                if (confirmation.submittedDesiredPresentTimeNs != 0) {
+                    scheduledCadenceErrorsNs_.push_back(
+                        static_cast<uint64_t>(std::llabs(
+                            static_cast<long long>(
+                                confirmation.actualPresentTimeNs)
+                            - static_cast<long long>(
+                                confirmation.submittedDesiredPresentTimeNs))));
+                    while (scheduledCadenceErrorsNs_.size() > 240)
+                        scheduledCadenceErrorsNs_.pop_front();
+                }
+                lastUniquePhysicalPresentNs_ =
+                    confirmation.actualPresentTimeNs;
+            }
         }
 
         std::vector<uint64_t> sortedCadenceErrors(
@@ -3767,8 +5543,39 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                     / static_cast<double>(generatedUniqueWsiAccepted_)
                 : 0.0;
 
+        if (provenance.nativeImplementation) {
+            __android_log_print(ANDROID_LOG_INFO, "LSFG_NATIVE",
+                "event=display_confirmation implementation=native-lsfg delivery_id=%" PRIu64
+                " kind=%s confirmed=%d unknown=%d backend=%s source_index=%" PRIu64,
+                provenance.deliveryId, provenanceKindName(provenance.kind), confirmed, unknown,
+                hostDisplayBackendName(confirmation.backend), provenance.sourceIndex);
+        }
         publishLsfgHostDisplayFeedback(
             confirmation, provenance, confirmed);
+
+        if (!provenance.nativeImplementation && provenance.kind == 1
+                && provenance.outputSlotIndex != 0) {
+            const double slotLatenessMs =
+                confirmation.actualPresentTimeNs != 0
+                    && provenance.outputSlotIntendedPresentTimeNs != 0
+                ? static_cast<double>(
+                    static_cast<int64_t>(confirmation.actualPresentTimeNs)
+                        - static_cast<int64_t>(
+                            provenance.outputSlotIntendedPresentTimeNs))
+                    / 1000000.0
+                : 0.0;
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+                "event=legacy-output-slot-confirmation output_slot_index=%" PRIu64
+                " intended_present_ns=%" PRIu64
+                " actual_confirmation_ns=%" PRIu64
+                " lateness_ms=%.3f confirmed=%d unknown=%d"
+                " generated_frame_drop_reason=none",
+                provenance.outputSlotIndex,
+                provenance.outputSlotIntendedPresentTimeNs,
+                confirmation.actualPresentTimeNs,
+                slotLatenessMs, confirmed ? 1 : 0, unknown ? 1 : 0);
+        }
 
         __android_log_print(
             ANDROID_LOG_INFO,
@@ -3963,8 +5770,13 @@ void VulkanRendererContext::recordHostPresent(
     confirmation.frameSlot = present.frameSlot;
     confirmation.gpuOutstandingAtSubmit = present.gpuOutstanding;
     for (const auto& provenance : present.frameProvenance) {
+        if (provenance.nativeImplementation && provenance.uniqueDelivery) {
+            presentedFrames.fetch_add(1, std::memory_order_relaxed);
+            if (provenance.kind == 1)
+                nativeGeneratedPresentedFrames_.fetch_add(1, std::memory_order_relaxed);
+        }
         if (provenance.uniqueDelivery) {
-            consumedLsfgDeliveries_.insert(provenance.deliveryId);
+            if (!provenance.nativeImplementation) consumedLsfgDeliveries_.insert(provenance.deliveryId);
             if (present.backend != HostDisplayConfirmationBackend::WsiAccepted) {
                 if (provenance.kind == 1) ++generatedUniqueWsiAccepted_;
                 else ++sourceUniqueWsiAccepted_;
@@ -4004,11 +5816,20 @@ void VulkanRendererContext::pollHostDisplayConfirmations() {
         uint32_t count = 0;
         VkResult query = vk_.GetPastPresentationTimingGOOGLE(
             device, swapchain, &count, nullptr);
-        if (query == VK_SUCCESS && count > 0) {
+        if ((query == VK_SUCCESS || query == VK_INCOMPLETE) && count > 0) {
             std::vector<VkPastPresentationTimingGOOGLE> timings(count);
             query = vk_.GetPastPresentationTimingGOOGLE(
                 device, swapchain, &count, timings.data());
-            if (query == VK_SUCCESS) {
+            // The presentation engine can publish more records between the
+            // count and data calls. VK_INCOMPLETE still returns valid records;
+            // consume them now and leave the remainder for the next poll.
+            if (query == VK_SUCCESS || query == VK_INCOMPLETE) {
+                if (query == VK_INCOMPLETE) {
+                    __android_log_print(
+                        ANDROID_LOG_DEBUG, "LSFG_HOST_DISPLAY",
+                        "event=display-timing-query-partial result=%d returned=%u capacity=%zu",
+                        static_cast<int>(query), count, timings.size());
+                }
                 for (uint32_t i = 0; i < count; ++i) {
                     const auto& timing = timings[i];
                     auto it = std::find_if(
@@ -4043,9 +5864,23 @@ void VulkanRendererContext::pollHostDisplayConfirmations() {
                 }
             } else {
                 ++hostDisplayTimingQueryFailureTotal_;
+                if (hostDisplayTimingQueryFailureTotal_ <= 5
+                        || hostDisplayTimingQueryFailureTotal_ % 120 == 0) {
+                    __android_log_print(
+                        ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                        "event=display-timing-query-failed stage=data result=%d failures=%" PRIu64,
+                        static_cast<int>(query), hostDisplayTimingQueryFailureTotal_);
+                }
             }
-        } else if (query != VK_SUCCESS) {
+        } else if (query != VK_SUCCESS && query != VK_INCOMPLETE) {
             ++hostDisplayTimingQueryFailureTotal_;
+            if (hostDisplayTimingQueryFailureTotal_ <= 5
+                    || hostDisplayTimingQueryFailureTotal_ % 120 == 0) {
+                __android_log_print(
+                    ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                    "event=display-timing-query-failed stage=count result=%d failures=%" PRIu64,
+                    static_cast<int>(query), hostDisplayTimingQueryFailureTotal_);
+            }
         }
     }
 
@@ -4203,6 +6038,7 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     }
 
     evictWindowAhbImports(id, ahb);
+    framegenSourceFrames.fetch_add(1, std::memory_order_release);
     needsRender.store(true); dirtyCV.notify_one();
 }
 
@@ -4466,8 +6302,7 @@ void VulkanRendererContext::setPresentMode(VkPresentModeKHR mode) {
     frameQueueSmoothRuntimeSuppressed_.store(false, std::memory_order_release);
     frameQueueSmoothPressureStrikes_.store(0, std::memory_order_relaxed);
     frameQueueSmoothFifoFallback_.store(false, std::memory_order_release);
-    fbResized.store(true, std::memory_order_release);
-    dirtyCV.notify_one();
+    requestLsfgSwapchainRebuild("present-mode-transition");
 }
 
 std::vector<int> VulkanRendererContext::getSupportedPresentModes() const {

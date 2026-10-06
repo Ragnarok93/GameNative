@@ -41,10 +41,15 @@ class LsfgRuntimeHandoffController(
     fun schedule(
         active: Boolean,
         multiplier: Int,
+        backend: String = LsfgVkManager.backend(container),
+        transition: LsfgVkManager.BackendTransitionRequest? = null,
         onStateChanged: (active: Boolean, multiplier: Int, mode: LsfgRuntimeMode) -> Unit,
         applyFpsLimiter: () -> Unit,
     ) {
         val generation = ++transitionGeneration
+        // A submitted backend transaction is authoritative. The separate
+        // backend argument is retained for Off/On handoffs without a transaction.
+        val handoffBackend = transition?.backend ?: backend
         onStateChanged(
             false,
             1,
@@ -90,8 +95,15 @@ class LsfgRuntimeHandoffController(
                 val runtimeState = withContext(Dispatchers.IO) {
                     LsfgVkManager.readRuntimeState(container)
                 }
-                observed = if (active) {
-                    runtimeState.readyForGeneration
+                val backendMatches = LsfgVkManager.backend(container) == handoffBackend
+                val presentationReady = transition?.let {
+                    LsfgVkManager.isBackendTransitionPresentationReady(it)
+                } ?: true
+                // Activation is WSI progress, not the physical-display health
+                // confirmation window. Health may remain lagging while generated
+                // frames are demonstrably flowing.
+                observed = backendMatches && presentationReady && if (active) {
+                    runtimeState.nativeActivationReady
                 } else {
                     runtimeState.readyForSourceOnly
                 }
@@ -109,27 +121,48 @@ class LsfgRuntimeHandoffController(
             if (remainingSettleMs > 0L) delay(remainingSettleMs)
             if (generation != transitionGeneration) return@launch
 
-            if (active && !observed) {
+            if (!observed) {
                 onStateChanged(
                     false,
                     1,
                     LsfgRuntimeMode.DEGRADED,
                 )
                 Timber.w(
-                    "LSFG runtime handoff timed out after %d active ms: generation=%d multiplier=%d",
+                    "LSFG runtime handoff timed out after %d active ms: generation=%d active=%b backend=%s multiplier=%d",
                     activePollingElapsedMs,
                     generation,
+                    active,
+                    handoffBackend,
                     multiplier,
                 )
+                transition?.let {
+                    LsfgVkManager.completeBackendTransition(
+                        it,
+                        completionReason =
+                            if (active) "$handoffBackend-activation-timeout"
+                            else "$handoffBackend-source-only-timeout",
+                        effectiveMultiplier = 1,
+                    )
+                }
                 applyFpsLimiter()
                 return@launch
             }
 
+            val effectiveMultiplier = if (active) multiplier.coerceIn(2, 4) else 1
             onStateChanged(
                 active,
-                if (active) multiplier.coerceIn(2, 4) else 1,
+                effectiveMultiplier,
                 if (active) LsfgRuntimeMode.GENERATING else LsfgRuntimeMode.SOURCE_ONLY_RESIDENT,
             )
+            transition?.let {
+                LsfgVkManager.completeBackendTransition(
+                    it,
+                    completionReason =
+                        if (active) "$handoffBackend-activation-ready"
+                        else "$handoffBackend-source-only-ready",
+                    effectiveMultiplier = effectiveMultiplier,
+                )
+            }
             applyFpsLimiter()
         }
     }

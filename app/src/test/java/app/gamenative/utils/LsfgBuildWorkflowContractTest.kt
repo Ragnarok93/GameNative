@@ -153,13 +153,46 @@ class LsfgBuildWorkflowContractTest {
         )
         assertTrue(workflow.contains("lib/arm64-v8a/libvulkan_renderer.so"))
         assertTrue(workflow.contains("gamenative-host-display-confirmation-v3-split-present-worker"))
+        assertTrue(workflow.contains("verify-native-lsfg-jni.sh"))
+
+        val standaloneCmake =
+            repoFile("app/src/main/cpp/vulkan-renderer-build/CMakeLists.txt").readText()
+        assertTrue(standaloneCmake.contains("\${LSFG_DIR}/lsfg_probe.c"))
+        assertTrue(standaloneCmake.contains("\${LSFG_DIR}/lsfg_jni.c"))
+
+        val jniVerifier = repoFile("tools/verify-native-lsfg-jni.sh").readText()
+        val gpuImageVerifier = repoFile("tools/verify-gpuimage-jni.sh").readText()
+        listOf(
+            "LosslessScaling_nativeBuildCache",
+            "LosslessScaling_nativeCacheMatchesSource",
+            "LosslessScaling_nativeSupportsFp16",
+            "Machine:",
+            "AArch64",
+        ).forEach { token ->
+            assertTrue("Native JNI verifier is missing $token", jniVerifier.contains(token))
+        }
+
+        listOf(
+            "GPUImage_isHardwareBufferConfigurationSupported",
+            "GPUImage_createHardwareBuffer",
+            "GPUImage_lockHardwareBuffer",
+            "GPUImage_createImageKHR",
+            "Machine:",
+            "AArch64",
+        ).forEach { token ->
+            assertTrue("GPUImage JNI verifier is missing $token", gpuImageVerifier.contains(token))
+        }
 
         listOf(
             "glslang-tools",
             "cmake --build",
             "--target vulkan_renderer",
+            "--target extras",
             "libvulkan_renderer.so",
+            "libextras.so",
             "gamenative-host-display-confirmation-v3-split-present-worker",
+            "verify-native-lsfg-jni.sh",
+            "verify-gpuimage-jni.sh",
         ).forEach { token ->
             assertTrue("Vulkan renderer preparation action is missing $token", action.contains(token))
         }
@@ -205,6 +238,36 @@ class LsfgBuildWorkflowContractTest {
         ).forEach { contract ->
             assertTrue("PR check must run renderer contract: $contract", prCheck.contains(contract))
         }
+    }
+
+    @Test
+    fun everyPackagedApkRebuildsAndVerifiesNativeRendererJni() {
+        val workflows = listOf(
+            ".github/workflows/pluvia-pr-check.yml",
+            ".github/workflows/legacy-release-build.yml",
+            ".github/workflows/tagged-release.yml",
+            ".github/workflows/app-release-signed.yml",
+            ".github/workflows/adhoc-signed-build.yml",
+            ".github/workflows/upgradeable-debug.yml",
+        )
+        workflows.forEach { path ->
+            val source = repoFile(path).readText()
+            assertTrue(
+                "$path must rebuild the current Vulkan renderer before packaging",
+                source.contains("uses: ./.github/actions/prepare-vulkan-renderer-native"),
+            )
+            assertTrue(
+                "$path must verify the renderer extracted from the final APK",
+                source.contains("verify-native-lsfg-apk.sh"),
+            )
+        }
+
+        val verifier = repoFile("tools/verify-native-lsfg-apk.sh").readText()
+        assertTrue(verifier.contains("lib/arm64-v8a/libvulkan_renderer.so"))
+        assertTrue(verifier.contains("lib/arm64-v8a/libextras.so"))
+        assertTrue(verifier.contains("verify-native-lsfg-jni.sh"))
+        assertTrue(verifier.contains("verify-gpuimage-jni.sh"))
+        assertTrue(verifier.contains("unzip -p"))
     }
 
     @Test

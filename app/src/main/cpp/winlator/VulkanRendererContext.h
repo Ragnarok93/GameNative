@@ -1,5 +1,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
+#include "../lsfg/vkr_lsfg.h"
+#include "adaptive_scheduler.hpp"
 #include <list>
 #include <vulkan/vulkan_android.h>
 
@@ -125,10 +127,17 @@ static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
 static constexpr uint64_t SMOOTH_PRESENT_STALL_NS = 8'000'000ULL;
 static constexpr uint32_t SMOOTH_PRESENT_STALL_STRIKES = 2;
 static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
-static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
-static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
+// Pre-composition correctness buffering must accommodate one real source plus
+// the maximum Native/Legacy synthetic burst. User-facing Frame Queue controls
+// GPU/WSI buffering and must not collapse this ordered handoff to one entry.
+static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY =
+    VKR_LSFG_MAX_GENERATIONS + 1;
+static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY =
+    MIN_HOST_DELIVERY_QUEUE_CAPACITY + 2;
 static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
-static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = 4;
+static constexpr uint32_t MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH =
+    VKR_LSFG_MAX_GENERATIONS + 1;
+static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = 6;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -188,6 +197,7 @@ enum class HostDisplayConfirmationBackend : uint8_t {
 
 struct LsfgFrameProvenance {
     bool valid = false;
+    bool nativeImplementation = false;
     uint64_t runtimeSessionId = 0;
     uint64_t contextEpoch = 0;
     uint64_t deliveryId = 0;
@@ -198,6 +208,10 @@ struct LsfgFrameProvenance {
     uint8_t interpolationIndex = 0;
     uint8_t kind = 0; // 0=source, 1=generated
     uint64_t desiredPresentTimeNs = 0;
+    // Host-owned Legacy cadence identity. These fields are assigned after
+    // provenance transport and are not part of the guest socket ABI.
+    uint64_t outputSlotIndex = 0;
+    uint64_t outputSlotIntendedPresentTimeNs = 0;
     bool uniqueDelivery = false;
 };
 
@@ -266,6 +280,8 @@ struct PendingHostPresent {
     uint64_t swapchainGeneration = 0;
     uint32_t gpuOutstanding = 0;
     uint64_t hostPresentEnqueueWaitNs = 0;
+    uint64_t enqueuedAtNs = 0;
+    uint64_t presenterQueueAgeNs = 0;
     uint32_t hostPresentQueueDepth = 0;
 };
 
@@ -329,6 +345,7 @@ public:
 
     void detachSurface();
     bool reattachSurface(ANativeWindow* newWindow);
+    bool hasPresentationSurface() const;
 
     bool verboseLog = true;
     void setVerboseLog(bool v) { verboseLog = v; }
@@ -347,12 +364,25 @@ public:
 
     void armFrameGeneration();
     void setFrameGenerationEnabled(bool enabled);
+    void beginLsfgBackendTransition(uint64_t transactionId, uint64_t revision);
+    void commitLsfgBackendTransitionPolicy(uint64_t transactionId);
+    bool isLsfgBackendTransitionPolicyApplied(uint64_t transactionId) const;
+    void completeLsfgBackendTransition(uint64_t transactionId, const char* reason);
     bool isFrameGenerationSupported() const;
     void setFrameGenerationShaders(const std::string& cachePath);
     void setFrameGenerationRefreshRate(float hz);
-    void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct);
+    void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct,
+                                int flowMode, int flowPreset, uint64_t configRevision);
+    void setFrameGenerationPressure(float gpuUsagePercent, int thermalStatus,
+                                    float sourceFps, float outputFps,
+                                    float frameTimeP95Ms, float slowFrameRatio);
     uint64_t getGeneratedFrameCount() const;
+    uint64_t getGeneratedPresentedFrameCount() const;
     uint64_t getPresentedFrameCount() const;
+    uint64_t getDisplayConfirmedFrameCount() const;
+    uint64_t getGeneratedDisplayConfirmedFrameCount() const;
+    uint64_t getSourceDisplayConfirmedFrameCount() const;
+    bool isDisplayConfirmationAvailable() const;
     uint64_t getRealFrameCount() const;
     uint64_t getSourceFrameCount() const;
     void setSourceFrameCount(uint64_t count);
@@ -461,12 +491,52 @@ private:
     uint64_t hostTemporalBacklogTotal_ = 0;
     uint64_t hostRefreshCycleQueryFailureTotal_ = 0;
     uint64_t hostSwapchainGeneration_ = 0;
+    uint64_t lsfgBackendTransitionId_ = 0;
+    uint64_t lsfgBackendTransitionRevision_ = 0;
+    uint64_t lsfgBackendTransitionStartGeneration_ = 0;
+    uint32_t lsfgBackendTransitionRecreationAttempts_ = 0;
+    uint32_t lsfgBackendTransitionRecreationCount_ = 0;
+    bool lsfgBackendTransitionFirstRecreationFailed_ = false;
+    bool lsfgBackendTransitionRebuildPending_ = false;
+    bool lsfgBackendTransitionPolicyDirty_ = false;
+    bool lsfgBackendTransitionPolicyCommitted_ = false;
+    bool lsfgBackendTransitionPolicyApplied_ = false;
+    uint64_t lsfgBackendTransitionExpectedGeneration_ = 0;
     uint64_t hostPhysicalCadenceEpoch_ = 0;
+    uint64_t legacyGeneratedSlotContextEpoch_ = 0;
+    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
+        legacyGeneratedSlotLastRawDesiredNs_{};
+    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
+        legacyGeneratedSlotPeriodNs_{};
+    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
+        legacyGeneratedSlotNextNs_{};
+    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
+        legacyGeneratedSlotIndex_{};
     uint64_t hostConfirmationPendingHighWater_ = 0;
     uint64_t hostConfirmationExpiredTotal_ = 0;
     uint64_t hostConfirmationOverflowTotal_ = 0;
     uint64_t hostDisplayTimingQueryFailureTotal_ = 0;
     uint64_t hostInvalidPresentMarginTotal_ = 0;
+    uint64_t hostSuboptimalTotal_ = 0;
+    uint32_t hostSuboptimalConsecutive_ = 0;
+    bool hostSuboptimalActive_ = false;
+    uint64_t hostSuboptimalStartNs_ = 0;
+    uint64_t hostSuboptimalStartGeneration_ = 0;
+    uint64_t hostSuboptimalEpisodeCount_ = 0;
+    uint64_t hostSuboptimalLastRequeryNs_ = 0;
+    uint64_t hostSuboptimalLastAuditGeneration_ = UINT64_MAX;
+    uint64_t hostSuboptimalLastRecreateNs_ = 0;
+    uint64_t hostSuboptimalRecreateGeneration_ = 0;
+    VkColorSpaceKHR swapchainColorSpace_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    VkImageUsageFlags swapchainImageUsage_ = 0;
+    VkSurfaceTransformFlagBitsKHR swapchainPreTransform_ =
+        VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    VkCompositeAlphaFlagBitsKHR swapchainCompositeAlpha_ =
+        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    uint32_t swapchainRequestedImageCount_ = 0;
+    std::deque<uint8_t> hostSuboptimalWindow_;
+    std::deque<uint64_t> hostPresentLatencySamplesNs_;
+    std::deque<uint64_t> hostPresenterQueueAgeSamplesNs_;
     std::deque<uint64_t> physicalCadenceErrorsNs_;
     std::deque<uint64_t> scheduledCadenceErrorsNs_;
     std::unordered_set<uint64_t> consumedLsfgDeliveries_;
@@ -680,26 +750,116 @@ private:
     std::vector<VkFence>     imgInFlight;
     uint32_t                 currentFrame = 0;
 
-    // Native LSFG state is intentionally inert until the renderer is explicitly
-    // armed by a future backend-control seam. This keeps the legacy path unchanged
-    // while the compositor integration is brought up incrementally.
+    // Allocate native state only after explicit backend selection. Legacy and
+    // source-only launches retain the ordinary compositor resource topology.
     VkrLsfg* lsfg = nullptr;
     std::string lsfgCachePath;
-    bool framegenArmed = false;
-    bool framegenSupported = false;
+    std::atomic<bool> framegenArmed{false};
+    std::atomic<bool> framegenSupported{false};
+    std::atomic<bool> nativeLsfgReady_{false};
+    std::atomic<bool> nativePresentationSurfaceReady_{false};
     bool nativeVulkanDispatchLoaded_ = false;
-    bool framegenRequested = false;
+    std::atomic<bool> framegenRequested{false};
     bool framegenArmWarned = false;
     uint32_t framegenMultiplier = 2;
     uint32_t framegenTargetRate = 0;
     float framegenFlowScale = 0.7f;
+    uint32_t framegenFlowMode = VKR_LSFG_FLOW_FIXED;
+    uint32_t framegenFlowPreset = VKR_LSFG_FLOW_PRESET_QUALITY;
+    uint64_t framegenConfigRevision = 0;
     float framegenRefreshRate = 60.0f;
+    std::atomic<float> framegenGpuUsagePercent_{-1.0f};
+    std::atomic<int> framegenThermalStatus_{-1};
+    std::atomic<float> framegenSourceFps_{0.0f};
+    std::atomic<float> framegenOutputFps_{0.0f};
+    std::atomic<float> framegenFrameTimeP95Ms_{0.0f};
+    std::atomic<float> framegenSlowFrameRatio_{0.0f};
+    uint64_t nativeLsfgContextEpoch_ = 0;
+    uint64_t nativeLastContextReuseRevision_ = UINT64_MAX;
     std::atomic<uint64_t> framegenSourceFrames{0};
-    uint64_t framegenRealFrames = 0;
-    uint64_t framegenMadeFrames = 0;
+    std::atomic<uint64_t> framegenRealFrames{0};
+    std::atomic<uint64_t> framegenMadeFrames{0};
+    std::atomic<uint64_t> nativeGeneratedPresentedFrames_{0};
     std::atomic<uint64_t> presentedFrames{0};
+    std::atomic<uint64_t> nativeSourceReceived_{0};
+    std::atomic<uint64_t> nativeSourceWsiSubmitted_{0};
+    std::atomic<uint64_t> nativeSourceWsiAccepted_{0};
+    std::atomic<uint64_t> nativeSourceDisplayConfirmed_{0};
+    std::atomic<uint64_t> nativeGeneratedRequested_{0};
+    std::atomic<uint64_t> nativeGeneratedAdmitted_{0};
+    std::atomic<uint64_t> nativeGeneratedDispatched_{0};
+    std::atomic<uint64_t> nativeGeneratedCompleted_{0};
+    std::atomic<uint64_t> nativeGeneratedWsiSubmitted_{0};
+    std::atomic<uint64_t> nativeGeneratedWsiAccepted_{0};
+    std::atomic<uint64_t> nativeGeneratedDisplayConfirmed_{0};
+    std::atomic<uint64_t> nativeGeneratedDisplayConfirmedEpoch_{0};
+    std::atomic<uint64_t> nativeSourceDisplayConfirmedEpoch_{0};
+    std::atomic<uint64_t> nativeGeneratedDroppedBefore_{0};
+    std::atomic<uint64_t> nativeGeneratedDroppedAfter_{0};
+    std::atomic<uint64_t> nativeGeneratedSuperseded_{0};
+    std::atomic<uint64_t> nativeGeneratedStale_{0};
+    std::atomic<uint64_t> nativeGeneratedDeadlineRejected_{0};
+    std::atomic<uint64_t> nativeGeneratedWsiRejected_{0};
+    std::atomic<uint64_t> nativeGeneratedBacklogRejected_{0};
+    std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> nativeGeneratedSubmittedByFrame_{};
+    std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> nativeSubmissionStartedNs_{};
+    std::atomic<uint64_t> nativeGpuCompletionLatencyNsTotal_{0};
+    std::atomic<uint64_t> nativeGpuCompletionSamples_{0};
+    std::atomic<uint64_t> nativeHostWaitNsTotal_{0};
+    std::atomic<uint64_t> nativeHostWaitSamples_{0};
+    uint64_t nativePresentRateSampleNs_ = 0;
+    uint64_t nativePresentRateSourceAccepted_ = 0;
+    uint64_t nativePresentRateGeneratedAccepted_ = 0;
+    uint64_t nativePresentRateSourceConfirmed_ = 0;
+    uint64_t nativePresentRateGeneratedConfirmed_ = 0;
+    double nativeSourceWsiFps_ = 0.0;
+    double nativeGeneratedWsiFps_ = 0.0;
+    double nativeOutputWsiFps_ = 0.0;
+    double nativeOutputConfirmedFps_ = 0.0;
+    double nativeSourceConfirmedFps_ = 0.0;
+    double nativeGeneratedConfirmedFps_ = 0.0;
+
+    struct NativePresentationSchedule {
+        std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS> generatedDesiredNs{};
+        uint32_t generatedCount = 0;
+        uint64_t sourceDesiredNs = 0;
+        uint64_t sourceIntervalNs = 0;
+        uint64_t refreshPeriodNs = 0;
+        uint32_t sourceRefreshCycles = 0;
+        uint64_t phaseAdvanceCycles = 0;
+    };
+    SourceProtectedTimeline nativeSourceTimeline_{};
+    SourceTimelineSample nativeSourceTimelineSample_{};
+    uint64_t nativeTimelineLastSourceArrivalNs_ = 0;
+    uint64_t nativeTimelineSourceIntervalNs_ = 0;
+    uint64_t nativeTimelineGeneration_ = 0;
+    std::string nativeLastAdmissionReason_{"none"};
+    uint64_t nativeLastAdmissionP50PresentNs_ = 0;
+    uint64_t nativeLastAdmissionP95PresentNs_ = 0;
+    uint64_t nativeLastAdmissionServiceEstimateNs_ = 0;
+    uint64_t nativeLastAdmissionSourceIntervalNs_ = 0;
+    std::deque<uint64_t> nativeSourceWsiEventNs_;
+    std::deque<uint64_t> nativeGeneratedWsiEventNs_;
+    std::deque<uint64_t> nativeSourceConfirmedEventNs_;
+    std::deque<uint64_t> nativeGeneratedConfirmedEventNs_;
+    std::deque<uint64_t> nativeSourceUnobservedEventNs_;
+    std::deque<uint64_t> nativeGeneratedUnobservedEventNs_;
+    std::deque<uint64_t> nativeGeneratedRejectedEventNs_;
+    uint64_t nativePresentationEvidenceStartNs_ = 0;
+    uint32_t nativePresentationPressureStrikes_ = 0;
+    uint32_t nativePresentationRecoveryStrikes_ = 0;
+    bool nativePresentationPressureActive_ = false;
+    VkrLsfgPresentationPressure nativePresentationPressure_{};
+
     bool nativeSwapchainTransferSupported_ = false;
-    std::array<std::array<VkSemaphore, VK_MAX_COMPOSITE_TARGETS - 1>, MAX_FRAMES_IN_FLIGHT>
+    bool nativeComputeSupported_ = false;
+    uint32_t nativeMinImageCount_ = 0;
+    uint64_t nativeLastSourceFrame_ = 0;
+    uint64_t nativeDeliveryId_ = 0;
+    uint64_t nativeRuntimeSessionId_ = 0;
+    void waitNativeResources();
+    void recoverNativeAcquiredFrame();
+    std::array<std::array<VkSemaphore, 3>, MAX_FRAMES_IN_FLIGHT>
         nativeExtraAcquireSems_{};
 
     VkSampler        sampler    = VK_NULL_HANDLE;
@@ -713,7 +873,7 @@ private:
     std::mutex        renderMutex;
     std::mutex        dirtyMutex;
     std::condition_variable dirtyCV;
-    std::shared_mutex frameMutex;
+    mutable std::shared_mutex frameMutex;
 
     void createInstance();
     void createSurface();
@@ -771,6 +931,11 @@ private:
     void flushHostDisplayConfirmationsUnknown(const char* reason);
     uint32_t effectiveFrameQueueTarget() const;
     uint32_t hostDeliveryQueueCapacity() const;
+    void resetLegacyGeneratedOutputSlotClock(const char* reason);
+    bool assignLegacyGeneratedOutputSlot(LsfgFrameProvenance& provenance);
+    bool legacyGeneratedOutputSlotMissed(
+        const LsfgFrameProvenance& provenance, uint64_t nowNs) const;
+    bool pruneMissedLegacyGeneratedOutputSlots(uint64_t nowNs);
     bool isLsfgHostDeliveryStale(const LsfgFrameProvenance& provenance) const;
     bool enqueueLsfgHostDelivery(
         int64_t ownerId, AHardwareBuffer* ahb, WinTex& source);
@@ -799,6 +964,19 @@ private:
     void hostPresenterLoop();
     void processHostPresentCompletions();
     void drainHostPresenter(const char* reason);
+    uint32_t nativeHostSyntheticAdmissionCapacity();
+    void noteNativeSourceArrival(uint64_t nowNs);
+    NativePresentationSchedule buildNativePresentationSchedule(
+        uint32_t generations, uint64_t sourceIndex);
+    void resetNativePresentationTimeline(const char* reason);
+    uint32_t nativeTemporalGenerationCapacity() const;
+    void recordNativePresentationEvidence(
+        bool generated, bool confirmed, bool unobserved, bool wsiAccepted,
+        bool wsiRejected, uint64_t nowNs);
+    void updateNativePresentationPressure(uint64_t nowNs);
+    void requestLsfgSwapchainRebuild(const char* reason);
+    void observeHostPresentResult(VkResult result);
+    void emitNativeLsfgPipelineTelemetry(const char* reason);
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);
@@ -825,7 +1003,8 @@ private:
         VkBuffer cursorUpload, bool hasCursorUpload,
         float ox, float oy, float sx, float sy, float cw, float ch,
         short ptrX, short ptrY, short curHotX, short curHotY,
-        short curW, short curH, bool curVis, bool keepOpen = false);
+        short curW, short curH, bool curVis, bool keepOpen = false,
+        const VkCompositeTarget* target = nullptr);
     void renderLoop();
     void renderFrame();
 

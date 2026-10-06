@@ -17,6 +17,7 @@ target_link_libraries(extras
         EGL
         GLESv2
         GLESv3
-        adrenotools)
+        adrenotools
+        dl)
 
 target_link_options(extras PRIVATE -Wl,-z,max-page-size=16384)

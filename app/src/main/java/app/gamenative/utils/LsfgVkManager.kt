@@ -90,7 +90,79 @@ object LsfgVkManager {
         val requestedAtNs: Long,
     )
 
+    /** One immutable backend handoff request. */
+    data class BackendTransitionRequest(
+        val transactionId: Long,
+        val revision: Long,
+        val previousBackend: String,
+        val backend: String,
+        val enabled: Boolean,
+        val requestedMultiplier: Int,
+        val effectiveMultiplier: Int,
+        val presentationPolicy: String,
+        val requestedAtNs: Long,
+    )
+
+    data class RuntimeRequestToken(
+        val revision: Long,
+        val backendGeneration: Long,
+        val backend: String,
+    )
+
+    data class NativeRuntimeConfigSnapshot(
+        val revision: Long,
+        val backendGeneration: Long,
+        val backend: String,
+        val enabled: Boolean,
+        val generationMode: String,
+        val multiplier: Int,
+        val targetFps: Int,
+        val flowMode: String,
+        val flowPreset: String,
+        val requestedFlowScale: Float,
+        val performanceMode: Boolean,
+        val presentMode: String,
+        val frameQueueEnabled: Boolean,
+        val frameQueueTarget: Int,
+        val displayRefresh: Float,
+    )
+
+    enum class NativeBackendPhase {
+        NATIVE_REQUESTED,
+        NATIVE_INITIALIZING,
+        NATIVE_READY,
+        NATIVE_WSI_GENERATING,
+        NATIVE_GENERATING,
+        NATIVE_PRESENTATION_DEGRADED,
+        NATIVE_CONFIRMATION_UNAVAILABLE,
+        NATIVE_DEGRADED,
+        NATIVE_FAILED,
+    }
+
+    enum class NativeHealthState {
+        NOT_APPLICABLE,
+        STARTING,
+        WSI_ACTIVE_AWAITING_CONFIRMATION,
+        HEALTHY,
+        CONFIRMATION_LAGGING,
+        CONFIRMATION_UNAVAILABLE,
+        GENERATION_STALLED,
+        FAILED,
+    }
+
+    private data class BackendTransitionTelemetry(
+        val request: BackendTransitionRequest,
+        var runtimeApplyResult: String = "pending",
+        var nativeDrainResult: String =
+            if (request.previousBackend == BACKEND_NATIVE &&
+                request.backend == BACKEND_LEGACY
+            ) "pending" else "not-required",
+    )
+
     private val backendRequestSerial = AtomicLong(0L)
+    private val nativeConfigRevision = AtomicLong(0L)
+    @Volatile private var latestBackendRequest: BackendRequest? = null
+    private val backendTransitionTelemetry = mutableMapOf<Long, BackendTransitionTelemetry>()
 
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
@@ -128,7 +200,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-bannerlator-engine-54545ff93a46ecf846b3ffb56c396d5874ed7de2-r19"
+        "gamenative-bannerlator-engine-c4ea747352046023be838e3bf8ac967bcad155e1-r20"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -227,10 +299,22 @@ object LsfgVkManager {
         val synchronizationPath: String? = null,
         val ahbMode: String? = null,
         val rejectionReason: String? = null,
+        val wsiGenerating: Boolean = false,
+        val displayConfirmedGenerating: Boolean = false,
+        val displayConfirmationAvailable: Boolean = false,
+        val presentationDegraded: Boolean = false,
+        val nativeHealthState: NativeHealthState = NativeHealthState.NOT_APPLICABLE,
     ) {
-        val readyForGeneration: Boolean
+        /**
+         * Native activation readiness is WSI-based. Physical display confirmation
+         * is reported by nativeHealthState and never gates this property.
+         */
+        val nativeActivationReady: Boolean
             get() = fresh && resident && generationReady && multiplier >= 2 && !degraded &&
                 (!framegenSupportKnown || framegenSupported)
+
+        val readyForGeneration: Boolean
+            get() = nativeActivationReady
 
         val readyForSourceOnly: Boolean
             get() = fresh && resident && sourceOnly && !generationReady && !degraded
@@ -240,7 +324,7 @@ object LsfgVkManager {
         parseBool(container.getExtra(EXTRA_ARMED, "false"))
 
     private fun frameGenerationActive(container: Container): Boolean =
-        isArmed(container) && multiplier(container) >= 2
+        !isNativeBackend(container) && isArmed(container) && multiplier(container) >= 2
 
     /** Get the persisted Fixed Flow Scale (0.25-1.0, default 0.80). */
     fun flowScale(container: Container): Float =
@@ -290,7 +374,11 @@ object LsfgVkManager {
 
     fun isNativeBackend(container: Container): Boolean = backend(container) == BACKEND_NATIVE
 
+    @Synchronized
     fun setBackend(container: Container, backend: String): BackendRequest {
+        // Backend generation invalidates older applies; the transaction owns
+        // the single runtime revision for this switch.
+        nativeApplyGeneration.incrementAndGet()
         val sanitized = sanitizeBackend(backend)
         val previous = this.backend(container)
         val request = BackendRequest(
@@ -299,6 +387,7 @@ object LsfgVkManager {
             backend = sanitized,
             requestedAtNs = System.nanoTime(),
         )
+        latestBackendRequest = request
         Timber.i(
             "LSFG_BACKEND: event=backend_request backend_generation=%d request_serial=%d requested_backend=%s previous_backend=%s",
             request.serial,
@@ -315,6 +404,145 @@ object LsfgVkManager {
             sanitized,
         )
         return request
+    }
+
+    @Synchronized
+    internal fun reserveRuntimeRequest(container: Container): RuntimeRequestToken =
+        RuntimeRequestToken(
+            revision = nativeConfigRevision.incrementAndGet(),
+            backendGeneration = backendRequestSerial.get(),
+            backend = backend(container),
+        )
+
+    /** Sole owner for a live backend switch. */
+    @JvmStatic
+    @Synchronized
+    fun submitBackendTransition(
+        container: Container,
+        requestedBackend: String,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        performanceMode: Boolean,
+    ): BackendTransitionRequest {
+        val backendRequest = setBackend(container, requestedBackend)
+        val token = reserveRuntimeRequest(container)
+        val adaptive = enabled && generationMode(container) == MODE_ADAPTIVE
+        val effectiveMultiplier = when {
+            !enabled -> 1
+            adaptive -> 4
+            else -> multiplier.coerceIn(2, 4)
+        }
+        val transition = BackendTransitionRequest(
+            transactionId = backendRequest.serial,
+            revision = token.revision,
+            previousBackend = backendRequest.previousBackend,
+            backend = backendRequest.backend,
+            enabled = enabled,
+            requestedMultiplier = multiplier,
+            effectiveMultiplier = effectiveMultiplier,
+            presentationPolicy =
+                if (backendRequest.backend == BACKEND_NATIVE && enabled) "mailbox"
+                else presentMode(container),
+            requestedAtNs = backendRequest.requestedAtNs,
+        )
+        backendTransitionTelemetry[transition.transactionId] =
+            BackendTransitionTelemetry(transition)
+        activeBackendTransition = transition
+        nativeRendererRef?.get()?.beginLsfgBackendTransition(
+            transition.transactionId, transition.revision)
+        Timber.i(
+            "LSFG_BACKEND_TX: event=start transaction_id=%d revision=%d old_backend=%s " +
+                "new_backend=%s requested_multiplier=%d effective_multiplier=%d " +
+                "presentation_policy=%s native_drain_required=%d",
+            transition.transactionId, transition.revision,
+            transition.previousBackend, transition.backend,
+            transition.requestedMultiplier, transition.effectiveMultiplier,
+            transition.presentationPolicy,
+            if (transition.previousBackend == BACKEND_NATIVE &&
+                transition.backend == BACKEND_LEGACY) 1 else 0,
+        )
+        val published = updateConfigAtRuntimeCaptured(
+            container = container,
+            enabled = enabled,
+            multiplier = effectiveMultiplier.coerceAtLeast(2),
+            flowScale = flowScale,
+            performanceMode = performanceMode,
+            adaptiveFramegen = adaptive,
+            fpsLimit = if (adaptive) adaptiveTargetFps(container) else 0,
+            adaptiveFlowScale = flowScaleMode(container) == FLOW_MODE_ADAPTIVE,
+            adaptiveFlowPreset = adaptiveFlowPreset(container),
+            presentMode = presentMode(container),
+            frameQueueEnabled = enabled && frameQueueEnabled(container),
+            frameQueueTarget = frameQueueTarget(container),
+            requestToken = token,
+            backendTransition = transition,
+        )
+        if (!published)
+            recordBackendTransitionRuntimeResult(transition, "runtime-publication-failed")
+        return transition
+    }
+
+    @Synchronized
+    private fun recordBackendTransitionRuntimeResult(
+        request: BackendTransitionRequest,
+        result: String,
+    ) {
+        val telemetry = backendTransitionTelemetry[request.transactionId] ?: return
+        telemetry.runtimeApplyResult = result
+        if (request.previousBackend == BACKEND_NATIVE &&
+            request.backend == BACKEND_LEGACY
+        ) {
+            telemetry.nativeDrainResult = when (result) {
+                "source-only-applied", "legacy-restored", "legacy-state-committed" ->
+                    "retired-and-drained"
+                else -> "failed:$result"
+            }
+        }
+        Timber.i(
+            "LSFG_BACKEND_TX: event=runtime_apply transaction_id=%d revision=%d " +
+                "runtime_apply_result=%s native_drain_result=%s",
+            request.transactionId, request.revision,
+            telemetry.runtimeApplyResult, telemetry.nativeDrainResult,
+        )
+    }
+
+    @JvmStatic
+    fun isBackendTransitionPresentationReady(
+        request: BackendTransitionRequest,
+    ): Boolean {
+        val renderer = nativeRendererRef?.get() ?: return true
+        if (nativeRendererContainer == null) return true
+        return renderer.isLsfgBackendTransitionPolicyApplied(
+            request.transactionId,
+        )
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun completeBackendTransition(
+        request: BackendTransitionRequest,
+        completionReason: String,
+        effectiveMultiplier: Int,
+    ) {
+        val telemetry = backendTransitionTelemetry.remove(request.transactionId)
+            ?: BackendTransitionTelemetry(request)
+        nativeRendererRef?.get()?.completeLsfgBackendTransition(
+            request.transactionId, completionReason)
+        if (activeBackendTransition?.transactionId == request.transactionId) {
+            activeBackendTransition = null
+        }
+        Timber.i(
+            "LSFG_BACKEND_TX: event=handoff_complete transaction_id=%d revision=%d " +
+                "old_backend=%s new_backend=%s requested_multiplier=%d effective_multiplier=%d " +
+                "presentation_policy=%s native_drain_result=%s runtime_apply_result=%s " +
+                "completion_reason=%s",
+            request.transactionId, request.revision,
+            request.previousBackend, request.backend,
+            request.requestedMultiplier, effectiveMultiplier,
+            request.presentationPolicy, telemetry.nativeDrainResult,
+            telemetry.runtimeApplyResult, completionReason,
+        )
     }
 
     fun recordBackendRuntimeApplied(
@@ -377,10 +605,26 @@ object LsfgVkManager {
             appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
             appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
         }
-        return writeConfigAtomic(
+        val written = writeConfigAtomic(
             File(root, RUNTIME_PRESSURE_RELATIVE_PATH),
             text,
         )
+        val nativeContainer = nativeRendererContainer
+        val renderer = nativeRendererRef?.get()
+        if (renderer != null && nativeContainer != null &&
+            nativeContainer.rootDir.absolutePath == root.absolutePath &&
+            latestNativeSnapshot?.backend == BACKEND_NATIVE
+        ) {
+            renderer.setFrameGenerationPressure(
+                gpu,
+                snapshot.thermalStatus ?: -1,
+                snapshot.fps,
+                readNativeOutputFps(nativeContainer) ?: 0f,
+                snapshot.frameTimeP95Ms,
+                slowRatio.toFloat(),
+            )
+        }
+        return written
     }
 
     /**
@@ -396,6 +640,7 @@ object LsfgVkManager {
 
     /** Served from a cache refreshed off the main thread; callers poll ~1/s. */
     fun readMeasuredFps(container: Container): Float? = synchronized(measuredFpsCacheLock) {
+        if (isNativeBackend(container)) return@synchronized readNativeOutputFps(container)
         val now = System.currentTimeMillis()
         val rootKey = runCatching { container.rootDir.canonicalPath }
             .getOrElse { container.rootDir.absolutePath }
@@ -441,6 +686,12 @@ object LsfgVkManager {
      * active frame-generation session must never fall back to the lower source cadence.
      */
     fun readFreshOutputFps(rootDir: File?, nowMs: Long = System.currentTimeMillis()): Float? {
+        val nativeContainer = nativeRendererContainer
+        if (nativeContainer != null && isNativeBackend(nativeContainer) && rootDir == nativeContainer.rootDir) {
+            return synchronized(measuredFpsCacheLock) {
+                readNativeOutputFps(nativeContainer)?.takeIf { it > 0f }
+            }
+        }
         val statsFile = rootDir?.let { File(it, STATS_RELATIVE_PATH) } ?: return null
         if (!statsFile.isFile || nowMs - statsFile.lastModified() !in 0L..STATS_FRESHNESS_MS) {
             return null
@@ -466,6 +717,145 @@ object LsfgVkManager {
     }
 
     fun readRuntimeState(container: Container): RuntimeState {
+        if (!isNativeBackend(container)) return readLegacyRuntimeState(container)
+        val renderer = nativeRendererRef?.get() ?: return unknownRuntimeState(false)
+        if (nativeRendererContainer !== container) return unknownRuntimeState(false)
+
+        val initialized = renderer.isFrameGenerationSupported()
+        val wsiGeneratedCount = renderer.getGeneratedPresentedFrameCount()
+        val confirmedGeneratedCount = renderer.getGeneratedDisplayConfirmedFrameCount()
+        val sourceFrameCount = renderer.getSourceFrameCount()
+        val confirmationAvailable = renderer.isDisplayConfirmationAvailable()
+        val snapshot = latestNativeSnapshot?.takeIf { nativeRendererContainer === container }
+        val enabled = snapshot?.let {
+            it.backend == BACKEND_NATIVE && it.enabled && it.multiplier >= 2
+        } ?: (isArmed(container) && multiplier(container) >= 2)
+        val failed = nativeApplyFailed ||
+            (nativeApplyComplete && renderer.hasNativeSurface() && !initialized && enabled)
+
+        val nowNs = System.nanoTime()
+        if (nativeStateRenderer?.get() !== renderer ||
+            wsiGeneratedCount < nativeStateSampleWsiGenerated ||
+            confirmedGeneratedCount < nativeStateSampleConfirmedGenerated ||
+            sourceFrameCount < nativeStateSampleSourceFrames
+        ) {
+            nativeStateRenderer = WeakReference(renderer)
+            nativeStateSampleNs = nowNs
+            nativeStateSampleWsiGenerated = wsiGeneratedCount
+            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
+            nativeStateSampleSourceFrames = sourceFrameCount
+            nativeConfirmedDeliveryWindows = 0
+            nativeDeliveryLossWindows = 0
+            nativeGenerationStallWindows = 0
+            nativeLastWsiProgressNs = if (wsiGeneratedCount > 0L) nowNs else 0L
+        } else if (nativeStateSampleNs == 0L) {
+            nativeStateSampleNs = nowNs
+            nativeStateSampleWsiGenerated = wsiGeneratedCount
+            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
+            nativeStateSampleSourceFrames = sourceFrameCount
+        } else if (nowNs - nativeStateSampleNs >= 500_000_000L) {
+            val wsiDelta = (wsiGeneratedCount - nativeStateSampleWsiGenerated).coerceAtLeast(0L)
+            val confirmedDelta =
+                (confirmedGeneratedCount - nativeStateSampleConfirmedGenerated).coerceAtLeast(0L)
+            val sourceDelta = (sourceFrameCount - nativeStateSampleSourceFrames).coerceAtLeast(0L)
+
+            if (wsiDelta > 0L) {
+                nativeLastWsiProgressNs = nowNs
+                nativeGenerationStallWindows = 0
+            } else if (enabled && initialized && sourceDelta > 0L) {
+                nativeGenerationStallWindows =
+                    (nativeGenerationStallWindows + 1).coerceAtMost(12)
+            }
+            if (confirmationAvailable && wsiDelta > 0L && confirmedDelta > 0L) {
+                nativeConfirmedDeliveryWindows =
+                    (nativeConfirmedDeliveryWindows + 1).coerceAtMost(4)
+                nativeDeliveryLossWindows =
+                    (nativeDeliveryLossWindows - 1).coerceAtLeast(0)
+            } else if (confirmationAvailable && wsiDelta >= 2L && confirmedDelta == 0L) {
+                nativeDeliveryLossWindows =
+                    (nativeDeliveryLossWindows + 1).coerceAtMost(8)
+                nativeConfirmedDeliveryWindows = 0
+            } else if (!confirmationAvailable) {
+                nativeConfirmedDeliveryWindows = 0
+                nativeDeliveryLossWindows = 0
+            }
+            nativeStateSampleNs = nowNs
+            nativeStateSampleWsiGenerated = wsiGeneratedCount
+            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
+            nativeStateSampleSourceFrames = sourceFrameCount
+        }
+
+        val wsiGenerating = initialized && wsiGeneratedCount > 0L
+        val activationReady = enabled && initialized && wsiGenerating
+        val confirmedGenerating =
+            activationReady && confirmationAvailable && nativeConfirmedDeliveryWindows >= 2
+        val confirmationLagging =
+            activationReady && confirmationAvailable && nativeDeliveryLossWindows >= 2
+        val generationStalled =
+            enabled && initialized && nativeGenerationStallWindows >= 6
+        val healthState = when {
+            failed -> NativeHealthState.FAILED
+            generationStalled -> NativeHealthState.GENERATION_STALLED
+            confirmedGenerating -> NativeHealthState.HEALTHY
+            activationReady && !confirmationAvailable -> NativeHealthState.CONFIRMATION_UNAVAILABLE
+            confirmationLagging -> NativeHealthState.CONFIRMATION_LAGGING
+            activationReady -> NativeHealthState.WSI_ACTIVE_AWAITING_CONFIRMATION
+            else -> NativeHealthState.STARTING
+        }
+
+        if (snapshot != null && snapshot.revision == nativeAppliedRevision) {
+            when {
+                failed -> transitionNativePhase(
+                    snapshot, NativeBackendPhase.NATIVE_FAILED,
+                    nativeFailureReason ?: "native-runtime-failed")
+                generationStalled -> transitionNativePhase(
+                    snapshot, NativeBackendPhase.NATIVE_DEGRADED,
+                    "generated-wsi-stalled-while-source-progresses")
+                confirmedGenerating -> transitionNativePhase(
+                    snapshot, NativeBackendPhase.NATIVE_GENERATING,
+                    "sustained-generated-display-confirmation")
+                wsiGenerating && !confirmationAvailable -> transitionNativePhase(
+                    snapshot, NativeBackendPhase.NATIVE_CONFIRMATION_UNAVAILABLE,
+                    "wsi-generating-display-confirmation-unavailable")
+                wsiGenerating -> transitionNativePhase(
+                    snapshot, NativeBackendPhase.NATIVE_WSI_GENERATING,
+                    if (confirmationLagging) "wsi-generating-health-confirmation-lagging"
+                    else "generated-output-wsi-accepted-awaiting-confirmation")
+            }
+        }
+
+        return RuntimeState(
+            status = when {
+                !enabled -> RuntimeStatus.SOURCE_ONLY
+                failed || generationStalled -> RuntimeStatus.DEGRADED
+                activationReady -> RuntimeStatus.GENERATING
+                else -> RuntimeStatus.UNKNOWN
+            },
+            resident = initialized || !enabled,
+            sourceOnly = !enabled,
+            generationReady = activationReady,
+            generationInitialized = initialized,
+            generatedPresented = wsiGeneratedCount > 0L,
+            degraded = enabled && (failed || generationStalled),
+            multiplier = if (enabled) snapshot?.multiplier ?: multiplier(container) else 1,
+            fresh = true,
+            framegenSupportKnown = initialized || failed,
+            framegenSupported = initialized,
+            vulkanPath = "native-host-compositor",
+            rejectionReason = when {
+                generationStalled -> "native-generation-stalled-with-source-progress"
+                failed -> nativeFailureReason ?: "native-initialization-failed"
+                else -> null
+            },
+            wsiGenerating = wsiGenerating,
+            displayConfirmedGenerating = confirmedGenerating,
+            displayConfirmationAvailable = confirmationAvailable,
+            presentationDegraded = generationStalled,
+            nativeHealthState = healthState,
+        )
+    }
+
+    private fun readLegacyRuntimeState(container: Container): RuntimeState {
         val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
         if (!statsFile.isFile) return unknownRuntimeState(fresh = false)
         val fresh = System.currentTimeMillis() - statsFile.lastModified() in 0L..STATS_FRESHNESS_MS
@@ -549,6 +939,11 @@ object LsfgVkManager {
         return runCatching {
             val driverName = LosslessScaling.getDriverName(container)
             LosslessScaling.resolveOrBuildCache(context, dll, driverName)?.absolutePath
+        }.onFailure { error ->
+            Timber.e(
+                error,
+                "LSFG_NATIVE_CACHE: event=cache_build_failed stage=java-bridge reason=exception",
+            )
         }.getOrNull()
     }
 
@@ -556,6 +951,84 @@ object LsfgVkManager {
     // actual Vulkan context; runtime refreshes are best-effort.
     @Volatile private var nativeRendererRef: WeakReference<VulkanRenderer>? = null
     @Volatile private var nativeRendererContext: Context? = null
+    @Volatile private var nativeRendererContainer: Container? = null
+    @Volatile private var guestSuspensionContainer: Container? = null
+    @Volatile private var guestSuspensionProbe: (() -> Boolean)? = null
+    @Volatile private var latestNativeSnapshot: NativeRuntimeConfigSnapshot? = null
+    @Volatile private var nativeSnapshotContainer: Container? = null
+    @Volatile private var nativeAppliedRevision = 0L
+    @Volatile private var nativeBackendPhase = NativeBackendPhase.NATIVE_REQUESTED
+    @Volatile private var nativeFailureReason: String? = null
+    private var nativeStateSampleNs = 0L
+    private var nativeStateSampleWsiGenerated = 0L
+    private var nativeStateSampleConfirmedGenerated = 0L
+    private var nativeStateSampleSourceFrames = 0L
+    private var nativeConfirmedDeliveryWindows = 0
+    private var nativeDeliveryLossWindows = 0
+    private var nativeGenerationStallWindows = 0
+    private var nativeLastWsiProgressNs = 0L
+    private var nativeActivationStartNs = 0L
+    private var nativeStateRenderer: WeakReference<VulkanRenderer>? = null
+    private var nativeFpsSampleNs = 0L
+    private var nativeFpsSampleCount = 0L
+    private var nativeFpsRenderer: WeakReference<VulkanRenderer>? = null
+    private var nativeFpsValue: Float? = null
+
+    // Prefer physical display confirmation whenever the renderer exposes a
+    // trustworthy asynchronous confirmation backend. WSI acceptance remains
+    // available as pipeline telemetry and is only the rate fallback when
+    // physical confirmation is unavailable on the device.
+    private fun readNativeOutputFps(container: Container): Float? {
+        val renderer = nativeRendererRef?.get() ?: return null
+        if (nativeRendererContainer !== container ||
+            !renderer.isFrameGenerationSupported()
+        ) return null
+        val confirmationAvailable = renderer.isDisplayConfirmationAvailable()
+        val count = if (confirmationAvailable) {
+            renderer.getDisplayConfirmedFrameCount()
+        } else {
+            renderer.getPresentedFrameCount()
+        }
+        val now = System.nanoTime()
+        if (nativeFpsRenderer?.get() !== renderer ||
+            count < nativeFpsSampleCount || nativeFpsSampleNs == 0L
+        ) {
+            nativeFpsRenderer = WeakReference(renderer)
+            nativeFpsSampleCount = count
+            nativeFpsSampleNs = now
+            nativeFpsValue = null
+            return null
+        }
+        val elapsed = now - nativeFpsSampleNs
+        if (elapsed >= 500_000_000L) {
+            nativeFpsValue =
+                ((count - nativeFpsSampleCount) * 1_000_000_000.0 / elapsed)
+                    .toFloat()
+            nativeFpsSampleCount = count
+            nativeFpsSampleNs = now
+            Timber.d(
+                "LSFG_NATIVE_PRESENT: event=output_rate output_fps=%.2f measurement=%s " +
+                    "display_confirmation_available=%d",
+                nativeFpsValue,
+                if (confirmationAvailable) "display-confirmed"
+                else "wsi-accepted-confirmation-unavailable",
+                if (confirmationAvailable) 1 else 0,
+            )
+        }
+        return nativeFpsValue
+    }
+
+    @Volatile private var nativeApplyFailed = false
+    @Volatile private var nativeApplyComplete = false
+    private val nativeApplyGeneration = AtomicLong()
+    private val nativeApplyExecutor by lazy {
+        Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-native-apply").apply { isDaemon = true } }
+    }
+    @Volatile private var nativeApplyScheduledRenderer: WeakReference<VulkanRenderer>? = null
+    @Volatile private var nativeApplyScheduledRevision = 0L
+    @Volatile private var nativeApplyScheduledBackendGeneration = 0L
+    @Volatile private var nativeApplyScheduledGeneration = 0L
+    @Volatile private var activeBackendTransition: BackendTransitionRequest? = null
 
     private fun displayRefreshRate(context: Context): Float =
         runCatching {
@@ -564,45 +1037,680 @@ object LsfgVkManager {
             display?.defaultDisplay?.refreshRate
         }.getOrNull()?.takeIf { it > 1f } ?: 60f
 
+    @JvmStatic
+    @Synchronized
+    fun registerGuestSuspensionProbe(container: Container, probe: () -> Boolean) {
+        guestSuspensionContainer = container
+        guestSuspensionProbe = probe
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun unregisterGuestSuspensionProbe(container: Container) {
+        if (guestSuspensionContainer === container) {
+            guestSuspensionContainer = null
+            guestSuspensionProbe = null
+        }
+    }
+
+    private fun isGuestSuspended(container: Container): Boolean =
+        guestSuspensionContainer === container &&
+            runCatching { guestSuspensionProbe?.invoke() == true }.getOrDefault(false)
+
+    private fun captureNativeRuntimeSnapshot(
+        container: Container,
+        context: Context,
+    ): NativeRuntimeConfigSnapshot {
+        val generationMode = generationMode(container)
+        val enabled = isArmed(container) && multiplier(container) >= 2
+        return NativeRuntimeConfigSnapshot(
+            revision = nativeConfigRevision.incrementAndGet(),
+            backendGeneration = backendRequestSerial.get(),
+            backend = backend(container),
+            enabled = enabled,
+            generationMode = generationMode,
+            multiplier = if (generationMode == MODE_ADAPTIVE) 4 else fixedMultiplier(container),
+            targetFps = if (generationMode == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,
+            flowMode = flowScaleMode(container),
+            flowPreset = adaptiveFlowPreset(container),
+            requestedFlowScale = flowScale(container),
+            performanceMode = performanceMode(container),
+            presentMode = presentMode(container),
+            frameQueueEnabled = frameQueueEnabled(container),
+            frameQueueTarget = frameQueueTarget(container),
+            displayRefresh = displayRefreshRate(context),
+        )
+    }
+
+    private fun captureNativeRuntimeSnapshot(
+        container: Container,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        presentMode: String,
+        frameQueueEnabled: Boolean,
+        frameQueueTarget: Int,
+        requestToken: RuntimeRequestToken = reserveRuntimeRequest(container),
+    ): NativeRuntimeConfigSnapshot {
+        val context = nativeRendererContext
+        return NativeRuntimeConfigSnapshot(
+            revision = requestToken.revision,
+            backendGeneration = requestToken.backendGeneration,
+            backend = requestToken.backend,
+            enabled = enabled && multiplier >= 2,
+            generationMode = if (adaptiveFramegen) MODE_ADAPTIVE else MODE_FIXED,
+            multiplier = if (adaptiveFramegen) 4 else multiplier.coerceIn(2, 4),
+            targetFps = if (adaptiveFramegen) sanitizeAdaptiveTargetFps(fpsLimit) else 0,
+            flowMode = if (adaptiveFlowScale) FLOW_MODE_ADAPTIVE else FLOW_MODE_FIXED,
+            flowPreset = sanitizeAdaptiveFlowPreset(adaptiveFlowPreset),
+            requestedFlowScale = flowScale.coerceIn(0.25f, 1.0f),
+            performanceMode = performanceMode,
+            presentMode = presentMode.takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox",
+            frameQueueEnabled = frameQueueEnabled,
+            frameQueueTarget = frameQueueTarget.coerceIn(0, 2),
+            displayRefresh = context?.let(::displayRefreshRate) ?: 60f,
+        )
+    }
+
+    private fun logNativeSnapshot(snapshot: NativeRuntimeConfigSnapshot, event: String) {
+        val nativeEnabled =
+            snapshot.backend == BACKEND_NATIVE && snapshot.enabled && snapshot.multiplier >= 2
+        Timber.i(
+            "LSFG_NATIVE_CONFIG: event=%s requested_revision=%d applied_revision=%d backend_generation=%d " +
+                "backend=%s enabled=%d requested_enabled=%d generation_mode=%s multiplier=%d target_fps=%d " +
+                "flow_mode=%s flow_preset=%s requested_scale=%.2f display_refresh=%.2f " +
+                "present_policy=%s queue_policy=%s legacy_present_policy=%s " +
+                "legacy_frame_queue_requested=%d legacy_queue_target=%d",
+            event,
+            snapshot.revision,
+            nativeAppliedRevision,
+            snapshot.backendGeneration,
+            snapshot.backend,
+            if (nativeEnabled) 1 else 0,
+            if (snapshot.enabled) 1 else 0,
+            snapshot.generationMode,
+            snapshot.multiplier,
+            snapshot.targetFps,
+            snapshot.flowMode,
+            snapshot.flowPreset,
+            snapshot.requestedFlowScale,
+            snapshot.displayRefresh,
+            if (nativeEnabled) "mailbox" else "disabled",
+            if (nativeEnabled) "shared-host-frame-queue+native-admission" else "disabled",
+            snapshot.presentMode,
+            if (snapshot.frameQueueEnabled) 1 else 0,
+            snapshot.frameQueueTarget,
+        )
+    }
+
+    private fun transitionNativePhase(
+        snapshot: NativeRuntimeConfigSnapshot,
+        phase: NativeBackendPhase,
+        reason: String,
+    ) {
+        if (snapshot.revision < nativeAppliedRevision) return
+        nativeBackendPhase = phase
+        Timber.i(
+            "LSFG_NATIVE_STATE: state=%s reason=%s requested_revision=%d applied_revision=%d backend_generation=%d",
+            phase.name,
+            reason,
+            snapshot.revision,
+            nativeAppliedRevision,
+            snapshot.backendGeneration,
+        )
+    }
+
+    private fun snapshotIsCurrent(
+        snapshot: NativeRuntimeConfigSnapshot,
+        applyGeneration: Long,
+    ): Boolean =
+        applyGeneration == nativeApplyGeneration.get() &&
+            snapshot.revision == nativeConfigRevision.get() &&
+            snapshot.backendGeneration == backendRequestSerial.get()
+
+    private fun discardStaleSnapshot(snapshot: NativeRuntimeConfigSnapshot, stage: String) {
+        Timber.i(
+            "LSFG_NATIVE_CONFIG: event=discarded_stale_revision requested_revision=%d applied_revision=%d " +
+                "current_revision=%d backend_generation=%d current_backend_generation=%d stage=%s",
+            snapshot.revision,
+            nativeAppliedRevision,
+            nativeConfigRevision.get(),
+            snapshot.backendGeneration,
+            backendRequestSerial.get(),
+            stage,
+        )
+    }
+
+    private fun isSnapshotRevisionCurrent(snapshot: NativeRuntimeConfigSnapshot): Boolean =
+        snapshot.revision == nativeConfigRevision.get() &&
+            snapshot.backendGeneration == backendRequestSerial.get()
+
     /**
-     * Push the persisted native-LSFG settings into the host compositor.
+     * Publish only the implicit-layer half of one captured runtime snapshot.
+     * allowGeneration=false is the inter-backend safety barrier: the Legacy
+     * layer remains resident but source-only until the current backend owner
+     * has been safely retired.
+     */
+    private fun publishLegacyRuntimeConfig(
+        container: Container,
+        snapshot: NativeRuntimeConfigSnapshot,
+        allowGeneration: Boolean,
+        reason: String,
+    ): Boolean {
+        if (!isSupported(container)) return false
+        return try {
+            val dllPath = containerDllPath(container)
+            val processExecutable = targetExecutable(container)
+            val frameGenActive =
+                allowGeneration &&
+                    snapshot.backend == BACKEND_LEGACY &&
+                    snapshot.enabled &&
+                    snapshot.multiplier >= 2 &&
+                    dllPath != null &&
+                    processExecutable != null
+            val adaptive = frameGenActive && snapshot.generationMode == MODE_ADAPTIVE
+            val adaptiveFlow = frameGenActive && snapshot.flowMode == FLOW_MODE_ADAPTIVE
+            val runtimeMultiplier =
+                if (adaptive) 4 else snapshot.multiplier.coerceIn(2, 4)
+            val configText = buildConfigToml(
+                dllPath = dllPath,
+                processExecutable = processExecutable,
+                enabled = frameGenActive,
+                multiplier = if (frameGenActive) runtimeMultiplier else 1,
+                flowScale = snapshot.requestedFlowScale,
+                adaptiveFlowScale = adaptiveFlow,
+                adaptiveFlowPreset = snapshot.flowPreset,
+                performanceMode = snapshot.performanceMode,
+                adaptiveFramegen = adaptive,
+                fpsLimit = if (adaptive) snapshot.targetFps else 0,
+                presentMode = snapshot.presentMode,
+                frameQueueEnabled = frameGenActive && snapshot.frameQueueEnabled,
+                frameQueueTarget = snapshot.frameQueueTarget,
+            )
+            val ok = writeConfigAtomic(configFile(container), configText)
+            Timber.i(
+                "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=%s reason=%s " +
+                    "requested_revision=%d backend_generation=%d write_ok=%d enabled=%d " +
+                    "multiplier=%d adaptive_framegen=%d target_fps=%d adaptive_flow=%d " +
+                    "flow_preset=%s requested_scale=%.2f present_mode=%s frame_queue=%d " +
+                    "frame_queue_target=%d",
+                if (frameGenActive) "generating" else "source-only",
+                reason,
+                snapshot.revision,
+                snapshot.backendGeneration,
+                if (ok) 1 else 0,
+                if (frameGenActive) 1 else 0,
+                if (frameGenActive) runtimeMultiplier else 1,
+                if (adaptive) 1 else 0,
+                if (adaptive) snapshot.targetFps else 0,
+                if (adaptiveFlow) 1 else 0,
+                snapshot.flowPreset,
+                snapshot.requestedFlowScale,
+                snapshot.presentMode,
+                if (frameGenActive && snapshot.frameQueueEnabled) 1 else 0,
+                snapshot.frameQueueTarget,
+            )
+            ok
+        } catch (error: Throwable) {
+            Timber.e(
+                error,
+                "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=unknown reason=%s " +
+                    "requested_revision=%d backend_generation=%d",
+                reason,
+                snapshot.revision,
+                snapshot.backendGeneration,
+            )
+            false
+        }
+    }
+
+    /**
+     * Publish the implicit layer's half of a Native handoff. This operation is
+     * deliberately separate from Native renderer configuration: it can only
+     * force the Legacy layer into source-only mode.
+     */
+    private fun publishLegacySourceOnlyForNative(
+        container: Container,
+        snapshot: NativeRuntimeConfigSnapshot,
+    ): Boolean = publishLegacyRuntimeConfig(
+        container = container,
+        snapshot = snapshot,
+        allowGeneration = false,
+        reason = "native-backend",
+    )
+
+    /**
+     * Push one immutable Native-LSFG settings snapshot into the host compositor.
      * Shader-cache construction is kept off the render/launch critical path.
      */
+    @Synchronized
+    private fun applyNativeRuntime(
+        renderer: VulkanRenderer,
+        container: Container,
+        context: Context,
+        snapshot: NativeRuntimeConfigSnapshot,
+        onApplied: ((String) -> Unit)? = null,
+    ) {
+        nativeRendererRef = WeakReference(renderer)
+        nativeRendererContext = context.applicationContext
+        nativeRendererContainer = container
+        val alreadyScheduled =
+            nativeApplyScheduledRenderer?.get() === renderer &&
+                nativeApplyScheduledRevision == snapshot.revision &&
+                nativeApplyScheduledBackendGeneration == snapshot.backendGeneration &&
+                nativeApplyScheduledGeneration == nativeApplyGeneration.get()
+        if (alreadyScheduled) {
+            Timber.i(
+                "LSFG_NATIVE_CONFIG: event=coalesced_runtime_application requested_revision=%d " +
+                    "backend_generation=%d",
+                snapshot.revision,
+                snapshot.backendGeneration,
+            )
+            return
+        }
+
+        latestNativeSnapshot = snapshot
+        nativeSnapshotContainer = container
+        val generation = nativeApplyGeneration.incrementAndGet()
+        nativeApplyScheduledRenderer = WeakReference(renderer)
+        nativeApplyScheduledRevision = snapshot.revision
+        nativeApplyScheduledBackendGeneration = snapshot.backendGeneration
+        nativeApplyScheduledGeneration = generation
+        nativeApplyFailed = false
+        nativeApplyComplete = false
+        nativeFailureReason = null
+        logNativeSnapshot(snapshot, "requested")
+        if (snapshot.backend == BACKEND_NATIVE && snapshot.enabled) {
+            nativeActivationStartNs = System.nanoTime()
+            nativeLastWsiProgressNs = 0L
+            nativeGenerationStallWindows = 0
+            nativeConfirmedDeliveryWindows = 0
+            nativeDeliveryLossWindows = 0
+            transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_REQUESTED, "configuration-requested")
+        }
+
+        nativeApplyExecutor.execute {
+            try {
+                if (!snapshotIsCurrent(snapshot, generation)) {
+                    discardStaleSnapshot(snapshot, "before-apply")
+                    return@execute
+                }
+                val requested = snapshot.backend == BACKEND_NATIVE
+                val enabled = requested && snapshot.enabled && snapshot.multiplier >= 2
+                if (!requested || !enabled) {
+                    renderer.setFrameGenerationEnabled(false)
+                    renderer.setVkPresentMode(if (snapshot.presentMode == "mailbox") 1 else 2)
+                    renderer.setLsfgFrameQueue(
+                        !requested && snapshot.frameQueueEnabled && snapshot.enabled,
+                        snapshot.frameQueueTarget,
+                    )
+                    // Release the transaction's single coalesced WSI rebuild
+                    // before Legacy generation is restored below.
+                    renderer.commitLsfgBackendTransitionPolicy(
+                        snapshot.backendGeneration,
+                    )
+                    if (!snapshotIsCurrent(snapshot, generation)) {
+                        discardStaleSnapshot(snapshot, "source-only")
+                        return@execute
+                    }
+
+                    // Native -> Legacy restoration must be owned by the newest
+                    // current snapshot, not by a callback tied to an older
+                    // revision. Rapid Quick Menu updates can supersede the
+                    // transition snapshot after Native has already retired.
+                    var result = "source-only-applied"
+                    if (!requested && snapshot.backend == BACKEND_LEGACY) {
+                        val restored = publishLegacyRuntimeConfig(
+                            container,
+                            snapshot,
+                            allowGeneration = snapshot.enabled,
+                            reason = "native-retired-current-snapshot",
+                        )
+                        result = if (restored) {
+                            "legacy-restored"
+                        } else {
+                            "legacy-restore-failed"
+                        }
+                        Timber.i(
+                            "LSFG_BACKEND: event=legacy_restore_after_native_retire " +
+                                "requested_revision=%d backend_generation=%d enabled=%d restored=%d",
+                            snapshot.revision,
+                            snapshot.backendGeneration,
+                            if (snapshot.enabled) 1 else 0,
+                            if (restored) 1 else 0,
+                        )
+                    }
+
+                    nativeApplyComplete = true
+                    nativeAppliedRevision = snapshot.revision
+                    logNativeSnapshot(snapshot, "applied")
+                    onApplied?.invoke(result)
+                    return@execute
+                }
+
+                transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_INITIALIZING, "handoff-started")
+                val legacyStateBefore = readLegacyRuntimeState(container)
+                val backendRequest = latestBackendRequest?.takeIf {
+                    it.serial == snapshot.backendGeneration && it.backend == BACKEND_NATIVE
+                }
+                val liveLegacyTransition =
+                    backendRequest?.previousBackend == BACKEND_LEGACY
+                val legacyAckRequired =
+                    liveLegacyTransition ||
+                        (legacyStateBefore.fresh &&
+                            legacyStateBefore.resident &&
+                            !legacyStateBefore.readyForSourceOnly)
+
+                // Native compute cannot arm until the resident implicit layer has
+                // been commanded source-only. This prevents double generation.
+                if (!publishLegacySourceOnlyForNative(container, snapshot)) {
+                    renderer.setFrameGenerationEnabled(false)
+                    nativeApplyFailed = true
+                    nativeApplyComplete = true
+                    nativeFailureReason = "legacy-disable-failed"
+                    transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_FAILED, nativeFailureReason!!)
+                    onApplied?.invoke(nativeFailureReason!!)
+                    return@execute
+                }
+
+                val cache = prepareNativeCache(context.applicationContext, container)
+                if (!snapshotIsCurrent(snapshot, generation)) {
+                    discardStaleSnapshot(snapshot, "after-cache")
+                    return@execute
+                }
+                if (cache == null) {
+                    renderer.setFrameGenerationEnabled(false)
+                    nativeApplyFailed = true
+                    nativeApplyComplete = true
+                    nativeFailureReason = "native-cache-unavailable"
+                    transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_FAILED, nativeFailureReason!!)
+                    onApplied?.invoke(nativeFailureReason!!)
+                    return@execute
+                }
+
+                if (legacyAckRequired) {
+                    Timber.i(
+                        "LSFG_BACKEND: event=legacy_source_only_wait requested_revision=%d " +
+                            "backend_generation=%d reason=%s legacy_fresh=%d legacy_resident=%d",
+                        snapshot.revision,
+                        snapshot.backendGeneration,
+                        if (liveLegacyTransition) "live-backend-transition" else "observed-legacy-active",
+                        if (legacyStateBefore.fresh) 1 else 0,
+                        if (legacyStateBefore.resident) 1 else 0,
+                    )
+                    var activeAckWaitNs = 0L
+                    var suspensionLogged = false
+                    while (!readLegacyRuntimeState(container).readyForSourceOnly) {
+                        if (!snapshotIsCurrent(snapshot, generation)) {
+                            discardStaleSnapshot(snapshot, "legacy-ack")
+                            return@execute
+                        }
+                        if (isGuestSuspended(container)) {
+                            if (!suspensionLogged) {
+                                Timber.i(
+                                    "LSFG_BACKEND: event=legacy_source_only_wait_suspended " +
+                                        "requested_revision=%d backend_generation=%d active_wait_ms=%.3f",
+                                    snapshot.revision, snapshot.backendGeneration,
+                                    activeAckWaitNs / 1_000_000.0)
+                                suspensionLogged = true
+                            }
+                            Thread.sleep(100L)
+                            continue
+                        }
+                        if (suspensionLogged) {
+                            Timber.i(
+                                "LSFG_BACKEND: event=legacy_source_only_wait_resumed " +
+                                    "requested_revision=%d backend_generation=%d active_wait_ms=%.3f",
+                                snapshot.revision, snapshot.backendGeneration,
+                                activeAckWaitNs / 1_000_000.0)
+                            suspensionLogged = false
+                        }
+                        val pollStartedNs = System.nanoTime()
+                        Thread.sleep(100L)
+                        activeAckWaitNs += (System.nanoTime() - pollStartedNs).coerceAtLeast(0L)
+                        if (activeAckWaitNs >= 30_000_000_000L) {
+                            renderer.setFrameGenerationEnabled(false)
+                            nativeApplyFailed = true
+                            nativeApplyComplete = true
+                            nativeFailureReason = "legacy-disable-timeout"
+                            transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_FAILED, nativeFailureReason!!)
+                            onApplied?.invoke(nativeFailureReason!!)
+                            return@execute
+                        }
+                    }
+                    Timber.i(
+                        "LSFG_BACKEND: event=legacy_source_only_ack requested_revision=%d " +
+                            "backend_generation=%d active_wait_ms=%.3f",
+                        snapshot.revision, snapshot.backendGeneration,
+                        activeAckWaitNs / 1_000_000.0)
+                }
+
+                if (!snapshotIsCurrent(snapshot, generation)) {
+                    discardStaleSnapshot(snapshot, "before-native-arm")
+                    return@execute
+                }
+
+                // Native reuses the shared Vulkan present-mode selection path,
+                // but timed synthetic delivery must prefer Mailbox. Android FIFO
+                // vkQueuePresentKHR can block for multiple refresh periods and a
+                // single serial presenter cannot sustain 2x/3x/4x output then.
+                // nativeSetPresentMode already falls back to FIFO when Mailbox is
+                // unsupported. The stored Legacy preference is left untouched and
+                // is restored by the source-only/Legacy branch.
+                renderer.setVkPresentMode(1)
+                // Native stale-slot admission is an additional pre-acquire safety
+                // guard, not a replacement Frame Queue implementation.
+                renderer.setLsfgFrameQueue(
+                    snapshot.frameQueueEnabled,
+                    snapshot.frameQueueTarget,
+                )
+                val initialized = try {
+                    renderer.applyFrameGenerationSettings(
+                        cache,
+                        snapshot.multiplier,
+                        snapshot.targetFps,
+                        (snapshot.requestedFlowScale * 100f).toInt(),
+                        if (snapshot.flowMode == FLOW_MODE_ADAPTIVE) {
+                            VulkanRenderer.LSFG_FLOW_ADAPTIVE
+                        } else {
+                            VulkanRenderer.LSFG_FLOW_FIXED
+                        },
+                        when (snapshot.flowPreset) {
+                            ADAPTIVE_FLOW_PRESET_BALANCED -> VulkanRenderer.LSFG_FLOW_PRESET_BALANCED
+                            ADAPTIVE_FLOW_PRESET_LOW -> VulkanRenderer.LSFG_FLOW_PRESET_LOW
+                            ADAPTIVE_FLOW_PRESET_AUTO -> VulkanRenderer.LSFG_FLOW_PRESET_AUTO
+                            else -> VulkanRenderer.LSFG_FLOW_PRESET_QUALITY
+                        },
+                        snapshot.revision,
+                        snapshot.displayRefresh,
+                    ) { snapshotIsCurrent(snapshot, generation) }
+                } finally {
+                    // Present mode, frame queue, shader/cache and framegen state
+                    // are staged while the backend transaction owns WSI policy.
+                    // This releases at most one rebuild after the full policy is set.
+                    renderer.commitLsfgBackendTransitionPolicy(
+                        snapshot.backendGeneration,
+                    )
+                }
+
+                if (!snapshotIsCurrent(snapshot, generation)) {
+                    discardStaleSnapshot(snapshot, "after-native-arm")
+                    return@execute
+                }
+                nativeApplyFailed = renderer.hasNativeSurface() && !initialized
+                nativeApplyComplete = true
+                nativeAppliedRevision = snapshot.revision
+                nativeFailureReason = if (nativeApplyFailed) {
+                    "native-capability-or-cache-rejected"
+                } else null
+                logNativeSnapshot(snapshot, "applied")
+                when {
+                    initialized -> transitionNativePhase(
+                        snapshot,
+                        NativeBackendPhase.NATIVE_READY,
+                        "context-initialized",
+                    )
+                    nativeApplyFailed -> transitionNativePhase(
+                        snapshot,
+                        NativeBackendPhase.NATIVE_FAILED,
+                        nativeFailureReason!!,
+                    )
+                    else -> transitionNativePhase(
+                        snapshot,
+                        NativeBackendPhase.NATIVE_INITIALIZING,
+                        "native-surface-pending",
+                    )
+                }
+                onApplied?.invoke(
+                    when {
+                        initialized -> "runtime-initialized"
+                        nativeApplyFailed -> nativeFailureReason!!
+                        else -> "native-surface-pending"
+                    },
+                )
+            } catch (error: Exception) {
+                if (snapshotIsCurrent(snapshot, generation)) {
+                    nativeApplyFailed = true
+                    nativeApplyComplete = true
+                    nativeFailureReason = "native-initialization-failed"
+                    transitionNativePhase(
+                        snapshot,
+                        NativeBackendPhase.NATIVE_FAILED,
+                        nativeFailureReason!!,
+                    )
+                    Timber.e(
+                        error,
+                        "LSFG_NATIVE_STATE: event=runtime_initialization_failed requested_revision=%d backend_generation=%d",
+                        snapshot.revision,
+                        snapshot.backendGeneration,
+                    )
+                    onApplied?.invoke(nativeFailureReason!!)
+                } else {
+                    discardStaleSnapshot(snapshot, "exception-after-stale")
+                }
+            }
+        }
+    }
+
+    /**
+     * Bind the renderer lifecycle to the manager-owned runtime transaction.
+     *
+     * Surface attachment is not a second backend transition. Reuse the current
+     * immutable snapshot when possible and coalesce repeated Compose effects
+     * while an application is already queued.
+     */
+    @JvmStatic
+    @Synchronized
+    fun attachRenderer(
+        renderer: VulkanRenderer,
+        container: Container,
+        context: Context,
+    ) {
+        val sameRenderer =
+            nativeRendererRef?.get() === renderer && nativeRendererContainer === container
+        nativeRendererRef = WeakReference(renderer)
+        nativeRendererContext = context.applicationContext
+        nativeRendererContainer = container
+
+        // A renderer created after a switch must inherit the same transaction.
+        // Do not restart the transaction when Compose merely re-runs the effect
+        // for the same renderer instance.
+        if (!sameRenderer) {
+            activeBackendTransition?.let { transition ->
+                renderer.beginLsfgBackendTransition(
+                    transition.transactionId,
+                    transition.revision,
+                )
+            }
+        }
+
+        val currentSnapshot = latestNativeSnapshot?.takeIf {
+            nativeSnapshotContainer === container &&
+                it.revision == nativeConfigRevision.get() &&
+                it.backendGeneration == backendRequestSerial.get()
+        }
+        val alreadyApplied =
+            sameRenderer &&
+                currentSnapshot != null &&
+                nativeApplyComplete &&
+                nativeAppliedRevision == currentSnapshot.revision &&
+                nativeApplyScheduledRenderer?.get() === renderer &&
+                nativeApplyScheduledRevision == currentSnapshot.revision &&
+                nativeApplyScheduledBackendGeneration == currentSnapshot.backendGeneration
+        if (alreadyApplied) {
+            Timber.d(
+                "LSFG_NATIVE_CONFIG: event=renderer_attachment_coalesced requested_revision=%d " +
+                    "backend_generation=%d",
+                currentSnapshot!!.revision,
+                currentSnapshot.backendGeneration,
+            )
+            return
+        }
+
+        val snapshot = currentSnapshot ?: captureNativeRuntimeSnapshot(container, context)
+        val transition = activeBackendTransition?.takeIf {
+            // A Quick Menu setting may supersede the transition revision while
+            // the backend generation remains the same. The backend transaction
+            // still owns the eventual runtime-apply acknowledgement.
+            it.transactionId == snapshot.backendGeneration &&
+                it.backend == snapshot.backend
+        }
+        applyNativeRuntime(
+            renderer,
+            container,
+            context,
+            snapshot,
+        ) { result ->
+            transition?.let {
+                recordBackendTransitionRuntimeResult(it, result)
+            }
+        }
+    }
+
     @JvmStatic
     fun applyNativeRuntime(
         renderer: VulkanRenderer,
         container: Container,
         context: Context,
+        onApplied: ((String) -> Unit)? = null,
     ) {
-        nativeRendererRef = WeakReference(renderer)
-        nativeRendererContext = context.applicationContext
-
-        val requested = isNativeBackend(container)
-        val enabled = requested && isArmed(container) && multiplier(container) >= 2
-
-        // Arm the native control seam without tearing down an already-running
-        // native context on every Quick Menu setting update.
-        renderer.armFrameGeneration()
-        renderer.setFrameGenerationMode(
-            multiplier(container).coerceAtLeast(2),
-            if (generationMode(container) == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,
-            (flowScale(container) * 100f).toInt(),
-        )
-        renderer.setFrameGenerationRefreshRate(displayRefreshRate(context))
-
-        if (!requested) return
-
-        val cache = prepareNativeCache(context, container)
-        if (cache != null) renderer.setFrameGenerationShaders(cache)
-        renderer.setFrameGenerationEnabled(enabled && cache != null)
+        val snapshot = captureNativeRuntimeSnapshot(container, context)
+        applyNativeRuntime(renderer, container, context, snapshot, onApplied)
     }
 
-    /** Re-apply native settings after Quick Menu changes without retaining a strong renderer ref. */
+    /** Re-apply native settings after runtime changes without retaining a strong renderer ref. */
     @JvmStatic
     fun refreshNativeRuntime(container: Container) {
         val renderer = nativeRendererRef?.get() ?: return
         val context = nativeRendererContext ?: return
-        applyNativeRuntime(renderer, container, context)
+        if (nativeRendererContainer !== container) return
+        val snapshot = captureNativeRuntimeSnapshot(container, context)
+        applyNativeRuntime(renderer, container, context, snapshot)
+    }
+
+    private fun refreshNativeRuntime(
+        container: Container,
+        snapshot: NativeRuntimeConfigSnapshot,
+        onApplied: ((String) -> Unit)? = null,
+    ) {
+        val renderer = nativeRendererRef?.get() ?: run {
+            onApplied?.invoke("native-renderer-absent")
+            return
+        }
+        val context = nativeRendererContext ?: run {
+            onApplied?.invoke("native-context-absent")
+            return
+        }
+        if (nativeRendererContainer !== container) {
+            onApplied?.invoke("native-container-mismatch")
+            return
+        }
+        applyNativeRuntime(renderer, container, context, snapshot, onApplied)
     }
 
     /**
@@ -734,7 +1842,14 @@ object LsfgVkManager {
             val dllPath = containerDllPath(container)
             val processExecutable = targetExecutable(container)
             val savedMultiplier = multiplier(container)
-            val frameGenActive = frameGenerationActive(container) && processExecutable != null
+            // The implicit layer remains resident under Native so a later
+            // Native -> Legacy handoff is cheap, but it must start source-only.
+            // Native owns generation only after its separate handoff succeeds.
+            val legacyGenerationAllowed = !isNativeBackend(container)
+            val frameGenActive =
+                legacyGenerationAllowed &&
+                    frameGenerationActive(container) &&
+                    processExecutable != null
             val adaptive = frameGenActive && generationMode(container) == MODE_ADAPTIVE
             val runtimeMultiplier = if (adaptive) 4 else savedMultiplier
             val adaptiveTarget = if (adaptive) adaptiveTargetFps(container) else 0
@@ -754,7 +1869,18 @@ object LsfgVkManager {
                 frameQueueEnabled = frameQueueEnabled(container),
                 frameQueueTarget = frameQueueTarget(container),
             )
-            writeConfigAtomic(configFile, configText)
+            val ok = writeConfigAtomic(configFile, configText)
+            Timber.i(
+                "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=%s reason=launch-config " +
+                    "backend=%s enabled=%d multiplier=%d adaptive_framegen=%d target_fps=%d",
+                if (frameGenActive) "generating" else "source-only",
+                backend(container),
+                if (frameGenActive) 1 else 0,
+                if (frameGenActive) runtimeMultiplier else 1,
+                if (adaptive) 1 else 0,
+                if (adaptive) adaptiveTarget else 0,
+            )
+            ok
         } catch (t: Throwable) {
             Timber.tag(TAG).e(t, "Failed to write LSFG conf.toml")
             false
@@ -1325,75 +2451,174 @@ object LsfgVkManager {
         presentMode: String,
         frameQueueEnabled: Boolean,
         frameQueueTarget: Int,
+    ): Boolean = updateConfigAtRuntimeCaptured(
+        container = container,
+        enabled = enabled,
+        multiplier = multiplier,
+        flowScale = flowScale,
+        performanceMode = performanceMode,
+        adaptiveFramegen = adaptiveFramegen,
+        fpsLimit = fpsLimit,
+        adaptiveFlowScale = adaptiveFlowScale,
+        adaptiveFlowPreset = adaptiveFlowPreset,
+        presentMode = presentMode,
+        frameQueueEnabled = frameQueueEnabled,
+        frameQueueTarget = frameQueueTarget,
+        requestToken = reserveRuntimeRequest(container),
+    )
+
+    @Synchronized
+    internal fun updateConfigAtRuntimeCaptured(
+        container: Container,
+        enabled: Boolean,
+        multiplier: Int,
+        flowScale: Float,
+        performanceMode: Boolean,
+        adaptiveFramegen: Boolean,
+        fpsLimit: Int,
+        adaptiveFlowScale: Boolean,
+        adaptiveFlowPreset: String,
+        presentMode: String,
+        frameQueueEnabled: Boolean,
+        frameQueueTarget: Int,
+        requestToken: RuntimeRequestToken,
+        backendTransition: BackendTransitionRequest? = null,
     ): Boolean {
         if (!isSupported(container)) return false
+        if (requestToken.revision != nativeConfigRevision.get()
+            || requestToken.backendGeneration != backendRequestSerial.get()
+        ) {
+            Timber.i(
+                "LSFG_NATIVE_CONFIG: event=discarded_stale_revision requested_revision=%d " +
+                    "current_revision=%d backend_generation=%d current_backend_generation=%d " +
+                    "stage=before-legacy-publication",
+                requestToken.revision,
+                nativeConfigRevision.get(),
+                requestToken.backendGeneration,
+                backendRequestSerial.get(),
+            )
+            backendTransition?.let {
+                recordBackendTransitionRuntimeResult(it, "discarded-stale-revision")
+            }
+            return true
+        }
 
-        val dllPath = containerDllPath(container)
-        val configFile = configFile(container)
-        if (!configFile.exists()) {
+        val snapshot = captureNativeRuntimeSnapshot(
+            container = container,
+            enabled = enabled,
+            multiplier = multiplier,
+            flowScale = flowScale,
+            performanceMode = performanceMode,
+            adaptiveFramegen = adaptiveFramegen,
+            fpsLimit = fpsLimit,
+            adaptiveFlowScale = adaptiveFlowScale,
+            adaptiveFlowPreset = adaptiveFlowPreset,
+            presentMode = presentMode,
+            frameQueueEnabled = frameQueueEnabled,
+            frameQueueTarget = frameQueueTarget,
+            requestToken = requestToken,
+        )
+        // Retain the winning immutable request even when the renderer is not
+        // attached yet; a later attachment must not allocate a second revision.
+        latestNativeSnapshot = snapshot
+        nativeSnapshotContainer = container
+        if (!configFile(container).exists()) {
             Timber.tag(TAG).w("conf.toml not found, cannot hot-reload")
             return false
         }
 
-        return try {
-            val processExecutable = targetExecutable(container)
-            val frameGenActive = enabled && multiplier >= 2 &&
-                dllPath != null && processExecutable != null
-            val effectiveAdaptiveFramegen = frameGenActive && adaptiveFramegen
-            val effectiveAdaptiveFlowScale = frameGenActive && adaptiveFlowScale
-            val effectiveMultiplier = if (effectiveAdaptiveFramegen) {
-                4
-            } else {
-                multiplier.coerceIn(2, 4)
-            }
-            val effectiveFpsLimit = if (effectiveAdaptiveFramegen) {
-                sanitizeAdaptiveTargetFps(fpsLimit)
-            } else {
-                0
-            }
-            val effectivePresentMode =
-                presentMode.takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox"
-            val effectiveAdaptiveFlowPreset =
-                sanitizeAdaptiveFlowPreset(adaptiveFlowPreset)
-            val effectiveFrameQueueEnabled = frameGenActive && frameQueueEnabled
-            val effectiveFrameQueueTarget = frameQueueTarget.coerceIn(0, 2)
-            val configText = buildConfigToml(
-                dllPath = dllPath,
-                processExecutable = processExecutable,
-                enabled = frameGenActive,
-                multiplier = if (frameGenActive) effectiveMultiplier else 1,
-                flowScale = flowScale.coerceIn(0.25f, 1.0f),
-                adaptiveFlowScale = effectiveAdaptiveFlowScale,
-                adaptiveFlowPreset = effectiveAdaptiveFlowPreset,
-                performanceMode = performanceMode,
-                adaptiveFramegen = effectiveAdaptiveFramegen,
-                fpsLimit = effectiveFpsLimit,
-                presentMode = effectivePresentMode,
-                frameQueueEnabled = effectiveFrameQueueEnabled,
-                frameQueueTarget = effectiveFrameQueueTarget,
-            )
+        val rendererAttached =
+            nativeRendererRef?.get() != null && nativeRendererContainer === container
+        val nativeOwnerMayBeLive =
+            snapshot.backend == BACKEND_LEGACY &&
+                rendererAttached &&
+                latestNativeSnapshot?.backend == BACKEND_NATIVE
 
-            val ok = writeConfigAtomic(configFile, configText)
-            if (ok) {
-                Timber.tag(TAG).i(
-                    "LSFG runtime config published backend=%s enabled=%b multiplier=%d adaptiveFramegen=%b targetFps=%d adaptiveFlow=%b flowPreset=%s flowScale=%.2f presentMode=%s frameQueue=%b frameQueueTarget=%d",
-                    backend(container),
-                    frameGenActive,
-                    if (frameGenActive) effectiveMultiplier else 1,
-                    effectiveAdaptiveFramegen,
-                    effectiveFpsLimit,
-                    effectiveAdaptiveFlowScale,
-                    effectiveAdaptiveFlowPreset,
-                    flowScale.coerceIn(0.25f, 1.0f),
-                    effectivePresentMode,
-                    effectiveFrameQueueEnabled,
-                    effectiveFrameQueueTarget,
+        if (nativeOwnerMayBeLive) {
+            // Transactional Native -> Legacy handoff:
+            // keep Legacy source-only until Native stops admission, drains its
+            // owned GPU work and disables generation.
+            if (!publishLegacyRuntimeConfig(
+                    container,
+                    snapshot,
+                    allowGeneration = false,
+                    reason = "native-to-legacy-handoff",
                 )
+            ) {
+                return false
             }
-            ok
-        } catch (t: Throwable) {
-            Timber.tag(TAG).e(t, "Failed to hot-reload conf.toml")
-            false
+            Timber.i(
+                "LSFG_BACKEND: event=handoff_start direction=native-to-legacy " +
+                    "requested_revision=%d backend_generation=%d",
+                snapshot.revision,
+                snapshot.backendGeneration,
+            )
+            refreshNativeRuntime(container, snapshot) { result ->
+                backendTransition?.let { recordBackendTransitionRuntimeResult(it, result) }
+                if ((result == "source-only-applied" || result == "legacy-restored")
+                    && isSnapshotRevisionCurrent(snapshot)) {
+                    val restored = if (result == "legacy-restored") {
+                        true
+                    } else {
+                        // Compatibility fallback for an older/non-owning disable
+                        // path. The current Legacy snapshot normally performs the
+                        // authoritative restore before invoking this callback.
+                        publishLegacyRuntimeConfig(
+                            container,
+                            snapshot,
+                            allowGeneration = true,
+                            reason = "native-retired",
+                        )
+                    }
+                    Timber.i(
+                        "LSFG_BACKEND: event=handoff_complete direction=native-to-legacy " +
+                            "requested_revision=%d backend_generation=%d legacy_restored=%d",
+                        snapshot.revision,
+                        snapshot.backendGeneration,
+                        if (restored) 1 else 0,
+                    )
+                } else {
+                    Timber.w(
+                        "LSFG_BACKEND: event=handoff_abort direction=native-to-legacy " +
+                            "requested_revision=%d backend_generation=%d result=%s current=%d",
+                        snapshot.revision,
+                        snapshot.backendGeneration,
+                        result,
+                        if (isSnapshotRevisionCurrent(snapshot)) 1 else 0,
+                    )
+                }
+            }
+            return true
         }
+
+        val allowLegacyGeneration = snapshot.backend == BACKEND_LEGACY
+        val published = publishLegacyRuntimeConfig(
+            container,
+            snapshot,
+            allowGeneration = allowLegacyGeneration,
+            reason = if (snapshot.backend == BACKEND_NATIVE) {
+                "native-backend"
+            } else {
+                "runtime-config"
+            },
+        )
+        if (published) {
+            // Native sees the identical immutable snapshot. For Native
+            // activation this occurs only after Legacy has been made source-only.
+            refreshNativeRuntime(container, snapshot) { result ->
+                backendTransition?.let {
+                    recordBackendTransitionRuntimeResult(
+                        it,
+                        if (snapshot.backend == BACKEND_LEGACY &&
+                            result == "native-renderer-absent"
+                        ) "legacy-state-committed" else result)
+                }
+            }
+        } else {
+            backendTransition?.let {
+                recordBackendTransitionRuntimeResult(it, "legacy-publication-failed")
+            }
+        }
+        return published
     }
 }

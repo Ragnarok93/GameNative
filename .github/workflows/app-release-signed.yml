@@ -35,6 +35,9 @@ jobs:
         packages: platform-tools
     - name: Prepare GameNative-pinned LSFG native runtime
       uses: ./.github/actions/prepare-lsfg-native
+
+    - name: Rebuild Native LSFG Vulkan renderer
+      uses: ./.github/actions/prepare-vulkan-renderer-native
     - name: Validate Gradle wrapper
       uses: gradle/actions/wrapper-validation@v4
     - name: Setup Gradle
@@ -120,6 +123,9 @@ jobs:
         unzip -p app-modern-release.apks universal.apk > universal-modern.apk
         java -jar tools/bundletool-all-1.17.2.jar build-apks --bundle=app-legacy-xr-release.aab --output=app-legacy-xr-release.apks --mode=universal
         unzip -p app-legacy-xr-release.apks universal.apk > universal-legacy-xr.apk
+        for apk in universal.apk universal-modern.apk universal-legacy-xr.apk; do
+          bash tools/verify-native-lsfg-apk.sh "$apk"
+        done
 
     - name: Sign and verify universal APKs
       env:

@@ -232,5 +232,11 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(applyFramegenBody.contains("xServerView.post"))
         assertTrue(applyFramegenBody.contains("computeEffectsRequireCompositor") ||
             applyFramegenBody.contains("setEffect("))
+        assertTrue(applyFramegenBody.contains("nativeSetLsfgFrameQueue("))
+        assertTrue(applyFramegenBody.contains("pendingLsfgFrameQueueEnabled"))
+        assertTrue(applyFramegenBody.contains("pendingLsfgFrameQueueTarget"))
+        assertTrue(!javaRenderer.contains("nativeOwnsFrameQueuePolicy"))
+        assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
+        assertTrue(context.contains("nativeLsfgContentPending"))
     }
 }

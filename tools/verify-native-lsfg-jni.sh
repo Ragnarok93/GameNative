@@ -35,9 +35,15 @@ required_symbols=(
   Java_com_winlator_renderer_lsfg_LosslessScaling_nativeSupportsFp16
 )
 
+symbol_names="$(awk '{print $8}' <<<"$symbols")"
 for symbol in "${required_symbols[@]}"; do
-  if ! awk '{print $8}' <<<"$symbols" | grep -Fxq "$symbol"; then
+  # Avoid grep -q in an awk|grep pipeline under pipefail: grep exits as soon
+  # as it finds a match, which SIGPIPEs awk and turns a real match into a
+  # false-negative pipeline status.
+  if ! grep -Fx "$symbol" <<<"$symbol_names" >/dev/null; then
     echo "ERROR: Packaged Vulkan renderer is missing required Native LSFG JNI symbol: $symbol" >&2
+    echo "LosslessScaling JNI symbols found:" >&2
+    grep -F 'Java_com_winlator_renderer_lsfg_LosslessScaling_' <<<"$symbol_names" >&2 || true
     exit 1
   fi
 done

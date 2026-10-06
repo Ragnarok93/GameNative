@@ -26,7 +26,9 @@ if ! grep -Eq 'Machine:[[:space:]]+AArch64' <<<"$header"; then
   exit 1
 fi
 
-symbols="$("$readelf_bin" -Ws "$so")"
+# --wide is required: GNU/LLVM readelf otherwise truncates long JNI symbol
+# names in the table, producing a false "missing symbol" failure.
+symbols="$("$readelf_bin" --wide -Ws "$so")"
 required_symbols=(
   Java_com_winlator_renderer_lsfg_LosslessScaling_nativeBuildCache
   Java_com_winlator_renderer_lsfg_LosslessScaling_nativeCacheMatchesSource

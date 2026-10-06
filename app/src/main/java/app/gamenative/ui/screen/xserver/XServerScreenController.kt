@@ -28,6 +28,7 @@ import app.gamenative.utils.LsfgQuickMenuHelper
 import app.gamenative.utils.LsfgRuntimeHandoffController
 import app.gamenative.utils.LsfgRuntimeMode
 import com.winlator.container.Container
+import com.winlator.winhandler.OnGetProcessInfoListener
 import com.winlator.winhandler.ProcessInfo
 import com.winlator.core.Win32AppWorkarounds
 import com.winlator.inputcontrols.ControlElement
@@ -35,11 +36,19 @@ import com.winlator.inputcontrols.TouchMouse
 import com.winlator.widget.FrameRating
 import com.winlator.widget.XServerRendererView
 import com.winlator.xserver.Keyboard
+import com.winlator.xserver.Property
 import com.winlator.xserver.Window
 import com.winlator.xserver.WindowManager
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
+import timber.log.Timber
 
 @Stable
 internal class XServerScreenPersistentState(
@@ -57,6 +66,10 @@ internal class XServerScreenPersistentState(
     val showPlayingBlockedDialog: MutableState<Boolean>,
     val playingBlockedRemoteName: MutableState<String?>,
 )
+
+private const val EXIT_PROCESS_TIMEOUT_MS = 30_000L
+private const val EXIT_PROCESS_RESPONSE_TIMEOUT_MS = 1_500L
+private const val EXIT_PROCESS_POLL_INTERVAL_MS = 250L
 
 internal class XServerScreenController(
     val context: Context,
@@ -165,10 +178,198 @@ internal class XServerScreenController(
     val initialLsfgSettings = LsfgQuickMenuHelper.readSettings(container)
     val isLsfgRequested: Boolean get() = isLsfgAvailable && lsfgMultiplier >= 2
     val lsfgRuntimeHandoffController = LsfgRuntimeHandoffController(container) { PluviaApp.isOverlayPaused }
+    var windowModificationListener: WindowManager.OnWindowModificationListener? = null
+
+    fun installWindowModificationListener(
+        xServerView: XServerRendererView,
+        onExitGame: () -> Unit,
+    ): WindowManager.OnWindowModificationListener {
+        windowModificationListener?.let {
+            xServerView.getxServer().windowManager.removeOnWindowModificationListener(it)
+        }
+
+        val renderer = xServerView.renderer
+        val wmListener = object : WindowManager.OnWindowModificationListener {
+            private fun describeFrameRatingWindow(window: Window): String =
+                "id=${window.id}, name=${window.name}, class=${window.className}, pid=${window.processId}"
+
+            private fun findTopmostApplicationWindow(window: Window): Window? {
+                val children = window.children
+                for (i in children.indices.reversed()) {
+                    val child = children[i]
+                    if (!child.attributes.isMapped()) continue
+                    val topmostInChild = findTopmostApplicationWindow(child)
+                    if (topmostInChild != null) return topmostInChild
+                    if (child.isApplicationWindow() && child.isRenderable()) return child
+                }
+                return null
+            }
+
+            private fun refreshFrameRatingTracking(reason: String) {
+                val rating = frameRating ?: return
+                val topmost = findTopmostApplicationWindow(xServerView.getxServer().windowManager.rootWindow)
+                val nextId = topmost?.id ?: -1
+                if (frameRatingWindowId == nextId) return
+
+                if (topmost == null) {
+                    if (frameRatingWindowId != -1) {
+                        Timber.i("FrameRating tracking cleared (%s); no topmost application window remains", reason)
+                    }
+                    frameRatingWindowId = -1
+                    (context as? Activity)?.runOnUiThread { rating.visibility = View.GONE }
+                    return
+                }
+
+                frameRatingWindowId = nextId
+                Timber.i(
+                    "FrameRating tracking attached (%s) to topmost app window %s",
+                    reason,
+                    describeFrameRatingWindow(topmost),
+                )
+                (context as? Activity)?.runOnUiThread {
+                    rating.resetSamplingEpoch()
+                    rating.visibility = View.VISIBLE
+                }
+            }
+
+            override fun onUpdateWindowContent(window: Window) {
+                if (!xServerState.value.winStarted && window.isApplicationWindow()) {
+                    if (shouldShowMouseCursor()) renderer?.setCursorVisible(true)
+                    xServerState.value.winStarted = true
+                }
+                if (frameRatingWindowId == -1 && window.isApplicationWindow()) {
+                    refreshFrameRatingTracking("content-update")
+                }
+                if (window.id == frameRatingWindowId) {
+                    (context as? Activity)?.runOnUiThread { frameRating?.update() }
+                }
+            }
+
+            override fun onModifyWindowProperty(window: Window, property: Property) {
+                if (window.id == frameRatingWindowId || window.isApplicationWindow()) {
+                    refreshFrameRatingTracking("property:${property.nameAsString}")
+                }
+            }
+
+            override fun onMapWindow(window: Window) {
+                Timber.i(
+                    "onMapWindow:" +
+                        "\n\twindowName: ${window.name}" +
+                        "\n\twindowClassName: ${window.className}" +
+                        "\n\tprocessId: ${window.processId}" +
+                        "\n\thasParent: ${window.parent != null}" +
+                        "\n\tchildrenSize: ${window.children.size}",
+                )
+                refreshFrameRatingTracking("map-window")
+                win32AppWorkarounds?.applyWindowWorkarounds(window)
+                onWindowMapped?.invoke(context, window)
+            }
+
+            override fun onUnmapWindow(window: Window) {
+                Timber.i(
+                    "onUnmapWindow:" +
+                        "\n\twindowName: ${window.name}" +
+                        "\n\twindowClassName: ${window.className}" +
+                        "\n\tprocessId: ${window.processId}" +
+                        "\n\thasParent: ${window.parent != null}" +
+                        "\n\tchildrenSize: ${window.children.size}",
+                )
+                refreshFrameRatingTracking("unmap-window")
+                startExitWatchForUnmappedGameWindow(window, onExitGame)
+                onWindowUnmapped?.invoke(window)
+            }
+
+            override fun onChangeWindowZOrder(window: Window) {
+                refreshFrameRatingTracking("z-order")
+            }
+
+            override fun onUpdateWindowGeometry(window: Window, resized: Boolean) {
+                if (window.id == frameRatingWindowId || window.isApplicationWindow()) {
+                    refreshFrameRatingTracking(if (resized) "geometry-resize" else "geometry-move")
+                }
+            }
+        }
+
+        xServerView.getxServer().windowManager.addOnWindowModificationListener(wmListener)
+        windowModificationListener = wmListener
+        return wmListener
+    }
+
+    fun removeWindowModificationListener(xServerView: XServerRendererView) {
+        windowModificationListener?.let {
+            xServerView.getxServer().windowManager.removeOnWindowModificationListener(it)
+        }
+        windowModificationListener = null
+    }
+
+    private fun shouldShowMouseCursor(): Boolean =
+        !container.isDisableMouseInput &&
+            (!container.isTouchscreenMode || currentGestureConfig.showCursorInTouchscreenMode)
+
+    fun startExitWatchForUnmappedGameWindow(window: Window, onExitGame: () -> Unit) {
+        val winHandler = xServerView?.getxServer()?.winHandler ?: return
+        if (exitWatchJob?.isActive == true) return
+        val targetExecutable = extractExecutableBasename(container.executablePath)
+        if (!windowMatchesExecutable(window, targetExecutable)) return
+
+        exitWatchJob = launchXServerIo {
+            val allowlist = buildEssentialProcessAllowlist()
+            val previousListener = winHandler.getOnGetProcessInfoListener()
+            val lock = Any()
+            var pendingSnapshot: CompletableDeferred<List<ProcessInfo>?>? = null
+            var currentList = mutableListOf<ProcessInfo>()
+            var expectedCount = 0
+
+            val listener = OnGetProcessInfoListener { index, count, processInfo ->
+                previousListener?.onGetProcessInfo(index, count, processInfo)
+                synchronized(lock) {
+                    val deferred = pendingSnapshot ?: return@synchronized
+                    if (count == 0 && processInfo == null) {
+                        if (!deferred.isCompleted) deferred.complete(null)
+                        return@synchronized
+                    }
+                    if (index == 0) {
+                        currentList = mutableListOf()
+                        expectedCount = count
+                    }
+                    if (processInfo != null) currentList.add(processInfo)
+                    if (currentList.size >= expectedCount && !deferred.isCompleted) {
+                        deferred.complete(currentList.toList())
+                    }
+                }
+            }
+
+            winHandler.setOnGetProcessInfoListener(listener)
+            try {
+                val startTime = System.currentTimeMillis()
+                while (System.currentTimeMillis() - startTime < EXIT_PROCESS_TIMEOUT_MS) {
+                    val deferred = CompletableDeferred<List<ProcessInfo>?>()
+                    synchronized(lock) { pendingSnapshot = deferred }
+                    winHandler.listProcesses()
+                    val snapshot = withTimeoutOrNull(EXIT_PROCESS_RESPONSE_TIMEOUT_MS) { deferred.await() }
+                    if (snapshot != null) {
+                        val hasNonEssential = snapshot.any { !allowlist.contains(normalizeProcessName(it.name)) }
+                        if (!hasNonEssential) {
+                            withContext(Dispatchers.Main) { onExitGame() }
+                            break
+                        }
+                    }
+                    delay(EXIT_PROCESS_POLL_INTERVAL_MS)
+                }
+            } finally {
+                winHandler.setOnGetProcessInfoListener(previousListener)
+                synchronized(lock) { pendingSnapshot = null }
+            }
+        }
+    }
 
     fun cleanup() {
         adaptiveCapGeneration.incrementAndGet()
         mainHandler.removeCallbacksAndMessages(null)
+        windowModificationListener?.let {
+            xServerView?.getxServer()?.windowManager?.removeOnWindowModificationListener(it)
+        }
+        windowModificationListener = null
         PluviaApp.radialMenuCoordinator?.detach()
         PluviaApp.radialMenuCoordinator = null
         physicalControllerHandler?.cleanup()

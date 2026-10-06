@@ -131,16 +131,18 @@ LsfgPlan LsfgPacer::PlanAt(size_t capacity, uint64_t source_frames, Clock::time_
             limit = 0;
             return LsfgPlan{0, true};
         }
-        limit = std::min(ceiling, HeadroomLimit());
+        // Fixed 2x/3x/4x remains authoritative exactly as in Legacy.
+        limit = ceiling;
         return LsfgPlan{limit, true};
     }
 
     const auto sourceInterval =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<float>(interval_seconds));
+    // Adaptive target density is owned by the exact same scheduler as Legacy.
+    // Native applies only hard backend capacity after the policy decision.
     const size_t scheduled = adaptive_scheduler.plan(sourceInterval);
-    const size_t allowed = std::min(ceiling, HeadroomLimit());
-    limit = std::min(scheduled, allowed);
+    limit = std::min(scheduled, ceiling);
     return LsfgPlan{limit, true};
 }
 

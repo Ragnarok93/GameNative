@@ -284,10 +284,23 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(!admissionBody2.contains("occupied) * p95PresentNs"))
         assertTrue(context.contains("admission_service_estimate_ms="))
 
-        // Structural presenter/admission loss is allowed to reduce Adaptive FG
-        // density even when lowering Flow cannot fix the rejected temporal slot.
-        assertTrue(vkr.contains("structural_presentation_pressure"))
-        assertTrue(vkr.contains("presentation_pressure || lsfg->synthetic_drop_pressure"))
-        assertTrue(vkr.contains("adaptive_generation_cap < VKR_LSFG_MAX_GENERATIONS"))
+        // Adaptive Flow remains the first actuator. The shared controller
+        // retains target-driven downsteps under presentation pressure until the
+        // preset floor; only then may Adaptive FG density back off.
+        val sharedFlowController =
+            File(
+                root,
+                "app/src/main/cpp/lsfg-vk-android/src/adaptive_flow_controller.cpp",
+            ).readText()
+        assertTrue(
+            sharedFlowController.contains(
+                "!downstepBaselineWsiPressure_ || observation.adaptiveFramegenMode",
+            ),
+        )
+        assertTrue(vkr.contains("const bool at_minimum ="))
+        assertTrue(vkr.contains("at_minimum && ("))
+        assertTrue(vkr.contains("presentation_pressure"))
+        assertTrue(vkr.contains("lsfg->synthetic_drop_pressure"))
+        assertTrue(!vkr.contains("structural_presentation_pressure"))
     }
 }

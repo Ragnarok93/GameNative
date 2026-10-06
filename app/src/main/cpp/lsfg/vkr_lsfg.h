@@ -22,6 +22,16 @@ extern "C" {
 
 typedef struct VkrLsfg VkrLsfg;
 
+typedef struct VkrLsfgPresentationPressure {
+    bool confirmation_available;
+    bool pressure_active;
+    bool source_delivery_healthy;
+    float generated_delivery_efficiency;
+    float source_delivery_efficiency;
+    float confirmation_timeout_rate;
+    float output_target_deficit_ratio;
+} VkrLsfgPresentationPressure;
+
 typedef struct VkrLsfgFlowState {
     bool adaptive;
     uint32_t preset;
@@ -55,6 +65,8 @@ void vkr_lsfg_set_pressure(VkrLsfg* lsfg, float gpu_usage_percent, int thermal_s
 
 void vkr_lsfg_note_admission(VkrLsfg* lsfg, uint32_t requested, uint32_t admitted);
 void vkr_lsfg_note_presentation_drop(VkrLsfg* lsfg, uint32_t dropped);
+void vkr_lsfg_set_presentation_pressure(
+    VkrLsfg* lsfg, const VkrLsfgPresentationPressure* pressure);
 
 void vkr_lsfg_set_guest_extent(VkrLsfg* lsfg, uint32_t width, uint32_t height);
 

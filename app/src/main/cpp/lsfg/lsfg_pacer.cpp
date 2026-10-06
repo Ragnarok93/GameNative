@@ -23,6 +23,15 @@ constexpr uint32_t MIN_RATE_SAMPLES = 12;
 
 }
 
+LsfgPresentationSlots BuildPresentationSlots(size_t generations) {
+    LsfgPresentationSlots slots{};
+    slots.generated_count = std::min(generations, LSFG_MAX_MULTIPLIER - 1);
+    const double denominator = static_cast<double>(slots.generated_count + 1);
+    for (size_t i = 0; i < slots.generated_count; ++i)
+        slots.generated[i] = static_cast<double>(i + 1) / denominator;
+    return slots;
+}
+
 size_t LsfgPacer::MaxGenerations() const {
     if (config.multiplier < 2) return 0;
     if (config.target_rate != 0) return LSFG_MAX_MULTIPLIER - 1;

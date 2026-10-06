@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,14 @@ struct LsfgPlan {
     size_t generations{};
     bool warm{};
 };
+
+struct LsfgPresentationSlots {
+    std::array<double, LSFG_MAX_MULTIPLIER - 1> generated{};
+    size_t generated_count{};
+    double source{1.0};
+};
+
+[[nodiscard]] LsfgPresentationSlots BuildPresentationSlots(size_t generations);
 
 struct LsfgPacerStats {
     float source_rate{};

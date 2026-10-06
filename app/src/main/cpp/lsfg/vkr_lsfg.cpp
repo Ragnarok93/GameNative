@@ -133,6 +133,7 @@ struct VkrLsfg {
     } pressure;
 
     bool synthetic_drop_pressure{};
+    VkrLsfgPresentationPressure presentation_pressure{};
     uint32_t adaptive_generation_cap{VKR_LSFG_MAX_GENERATIONS};
     double density_pressure_seconds{};
     double density_recovery_seconds{};
@@ -293,6 +294,12 @@ void vkr_lsfg_note_presentation_drop(VkrLsfg* lsfg, uint32_t dropped) {
     lsfg->synthetic_drop_pressure = true;
 }
 
+void vkr_lsfg_set_presentation_pressure(
+        VkrLsfg* lsfg, const VkrLsfgPresentationPressure* pressure) {
+    if (!lsfg || !pressure) return;
+    lsfg->presentation_pressure = *pressure;
+}
+
 void vkr_lsfg_set_guest_extent(VkrLsfg* lsfg, uint32_t width, uint32_t height) {
     if (!lsfg || width == 0 || height == 0) return;
     lsfg->peak_guest_extent.width = std::max(lsfg->peak_guest_extent.width, width);
@@ -450,8 +457,16 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         observation.flowMs = 0.0;
         observation.mipmapsMs = 0.0;
         observation.generationCount = lsfg->plan.generations;
-        observation.wsiPresentationPressure = lsfg->synthetic_drop_pressure;
-        observation.wsiLossRate = lsfg->synthetic_drop_pressure ? 1.0 : 0.0;
+        observation.wsiPresentationPressure =
+            lsfg->presentation_pressure.pressure_active
+            || lsfg->synthetic_drop_pressure;
+        observation.wsiLossRate =
+            lsfg->presentation_pressure.confirmation_available
+                ? std::clamp(
+                    1.0 - static_cast<double>(
+                        lsfg->presentation_pressure.generated_delivery_efficiency),
+                    0.0, 1.0)
+                : (lsfg->synthetic_drop_pressure ? 1.0 : 0.0);
         observation.sourceFps =
             pressure_fresh && lsfg->pressure.source_valid
                 ? lsfg->pressure.source_fps : stats.source_rate;
@@ -507,9 +522,13 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         const auto& flow = lsfg->flow_controller.telemetry();
         const bool at_minimum =
             lsfg->active_flow_scale <= flow.minimumScale + 0.0005f;
+        const bool presentation_pressure =
+            lsfg->presentation_pressure.confirmation_available
+            && lsfg->presentation_pressure.pressure_active;
         const bool severe_pressure =
             at_minimum && (
-                lsfg->synthetic_drop_pressure
+                presentation_pressure
+                || lsfg->synthetic_drop_pressure
                 || (global_pressure_valid
                     && lsfg->pressure.gpu_usage_percent >= 96.0f
                     && output_deficit));
@@ -517,33 +536,67 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
             lsfg->density_pressure_seconds += elapsed_seconds;
             lsfg->density_recovery_seconds = 0.0;
             if (lsfg->density_pressure_seconds >= 0.60
-                    && lsfg->adaptive_generation_cap > 1) {
+                    && lsfg->adaptive_generation_cap > 0) {
                 --lsfg->adaptive_generation_cap;
                 lsfg->density_pressure_seconds = 0.0;
                 LSFG_FLOW_LOG(
-                    "event=generation_density_backoff reason=flow-minimum-pressure "
-                    "generation_cap=%u active_scale=%.2f gpu_pressure=%.1f output_deficit=%d",
+                    "event=generation_density_backoff reason=%s "
+                    "generation_cap=%u active_scale=%.2f gpu_pressure=%.1f output_deficit=%d "
+                    "presentation_pressure=%d generated_delivery_efficiency=%.3f "
+                    "source_delivery_efficiency=%.3f confirmation_timeout_rate=%.3f",
+                    presentation_pressure ? "physical-delivery-pressure"
+                        : (lsfg->synthetic_drop_pressure
+                            ? "synthetic-admission-pressure" : "global-gpu-pressure"),
                     lsfg->adaptive_generation_cap,
                     static_cast<double>(lsfg->active_flow_scale),
                     global_pressure_valid ? static_cast<double>(lsfg->pressure.gpu_usage_percent) : -1.0,
-                    output_deficit ? 1 : 0);
+                    output_deficit ? 1 : 0,
+                    presentation_pressure ? 1 : 0,
+                    static_cast<double>(
+                        lsfg->presentation_pressure.generated_delivery_efficiency),
+                    static_cast<double>(
+                        lsfg->presentation_pressure.source_delivery_efficiency),
+                    static_cast<double>(
+                        lsfg->presentation_pressure.confirmation_timeout_rate));
             }
         } else {
             lsfg->density_pressure_seconds = 0.0;
+            const bool confirmation_recovered =
+                !lsfg->presentation_pressure.confirmation_available
+                || (lsfg->presentation_pressure.source_delivery_healthy
+                    && !lsfg->presentation_pressure.pressure_active
+                    && (lsfg->adaptive_generation_cap == 0
+                        || lsfg->presentation_pressure.generated_delivery_efficiency >= 0.70f));
+            const bool output_recovered =
+                lsfg->adaptive_generation_cap == 0
+                    ? true
+                    : (!output_valid || output_satisfied);
             const bool recovery =
                 stats.target_rate > 0.0f && at_minimum && global_pressure_valid
                 && lsfg->pressure.gpu_usage_percent <= 88.0f
-                && (!output_valid || output_satisfied)
+                && output_recovered
+                && confirmation_recovered
                 && !lsfg->synthetic_drop_pressure;
             if (recovery && lsfg->adaptive_generation_cap < VKR_LSFG_MAX_GENERATIONS) {
                 lsfg->density_recovery_seconds += elapsed_seconds;
-                if (lsfg->density_recovery_seconds >= 2.0) {
+                const double recovery_hold =
+                    lsfg->adaptive_generation_cap == 0 ? 3.0 : 2.0;
+                if (lsfg->density_recovery_seconds >= recovery_hold) {
                     ++lsfg->adaptive_generation_cap;
                     lsfg->density_recovery_seconds = 0.0;
                     LSFG_FLOW_LOG(
-                        "event=generation_density_recovery generation_cap=%u active_scale=%.2f",
+                        "event=generation_density_recovery reason=%s "
+                        "generation_cap=%u active_scale=%.2f source_delivery_healthy=%d "
+                        "generated_delivery_efficiency=%.3f gpu_pressure=%.1f",
+                        lsfg->adaptive_generation_cap == 1
+                            ? "source-only-probe" : "confirmed-recovery",
                         lsfg->adaptive_generation_cap,
-                        static_cast<double>(lsfg->active_flow_scale));
+                        static_cast<double>(lsfg->active_flow_scale),
+                        lsfg->presentation_pressure.source_delivery_healthy ? 1 : 0,
+                        static_cast<double>(
+                            lsfg->presentation_pressure.generated_delivery_efficiency),
+                        global_pressure_valid
+                            ? static_cast<double>(lsfg->pressure.gpu_usage_percent) : -1.0);
                 }
             } else {
                 lsfg->density_recovery_seconds = 0.0;
@@ -644,6 +697,7 @@ void vkr_lsfg_reset(VkrLsfg* lsfg) {
     lsfg->generated = false;
     lsfg->plan = {};
     lsfg->synthetic_drop_pressure = false;
+    lsfg->presentation_pressure = {};
     lsfg->density_pressure_seconds = 0.0;
     lsfg->density_recovery_seconds = 0.0;
     lsfg->adaptive_generation_cap = VKR_LSFG_MAX_GENERATIONS;

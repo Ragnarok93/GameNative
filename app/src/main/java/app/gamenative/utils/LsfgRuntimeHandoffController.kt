@@ -96,8 +96,11 @@ class LsfgRuntimeHandoffController(
                 val presentationReady = transition?.let {
                     LsfgVkManager.isBackendTransitionPresentationReady(it)
                 } ?: true
+                // Activation is WSI progress, not the physical-display health
+                // confirmation window. Health may remain lagging while generated
+                // frames are demonstrably flowing.
                 observed = backendMatches && presentationReady && if (active) {
-                    runtimeState.readyForGeneration
+                    runtimeState.nativeActivationReady
                 } else {
                     runtimeState.readyForSourceOnly
                 }

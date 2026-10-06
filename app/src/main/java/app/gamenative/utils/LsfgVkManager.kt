@@ -1653,7 +1653,21 @@ object LsfgVkManager {
         }
 
         val snapshot = currentSnapshot ?: captureNativeRuntimeSnapshot(container, context)
-        applyNativeRuntime(renderer, container, context, snapshot)
+        val transition = activeBackendTransition?.takeIf {
+            it.revision == snapshot.revision &&
+                it.backendGeneration == snapshot.backendGeneration &&
+                it.backend == snapshot.backend
+        }
+        applyNativeRuntime(
+            renderer,
+            container,
+            context,
+            snapshot,
+        ) { result ->
+            transition?.let {
+                recordBackendTransitionRuntimeResult(it, result)
+            }
+        }
     }
 
     @JvmStatic

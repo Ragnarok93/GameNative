@@ -7,14 +7,23 @@ if [[ ! -s "$apk" ]]; then
   exit 1
 fi
 
-entry='lib/arm64-v8a/libvulkan_renderer.so'
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
 
-if ! unzip -p "$apk" "$entry" > "$tmp" || [[ ! -s "$tmp" ]]; then
-  echo "ERROR: APK does not contain $entry: $apk" >&2
-  exit 1
-fi
+extract_required() {
+  local entry="$1"
+  local output="$2"
+  if ! unzip -p "$apk" "$entry" > "$output" || [[ ! -s "$output" ]]; then
+    echo "ERROR: APK does not contain $entry: $apk" >&2
+    exit 1
+  fi
+}
 
-bash tools/verify-native-lsfg-jni.sh "$tmp"
-echo "Verified packaged Native LSFG JNI bridge in $apk"
+renderer="$tmpdir/libvulkan_renderer.so"
+extras="$tmpdir/libextras.so"
+extract_required 'lib/arm64-v8a/libvulkan_renderer.so' "$renderer"
+extract_required 'lib/arm64-v8a/libextras.so' "$extras"
+
+bash tools/verify-native-lsfg-jni.sh "$renderer"
+bash tools/verify-gpuimage-jni.sh "$extras"
+echo "Verified packaged Native LSFG and GPUImage JNI bridges in $apk"

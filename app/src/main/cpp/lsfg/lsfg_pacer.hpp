@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <optional>
 
+#include "adaptive_scheduler.hpp"
+
 namespace lsfg {
 
 constexpr size_t LSFG_MAX_MULTIPLIER = 4;
@@ -47,9 +49,7 @@ struct LsfgPacerStats {
 
 class LsfgPacer {
 public:
-    void SetConfig(const LsfgPacerConfig& config_) {
-        config = config_;
-    }
+    void SetConfig(const LsfgPacerConfig& config_);
 
     [[nodiscard]] const LsfgPacerConfig& Config() const {
         return config;
@@ -88,7 +88,7 @@ private:
     uint32_t loop_samples{};
     uint64_t last_drawn{};
     float last_elapsed{};
-    float output_credit{};
+    AdaptiveFrameScheduler adaptive_scheduler;
     size_t limit{};
 };
 

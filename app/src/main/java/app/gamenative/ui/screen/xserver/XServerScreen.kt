@@ -3413,14 +3413,11 @@ private fun initializeXServerViewRuntime(
         xServerView.setFrameRateLimit(effectiveSourceFpsCap(initialLimit))
         val renderer = xServerView.renderer
         if (!useGLRenderer && renderer is VulkanRenderer) {
-            val pm = container.rendererPresentMode.ifEmpty { "fifo" }
-            val vkMode = when (pm.lowercase(Locale.getDefault())) {
-                "mailbox" -> 1
-                "immediate" -> 0
-                "relaxed" -> 3
-                else -> 2
-            }
-            renderer.setVkPresentMode(vkMode)
+            LsfgVkManager.attachRenderer(
+                renderer = renderer,
+                container = controller.container,
+                context = controller.context,
+            )
         }
         if (renderer is ASurfaceRenderer) {
             renderer.setSfCompatMode(container.sfCompatMode)

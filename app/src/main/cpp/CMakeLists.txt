@@ -68,6 +68,7 @@ add_library(vulkan_renderer SHARED
             lsfg/lsfg_pacer.cpp
             lsfg/vkr_lsfg.cpp
             lsfg-vk-android/src/adaptive_flow_controller.cpp
+            lsfg-vk-android/src/adaptive_scheduler.cpp
             ${CMAKE_CURRENT_BINARY_DIR}/window_vert.h
             ${CMAKE_CURRENT_BINARY_DIR}/window_frag.h)
 

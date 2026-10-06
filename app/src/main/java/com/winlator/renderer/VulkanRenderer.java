@@ -949,7 +949,15 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         android.util.Log.i(
             "LSFG_NATIVE",
             "event=surface_settings_replayed initialized="
-                + frameGenerationSupportedSnapshot);
+                + frameGenerationSupportedSnapshot
+                + " backend=native config_revision=" + pendingFramegenConfigRevision
+                + " multiplier=" + pendingFramegenMultiplier
+                + " target_fps=" + pendingFramegenTargetRate
+                + " flow_mode=" + (pendingFramegenFlowMode == LSFG_FLOW_ADAPTIVE ? "adaptive" : "fixed")
+                + " flow_preset=" + pendingFramegenFlowPreset
+                + " frame_queue_enabled=" + (pendingLsfgFrameQueueEnabled ? 1 : 0)
+                + " frame_queue_target=" + pendingLsfgFrameQueueTarget
+                + " requested_present_mode=" + pendingPresentMode);
     }
 
     public boolean isFrameGenerationSupported() {
@@ -1147,7 +1155,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     + " frame_queue_target=" + pendingLsfgFrameQueueTarget);
             android.util.Log.i(
                 "LSFG_FRAME_QUEUE",
-                "event=policy-ownership owner=shared-host-frame-queue"
+                "event=policy-ownership owner=shared-host-frame-queue backend=native"
+                    + " config_revision=" + pendingFramegenConfigRevision
+                    + " requested_present_mode=" + pendingPresentMode
+                    + " generation_mode=" + (pendingFramegenTargetRate > 0 ? "adaptive" : "fixed")
                     + " enabled=" + (pendingLsfgFrameQueueEnabled ? 1 : 0)
                     + " requested_target=" + pendingLsfgFrameQueueTarget);
             nativeArmFrameGeneration(handle);

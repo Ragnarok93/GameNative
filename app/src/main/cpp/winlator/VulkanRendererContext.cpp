@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <chrono>
 #include <cmath>
+#include <cassert>
 #include <unordered_set>
 #include "../lsfg/lsfg_pacer.hpp"
 #include <time.h>

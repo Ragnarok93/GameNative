@@ -15,6 +15,8 @@ runs:
       run: |
         set -euo pipefail
 
+        python3 tools/host_display_timing_test.py
+
         marker='gamenative-host-display-confirmation-v3-split-present-worker'
         native_root=app/src/main/cpp
         renderer_root="$native_root/vulkan-renderer-build"

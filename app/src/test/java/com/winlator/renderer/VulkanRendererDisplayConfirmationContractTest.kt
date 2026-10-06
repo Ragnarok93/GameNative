@@ -145,6 +145,10 @@ class VulkanRendererDisplayConfirmationContractTest {
 
         assertTrue(header.contains("NativePresentationSchedule"))
         assertTrue(implementation.contains("buildNativePresentationSchedule"))
+        assertTrue(header.contains("SourceProtectedTimeline nativeSourceTimeline_"))
+        assertTrue(implementation.contains("nativeSourceTimeline_.observe"))
+        assertTrue(implementation.contains("nativeSourceTimeline_.syntheticDesiredTimeNs"))
+        assertTrue(implementation.contains("shared_timeline=source-protected"))
         assertTrue(implementation.contains("lsfg::BuildPresentationSlots"))
         assertTrue(implementation.contains("schedule.generatedDesiredNs"))
         assertTrue(implementation.contains("schedule.sourceDesiredNs"))

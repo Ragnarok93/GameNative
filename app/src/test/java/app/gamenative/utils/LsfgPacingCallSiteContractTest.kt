@@ -99,6 +99,7 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(handoff.contains("LsfgVkManager.readRuntimeState(container)"))
         assertTrue(handoff.contains("runtimeState.nativeActivationReady"))
         assertTrue(manager.contains("val nativeActivationReady"))
+        assertTrue(manager.contains("nativeSnapshotContainer"))
         assertTrue(handoff.contains("runtimeState.readyForSourceOnly"))
         assertTrue(handoff.contains("LsfgVkManager.backend(container) == backend"))
         assertTrue(handoff.contains("isBackendTransitionPresentationReady"))

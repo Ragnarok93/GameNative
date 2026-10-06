@@ -1231,14 +1231,16 @@ object LsfgVkManager {
                     return@execute
                 }
 
-                // Native reuses the same GameNative present-mode and Frame Queue
-                // policy as Legacy. Do not force FIFO during Native arming.
-                renderer.setVkPresentMode(
-                    if (snapshot.presentMode == "mailbox") 1 else 2,
-                )
-                // FIFO still makes Smooth fall back through the shared renderer's
-                // existing compatibility path; Native stale-slot admission is an
-                // additional pre-acquire safety guard, not a replacement queue.
+                // Native reuses the shared Vulkan present-mode selection path,
+                // but timed synthetic delivery must prefer Mailbox. Android FIFO
+                // vkQueuePresentKHR can block for multiple refresh periods and a
+                // single serial presenter cannot sustain 2x/3x/4x output then.
+                // nativeSetPresentMode already falls back to FIFO when Mailbox is
+                // unsupported. The stored Legacy preference is left untouched and
+                // is restored by the source-only/Legacy branch.
+                renderer.setVkPresentMode(1)
+                // Native stale-slot admission is an additional pre-acquire safety
+                // guard, not a replacement Frame Queue implementation.
                 renderer.setLsfgFrameQueue(
                     snapshot.frameQueueEnabled,
                     snapshot.frameQueueTarget,

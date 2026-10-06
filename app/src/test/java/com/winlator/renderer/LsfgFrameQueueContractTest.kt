@@ -316,7 +316,9 @@ class LsfgFrameQueueContractTest {
     fun persistentSuboptimalAuditIsDebouncedAndResetPerSwapchainEpoch() {
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(implementation.contains("kPersistentSuboptimalRequeryNs = 1000000000ULL"))
+        assertTrue(implementation.contains("hostSuboptimalLastAuditGeneration_ == hostSwapchainGeneration_"))
+        assertTrue(implementation.contains("hostSuboptimalLastAuditGeneration_ = hostSwapchainGeneration_"))
+        assertTrue(implementation.contains("hostSuboptimalLastAuditGeneration_ = UINT64_MAX"))
         assertTrue(implementation.contains("hostSuboptimalLastRequeryNs_ = 0"))
         assertTrue(implementation.contains("hostSuboptimalConsecutive_ = 0"))
         assertTrue(implementation.contains("hostSuboptimalWindow_.clear()"))

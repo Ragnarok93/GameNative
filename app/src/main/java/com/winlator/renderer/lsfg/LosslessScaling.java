@@ -8,6 +8,8 @@ import com.winlator.container.Container;
 import com.winlator.core.KeyValueSet;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.security.MessageDigest;
 
 public final class LosslessScaling {
     private static final String TAG = "LosslessScaling";
@@ -19,6 +21,11 @@ public final class LosslessScaling {
     private static final String CACHE_FP32 = "lossless_fp32.lsfgcache";
     private static volatile boolean nativeLibraryLoaded;
     private static volatile String nativeLibraryLoadFailure = "none";
+    private static String memoKey;
+    private static String memoCachePath;
+    private static long memoCacheLength;
+    private static long memoCacheModified;
+    private static String memoSourceSha256 = "unknown";
 
     static {
         try {
@@ -55,6 +62,39 @@ public final class LosslessScaling {
 
     private static String sourceIdentity(File source) {
         return source.getName() + ":" + source.length() + ":" + source.lastModified();
+    }
+
+    private static String sha256(File source) {
+        try (FileInputStream input = new FileInputStream(source)) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[64 * 1024];
+            for (int read; (read = input.read(buffer)) >= 0;) {
+                if (read > 0) digest.update(buffer, 0, read);
+            }
+            StringBuilder hex = new StringBuilder(64);
+            for (byte value : digest.digest()) {
+                hex.append(String.format(java.util.Locale.US, "%02x", value & 0xff));
+            }
+            return hex.toString();
+        } catch (Throwable ignored) {
+            return "unavailable";
+        }
+    }
+
+    private static boolean memoMatches(String key, File cache) {
+        return key.equals(memoKey)
+            && cache.getAbsolutePath().equals(memoCachePath)
+            && cache.isFile()
+            && cache.length() == memoCacheLength
+            && cache.lastModified() == memoCacheModified;
+    }
+
+    private static void memoize(String key, File cache, String sourceSha256) {
+        memoKey = key;
+        memoCachePath = cache.getAbsolutePath();
+        memoCacheLength = cache.length();
+        memoCacheModified = cache.lastModified();
+        memoSourceSha256 = sourceSha256;
     }
 
     private static String statusName(int status) {
@@ -97,7 +137,7 @@ public final class LosslessScaling {
      * Resolve the compiled shader cache for {@code dll}, building it when missing or
      * stale. Returns null when no usable cache could be produced.
      */
-    public static File resolveOrBuildCache(Context context, File dll, String driverName) {
+    public static synchronized File resolveOrBuildCache(Context context, File dll, String driverName) {
         final long startedNs = System.nanoTime();
         if (context == null) {
             Log.e(CACHE_TAG, "event=cache_build_failed stage=arguments reason=context-null");
@@ -155,6 +195,22 @@ public final class LosslessScaling {
             return null;
         }
         File cache = new File(store, fp16 ? CACHE_FP16 : CACHE_FP32);
+        final String driverIdentity =
+            driverName == null || driverName.isEmpty() ? "system" : driverName;
+        final String memoIdentity =
+            dll.getAbsolutePath() + "|" + sourceIdentity + "|" + driverIdentity + "|" + fp16;
+        if (memoMatches(memoIdentity, cache)) {
+            Log.i(
+                CACHE_TAG,
+                "event=cache_hit validation=memoized source_hash_sha256=" + memoSourceSha256
+                    + " source_identity=" + sourceIdentity
+                    + " fp16=" + (fp16 ? 1 : 0)
+                    + " driver=" + driverIdentity
+                    + " cache=" + cache.getAbsolutePath()
+            );
+            return cache;
+        }
+        final String sourceSha256 = sha256(dll);
 
         try {
             if (cache.isFile()) {
@@ -178,14 +234,19 @@ public final class LosslessScaling {
                         CACHE_TAG,
                         "event=cache_hit validation=source-hash-match fp16=" + (fp16 ? 1 : 0)
                             + " source_identity=" + sourceIdentity
+                            + " source_hash_sha256=" + sourceSha256
+                            + " driver=" + driverIdentity
                             + " cache=" + cache.getAbsolutePath()
                     );
+                    memoize(memoIdentity, cache, sourceSha256);
                     return cache;
                 }
                 Log.i(
                     CACHE_TAG,
                     "event=cache_stale validation=source-hash-mismatch fp16=" + (fp16 ? 1 : 0)
                         + " source_identity=" + sourceIdentity
+                        + " source_hash_sha256=" + sourceSha256
+                        + " driver=" + driverIdentity
                 );
             } else {
                 Log.i(
@@ -199,6 +260,8 @@ public final class LosslessScaling {
                 CACHE_TAG,
                 "event=cache_build_started fp16=" + (fp16 ? 1 : 0)
                     + " source_identity=" + sourceIdentity
+                    + " source_hash_sha256=" + sourceSha256
+                    + " driver=" + driverIdentity
                     + " cache=" + cache.getAbsolutePath()
             );
             final int status;
@@ -235,8 +298,11 @@ public final class LosslessScaling {
                 "event=cache_build_complete validation=created status=ok fp16=" + (fp16 ? 1 : 0)
                     + " duration_ms=" + String.format(java.util.Locale.US, "%.3f", durationMs)
                     + " source_identity=" + sourceIdentity
+                    + " source_hash_sha256=" + sourceSha256
+                    + " driver=" + driverIdentity
                     + " cache=" + cache.getAbsolutePath()
             );
+            memoize(memoIdentity, cache, sourceSha256);
             return cache;
         } catch (Throwable t) {
             if (cache.isFile()) cache.delete();

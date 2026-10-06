@@ -233,12 +233,29 @@ void VulkanRendererContext::createLsfg() {
         RLOG_E("LSFG shaders unavailable at %s; frame generation stays off", lsfgCachePath.c_str());
         return;
     }
-    framegenSupported = compositeFormatSupported() && nativeSwapchainTransferSupported_;
-    nativeRuntimeSessionId_ = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-    RLOG("Native LSFG capability: supported=%d composite_format=%d swapchain_transfer=%d",
-         framegenSupported ? 1 : 0,
-         compositeFormatSupported() ? 1 : 0,
-         nativeSwapchainTransferSupported_ ? 1 : 0);
+    const bool formatSupported = compositeFormatSupported();
+    framegenSupported = formatSupported && nativeSwapchainTransferSupported_;
+    nativeRuntimeSessionId_ = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    VkPhysicalDeviceProperties nativeProps{};
+    vkd.GetPhysicalDeviceProperties(physicalDevice, &nativeProps);
+    RLOG(
+        "LSFG_NATIVE_CONTEXT: event=capability_probe surface=%d vulkan_device=%d compute=%d "
+        "compute_pipeline=%d composite_format=%d swapchain_transfer=%d sync=binary-semaphore+fence "
+        "vendor_id=0x%04x device_id=0x%04x driver_version=%u api_version=%u "
+        "cache_path_present=%d supported=%d",
+        surface != VK_NULL_HANDLE ? 1 : 0,
+        physicalDevice != VK_NULL_HANDLE && device != VK_NULL_HANDLE ? 1 : 0,
+        nativeComputeSupported_ ? 1 : 0,
+        vkd.CreateComputePipelines ? 1 : 0,
+        formatSupported ? 1 : 0,
+        nativeSwapchainTransferSupported_ ? 1 : 0,
+        nativeProps.vendorID,
+        nativeProps.deviceID,
+        nativeProps.driverVersion,
+        nativeProps.apiVersion,
+        !lsfgCachePath.empty() ? 1 : 0,
+        framegenSupported ? 1 : 0);
     if (!framegenSupported)
         return;
 

@@ -34,6 +34,7 @@ import com.winlator.core.Win32AppWorkarounds
 import com.winlator.inputcontrols.ControlElement
 import com.winlator.inputcontrols.TouchMouse
 import com.winlator.widget.FrameRating
+import com.winlator.widget.TouchpadView
 import com.winlator.widget.XServerRendererView
 import com.winlator.xserver.Keyboard
 import com.winlator.xserver.Property
@@ -301,6 +302,37 @@ internal class XServerScreenController(
         windowModificationListener = null
     }
 
+    fun installTouchpadInteractionCallbacks() {
+        val touchpad = PluviaApp.touchpadView ?: return
+        touchpad.setClickHighlightListener(object : TouchpadView.ClickHighlightListener {
+            override fun onClickAt(screenX: Float, screenY: Float) {
+                touchpad.post {
+                    if (currentGestureConfig.showClickHighlight) {
+                        clickHighlightPoints.add(
+                            app.gamenative.ui.component.HighlightPoint(
+                                screenX,
+                                screenY,
+                                androidx.compose.animation.core.Animatable(0.5f),
+                            ),
+                        )
+                    }
+                }
+            }
+
+            override fun onGestureTriggered(gestureName: String) {
+                touchpad.post {
+                    if (currentGestureConfig.showGestureDebugOverlay) {
+                        debugGestureName = gestureName
+                        debugGestureKey++
+                    }
+                }
+            }
+        })
+    }
+
+    fun removeTouchpadInteractionCallbacks() {
+        PluviaApp.touchpadView?.setClickHighlightListener(null)
+    }
     private fun shouldShowMouseCursor(): Boolean =
         !container.isDisableMouseInput &&
             (!container.isTouchscreenMode || currentGestureConfig.showCursorInTouchscreenMode)
@@ -369,6 +401,7 @@ internal class XServerScreenController(
             xServerView?.getxServer()?.windowManager?.removeOnWindowModificationListener(it)
         }
         windowModificationListener = null
+        removeTouchpadInteractionCallbacks()
         PluviaApp.radialMenuCoordinator?.detach()
         PluviaApp.radialMenuCoordinator = null
         physicalControllerHandler?.cleanup()

@@ -823,6 +823,89 @@ object LsfgVkManager {
         )
     }
 
+    private fun isSnapshotRevisionCurrent(snapshot: NativeRuntimeConfigSnapshot): Boolean =
+        snapshot.revision == nativeConfigRevision.get() &&
+            snapshot.backendGeneration == backendRequestSerial.get()
+
+    /**
+     * Publish only the implicit-layer half of one captured runtime snapshot.
+     * allowGeneration=false is the inter-backend safety barrier: the Legacy
+     * layer remains resident but source-only until the current backend owner
+     * has been safely retired.
+     */
+    private fun publishLegacyRuntimeConfig(
+        container: Container,
+        snapshot: NativeRuntimeConfigSnapshot,
+        allowGeneration: Boolean,
+        reason: String,
+    ): Boolean {
+        if (!isSupported(container)) return false
+        return try {
+            val dllPath = containerDllPath(container)
+            val processExecutable = targetExecutable(container)
+            val frameGenActive =
+                allowGeneration &&
+                    snapshot.backend == BACKEND_LEGACY &&
+                    snapshot.enabled &&
+                    snapshot.multiplier >= 2 &&
+                    dllPath != null &&
+                    processExecutable != null
+            val adaptive = frameGenActive && snapshot.generationMode == MODE_ADAPTIVE
+            val adaptiveFlow = frameGenActive && snapshot.flowMode == FLOW_MODE_ADAPTIVE
+            val runtimeMultiplier =
+                if (adaptive) 4 else snapshot.multiplier.coerceIn(2, 4)
+            val configText = buildConfigToml(
+                dllPath = dllPath,
+                processExecutable = processExecutable,
+                enabled = frameGenActive,
+                multiplier = if (frameGenActive) runtimeMultiplier else 1,
+                flowScale = snapshot.requestedFlowScale,
+                adaptiveFlowScale = adaptiveFlow,
+                adaptiveFlowPreset = snapshot.flowPreset,
+                performanceMode = snapshot.performanceMode,
+                adaptiveFramegen = adaptive,
+                fpsLimit = if (adaptive) snapshot.targetFps else 0,
+                presentMode = snapshot.presentMode,
+                frameQueueEnabled = frameGenActive && snapshot.frameQueueEnabled,
+                frameQueueTarget = snapshot.frameQueueTarget,
+            )
+            val ok = writeConfigAtomic(configFile(container), configText)
+            Timber.i(
+                "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=%s reason=%s " +
+                    "requested_revision=%d backend_generation=%d write_ok=%d enabled=%d " +
+                    "multiplier=%d adaptive_framegen=%d target_fps=%d adaptive_flow=%d " +
+                    "flow_preset=%s requested_scale=%.2f present_mode=%s frame_queue=%d " +
+                    "frame_queue_target=%d",
+                if (frameGenActive) "generating" else "source-only",
+                reason,
+                snapshot.revision,
+                snapshot.backendGeneration,
+                if (ok) 1 else 0,
+                if (frameGenActive) 1 else 0,
+                if (frameGenActive) runtimeMultiplier else 1,
+                if (adaptive) 1 else 0,
+                if (adaptive) snapshot.targetFps else 0,
+                if (adaptiveFlow) 1 else 0,
+                snapshot.flowPreset,
+                snapshot.requestedFlowScale,
+                snapshot.presentMode,
+                if (frameGenActive && snapshot.frameQueueEnabled) 1 else 0,
+                snapshot.frameQueueTarget,
+            )
+            ok
+        } catch (error: Throwable) {
+            Timber.e(
+                error,
+                "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=unknown reason=%s " +
+                    "requested_revision=%d backend_generation=%d",
+                reason,
+                snapshot.revision,
+                snapshot.backendGeneration,
+            )
+            false
+        }
+    }
+
     /**
      * Publish the implicit layer's half of a Native handoff. This operation is
      * deliberately separate from Native renderer configuration: it can only
@@ -831,44 +914,12 @@ object LsfgVkManager {
     private fun publishLegacySourceOnlyForNative(
         container: Container,
         snapshot: NativeRuntimeConfigSnapshot,
-    ): Boolean {
-        if (!isSupported(container)) return false
-        return try {
-            val configText = buildConfigToml(
-                dllPath = containerDllPath(container),
-                processExecutable = targetExecutable(container),
-                enabled = false,
-                multiplier = 1,
-                flowScale = snapshot.requestedFlowScale,
-                adaptiveFlowScale = false,
-                adaptiveFlowPreset = snapshot.flowPreset,
-                performanceMode = snapshot.performanceMode,
-                adaptiveFramegen = false,
-                fpsLimit = 0,
-                presentMode = snapshot.presentMode,
-                frameQueueEnabled = false,
-                frameQueueTarget = snapshot.frameQueueTarget,
-            )
-            val ok = writeConfigAtomic(configFile(container), configText)
-            Timber.i(
-                "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=source-only reason=native-backend " +
-                    "requested_revision=%d backend_generation=%d write_ok=%d",
-                snapshot.revision,
-                snapshot.backendGeneration,
-                if (ok) 1 else 0,
-            )
-            ok
-        } catch (error: Throwable) {
-            Timber.e(
-                error,
-                "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=unknown reason=native-backend-write-failed " +
-                    "requested_revision=%d backend_generation=%d",
-                snapshot.revision,
-                snapshot.backendGeneration,
-            )
-            false
-        }
-    }
+    ): Boolean = publishLegacyRuntimeConfig(
+        container = container,
+        snapshot = snapshot,
+        allowGeneration = false,
+        reason = "native-backend",
+    )
 
     /**
      * Push one immutable Native-LSFG settings snapshot into the host compositor.
@@ -1089,11 +1140,21 @@ object LsfgVkManager {
     private fun refreshNativeRuntime(
         container: Container,
         snapshot: NativeRuntimeConfigSnapshot,
+        onApplied: ((String) -> Unit)? = null,
     ) {
-        val renderer = nativeRendererRef?.get() ?: return
-        val context = nativeRendererContext ?: return
-        if (nativeRendererContainer !== container) return
-        applyNativeRuntime(renderer, container, context, snapshot)
+        val renderer = nativeRendererRef?.get() ?: run {
+            onApplied?.invoke("native-renderer-absent")
+            return
+        }
+        val context = nativeRendererContext ?: run {
+            onApplied?.invoke("native-context-absent")
+            return
+        }
+        if (nativeRendererContainer !== container) {
+            onApplied?.invoke("native-container-mismatch")
+            return
+        }
+        applyNativeRuntime(renderer, container, context, snapshot, onApplied)
     }
 
     /**
@@ -1833,75 +1894,81 @@ object LsfgVkManager {
             frameQueueEnabled = frameQueueEnabled,
             frameQueueTarget = frameQueueTarget,
         )
-        val dllPath = containerDllPath(container)
-        val configFile = configFile(container)
-        if (!configFile.exists()) {
+        if (!configFile(container).exists()) {
             Timber.tag(TAG).w("conf.toml not found, cannot hot-reload")
             return false
         }
 
-        return try {
-            val processExecutable = targetExecutable(container)
-            val frameGenActive = snapshot.backend != BACKEND_NATIVE &&
-                snapshot.enabled && snapshot.multiplier >= 2 &&
-                dllPath != null && processExecutable != null
-            val effectiveAdaptiveFramegen =
-                frameGenActive && snapshot.generationMode == MODE_ADAPTIVE
-            val effectiveAdaptiveFlowScale =
-                frameGenActive && snapshot.flowMode == FLOW_MODE_ADAPTIVE
-            val effectiveMultiplier =
-                if (effectiveAdaptiveFramegen) 4 else snapshot.multiplier.coerceIn(2, 4)
-            val effectiveFpsLimit =
-                if (effectiveAdaptiveFramegen) snapshot.targetFps else 0
-            val effectiveFrameQueueEnabled = frameGenActive && snapshot.frameQueueEnabled
-            val configText = buildConfigToml(
-                dllPath = dllPath,
-                processExecutable = processExecutable,
-                enabled = frameGenActive,
-                multiplier = if (frameGenActive) effectiveMultiplier else 1,
-                flowScale = snapshot.requestedFlowScale,
-                adaptiveFlowScale = effectiveAdaptiveFlowScale,
-                adaptiveFlowPreset = snapshot.flowPreset,
-                performanceMode = snapshot.performanceMode,
-                adaptiveFramegen = effectiveAdaptiveFramegen,
-                fpsLimit = effectiveFpsLimit,
-                presentMode = snapshot.presentMode,
-                frameQueueEnabled = effectiveFrameQueueEnabled,
-                frameQueueTarget = snapshot.frameQueueTarget,
-            )
+        val rendererAttached =
+            nativeRendererRef?.get() != null && nativeRendererContainer === container
+        val nativeOwnerMayBeLive =
+            snapshot.backend == BACKEND_LEGACY &&
+                rendererAttached &&
+                latestNativeSnapshot?.backend == BACKEND_NATIVE
 
-            val ok = writeConfigAtomic(configFile, configText)
-            if (ok) {
-                val legacyState = if (frameGenActive) "generating" else "source-only"
-                val reason = if (snapshot.backend == BACKEND_NATIVE) "native-backend" else "runtime-config"
-                Timber.tag(TAG).i(
-                    "LSFG_LEGACY_CONFIG: event=legacy_layer_state state=%s reason=%s " +
-                        "requested_revision=%d backend_generation=%d enabled=%d multiplier=%d " +
-                        "adaptive_framegen=%d target_fps=%d adaptive_flow=%d flow_preset=%s " +
-                        "requested_scale=%.2f present_mode=%s frame_queue=%d frame_queue_target=%d",
-                    legacyState,
-                    reason,
-                    snapshot.revision,
-                    snapshot.backendGeneration,
-                    if (frameGenActive) 1 else 0,
-                    if (frameGenActive) effectiveMultiplier else 1,
-                    if (effectiveAdaptiveFramegen) 1 else 0,
-                    effectiveFpsLimit,
-                    if (effectiveAdaptiveFlowScale) 1 else 0,
-                    snapshot.flowPreset,
-                    snapshot.requestedFlowScale,
-                    snapshot.presentMode,
-                    if (effectiveFrameQueueEnabled) 1 else 0,
-                    snapshot.frameQueueTarget,
+        if (nativeOwnerMayBeLive) {
+            // Transactional Native -> Legacy handoff:
+            // keep Legacy source-only until Native stops admission, drains its
+            // owned GPU work and disables generation.
+            if (!publishLegacyRuntimeConfig(
+                    container,
+                    snapshot,
+                    allowGeneration = false,
+                    reason = "native-to-legacy-handoff",
                 )
-                // The Native renderer receives the exact same immutable values
-                // that produced the Legacy source-only/generating config above.
-                refreshNativeRuntime(container, snapshot)
+            ) {
+                return false
             }
-            ok
-        } catch (t: Throwable) {
-            Timber.tag(TAG).e(t, "Failed to hot-reload conf.toml")
-            false
+            Timber.i(
+                "LSFG_BACKEND: event=handoff_start direction=native-to-legacy " +
+                    "requested_revision=%d backend_generation=%d",
+                snapshot.revision,
+                snapshot.backendGeneration,
+            )
+            refreshNativeRuntime(container, snapshot) { result ->
+                if (result == "source-only-applied" && isSnapshotRevisionCurrent(snapshot)) {
+                    val restored = publishLegacyRuntimeConfig(
+                        container,
+                        snapshot,
+                        allowGeneration = true,
+                        reason = "native-retired",
+                    )
+                    Timber.i(
+                        "LSFG_BACKEND: event=handoff_complete direction=native-to-legacy " +
+                            "requested_revision=%d backend_generation=%d legacy_restored=%d",
+                        snapshot.revision,
+                        snapshot.backendGeneration,
+                        if (restored) 1 else 0,
+                    )
+                } else {
+                    Timber.w(
+                        "LSFG_BACKEND: event=handoff_abort direction=native-to-legacy " +
+                            "requested_revision=%d backend_generation=%d result=%s current=%d",
+                        snapshot.revision,
+                        snapshot.backendGeneration,
+                        result,
+                        if (isSnapshotRevisionCurrent(snapshot)) 1 else 0,
+                    )
+                }
+            }
+            return true
         }
-    }
-}
+
+        val allowLegacyGeneration = snapshot.backend == BACKEND_LEGACY
+        val published = publishLegacyRuntimeConfig(
+            container,
+            snapshot,
+            allowGeneration = allowLegacyGeneration,
+            reason = if (snapshot.backend == BACKEND_NATIVE) {
+                "native-backend"
+            } else {
+                "runtime-config"
+            },
+        )
+        if (published) {
+            // Native sees the identical immutable snapshot. For Native
+            // activation this occurs only after Legacy has been made source-only.
+            refreshNativeRuntime(container, snapshot)
+        }
+        return published
+    }}

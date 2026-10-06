@@ -1734,6 +1734,7 @@ bool VulkanRendererContext::selectQueuedLsfgHostDelivery(
     if (qit == pendingLsfgHostDeliveries_.end())
         return false;
     auto& queue = qit->second;
+    bool droppedStaleDelivery = false;
     while (!queue.empty()) {
         const QueuedLsfgHostDelivery queued = queue.front();
         const bool wrongEpoch =
@@ -1742,12 +1743,19 @@ bool VulkanRendererContext::selectQueuedLsfgHostDelivery(
             && queued.provenance.contextEpoch != hostDeliveryQueueContextEpoch_;
         if (wrongEpoch || isLsfgHostDeliveryStale(queued.provenance)) {
             queue.pop_front();
+            droppedStaleDelivery = true;
             if (queued.provenance.kind == 1)
                 generatedStaleDrop_.fetch_add(1, std::memory_order_relaxed);
             else
                 sourceStaleDrop_.fetch_add(1, std::memory_order_relaxed);
             pendingLsfgHostDeliveryCount_.fetch_sub(1, std::memory_order_relaxed);
             releaseWindowAhbReference(queued.ahb);
+            const auto texture = texMap.find(renderEntry.id);
+            if (texture != texMap.end()
+                    && texture->second.frameProvenance.deliveryId
+                        == queued.provenance.deliveryId) {
+                texture->second.frameProvenance = {};
+            }
             emitHostDeliveryAccounting(
                 wrongEpoch ? "provenance-epoch-reset" : "queued-delivery-stale",
                 &queued.provenance);
@@ -1785,6 +1793,13 @@ bool VulkanRendererContext::selectQueuedLsfgHostDelivery(
         return true;
     }
     pendingLsfgHostDeliveries_.erase(qit);
+    // The queue entry is the only eligible snapshot for this delivery. Do not
+    // fall back to the same AHB through texMap after dropping its stale slot.
+    // A subsequent fresh delivery will request another render explicitly.
+    if (droppedStaleDelivery) {
+        draw = {};
+        return true;
+    }
     return false;
 }
 

@@ -54,7 +54,11 @@ object LsfgQuickMenuHelper {
     }
 
     fun readSettings(container: Container): Settings = Settings(
-        multiplier = LsfgVkManager.multiplier(container),
+        multiplier = if (generationMode(container) == FrameGenerationMode.FIXED) {
+            LsfgVkManager.fixedMultiplier(container)
+        } else {
+            LsfgVkManager.multiplier(container)
+        },
         flowScale = LsfgVkManager.flowScale(container),
         performanceMode = LsfgVkManager.performanceMode(container),
     )
@@ -180,7 +184,19 @@ object LsfgQuickMenuHelper {
 
     fun applyFrameQueueToRenderer(container: Container, renderer: VulkanRenderer?) {
         renderer ?: return
-        renderer.setVkPresentMode(if (LsfgVkManager.isNativeBackend(container) && LsfgVkManager.multiplier(container) >= 2) 2 else if (presentMode(container) == "mailbox") 1 else 2)
+        renderer.setVkPresentMode(
+            if (LsfgVkManager.isNativeBackend(container) &&
+                LsfgVkManager.isArmed(container)
+            ) {
+                // Native timed presentation prefers Mailbox; native Vulkan
+                // capability selection falls back to FIFO if unsupported.
+                1
+            } else if (presentMode(container) == "mailbox") {
+                1
+            } else {
+                2
+            },
+        )
         renderer.setLsfgFrameQueue(
             !LsfgVkManager.isNativeBackend(container) && frameQueueEnabled(container) && sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2,
             frameQueueTarget(container).depth,

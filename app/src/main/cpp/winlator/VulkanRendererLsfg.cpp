@@ -193,6 +193,8 @@ void VulkanRendererContext::destroyLsfg() {
     nativeGeneratedWsiSubmitted_.store(0);
     nativeGeneratedWsiAccepted_.store(0);
     nativeGeneratedDisplayConfirmed_.store(0);
+    nativeGeneratedDisplayConfirmedEpoch_.store(0);
+    nativeSourceDisplayConfirmedEpoch_.store(0);
     nativeGeneratedDroppedBefore_.store(0);
     nativeGeneratedDroppedAfter_.store(0);
     nativeGeneratedSuperseded_.store(0);
@@ -217,6 +219,7 @@ void VulkanRendererContext::destroyLsfg() {
     nativeSubmissionStartedNs_.fill(0);
     nativeLastContextReuseRevision_ = UINT64_MAX;
     framegenSupported = false;
+    nativeLsfgReady_.store(false, std::memory_order_release);
 }
 
 void VulkanRendererContext::createLsfg() {
@@ -266,8 +269,11 @@ void VulkanRendererContext::createLsfg() {
         nativeProps.apiVersion,
         !lsfgCachePath.empty() ? 1 : 0,
         framegenSupported ? 1 : 0);
-    if (!framegenSupported)
+    if (!framegenSupported) {
+        nativeLsfgReady_.store(false, std::memory_order_release);
         return;
+    }
+    nativeLsfgReady_.store(true, std::memory_order_release);
 
     vkr_lsfg_configure(lsfg, framegenMultiplier ? framegenMultiplier : 2u,
                        framegenTargetRate,
@@ -408,10 +414,12 @@ void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
 }
 
 bool VulkanRendererContext::isFrameGenerationSupported() const {
-    std::shared_lock<std::shared_mutex> fl(frameMutex);
-    return framegenRequested && framegenArmed && framegenSupported && lsfg != nullptr
-        && !surfaceDetached.load(std::memory_order_acquire)
-        && surface != VK_NULL_HANDLE && swapchain != VK_NULL_HANDLE;
+    return framegenRequested.load(std::memory_order_acquire)
+        && framegenArmed.load(std::memory_order_acquire)
+        && framegenSupported.load(std::memory_order_acquire)
+        && nativeLsfgReady_.load(std::memory_order_acquire)
+        && nativePresentationSurfaceReady_.load(std::memory_order_acquire)
+        && !surfaceDetached.load(std::memory_order_acquire);
 }
 
 void VulkanRendererContext::setFrameGenerationShaders(const std::string& cachePath) {
@@ -539,23 +547,19 @@ void VulkanRendererContext::setFrameGenerationMode(
 void VulkanRendererContext::setFrameGenerationPressure(
         float gpuUsagePercent, int thermalStatus, float sourceFps, float outputFps,
         float frameTimeP95Ms, float slowFrameRatio) {
-    std::unique_lock<std::shared_mutex> fl(frameMutex);
-    framegenGpuUsagePercent_ = gpuUsagePercent;
-    framegenThermalStatus_ = thermalStatus;
-    framegenSourceFps_ = sourceFps;
-    framegenOutputFps_ = outputFps;
-    framegenFrameTimeP95Ms_ = frameTimeP95Ms;
-    framegenSlowFrameRatio_ = slowFrameRatio;
-    if (lsfg) {
-        vkr_lsfg_set_pressure(
-            lsfg, gpuUsagePercent, thermalStatus, sourceFps, outputFps,
-            frameTimeP95Ms, slowFrameRatio);
-    }
+    // High-frequency control-plane telemetry is intentionally lock-free.
+    // renderFrame snapshots these atomics immediately before vkr_lsfg_plan(),
+    // so JNI never waits for the frame-wide shared frameMutex.
+    framegenGpuUsagePercent_.store(gpuUsagePercent, std::memory_order_relaxed);
+    framegenThermalStatus_.store(thermalStatus, std::memory_order_relaxed);
+    framegenSourceFps_.store(sourceFps, std::memory_order_relaxed);
+    framegenOutputFps_.store(outputFps, std::memory_order_relaxed);
+    framegenFrameTimeP95Ms_.store(frameTimeP95Ms, std::memory_order_relaxed);
+    framegenSlowFrameRatio_.store(slowFrameRatio, std::memory_order_relaxed);
 }
 
 uint64_t VulkanRendererContext::getGeneratedFrameCount() const {
-    std::shared_lock<std::shared_mutex> fl(frameMutex);
-    return framegenMadeFrames;
+    return framegenMadeFrames.load(std::memory_order_relaxed);
 }
 
 uint64_t VulkanRendererContext::getGeneratedPresentedFrameCount() const {
@@ -566,9 +570,25 @@ uint64_t VulkanRendererContext::getPresentedFrameCount() const {
     return presentedFrames.load(std::memory_order_relaxed);
 }
 
+uint64_t VulkanRendererContext::getDisplayConfirmedFrameCount() const {
+    return nativeSourceDisplayConfirmedEpoch_.load(std::memory_order_relaxed)
+        + nativeGeneratedDisplayConfirmedEpoch_.load(std::memory_order_relaxed);
+}
+
+uint64_t VulkanRendererContext::getGeneratedDisplayConfirmedFrameCount() const {
+    return nativeGeneratedDisplayConfirmedEpoch_.load(std::memory_order_relaxed);
+}
+
+uint64_t VulkanRendererContext::getSourceDisplayConfirmedFrameCount() const {
+    return nativeSourceDisplayConfirmedEpoch_.load(std::memory_order_relaxed);
+}
+
+bool VulkanRendererContext::isDisplayConfirmationAvailable() const {
+    return hostGoogleDisplayTimingEnabled || hostPresentWaitEnabled;
+}
+
 uint64_t VulkanRendererContext::getRealFrameCount() const {
-    std::shared_lock<std::shared_mutex> fl(frameMutex);
-    return framegenRealFrames;
+    return framegenRealFrames.load(std::memory_order_relaxed);
 }
 
 uint64_t VulkanRendererContext::getSourceFrameCount() const {

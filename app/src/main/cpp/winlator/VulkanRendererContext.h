@@ -128,7 +128,7 @@ static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
 static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
 static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
 static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
-static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = 4;
+static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = 6;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
 // renderer's descriptor budget indefinitely.
@@ -188,6 +188,7 @@ enum class HostDisplayConfirmationBackend : uint8_t {
 
 struct LsfgFrameProvenance {
     bool valid = false;
+    bool nativeImplementation = false;
     uint64_t runtimeSessionId = 0;
     uint64_t contextEpoch = 0;
     uint64_t deliveryId = 0;
@@ -352,6 +353,7 @@ public:
     void setFrameGenerationRefreshRate(float hz);
     void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct);
     uint64_t getGeneratedFrameCount() const;
+    uint64_t getGeneratedPresentedFrameCount() const;
     uint64_t getPresentedFrameCount() const;
     uint64_t getRealFrameCount() const;
     uint64_t getSourceFrameCount() const;
@@ -686,7 +688,7 @@ private:
     VkrLsfg* lsfg = nullptr;
     std::string lsfgCachePath;
     bool framegenArmed = false;
-    bool framegenSupported = false;
+    std::atomic<bool> framegenSupported{false};
     bool nativeVulkanDispatchLoaded_ = false;
     bool framegenRequested = false;
     bool framegenArmWarned = false;
@@ -695,11 +697,19 @@ private:
     float framegenFlowScale = 0.7f;
     float framegenRefreshRate = 60.0f;
     std::atomic<uint64_t> framegenSourceFrames{0};
-    uint64_t framegenRealFrames = 0;
-    uint64_t framegenMadeFrames = 0;
+    std::atomic<uint64_t> framegenRealFrames{0};
+    std::atomic<uint64_t> framegenMadeFrames{0};
+    std::atomic<uint64_t> nativeGeneratedPresentedFrames_{0};
     std::atomic<uint64_t> presentedFrames{0};
     bool nativeSwapchainTransferSupported_ = false;
-    std::array<std::array<VkSemaphore, VK_MAX_COMPOSITE_TARGETS - 1>, MAX_FRAMES_IN_FLIGHT>
+    bool nativeComputeSupported_ = false;
+    uint32_t nativeMinImageCount_ = 0;
+    uint64_t nativeLastSourceFrame_ = 0;
+    uint64_t nativeDeliveryId_ = 0;
+    uint64_t nativeRuntimeSessionId_ = 0;
+    void waitNativeResources();
+    void recoverNativeAcquiredFrame();
+    std::array<std::array<VkSemaphore, 3>, MAX_FRAMES_IN_FLIGHT>
         nativeExtraAcquireSems_{};
 
     VkSampler        sampler    = VK_NULL_HANDLE;
@@ -825,7 +835,8 @@ private:
         VkBuffer cursorUpload, bool hasCursorUpload,
         float ox, float oy, float sx, float sy, float cw, float ch,
         short ptrX, short ptrY, short curHotX, short curHotY,
-        short curW, short curH, bool curVis, bool keepOpen = false);
+        short curW, short curH, bool curVis, bool keepOpen = false,
+        const VkCompositeTarget* target = nullptr);
     void renderLoop();
     void renderFrame();
 

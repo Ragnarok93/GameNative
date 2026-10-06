@@ -47,6 +47,11 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     public final XServerView xServerView;
     private final XServer xServer;
     private long nativeHandle = 0;
+    private boolean pendingFramegenArmed = false;
+    private volatile boolean pendingFramegenEnabled = false;
+    private String pendingFramegenShaders = "";
+    private int pendingFramegenMultiplier = 2, pendingFramegenTargetRate = 0, pendingFramegenFlowScale = 70;
+    private float pendingFramegenRefreshRate = 60.0f;
     private final Object lock = new Object();
 
     public final ViewTransformation viewTransformation = new ViewTransformation();
@@ -178,6 +183,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetPresentMode(long handle, int mode);
     private native void nativeSetLsfgFrameQueue(long handle, boolean enabled, int target);
     private native void nativeArmFrameGeneration(long handle);
+    private native boolean nativeIsFrameGenerationSupported(long handle);
+    private native long nativeGetGeneratedPresentedFrameCount(long handle);
     private native void nativeSetFrameGenerationEnabled(long handle, boolean enabled);
     private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
     private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
@@ -239,6 +246,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     nativeLibDir,
                     "");
                 if (nativeHandle != 0) {
+                    replayFrameGenerationLocked();
                     nativeSetPresentMode(nativeHandle, pendingPresentMode);
                     nativeSetLsfgFrameQueue(
                         nativeHandle,
@@ -835,7 +843,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     // compositor (window.frag). Scanout bypasses the shader, so these can only
     // take visible effect when content is routed through the textured-quad path.
     private boolean computeEffectsRequireCompositor() {
-        return pendingEffectId != EFFECT_NONE
+        return pendingFramegenEnabled || pendingEffectId != EFFECT_NONE
             || pendingEffectMask != 0
             || pendingBrightness != 0.0f
             || pendingContrast != 0.0f
@@ -863,39 +871,77 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         synchronized (lock) { if (nativeHandle != 0) nativeSetPresentMode(nativeHandle, mode); }
     }
 
+    private void replayFrameGenerationLocked() {
+        if (!pendingFramegenArmed || nativeHandle == 0) return;
+        nativeArmFrameGeneration(nativeHandle);
+        nativeSetFrameGenerationMode(nativeHandle, pendingFramegenMultiplier, pendingFramegenTargetRate, pendingFramegenFlowScale);
+        nativeSetFrameGenerationRefreshRate(nativeHandle, pendingFramegenRefreshRate);
+        if (!pendingFramegenShaders.isEmpty()) nativeSetFrameGenerationShaders(nativeHandle, pendingFramegenShaders);
+        nativeSetFrameGenerationEnabled(nativeHandle, pendingFramegenEnabled);
+        android.util.Log.i("LSFG_NATIVE", "event=surface_settings_replayed initialized=" + nativeIsFrameGenerationSupported(nativeHandle));
+    }
+
+    public boolean isFrameGenerationSupported() {
+        synchronized (lock) {
+            return nativeHandle != 0 && nativeIsFrameGenerationSupported(nativeHandle);
+        }
+    }
+
+    public boolean hasNativeSurface() {
+        synchronized (lock) { return nativeHandle != 0; }
+    }
+
+    public long getGeneratedPresentedFrameCount() {
+        synchronized (lock) {
+            return nativeHandle != 0 ? nativeGetGeneratedPresentedFrameCount(nativeHandle) : 0L;
+        }
+    }
+
     public void armFrameGeneration() {
         synchronized (lock) {
+            pendingFramegenArmed = true;
             if (nativeHandle != 0) nativeArmFrameGeneration(nativeHandle);
         }
     }
 
     public void setFrameGenerationEnabled(boolean enabled) {
         synchronized (lock) {
+            pendingFramegenEnabled = enabled;
             if (nativeHandle != 0) nativeSetFrameGenerationEnabled(nativeHandle, enabled);
         }
+        // Native Rendering+ scanout bypasses compute entirely. Keep the
+        // compositor active for LSFG, and restore scanout on disable.
+        xServerView.post(() -> {
+            setEffect(pendingEffectId, pendingSharpness, outputScalingMode,
+                pendingEffectMask, pendingBrightness, pendingContrast, pendingGamma);
+            queueSceneUpdate();
+            xServerView.requestRender();
+        });
     }
 
     public void setFrameGenerationShaders(String cachePath) {
         if (cachePath == null || cachePath.isEmpty()) return;
         synchronized (lock) {
+            pendingFramegenShaders = cachePath;
             if (nativeHandle != 0) nativeSetFrameGenerationShaders(nativeHandle, cachePath);
         }
     }
 
     public void setFrameGenerationRefreshRate(float hz) {
         synchronized (lock) {
+            pendingFramegenRefreshRate = hz;
             if (nativeHandle != 0) nativeSetFrameGenerationRefreshRate(nativeHandle, hz);
         }
     }
 
     public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {
         synchronized (lock) {
+            pendingFramegenMultiplier = Math.max(2, Math.min(4, multiplier));
+            pendingFramegenTargetRate = Math.max(0, targetRate);
+            pendingFramegenFlowScale = Math.max(25, Math.min(100, flowScalePct));
             if (nativeHandle != 0) {
-                nativeSetFrameGenerationMode(
-                    nativeHandle,
-                    Math.max(2, Math.min(4, multiplier)),
-                    Math.max(0, targetRate),
-                    Math.max(25, Math.min(100, flowScalePct)));
+                nativeSetFrameGenerationMode(nativeHandle, pendingFramegenMultiplier,
+                    pendingFramegenTargetRate, pendingFramegenFlowScale);
             }
         }
     }

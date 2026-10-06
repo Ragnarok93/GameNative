@@ -240,7 +240,7 @@ object LsfgVkManager {
         parseBool(container.getExtra(EXTRA_ARMED, "false"))
 
     private fun frameGenerationActive(container: Container): Boolean =
-        isArmed(container) && multiplier(container) >= 2
+        !isNativeBackend(container) && isArmed(container) && multiplier(container) >= 2
 
     /** Get the persisted Fixed Flow Scale (0.25-1.0, default 0.80). */
     fun flowScale(container: Container): Float =
@@ -396,6 +396,7 @@ object LsfgVkManager {
 
     /** Served from a cache refreshed off the main thread; callers poll ~1/s. */
     fun readMeasuredFps(container: Container): Float? = synchronized(measuredFpsCacheLock) {
+        if (isNativeBackend(container)) return@synchronized readNativeOutputFps(container)
         val now = System.currentTimeMillis()
         val rootKey = runCatching { container.rootDir.canonicalPath }
             .getOrElse { container.rootDir.absolutePath }
@@ -441,6 +442,12 @@ object LsfgVkManager {
      * active frame-generation session must never fall back to the lower source cadence.
      */
     fun readFreshOutputFps(rootDir: File?, nowMs: Long = System.currentTimeMillis()): Float? {
+        val nativeContainer = nativeRendererContainer
+        if (nativeContainer != null && isNativeBackend(nativeContainer) && rootDir == nativeContainer.rootDir) {
+            return synchronized(measuredFpsCacheLock) {
+                readNativeOutputFps(nativeContainer)?.takeIf { it > 0f }
+            }
+        }
         val statsFile = rootDir?.let { File(it, STATS_RELATIVE_PATH) } ?: return null
         if (!statsFile.isFile || nowMs - statsFile.lastModified() !in 0L..STATS_FRESHNESS_MS) {
             return null
@@ -466,6 +473,35 @@ object LsfgVkManager {
     }
 
     fun readRuntimeState(container: Container): RuntimeState {
+        if (!isNativeBackend(container)) return readLegacyRuntimeState(container);
+        val renderer = nativeRendererRef?.get() ?: return unknownRuntimeState(false);
+        if (nativeRendererContainer !== container) return unknownRuntimeState(false);
+        val initialized = renderer.isFrameGenerationSupported()
+        val presented = renderer.getGeneratedPresentedFrameCount() > 0
+        val enabled = isArmed(container) && multiplier(container) >= 2
+        return RuntimeState(
+            status = when {
+                !enabled -> RuntimeStatus.SOURCE_ONLY
+                initialized && presented -> RuntimeStatus.GENERATING
+                nativeApplyFailed -> RuntimeStatus.DEGRADED
+                else -> RuntimeStatus.UNKNOWN
+            },
+            resident = initialized || !enabled,
+            sourceOnly = !enabled,
+            generationReady = initialized && presented,
+            generationInitialized = initialized,
+            generatedPresented = presented,
+            degraded = enabled && nativeApplyFailed,
+            multiplier = if (enabled) multiplier(container) else 1,
+            fresh = true,
+            framegenSupportKnown = initialized || nativeApplyFailed,
+            framegenSupported = initialized,
+            vulkanPath = "native-host-compositor",
+            rejectionReason = if (nativeApplyFailed) "native-initialization-failed" else null,
+        )
+    }
+
+    private fun readLegacyRuntimeState(container: Container): RuntimeState {
         val statsFile = File(container.rootDir, STATS_RELATIVE_PATH)
         if (!statsFile.isFile) return unknownRuntimeState(fresh = false)
         val fresh = System.currentTimeMillis() - statsFile.lastModified() in 0L..STATS_FRESHNESS_MS
@@ -556,6 +592,41 @@ object LsfgVkManager {
     // actual Vulkan context; runtime refreshes are best-effort.
     @Volatile private var nativeRendererRef: WeakReference<VulkanRenderer>? = null
     @Volatile private var nativeRendererContext: Context? = null
+    @Volatile private var nativeRendererContainer: Container? = null
+    private var nativeFpsSampleNs = 0L
+    private var nativeFpsSampleCount = 0L
+    private var nativeFpsRenderer: WeakReference<VulkanRenderer>? = null
+    private var nativeFpsValue: Float? = null
+
+    // Count only unique outputs accepted by host WSI, never a multiplier times
+    // source FPS. Physical confirmation remains separately observable in logs.
+    private fun readNativeOutputFps(container: Container): Float? {
+        val renderer = nativeRendererRef?.get() ?: return null
+        if (nativeRendererContainer !== container || !renderer.isFrameGenerationSupported()) return null
+        val count = renderer.getPresentedFrameCount()
+        val now = System.nanoTime()
+        if (nativeFpsRenderer?.get() !== renderer || count < nativeFpsSampleCount || nativeFpsSampleNs == 0L) {
+            nativeFpsRenderer = WeakReference(renderer)
+            nativeFpsSampleCount = count
+            nativeFpsSampleNs = now
+            nativeFpsValue = null
+            return null
+        }
+        val elapsed = now - nativeFpsSampleNs
+        if (elapsed >= 500_000_000L) {
+            nativeFpsValue = ((count - nativeFpsSampleCount) * 1_000_000_000.0 / elapsed).toFloat()
+            nativeFpsSampleCount = count
+            nativeFpsSampleNs = now
+            Timber.d("LSFG_NATIVE: event=output_rate fps=%.2f measurement=wsi-accepted", nativeFpsValue)
+        }
+        return nativeFpsValue
+    }
+
+    @Volatile private var nativeApplyFailed = false
+    private val nativeApplyGeneration = java.util.concurrent.atomic.AtomicLong()
+    private val nativeApplyExecutor by lazy {
+        Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-native-apply").apply { isDaemon = true } }
+    }
 
     private fun displayRefreshRate(context: Context): Float =
         runCatching {
@@ -573,35 +644,99 @@ object LsfgVkManager {
         renderer: VulkanRenderer,
         container: Container,
         context: Context,
+        onApplied: ((String) -> Unit)? = null,
     ) {
         nativeRendererRef = WeakReference(renderer)
         nativeRendererContext = context.applicationContext
-
-        val requested = isNativeBackend(container)
-        val enabled = requested && isArmed(container) && multiplier(container) >= 2
-
-        // Arm the native control seam without tearing down an already-running
-        // native context on every Quick Menu setting update.
-        renderer.armFrameGeneration()
-        renderer.setFrameGenerationMode(
-            multiplier(container).coerceAtLeast(2),
-            if (generationMode(container) == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,
-            (flowScale(container) * 100f).toInt(),
-        )
-        renderer.setFrameGenerationRefreshRate(displayRefreshRate(context))
-
-        if (!requested) return
-
-        val cache = prepareNativeCache(context, container)
-        if (cache != null) renderer.setFrameGenerationShaders(cache)
-        renderer.setFrameGenerationEnabled(enabled && cache != null)
+        nativeRendererContainer = container
+        val generation = nativeApplyGeneration.incrementAndGet()
+        nativeApplyFailed = false
+        nativeApplyExecutor.execute {
+          try {
+            if (generation != nativeApplyGeneration.get()) return@execute
+            val requested = isNativeBackend(container)
+            val enabled = requested && isArmed(container) && multiplier(container) >= 2
+            if (!requested || !enabled) {
+                renderer.setFrameGenerationEnabled(false)
+                renderer.setVkPresentMode(if (presentMode(container) == "mailbox") 1 else 2)
+                renderer.setLsfgFrameQueue(!requested && enabledForLegacyQueue(container), frameQueueTarget(container))
+                onApplied?.invoke("source-only-applied")
+                return@execute
+            }
+            val legacyWasGenerating = runCatching {
+                File(container.rootDir, STATS_RELATIVE_PATH).takeIf { it.isFile }
+                    ?.readLines()?.any { it == "generation_ready=1" || it == "state=generating" } == true
+            }.getOrDefault(false)
+            // Disable the resident implicit layer first. Until it acknowledges
+            // source-only, native compute stays off to prevent double generation.
+            if (!writeConfig(container)) {
+                nativeApplyFailed = true
+                onApplied?.invoke("legacy-disable-failed")
+                return@execute
+            }
+            val cache = prepareNativeCache(context.applicationContext, container)
+            if (generation != nativeApplyGeneration.get()) return@execute
+            if (cache == null) {
+                renderer.setFrameGenerationEnabled(false)
+                nativeApplyFailed = true
+                onApplied?.invoke("native-cache-unavailable")
+                return@execute
+            }
+            val deadline = System.nanoTime() + 30_000_000_000L
+            if (legacyWasGenerating) {
+                while (!readLegacyRuntimeState(container).readyForSourceOnly) {
+                    if (generation != nativeApplyGeneration.get()) return@execute
+                    if (System.nanoTime() >= deadline) {
+                        nativeApplyFailed = true
+                        onApplied?.invoke("legacy-disable-timeout")
+                        return@execute
+                    }
+                    Thread.sleep(100L)
+                }
+            }
+            if (generation != nativeApplyGeneration.get() || !isNativeBackend(container)) return@execute
+            // FIFO retains every output in temporal order. The layer's Mailbox
+            // preference remains persisted for switching back to Legacy.
+            renderer.setVkPresentMode(2)
+            renderer.setLsfgFrameQueue(false, 0)
+            renderer.armFrameGeneration()
+            renderer.setFrameGenerationMode(
+                multiplier(container).coerceIn(2, 4),
+                if (generationMode(container) == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,
+                (flowScale(container) * 100f).toInt(),
+            )
+            renderer.setFrameGenerationRefreshRate(displayRefreshRate(context))
+            renderer.setFrameGenerationShaders(cache)
+            renderer.setFrameGenerationEnabled(true)
+            val initialized = renderer.isFrameGenerationSupported()
+            nativeApplyFailed = renderer.hasNativeSurface() && !initialized
+            Timber.i("LSFG_NATIVE: event=runtime_initialization initialized=%b generation=%d backend=%s", initialized, generation, backend(container))
+            // A missing surface leaves replayable settings pending; it is not a
+            // native success. Actual generation readiness uses accepted output.
+            onApplied?.invoke(when {
+                initialized -> "runtime-initialized"
+                nativeApplyFailed -> "native-capability-or-cache-rejected"
+                else -> "native-surface-pending"
+            })
+          } catch (error: Exception) {
+            if (generation == nativeApplyGeneration.get()) {
+                nativeApplyFailed = true
+                Timber.e(error, "LSFG_NATIVE: event=runtime_initialization_failed")
+                onApplied?.invoke("native-initialization-failed")
+            }
+          }
+        }
     }
 
     /** Re-apply native settings after Quick Menu changes without retaining a strong renderer ref. */
+    private fun enabledForLegacyQueue(container: Container): Boolean =
+        frameQueueEnabled(container) && isArmed(container) && multiplier(container) >= 2
+
     @JvmStatic
     fun refreshNativeRuntime(container: Container) {
         val renderer = nativeRendererRef?.get() ?: return
         val context = nativeRendererContext ?: return
+        if (nativeRendererContainer !== container) return
         applyNativeRuntime(renderer, container, context)
     }
 
@@ -1337,7 +1472,7 @@ object LsfgVkManager {
 
         return try {
             val processExecutable = targetExecutable(container)
-            val frameGenActive = enabled && multiplier >= 2 &&
+            val frameGenActive = !isNativeBackend(container) && enabled && multiplier >= 2 &&
                 dllPath != null && processExecutable != null
             val effectiveAdaptiveFramegen = frameGenActive && adaptiveFramegen
             val effectiveAdaptiveFlowScale = frameGenActive && adaptiveFlowScale

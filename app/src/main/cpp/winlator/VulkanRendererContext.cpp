@@ -22,6 +22,8 @@
 extern "C" __attribute__((used, visibility("default")))
 const char gamenative_vulkan_renderer_build_marker[] =
     "gamenative-host-display-confirmation-v3-split-present-worker";
+extern "C" __attribute__((used, visibility("default")))
+const char gamenative_native_lsfg_build_marker[] = "gamenative-native-lsfg-v1.3-complete";
 
 namespace {
 constexpr char LSFG_PROVENANCE_SOCKET[] = "gamenative-lsfg-provenance-v1";
@@ -127,7 +129,7 @@ void publishLsfgHostDisplayFeedback(
         const HostDisplayConfirmation& confirmation,
         const LsfgFrameProvenance& provenance,
         bool confirmed) noexcept {
-    if (!provenance.uniqueDelivery || provenance.deliveryId == 0)
+    if (provenance.nativeImplementation || !provenance.uniqueDelivery || provenance.deliveryId == 0)
         return;
 
     static const int socketFd = []() noexcept {
@@ -485,6 +487,10 @@ void VulkanRendererContext::createLogicalDevice() {
     bool googleDisplayTimingExtension = false;
     bool presentIdExtension = false;
     bool presentWaitExtension = false;
+    bool memoryModelExtension = false;
+    bool float16Extension = false;
+    VkPhysicalDeviceProperties nativeProperties{};
+    vk_.GetPhysicalDeviceProperties(physicalDevice, &nativeProperties);
     PFN_vkEnumerateDeviceExtensionProperties enumDevExts =
         (PFN_vkEnumerateDeviceExtensionProperties)gipa(instance, "vkEnumerateDeviceExtensionProperties");
     { uint32_t n=0; if(enumDevExts) enumDevExts(physicalDevice,nullptr,&n,nullptr);
@@ -493,6 +499,10 @@ void VulkanRendererContext::createLogicalDevice() {
       for (auto& e:av) {
           if (strcmp(e.extensionName,"VK_EXT_filter_cubic")==0
            || strcmp(e.extensionName,"VK_IMG_filter_cubic")==0) cubicSupported=true;
+          if (strcmp(e.extensionName, VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME)==0)
+              memoryModelExtension = true;
+          if (strcmp(e.extensionName, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)==0)
+              float16Extension = true;
           if (strcmp(e.extensionName, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)==0)
               googleDisplayTimingExtension = true;
           if (strcmp(e.extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME)==0)
@@ -516,6 +526,14 @@ void VulkanRendererContext::createLogicalDevice() {
         presentWaitFeatures.pNext = featureChain;
         featureChain = &presentWaitFeatures;
     }
+    VkPhysicalDeviceVulkanMemoryModelFeatures memoryModel{};
+    memoryModel.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
+    VkPhysicalDeviceShaderFloat16Int8Features float16{};
+    float16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+    const bool memoryModelAvailable = nativeProperties.apiVersion >= VK_API_VERSION_1_2 || memoryModelExtension;
+    const bool float16Available = nativeProperties.apiVersion >= VK_API_VERSION_1_2 || float16Extension;
+    if (memoryModelAvailable) { memoryModel.pNext = featureChain; featureChain = &memoryModel; }
+    if (float16Available) { float16.pNext = featureChain; featureChain = &float16; }
     features2.pNext = featureChain;
     if (featureChain && vk_.GetPhysicalDeviceFeatures2)
         vk_.GetPhysicalDeviceFeatures2(physicalDevice, &features2);
@@ -550,7 +568,42 @@ void VulkanRendererContext::createLogicalDevice() {
     VkDeviceCreateInfo ci{}; ci.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     ci.pQueueCreateInfos=&qi; ci.queueCreateInfoCount=1;
     ci.enabledExtensionCount=(uint32_t)extList.size(); ci.ppEnabledExtensionNames=extList.data();
-    ci.pNext = hostPresentWaitEnabled ? &enabledPresentWait : nullptr;
+    VkPhysicalDeviceVulkanMemoryModelFeatures enabledMemoryModel{};
+    enabledMemoryModel.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
+    enabledMemoryModel.vulkanMemoryModel = memoryModel.vulkanMemoryModel;
+    VkPhysicalDeviceShaderFloat16Int8Features enabledFloat16{};
+    enabledFloat16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+    enabledFloat16.shaderFloat16 = float16.shaderFloat16;
+    VkPhysicalDeviceFeatures enabledFeatures{};
+    enabledFeatures.shaderStorageImageWriteWithoutFormat = features2.features.shaderStorageImageWriteWithoutFormat;
+    enabledFeatures.shaderStorageImageExtendedFormats = features2.features.shaderStorageImageExtendedFormats;
+    void* enabledChain = hostPresentWaitEnabled ? &enabledPresentWait : nullptr;
+    if (memoryModelAvailable && enabledMemoryModel.vulkanMemoryModel) {
+        enabledMemoryModel.pNext = enabledChain; enabledChain = &enabledMemoryModel;
+        if (nativeProperties.apiVersion < VK_API_VERSION_1_2)
+            extList.push_back(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME);
+    }
+    if (float16Available && enabledFloat16.shaderFloat16) {
+        enabledFloat16.pNext = enabledChain; enabledChain = &enabledFloat16;
+        if (nativeProperties.apiVersion < VK_API_VERSION_1_2)
+            extList.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+    }
+    uint32_t familyCount = 0;
+    vk_.GetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    vk_.GetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, families.data());
+    nativeComputeSupported_ = enabledMemoryModel.vulkanMemoryModel && enabledFloat16.shaderFloat16
+        && enabledFeatures.shaderStorageImageWriteWithoutFormat
+        && enabledFeatures.shaderStorageImageExtendedFormats
+        && graphicsQueueFamilyIndex < families.size()
+        && (families[graphicsQueueFamilyIndex].queueFlags & VK_QUEUE_COMPUTE_BIT);
+    ci.pNext = enabledChain;
+    ci.pEnabledFeatures = &enabledFeatures;
+    ci.enabledExtensionCount = static_cast<uint32_t>(extList.size());
+    ci.ppEnabledExtensionNames = extList.data();
+    RLOG("LSFG_NATIVE: event=device_capability compute=%d memory_model=%d float16=%d storage_write=%d storage_extended=%d",
+        nativeComputeSupported_, enabledMemoryModel.vulkanMemoryModel, enabledFloat16.shaderFloat16,
+        enabledFeatures.shaderStorageImageWriteWithoutFormat, enabledFeatures.shaderStorageImageExtendedFormats);
     VkResult deviceCreateResult =
         vk_.CreateDevice(physicalDevice,&ci,nullptr,&device);
     if (deviceCreateResult != VK_SUCCESS && requestedHostQueueCount > 1) {
@@ -635,7 +688,8 @@ void VulkanRendererContext::createSwapchain() {
     uint32_t fmtN=0; vk_.GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice,surface,&fmtN,nullptr);
     std::vector<VkSurfaceFormatKHR> fmts(fmtN); vk_.GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice,surface,&fmtN,fmts.data());
     swapchainFmt = VK_FORMAT_R8G8B8A8_UNORM;
-    uint32_t imgCount=caps.minImageCount+1;
+    nativeMinImageCount_ = caps.minImageCount;
+    uint32_t imgCount=caps.minImageCount+1+framegenExtraImages();
     if (caps.maxImageCount>0&&imgCount>caps.maxImageCount) imgCount=caps.maxImageCount;
 
     uint32_t pmCount=0;
@@ -672,10 +726,9 @@ void VulkanRendererContext::createSwapchain() {
     ci.imageColorSpace=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR; ci.imageExtent=swapchainExt;
     ci.imageArrayLayers=1; ci.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     nativeSwapchainTransferSupported_ =
-        (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0 &&
         (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
     if (nativeSwapchainTransferSupported_)
-        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ci.imageSharingMode=VK_SHARING_MODE_EXCLUSIVE; ci.preTransform=pre;
     ci.compositeAlpha=compositeAlpha; ci.presentMode=presentMode; ci.clipped=VK_TRUE;
     ci.oldSwapchain=oldSwapchain;
@@ -1825,6 +1878,16 @@ void VulkanRendererContext::drainHostPresenter(const char* reason) {
 void VulkanRendererContext::cleanupSwapchain() {
     drainHostPresenter("swapchain-cleanup");
     retireFrameQueuePresentSemaphores();
+    if (lsfg) {
+        vkr_lsfg_forget_targets(lsfg);
+        vkr_lsfg_reset(lsfg);
+    }
+    destroyCompositeTargets();
+    if (compositePass != VK_NULL_HANDLE) {
+        vk_.DestroyRenderPass(device, compositePass, nullptr);
+        compositePass = VK_NULL_HANDLE;
+    }
+    nativeLastSourceFrame_ = 0;
     flushHostDisplayConfirmationsUnknown("swapchain-recreate");
     if (swapchain != VK_NULL_HANDLE) {
         resetHostPhysicalCadenceTelemetry("swapchain-destroyed");
@@ -2070,7 +2133,8 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
     VkBuffer cursorUpload, bool hasCursorUpload,
     float ox, float oy, float sx, float sy, float cw, float ch,
     short ptrX, short ptrY, short curHotX, short curHotY,
-    short curW, short curH, bool curVis, bool keepOpen)
+    short curW, short curH, bool curVis, bool keepOpen,
+    const VkCompositeTarget* target)
 {
     VkCommandBufferBeginInfo bi{}; bi.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     if (vk_.BeginCommandBuffer(cb,&bi)!=VK_SUCCESS) throw std::runtime_error("begin cb");
@@ -2147,8 +2211,8 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
     bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
     VkExtent2D tgtExt = toXr ? xrExt : swapchainExt;
     VkRenderPassBeginInfo rpi{}; rpi.sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpi.renderPass = toXr ? xrRp : renderPass;
-    rpi.framebuffer = toXr ? xrFb : swapchainFBs[imgIdx];
+    rpi.renderPass = target ? compositePass : (toXr ? xrRp : renderPass);
+    rpi.framebuffer = target ? target->framebuffer : (toXr ? xrFb : swapchainFBs[imgIdx]);
     rpi.renderArea={{0,0},tgtExt};
     VkClearValue clr={{{0.f,0.f,0.f,1.f}}}; rpi.clearValueCount=1; rpi.pClearValues=&clr;
 
@@ -2492,40 +2556,38 @@ ok=true;}catch(...){}
     }
 
     uint32_t imgIdx = 0;
-    uint32_t nativeGeneratedImgIdx = 0;
-    VkSemaphore nativeGeneratedAcquireSemaphore = VK_NULL_HANDLE;
+    std::array<uint32_t, VKR_LSFG_MAX_GENERATIONS> nativeGeneratedImgIndices{};
     uint64_t acquireNs = 0;
     VkResult res = VK_SUCCESS;
-
-    // Native LSFG is deliberately a narrow compositor path: 2x only for the
-    // first bring-up slice, with the source still rendered by the existing
-    // renderer and generated output copied into a second acquired WSI image.
-    bool nativeRuntimeActive =
-        !toXr &&
-        framegenArmed &&
-        framegenRequested &&
-        lsfg != nullptr &&
-        framegenSupported &&
-        framegenMultiplier == 2 &&
-        swapchainImages.size() >= 2;
-
+    bool nativeRuntimeActive = !toXr && framegenArmed && framegenRequested
+        && lsfg != nullptr && framegenSupported;
+    const uint32_t nativeCapacity = nativeRuntimeActive && swapchainImages.size() > nativeMinImageCount_
+        ? std::min<uint32_t>(VKR_LSFG_MAX_GENERATIONS,
+            static_cast<uint32_t>(swapchainImages.size()) - nativeMinImageCount_) : 0;
     uint32_t nativeGenerations = 0;
-    uint64_t nativeSourceFrame = framegenSourceFrames.load(std::memory_order_relaxed) + 1;
-    if (nativeRuntimeActive) {
-        if (!ensureNativeExtraAcquireSemaphores()) {
-            nativeRuntimeActive = false;
-            RLOG_E("Native LSFG disabled for frame: generated-image acquire sync unavailable");
-        }
+    const uint64_t nativeSourceFrame = framegenSourceFrames.load(std::memory_order_acquire);
+    const bool nativeFreshSource = nativeSourceFrame != nativeLastSourceFrame_;
+    if (nativeRuntimeActive && !ensureNativeExtraAcquireSemaphores()) {
+        nativeRuntimeActive = false;
+        RLOG_E("LSFG_NATIVE: event=frame_fallback reason=acquire-sync-unavailable");
     }
     if (nativeRuntimeActive) {
         vkr_lsfg_set_guest_extent(lsfg, containerWidth, containerHeight);
-        vkr_lsfg_set_refresh_rate(lsfg, framegenRefreshRate);
-        if (!createCompositeTargets(swapchainExt.width, swapchainExt.height, 1) ||
-            !vkr_lsfg_prepare(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt)) {
+        const uint32_t targets = MAX_FRAMES_IN_FLIGHT + nativeCapacity;
+        const bool rebuild = !compositeBuilt || compositeCount != targets
+            || composite[0].width != swapchainExt.width || composite[0].height != swapchainExt.height
+            || vkr_lsfg_needs_rebuild(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt);
+        if (rebuild) {
+            waitNativeResources();
+            vkr_lsfg_forget_targets(lsfg);
+        }
+        if (!createCompositeTargets(swapchainExt.width, swapchainExt.height, targets)
+                || !vkr_lsfg_prepare(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt)) {
             nativeRuntimeActive = false;
-            RLOG_E("Native LSFG disabled for frame: target/chain preparation failed");
-        } else {
-            nativeGenerations = vkr_lsfg_plan(lsfg, 1, nativeSourceFrame);
+            framegenSupported = false;
+            RLOG_E("LSFG_NATIVE: event=initialization_failed reason=target-or-chain-build");
+        } else if (nativeFreshSource) {
+            nativeGenerations = vkr_lsfg_plan(lsfg, nativeCapacity, nativeSourceFrame);
         }
     }
 
@@ -2560,39 +2622,36 @@ ok=true;}catch(...){}
         }
         imgInFlight[imgIdx]=inFlightFences[currentFrame];
 
-        if (nativeRuntimeActive && nativeGenerations > 0) {
-            nativeGeneratedAcquireSemaphore = nativeExtraAcquireSems_[currentFrame][0];
-            res = vk_.AcquireNextImageKHR(
-                device, swapchain, UINT64_MAX, nativeGeneratedAcquireSemaphore,
-                VK_NULL_HANDLE, &nativeGeneratedImgIdx);
-            if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_ERROR_SURFACE_LOST_KHR) {
-                fbResized.store(true);
-                return;
+        const uint32_t plannedGenerations = nativeGenerations;
+        nativeGenerations = 0;
+        // Reserve the acquired source. Extra images are optional and bounded;
+        // an unavailable output must never strand the source or block indefinitely.
+        const uint64_t extraAcquireTimeout = std::clamp<uint64_t>(
+            static_cast<uint64_t>(1000000000.0 / std::max(1.0f, framegenRefreshRate)),
+            2000000ULL, 20000000ULL);
+        const uint64_t extraAcquireDeadline = monotonicTimeNs() + extraAcquireTimeout;
+        for (uint32_t g = 0; g < plannedGenerations; ++g) {
+            uint32_t generatedImage = 0;
+            const uint64_t extraAcquireNow = monotonicTimeNs();
+            const VkResult acquireResult = vk_.AcquireNextImageKHR(device, swapchain,
+                extraAcquireNow < extraAcquireDeadline ? extraAcquireDeadline - extraAcquireNow : 0,
+                nativeExtraAcquireSems_[currentFrame][g],
+                VK_NULL_HANDLE, &generatedImage);
+            if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+                if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR || acquireResult == VK_ERROR_SURFACE_LOST_KHR)
+                    fbResized.store(true);
+                RLOG("LSFG_NATIVE: event=generated_acquire_fallback planned=%u acquired=%u result=%d",
+                    plannedGenerations, nativeGenerations, acquireResult);
+                break;
             }
-            if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
-                return;
-            }
-            if (nativeGeneratedImgIdx >= swapchainImages.size() ||
-                nativeGeneratedImgIdx == imgIdx) {
-                RLOG_E("Native LSFG acquired invalid generated image index=%u source=%u images=%zu",
-                    nativeGeneratedImgIdx, imgIdx, swapchainImages.size());
-                return;
-            }
-            if (imgInFlight[nativeGeneratedImgIdx] != VK_NULL_HANDLE &&
-                imgInFlight[nativeGeneratedImgIdx] != inFlightFences[currentFrame]) {
-                VkResult imageFenceStatus = vk_.GetFenceStatus
-                    ? vk_.GetFenceStatus(device, imgInFlight[nativeGeneratedImgIdx])
-                    : VK_NOT_READY;
-                if (imageFenceStatus == VK_SUCCESS) {
-                    completeObservedFence(imgInFlight[nativeGeneratedImgIdx]);
-                } else if (vk_.WaitForFences(
-                        device,1,&imgInFlight[nativeGeneratedImgIdx],VK_TRUE,UINT64_MAX) != VK_SUCCESS) {
+            nativeGeneratedImgIndices[nativeGenerations++] = generatedImage;
+            if (imgInFlight[generatedImage] != VK_NULL_HANDLE
+                    && imgInFlight[generatedImage] != inFlightFences[currentFrame]) {
+                if (vk_.WaitForFences(device, 1, &imgInFlight[generatedImage], VK_TRUE, UINT64_MAX) != VK_SUCCESS)
                     return;
-                } else {
-                    completeObservedFence(imgInFlight[nativeGeneratedImgIdx]);
-                }
+                completeObservedFence(imgInFlight[generatedImage]);
             }
-            imgInFlight[nativeGeneratedImgIdx] = inFlightFences[currentFrame];
+            imgInFlight[generatedImage] = inFlightFences[currentFrame];
         }
     }
 
@@ -2664,50 +2723,43 @@ ok=true;}catch(...){}
         frameAhbTransitions,framePreUpload,framePostUpload,
         curUpload,hasCurUpload,
         ox,oy,sx,sy,cw,ch,ptrX,ptrY,curHotX,curHotY,curW,curH,effectiveCurVis,
-        nativeRuntimeActive);
+        nativeRuntimeActive, nativeRuntimeActive ? &composite[currentFrame] : nullptr);
 
     if (nativeRuntimeActive) {
         VkCommandBuffer cb = cmdBufs[currentFrame];
-
-        // The existing render pass ends the source in PRESENT_SRC. Move it into
-        // the LSFG chain's expected GENERAL layout, feed history, and optionally
-        // generate one interpolated frame into the offscreen target.
-        transition(cb, swapchainImages[imgIdx],
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
-            0, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-
-        vkr_lsfg_process(
-            lsfg, cb, swapchainImages[imgIdx],
-            swapchainExt.width, swapchainExt.height, nativeGenerations);
-
-        if (nativeGenerations > 0) {
-            vkr_lsfg_generate_into(
-                lsfg, cb, 0, 0, composite[0].image, composite[0].view,
-                swapchainExt.width, swapchainExt.height);
-            blitCompositeToSwapchain(
-                cb, composite[0], swapchainImages[nativeGeneratedImgIdx]);
-            framegenMadeFrames += nativeGenerations;
+        if (nativeFreshSource) {
+            vkr_lsfg_process(lsfg, cb, composite[currentFrame].image,
+                swapchainExt.width, swapchainExt.height, nativeGenerations);
         }
-
-        transition(cb, swapchainImages[imgIdx],
-            VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT, 0,
-            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-
-        framegenSourceFrames.store(nativeSourceFrame, std::memory_order_release);
-        framegenRealFrames++;
+        for (uint32_t g = 0; g < nativeGenerations; ++g) {
+            const uint32_t target = MAX_FRAMES_IN_FLIGHT + g;
+            vkr_lsfg_generate_into(lsfg, cb, g, target, composite[target].image,
+                composite[target].view, swapchainExt.width, swapchainExt.height);
+            blitCompositeToSwapchain(cb, composite[target], swapchainImages[nativeGeneratedImgIndices[g]]);
+        }
+        blitCompositeToSwapchain(cb, composite[currentFrame], swapchainImages[imgIdx]);
         const VkResult endStatus = vk_.EndCommandBuffer(cb);
         if (endStatus != VK_SUCCESS) {
-            RLOG_E("Native LSFG command buffer end failed: status=%d", (int)endStatus);
+            RLOG_E("LSFG_NATIVE: event=command_buffer_failed result=%d", endStatus);
+            recoverNativeAcquiredFrame();
             return;
         }
     }
 
     std::vector<LsfgFrameProvenance> frameProvenance =
         classifyHostPresentProvenance(frameDraws);
+    if (nativeRuntimeActive) {
+        LsfgFrameProvenance nativeSource{};
+        nativeSource.valid = true;
+        nativeSource.nativeImplementation = true;
+        nativeSource.runtimeSessionId = nativeRuntimeSessionId_;
+        nativeSource.contextEpoch = hostSwapchainGeneration_;
+        nativeSource.deliveryId = (1ULL << 63) | ++nativeDeliveryId_;
+        nativeSource.sourceIndex = nativeSourceFrame;
+        nativeSource.swapchainImageIndex = imgIdx;
+        nativeSource.uniqueDelivery = nativeFreshSource;
+        frameProvenance = {nativeSource};
+    }
     const bool hasUniqueLsfgDelivery = std::any_of(
         frameProvenance.begin(), frameProvenance.end(),
         [](const LsfgFrameProvenance& provenance) {
@@ -2716,8 +2768,8 @@ ok=true;}catch(...){}
     const HostDesiredPresentDecision desiredDecision =
         validatedHostDesiredPresentTime(frameProvenance);
 
-    std::array<VkSemaphore, 2> wSem{};
-    std::array<VkSemaphore, 2> sSem{};
+    std::array<VkSemaphore, 1 + VKR_LSFG_MAX_GENERATIONS> wSem{};
+    std::array<VkSemaphore, 1 + VKR_LSFG_MAX_GENERATIONS> sSem{};
     uint32_t waitSemaphoreCount = 0;
     uint32_t signalSemaphoreCount = 0;
     VkSemaphore signalSemaphore = renderDoneSems[currentFrame];
@@ -2739,25 +2791,19 @@ ok=true;}catch(...){}
     if (!toXr) {
         wSem[waitSemaphoreCount++] = imgAvailSems[currentFrame];
         sSem[signalSemaphoreCount++] = signalSemaphore;
-        if (nativeRuntimeActive && nativeGenerations > 0) {
-            if (nativeGeneratedImgIdx >= frameQueuePresentSems_.size()
-                    || frameQueuePresentSems_[nativeGeneratedImgIdx] == VK_NULL_HANDLE) {
-                fbResized.store(true, std::memory_order_release);
-                return;
-            }
-            wSem[waitSemaphoreCount++] = nativeGeneratedAcquireSemaphore;
-            sSem[signalSemaphoreCount++] = frameQueuePresentSems_[nativeGeneratedImgIdx];
+        for (uint32_t g = 0; g < nativeGenerations; ++g) {
+            wSem[waitSemaphoreCount++] = nativeExtraAcquireSems_[currentFrame][g];
+            sSem[signalSemaphoreCount++] = frameQueuePresentSems_[nativeGeneratedImgIndices[g]];
         }
     }
-    VkPipelineStageFlags wStage[2] = {
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-    };
+    std::array<VkPipelineStageFlags, 1 + VKR_LSFG_MAX_GENERATIONS> wStage{};
+    wStage.fill(VK_PIPELINE_STAGE_TRANSFER_BIT);
+    if (!nativeRuntimeActive) wStage[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si{}; si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
     if (!toXr) {
         si.waitSemaphoreCount=waitSemaphoreCount;
         si.pWaitSemaphores=wSem.data();
-        si.pWaitDstStageMask=wStage;
+        si.pWaitDstStageMask=wStage.data();
         si.signalSemaphoreCount=signalSemaphoreCount;
         si.pSignalSemaphores=sSem.data();
     }
@@ -2795,10 +2841,19 @@ ok=true;}catch(...){}
             static_cast<double>(submitCallNs) / 1000000.0,
             static_cast<double>(graphicsQueueBlockedNs) / 1000000.0,
             submitResult);
+        if (nativeRuntimeActive) {
+            recoverNativeAcquiredFrame();
+            return;
+        }
         vk_.DestroyFence(device,inFlightFences[currentFrame],nullptr);
         VkFenceCreateInfo fi{}; fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; fi.flags=VK_FENCE_CREATE_SIGNALED_BIT;
         vk_.CreateFence(device,&fi,nullptr,&inFlightFences[currentFrame]);
         return;
+    }
+    if (nativeRuntimeActive && nativeFreshSource) {
+        nativeLastSourceFrame_ = nativeSourceFrame;
+        ++framegenRealFrames;
+        framegenMadeFrames += nativeGenerations;
     }
     submissionTimeline.submitFrame(currentFrame, submissionSerial);
     renderSubmissionSerial.store(submissionSerial, std::memory_order_release);
@@ -2845,6 +2900,55 @@ ok=true;}catch(...){}
 
         const uint32_t gpuOutstanding =
             countOutstandingFrameSubmissions(true);
+        const uint64_t nativeFirstHostPresentId = hostPresentId;
+        const uint32_t nativeFirstGooglePresentId = googlePresentId;
+        for (uint32_t g = 0; g < nativeGenerations; ++g) {
+            LsfgFrameProvenance generatedProvenance{};
+            generatedProvenance.valid = true;
+            generatedProvenance.nativeImplementation = true;
+            generatedProvenance.runtimeSessionId = nativeRuntimeSessionId_;
+            generatedProvenance.contextEpoch = hostSwapchainGeneration_;
+            generatedProvenance.deliveryId = (1ULL << 63) | ++nativeDeliveryId_;
+            generatedProvenance.sourceIndex = nativeSourceFrame;
+            generatedProvenance.batchId = submissionSerial;
+            generatedProvenance.swapchainImageIndex = nativeGeneratedImgIndices[g];
+            generatedProvenance.interpolationCount = nativeGenerations;
+            generatedProvenance.interpolationIndex = static_cast<uint8_t>(g + 1);
+            generatedProvenance.kind = 1;
+            generatedProvenance.uniqueDelivery = true;
+            const VkResult generatedPresentResult = enqueueHostPresent(PendingHostPresent{
+                .frameSlot = currentFrame,
+                .imageIndex = nativeGeneratedImgIndices[g],
+                .swapchain = swapchain,
+                .waitSemaphore = frameQueuePresentSems_[nativeGeneratedImgIndices[g]],
+                .hostPresentId = g == 0 ? nativeFirstHostPresentId : hostPresentId_++,
+                .googlePresentId = g == 0 ? nativeFirstGooglePresentId : hostGooglePresentId_++,
+                .backend = confirmationBackend,
+                .frameProvenance = {generatedProvenance},
+                .desiredDecision = HostDesiredPresentDecision{},
+                .hasUniqueLsfgDelivery = true,
+                .acquireNs = 0,
+                .submitCallNs = submitCallNs,
+                .submissionSerial = submissionSerial,
+                .swapchainGeneration = hostSwapchainGeneration_,
+                .gpuOutstanding = gpuOutstanding,
+            });
+            if (generatedPresentResult == VK_ERROR_OUT_OF_DATE_KHR || generatedPresentResult == VK_ERROR_SURFACE_LOST_KHR)
+                fbResized.store(true);
+            if (generatedPresentResult == VK_SUCCESS) {
+                if (framegenMadeFrames <= 8 || framegenRealFrames % 120 == 0)
+                    RLOG("LSFG_NATIVE: event=generated_present_queued interpolation=%u count=%u image=%u submission_serial=%" PRIu64
+                        " delivery_id=%" PRIu64 " source_index=%" PRIu64 " multiplier=%u target_rate=%u capacity=%u",
+                        g + 1, nativeGenerations, nativeGeneratedImgIndices[g], submissionSerial,
+                        generatedProvenance.deliveryId, nativeSourceFrame, framegenMultiplier, framegenTargetRate, nativeCapacity);
+            } else {
+                RLOG_E("LSFG_NATIVE: event=generated_present_failed result=%d", generatedPresentResult);
+            }
+        }
+        if (nativeGenerations > 0) {
+            hostPresentId = hostPresentId_++;
+            googlePresentId = hostGooglePresentId_++;
+        }
         res = enqueueHostPresent(PendingHostPresent{
             .frameSlot = currentFrame,
             .imageIndex = imgIdx,
@@ -2865,58 +2969,7 @@ ok=true;}catch(...){}
         if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR)
             fbResized.store(true);
 
-        if (res == VK_SUCCESS && nativeRuntimeActive && nativeGenerations > 0) {
-            uint64_t generatedHostPresentId = hostPresentId_++;
-            if (generatedHostPresentId == 0) {
-                generatedHostPresentId = 1;
-                hostPresentId_ = 2;
-            }
-            uint32_t generatedGooglePresentId = hostGooglePresentId_++;
-            if (generatedGooglePresentId == 0) {
-                generatedGooglePresentId = 1;
-                hostGooglePresentId_ = 2;
-            }
 
-            LsfgFrameProvenance generatedProvenance{};
-            generatedProvenance.valid = true;
-            generatedProvenance.contextEpoch = hostSwapchainGeneration_;
-            generatedProvenance.swapchainImageIndex = nativeGeneratedImgIdx;
-            generatedProvenance.interpolationCount = nativeGenerations;
-            generatedProvenance.interpolationIndex = 1;
-            generatedProvenance.kind = 1;
-
-            std::vector<LsfgFrameProvenance> generatedProvenanceList{
-                generatedProvenance
-            };
-            const uint32_t generatedGpuOutstanding =
-                countOutstandingFrameSubmissions(true);
-            const VkResult generatedPresentResult = enqueueHostPresent(PendingHostPresent{
-                .frameSlot = currentFrame,
-                .imageIndex = nativeGeneratedImgIdx,
-                .swapchain = swapchain,
-                .waitSemaphore = frameQueuePresentSems_[nativeGeneratedImgIdx],
-                .hostPresentId = generatedHostPresentId,
-                .googlePresentId = generatedGooglePresentId,
-                .backend = confirmationBackend,
-                .frameProvenance = std::move(generatedProvenanceList),
-                .desiredDecision = HostDesiredPresentDecision{},
-                .hasUniqueLsfgDelivery = false,
-                .acquireNs = 0,
-                .submitCallNs = submitCallNs,
-                .submissionSerial = submissionSerial,
-                .swapchainGeneration = hostSwapchainGeneration_,
-                .gpuOutstanding = generatedGpuOutstanding,
-            });
-            if (generatedPresentResult == VK_ERROR_OUT_OF_DATE_KHR ||
-                generatedPresentResult == VK_ERROR_SURFACE_LOST_KHR) {
-                fbResized.store(true);
-            }
-            if (generatedPresentResult == VK_SUCCESS) {
-                presentedFrames.fetch_add(1, std::memory_order_relaxed);
-                RLOG("LSFG_NATIVE: event=generated_present_queued generation=%u image=%u submission_serial=%" PRIu64,
-                    nativeGenerations, nativeGeneratedImgIdx, submissionSerial);
-            }
-        }
     } else {
         // The XR session samples xrAhb from its own GL context with no fence handoff;
         // blocking here means the buffer is fully written whenever this thread is idle,
@@ -3040,7 +3093,10 @@ void VulkanRendererContext::updateWindowContent(int64_t id, void* px, short w, s
     {
         std::lock_guard<std::mutex> lk(renderMutex);
         auto it=texMap.find(id);
-        if (it!=texMap.end()) it->second.dirty=true;
+        if (it!=texMap.end()) {
+            it->second.dirty=true;
+            framegenSourceFrames.fetch_add(1, std::memory_order_release);
+        }
     }
     needsRender.store(true); dirtyCV.notify_one();
 }
@@ -3767,6 +3823,13 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                     / static_cast<double>(generatedUniqueWsiAccepted_)
                 : 0.0;
 
+        if (provenance.nativeImplementation) {
+            __android_log_print(ANDROID_LOG_INFO, "LSFG_NATIVE",
+                "event=display_confirmation implementation=native-lsfg delivery_id=%" PRIu64
+                " kind=%s confirmed=%d unknown=%d backend=%s source_index=%" PRIu64,
+                provenance.deliveryId, provenanceKindName(provenance.kind), confirmed, unknown,
+                hostDisplayBackendName(confirmation.backend), provenance.sourceIndex);
+        }
         publishLsfgHostDisplayFeedback(
             confirmation, provenance, confirmed);
 
@@ -3963,8 +4026,13 @@ void VulkanRendererContext::recordHostPresent(
     confirmation.frameSlot = present.frameSlot;
     confirmation.gpuOutstandingAtSubmit = present.gpuOutstanding;
     for (const auto& provenance : present.frameProvenance) {
+        if (provenance.nativeImplementation && provenance.uniqueDelivery) {
+            presentedFrames.fetch_add(1, std::memory_order_relaxed);
+            if (provenance.kind == 1)
+                nativeGeneratedPresentedFrames_.fetch_add(1, std::memory_order_relaxed);
+        }
         if (provenance.uniqueDelivery) {
-            consumedLsfgDeliveries_.insert(provenance.deliveryId);
+            if (!provenance.nativeImplementation) consumedLsfgDeliveries_.insert(provenance.deliveryId);
             if (present.backend != HostDisplayConfirmationBackend::WsiAccepted) {
                 if (provenance.kind == 1) ++generatedUniqueWsiAccepted_;
                 else ++sourceUniqueWsiAccepted_;
@@ -4226,6 +4294,7 @@ void VulkanRendererContext::updateWindowContentAHB(int64_t id, AHardwareBuffer* 
     }
 
     evictWindowAhbImports(id, ahb);
+    framegenSourceFrames.fetch_add(1, std::memory_order_release);
     needsRender.store(true); dirtyCV.notify_one();
 }
 
@@ -4500,4 +4569,3 @@ std::vector<int> VulkanRendererContext::getSupportedPresentModes() const {
 }
 
 #pragma GCC diagnostic pop
-

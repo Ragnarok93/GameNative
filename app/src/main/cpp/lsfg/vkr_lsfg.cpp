@@ -280,6 +280,10 @@ void vkr_lsfg_forget_targets(VkrLsfg* lsfg) {
 void vkr_lsfg_reset(VkrLsfg* lsfg) {
     if (!lsfg) return;
     lsfg->pacer.Reset();
+    lsfg->frame_count = 0;
+    lsfg->last_count = 0;
+    lsfg->last_generations = 0;
+    lsfg->plan_calls = 0;
     lsfg->peak_guest_extent = VkExtent2D{};
     lsfg->warm_streak = 0;
     lsfg->warm = false;

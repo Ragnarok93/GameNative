@@ -16,6 +16,7 @@ runs:
         set -euo pipefail
 
         python3 tools/host_display_timing_test.py
+        python3 tools/native_lsfg_pacer_test.py
 
         marker='gamenative-host-display-confirmation-v3-split-present-worker'
         native_root=app/src/main/cpp
@@ -68,5 +69,7 @@ runs:
           grep -aFq "$marker" "$destination"
         done
 
+        grep -aFq 'gamenative-native-lsfg-v1.3-complete' "$built"
         file "$built"
         sha256sum "$built"
+

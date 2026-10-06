@@ -295,6 +295,20 @@ Java_com_winlator_renderer_VulkanRenderer_nativeArmFrameGeneration(
         renderer->armFrameGeneration();
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeIsFrameGenerationSupported(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer && renderer->isFrameGenerationSupported() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetGeneratedPresentedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? static_cast<jlong>(renderer->getGeneratedPresentedFrameCount()) : 0;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationEnabled(
         JNIEnv*, jobject, jlong handle, jboolean enabled) {
@@ -399,3 +413,4 @@ Java_com_winlator_renderer_VulkanRenderer_nativeReattachSurface(JNIEnv* env, job
     }
     return (jboolean)ok;
 }
+

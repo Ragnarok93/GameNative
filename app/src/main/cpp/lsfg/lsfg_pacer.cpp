@@ -85,13 +85,16 @@ size_t LsfgPacer::HeadroomLimit() const {
 }
 
 LsfgPlan LsfgPacer::Plan(size_t capacity, uint64_t source_frames) {
+    return PlanAt(capacity, source_frames, Clock::now());
+}
+
+LsfgPlan LsfgPacer::PlanAt(size_t capacity, uint64_t source_frames, Clock::time_point now) {
     const size_t ceiling = std::min(capacity, MaxGenerations());
     if (ceiling == 0) {
         Reset();
         return {};
     }
 
-    const Clock::time_point now = Clock::now();
     TrackSourceRate(now, source_frames);
     if (!last_frame) {
         last_frame = now;

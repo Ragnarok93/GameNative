@@ -49,6 +49,10 @@ public:
     [[nodiscard]] size_t MaxGenerations() const;
 
     [[nodiscard]] LsfgPlan Plan(size_t capacity, uint64_t source_frames);
+    // Explicit monotonic timestamp lets regression tests exercise rate changes
+    // and discontinuities without sleeps or scheduler-dependent outcomes.
+    [[nodiscard]] LsfgPlan PlanAt(size_t capacity, uint64_t source_frames,
+                                std::chrono::steady_clock::time_point now);
 
     [[nodiscard]] LsfgPacerStats Stats() const;
 

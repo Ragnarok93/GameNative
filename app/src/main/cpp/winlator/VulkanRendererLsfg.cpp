@@ -3,6 +3,8 @@
 #include "../lsfg/vkr_lsfg.h"
 
 #include <cstring>
+#include <algorithm>
+#include <chrono>
 #include <string>
 
 void VulkanRendererContext::createCompositePass() {
@@ -106,7 +108,10 @@ bool VulkanRendererContext::createOneComposite(VkCompositeTarget& c, uint32_t w,
         c.image = VK_NULL_HANDLE;
         return false;
     }
-    vk_.BindImageMemory(device, c.image, c.memory, 0);
+    if (vk_.BindImageMemory(device, c.image, c.memory, 0) != VK_SUCCESS) {
+        destroyOneComposite(c);
+        return false;
+    }
 
     VkImageViewCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -174,11 +179,17 @@ void VulkanRendererContext::destroyLsfg() {
     lsfg = nullptr;
     framegenRealFrames = 0;
     framegenMadeFrames = 0;
+    nativeGeneratedPresentedFrames_.store(0);
+    presentedFrames.store(0);
     framegenSupported = false;
 }
 
 void VulkanRendererContext::createLsfg() {
     if (lsfg || lsfgCachePath.empty() || !device || !physicalDevice) return;
+    if (!nativeComputeSupported_) {
+        RLOG_E("LSFG_NATIVE: event=initialization_failed reason=required-device-features");
+        return;
+    }
 
     if (!nativeVulkanDispatchLoaded_) {
         if (!vkd_load(instance, device, gipa)) {
@@ -198,6 +209,7 @@ void VulkanRendererContext::createLsfg() {
         return;
     }
     framegenSupported = compositeFormatSupported() && nativeSwapchainTransferSupported_;
+    nativeRuntimeSessionId_ = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
     RLOG("Native LSFG capability: supported=%d composite_format=%d swapchain_transfer=%d",
          framegenSupported ? 1 : 0,
          compositeFormatSupported() ? 1 : 0,
@@ -259,19 +271,65 @@ void VulkanRendererContext::blitCompositeToSwapchain(VkCommandBuffer cmd, const 
                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 }
 
+void VulkanRendererContext::waitNativeResources() {
+    drainHostPresenter("native-lsfg-resource-change");
+    for (auto fence : inFlightFences) {
+        if (fence != VK_NULL_HANDLE && vk_.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS)
+            completeObservedFence(fence);
+    }
+}
+
+void VulkanRendererContext::recoverNativeAcquiredFrame() {
+    // Match upstream's failed-submit recovery: acquired binary semaphores may
+    // still be signalled, so they cannot be reused by the next frame.
+    const VkFence stale = inFlightFences[currentFrame];
+    for (auto& fence : imgInFlight) if (fence == stale) fence = VK_NULL_HANDLE;
+    if (stale) vk_.DestroyFence(device, stale, nullptr);
+    VkFenceCreateInfo fi{};
+    fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    inFlightFences[currentFrame] = VK_NULL_HANDLE;
+    bool ok = vk_.CreateFence(device, &fi, nullptr, &inFlightFences[currentFrame]) == VK_SUCCESS;
+    VkSemaphoreCreateInfo sci{};
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    auto replaceSemaphore = [&](VkSemaphore& semaphore) {
+        if (semaphore) vk_.DestroySemaphore(device, semaphore, nullptr);
+        semaphore = VK_NULL_HANDLE;
+        if (vk_.CreateSemaphore(device, &sci, nullptr, &semaphore) != VK_SUCCESS) ok = false;
+    };
+    replaceSemaphore(imgAvailSems[currentFrame]);
+    for (auto& semaphore : nativeExtraAcquireSems_[currentFrame]) {
+        if (semaphore != VK_NULL_HANDLE) replaceSemaphore(semaphore);
+    }
+    if (lsfg) {
+        waitNativeResources();
+        vkr_lsfg_reset(lsfg);
+    }
+    nativeLastSourceFrame_ = 0;
+    if (!ok) {
+        RLOG_E("LSFG_NATIVE: event=recovery_failed reason=sync-allocation");
+        isRunning.store(false);
+        dirtyCV.notify_all();
+    }
+    fbResized.store(ok);
+}
+
 void VulkanRendererContext::armFrameGeneration() {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
     framegenArmed = true;
 }
 
 void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
     framegenArmed = true;
     if (framegenRequested == enabled) return;
-    std::unique_lock<std::shared_mutex> fl(frameMutex);
     std::lock_guard<std::mutex> lk(renderMutex);
     framegenRequested = enabled;
     if (!enabled) {
-        if (device) vk_.DeviceWaitIdle(device);
+        if (device) waitNativeResources();
         destroyLsfg();
+        destroyCompositeTargets();
+        nativeLastSourceFrame_ = 0;
     } else if (device && !lsfgCachePath.empty()) {
         createLsfg();
     }
@@ -282,19 +340,19 @@ void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
 }
 
 bool VulkanRendererContext::isFrameGenerationSupported() const {
-    return framegenArmed && framegenSupported;
+    std::shared_lock<std::shared_mutex> fl(const_cast<VulkanRendererContext*>(this)->frameMutex);
+    return framegenRequested && framegenArmed && framegenSupported && lsfg != nullptr;
 }
 
 void VulkanRendererContext::setFrameGenerationShaders(const std::string& cachePath) {
-    if (!framegenArmed) return;
-    if (!cachePath.empty() && cachePath == lsfgCachePath && lsfg != nullptr)
-        return;
     std::unique_lock<std::shared_mutex> fl(frameMutex);
+    if (!framegenArmed) return;
+    if (!cachePath.empty() && cachePath == lsfgCachePath && lsfg != nullptr) return;
     std::lock_guard<std::mutex> lk(renderMutex);
     // Cache-path changes before Native LSFG is created must not stall the
     // renderer. Only an existing native context can own GPU work that requires
     // a conservative teardown wait here.
-    if (lsfg != nullptr && device) vk_.DeviceWaitIdle(device);
+    if (lsfg != nullptr && device) waitNativeResources();
     destroyLsfg();
     lsfgCachePath = cachePath;
     if (framegenRequested && device && !lsfgCachePath.empty()) {
@@ -309,19 +367,29 @@ void VulkanRendererContext::setSourceFrameCount(uint64_t count) {
 }
 
 void VulkanRendererContext::setFrameGenerationRefreshRate(float hz) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
     framegenRefreshRate = hz > 1.0f ? hz : 60.0f;
     if (lsfg)
         vkr_lsfg_set_refresh_rate(lsfg, framegenRefreshRate);
 }
 
 void VulkanRendererContext::setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {
-    if (!framegenArmed) return;
     std::unique_lock<std::shared_mutex> fl(frameMutex);
+    if (!framegenArmed) return;
     std::lock_guard<std::mutex> lk(renderMutex);
     const uint32_t previous_images = framegenExtraImages();
-    framegenMultiplier = multiplier < 2 ? 2u : (uint32_t)multiplier;
-    framegenTargetRate = targetRate < 0 ? 0u : (uint32_t)targetRate;
-    framegenFlowScale = flowScalePct <= 0 ? 0.7f : (float)flowScalePct / 100.0f;
+    const uint32_t nextMultiplier = static_cast<uint32_t>(std::clamp(multiplier, 2, 4));
+    const uint32_t nextTarget = static_cast<uint32_t>(std::max(targetRate, 0));
+    const float nextFlow = static_cast<float>(std::clamp(flowScalePct, 25, 100)) / 100.0f;
+    if (nextMultiplier == framegenMultiplier && nextTarget == framegenTargetRate && nextFlow == framegenFlowScale) return;
+    if (lsfg) {
+        waitNativeResources();
+        vkr_lsfg_reset(lsfg);
+        nativeLastSourceFrame_ = 0;
+    }
+    framegenMultiplier = nextMultiplier;
+    framegenTargetRate = nextTarget;
+    framegenFlowScale = nextFlow;
     if (lsfg) {
         vkr_lsfg_configure(lsfg, framegenMultiplier, framegenTargetRate,
                            framegenFlowScale, framegenRefreshRate);
@@ -333,7 +401,12 @@ void VulkanRendererContext::setFrameGenerationMode(int multiplier, int targetRat
 }
 
 uint64_t VulkanRendererContext::getGeneratedFrameCount() const {
+    std::shared_lock<std::shared_mutex> fl(const_cast<VulkanRendererContext*>(this)->frameMutex);
     return framegenMadeFrames;
+}
+
+uint64_t VulkanRendererContext::getGeneratedPresentedFrameCount() const {
+    return nativeGeneratedPresentedFrames_.load(std::memory_order_relaxed);
 }
 
 uint64_t VulkanRendererContext::getPresentedFrameCount() const {
@@ -341,6 +414,7 @@ uint64_t VulkanRendererContext::getPresentedFrameCount() const {
 }
 
 uint64_t VulkanRendererContext::getRealFrameCount() const {
+    std::shared_lock<std::shared_mutex> fl(const_cast<VulkanRendererContext*>(this)->frameMutex);
     return framegenRealFrames;
 }
 

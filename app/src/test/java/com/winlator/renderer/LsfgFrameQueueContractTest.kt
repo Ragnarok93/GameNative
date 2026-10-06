@@ -624,29 +624,35 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
-    fun nativeOwnsLiveQueuePolicyWithoutOverwritingLegacyPreference() {
+    fun nativeUsesTheSameLiveFrameQueuePolicyAsLegacy() {
         val renderer =
             repoSource("app/src/main/java/com/winlator/renderer/VulkanRenderer.java")
         val manager =
             repoSource("app/src/main/java/app/gamenative/utils/LsfgVkManager.kt")
+        val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(renderer.contains("nativeOwnsFrameQueuePolicy"))
-        assertTrue(renderer.contains("setNativeFrameQueuePolicyOwned(boolean owned)"))
-        assertTrue(renderer.contains("event=legacy-policy-retained owner=native"))
-        assertTrue(renderer.contains("event=policy-ownership owner="))
-        assertTrue(renderer.contains("owned ? false : pendingLsfgFrameQueueEnabled"))
-        assertTrue(renderer.contains("owned ? 0 : pendingLsfgFrameQueueTarget"))
+        assertFalse(renderer.contains("nativeOwnsFrameQueuePolicy"))
+        assertFalse(renderer.contains("setNativeFrameQueuePolicyOwned"))
+        assertFalse(renderer.contains("legacy-policy-retained owner=native"))
 
         val applyStart = renderer.indexOf("public boolean applyFrameGenerationSettings")
         val applyEnd = renderer.indexOf("public void setFrameGenerationShaders", applyStart)
         assertTrue(applyStart >= 0 && applyEnd > applyStart)
         val apply = renderer.substring(applyStart, applyEnd)
-        assertTrue(apply.contains("nativeOwnsFrameQueuePolicy = true"))
-        assertTrue(apply.contains("nativeSetLsfgFrameQueue(handle, false, 0)"))
-        assertFalse(apply.contains("pendingLsfgFrameQueueEnabled = false"))
-        assertFalse(apply.contains("pendingLsfgFrameQueueTarget = 0"))
+        assertTrue(apply.contains("pendingLsfgFrameQueueEnabled"))
+        assertTrue(apply.contains("pendingLsfgFrameQueueTarget"))
+        assertTrue(apply.contains("nativeSetLsfgFrameQueue("))
+        assertFalse(apply.contains("nativeSetLsfgFrameQueue(handle, false, 0)"))
 
-        assertTrue(manager.contains("renderer.setNativeFrameQueuePolicyOwned(false)"))
+        assertTrue(manager.contains("renderer.setLsfgFrameQueue("))
+        assertTrue(manager.contains("snapshot.frameQueueEnabled"))
+        assertTrue(manager.contains("snapshot.frameQueueTarget"))
+        assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
+
+        assertTrue(implementation.contains("nativeLsfgContentPending"))
+        assertTrue(implementation.contains("activeFrameSlotCount()"))
+        assertTrue(implementation.contains("enforceFrameQueueSubmissionBudget(frameQueueTarget)"))
+        assertTrue(implementation.contains("effectiveFrameQueueTarget()"))
     }
 
     private fun source(name: String): String {

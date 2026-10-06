@@ -125,6 +125,7 @@ object LsfgVkManager {
 
     private val backendRequestSerial = AtomicLong(0L)
     private val nativeConfigRevision = AtomicLong(0L)
+    @Volatile private var latestBackendRequest: BackendRequest? = null
 
     const val MODE_FIXED = "fixed"
     const val MODE_ADAPTIVE = "adaptive"
@@ -336,6 +337,7 @@ object LsfgVkManager {
             backend = sanitized,
             requestedAtNs = System.nanoTime(),
         )
+        latestBackendRequest = request
         Timber.i(
             "LSFG_BACKEND: event=backend_request backend_generation=%d request_serial=%d requested_backend=%s previous_backend=%s",
             request.serial,
@@ -988,10 +990,17 @@ object LsfgVkManager {
                 }
 
                 transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_INITIALIZING, "handoff-started")
-                val legacyWasGenerating = runCatching {
-                    File(container.rootDir, STATS_RELATIVE_PATH).takeIf { it.isFile }
-                        ?.readLines()?.any { it == "generation_ready=1" || it == "state=generating" } == true
-                }.getOrDefault(false)
+                val legacyStateBefore = readLegacyRuntimeState(container)
+                val backendRequest = latestBackendRequest?.takeIf {
+                    it.serial == snapshot.backendGeneration && it.backend == BACKEND_NATIVE
+                }
+                val liveLegacyTransition =
+                    backendRequest?.previousBackend == BACKEND_LEGACY
+                val legacyAckRequired =
+                    liveLegacyTransition ||
+                        (legacyStateBefore.fresh &&
+                            legacyStateBefore.resident &&
+                            !legacyStateBefore.readyForSourceOnly)
 
                 // Native compute cannot arm until the resident implicit layer has
                 // been commanded source-only. This prevents double generation.
@@ -1021,7 +1030,16 @@ object LsfgVkManager {
                 }
 
                 val deadline = System.nanoTime() + 30_000_000_000L
-                if (legacyWasGenerating) {
+                if (legacyAckRequired) {
+                    Timber.i(
+                        "LSFG_BACKEND: event=legacy_source_only_wait requested_revision=%d " +
+                            "backend_generation=%d reason=%s legacy_fresh=%d legacy_resident=%d",
+                        snapshot.revision,
+                        snapshot.backendGeneration,
+                        if (liveLegacyTransition) "live-backend-transition" else "observed-legacy-active",
+                        if (legacyStateBefore.fresh) 1 else 0,
+                        if (legacyStateBefore.resident) 1 else 0,
+                    )
                     while (!readLegacyRuntimeState(container).readyForSourceOnly) {
                         if (!snapshotIsCurrent(snapshot, generation)) {
                             discardStaleSnapshot(snapshot, "legacy-ack")

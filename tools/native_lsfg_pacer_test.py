@@ -125,9 +125,18 @@ int main() {
     std::cout << "native LSFG pacer: explicit slots, fixed 2x/3x/4x, adaptive selected density, capacity, fractional credit, reset passed\n";
 }
 '''
+shared = root.parent / "lsfg-vk-android"
 with tempfile.TemporaryDirectory(prefix="native-lsfg-pacer-") as directory:
     cpp = Path(directory) / "test.cpp"
     binary = Path(directory) / "test"
     cpp.write_text(test)
-    subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(root), str(cpp), str(root / "lsfg_pacer.cpp"), "-o", str(binary)], check=True)
+    subprocess.run([
+        "g++", "-std=c++20", "-Wall", "-Wextra", "-Werror",
+        "-I", str(root),
+        "-I", str(shared / "include"),
+        str(cpp),
+        str(root / "lsfg_pacer.cpp"),
+        str(shared / "src/adaptive_scheduler.cpp"),
+        "-o", str(binary),
+    ], check=True)
     subprocess.run([str(binary)], check=True)

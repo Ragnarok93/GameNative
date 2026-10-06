@@ -54,7 +54,7 @@ public class NativeBridgeTest {
     static final int EFFECT_NONE = 0;
     int pendingEffectId = 0, pendingEffectMask = 0, pendingFilterMode = 0, outputScalingMode = 0;
     float pendingSharpness = 0, pendingBrightness = 0, pendingContrast = 0, pendingGamma = 1;
-    boolean compositorRequired = false, nativeEnabled = false;
+    boolean compositorRequired = false, nativeEnabled = false, surfaceAttached = false;
     long generatedAccepted = 0;
     List<String> calls = new ArrayList<>();
     class SurfaceView {
@@ -83,6 +83,7 @@ public class NativeBridgeTest {
     void nativeSetFrameGenerationEnabled(long handle, boolean enabled) {
         nativeEnabled = enabled; calls.add("enabled:" + handle + ":" + enabled);
     }
+    boolean nativeHasPresentationSurface(long handle) { return surfaceAttached; }
     boolean nativeIsFrameGenerationSupported(long handle) { return nativeEnabled; }
     long nativeGetGeneratedPresentedFrameCount(long handle) { return generatedAccepted; }
     /* METHODS */
@@ -97,6 +98,7 @@ public class NativeBridgeTest {
         require(!bridge.isFrameGenerationSupported());
         bridge.calls.clear();
         bridge.nativeHandle = 1;
+        bridge.surfaceAttached = true;
         bridge.replayFrameGenerationLocked();
         require(bridge.calls.equals(Arrays.asList(
             "arm:1", "mode:1:4:120:80:1:3:17", "refresh:1:120.0",
@@ -116,6 +118,7 @@ public class NativeBridgeTest {
         require(!bridge.compositorRequired);
         // Surface recreation replays disabled state too, preserving Legacy.
         bridge.nativeHandle = 2;
+        bridge.surfaceAttached = true;
         bridge.replayFrameGenerationLocked();
         require(bridge.calls.contains("enabled:2:false"));
         require(!bridge.isFrameGenerationSupported());

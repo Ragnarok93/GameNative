@@ -41,6 +41,9 @@ jobs:
       - name: Prepare exact GameNative-pinned LSFG native runtime
         uses: ./.github/actions/prepare-lsfg-native
 
+      - name: Rebuild Native LSFG Vulkan renderer
+        uses: ./.github/actions/prepare-vulkan-renderer-native
+
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@v6
 
@@ -145,6 +148,7 @@ jobs:
 
           apk="${apks[0]}"
           cp "$apk" gamenative-legacy-release.apk
+          bash tools/verify-native-lsfg-apk.sh gamenative-legacy-release.apk
           unzip -Z1 gamenative-legacy-release.apk > apk-entries.txt
 
           # Release must not contain debug-only local manifest/probe payloads.

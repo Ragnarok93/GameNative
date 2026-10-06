@@ -226,6 +226,34 @@ class LsfgBuildWorkflowContractTest {
     }
 
     @Test
+    fun everyPackagedApkRebuildsAndVerifiesNativeRendererJni() {
+        val workflows = listOf(
+            ".github/workflows/pluvia-pr-check.yml",
+            ".github/workflows/legacy-release-build.yml",
+            ".github/workflows/tagged-release.yml",
+            ".github/workflows/app-release-signed.yml",
+            ".github/workflows/adhoc-signed-build.yml",
+            ".github/workflows/upgradeable-debug.yml",
+        )
+        workflows.forEach { path ->
+            val source = repoFile(path).readText()
+            assertTrue(
+                "$path must rebuild the current Vulkan renderer before packaging",
+                source.contains("uses: ./.github/actions/prepare-vulkan-renderer-native"),
+            )
+            assertTrue(
+                "$path must verify the renderer extracted from the final APK",
+                source.contains("verify-native-lsfg-apk.sh"),
+            )
+        }
+
+        val verifier = repoFile("tools/verify-native-lsfg-apk.sh").readText()
+        assertTrue(verifier.contains("lib/arm64-v8a/libvulkan_renderer.so"))
+        assertTrue(verifier.contains("verify-native-lsfg-jni.sh"))
+        assertTrue(verifier.contains("unzip -p"))
+    }
+
+    @Test
     fun retiredLsfgStagingWorkflowsStayAbsent() {
         val workflowDir = repoFile(".github/workflows/pluvia-pr-check.yml").parentFile
         listOf(

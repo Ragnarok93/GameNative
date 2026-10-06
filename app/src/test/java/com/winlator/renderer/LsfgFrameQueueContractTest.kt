@@ -326,6 +326,8 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("legacy-output-slot-drop"))
         assertTrue(implementation.contains("missed-usable-output-slot"))
         assertTrue(implementation.contains("legacy-output-slot-missed-no-phase-repair"))
+        assertTrue(implementation.contains("droppedStaleDelivery"))
+        assertTrue(implementation.contains("same AHB through texMap"))
         assertFalse(implementation.contains("material cadence/configuration change rebases once"))
     }
 

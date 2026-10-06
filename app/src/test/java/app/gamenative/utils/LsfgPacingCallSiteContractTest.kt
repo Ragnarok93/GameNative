@@ -97,7 +97,8 @@ class LsfgPacingCallSiteContractTest {
         val manager = read("app/gamenative/utils/LsfgVkManager.kt")
 
         assertTrue(handoff.contains("LsfgVkManager.readRuntimeState(container)"))
-        assertTrue(handoff.contains("runtimeState.readyForGeneration"))
+        assertTrue(handoff.contains("runtimeState.nativeActivationReady"))
+        assertTrue(manager.contains("val nativeActivationReady"))
         assertTrue(handoff.contains("runtimeState.readyForSourceOnly"))
         assertTrue(handoff.contains("LsfgVkManager.backend(container) == backend"))
         assertTrue(handoff.contains("isBackendTransitionPresentationReady"))

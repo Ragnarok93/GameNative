@@ -76,6 +76,8 @@ jobs:
           --tests app.gamenative.utils.LsfgAdaptiveFlowUiContractTest
           --tests app.gamenative.utils.LsfgBuildWorkflowContractTest
           --tests app.gamenative.utils.LsfgNativeRendererIntegrationContractTest
+          --tests app.gamenative.utils.LsfgPacingCallSiteContractTest
+          --tests app.gamenative.utils.LsfgRuntimeUpdateDebouncerTest
           --tests app.gamenative.utils.XServerLaunchBootstrapContractTest
           --tests com.winlator.renderer.VulkanRendererAhbCacheContractTest
           --tests com.winlator.renderer.VulkanRendererDisplayConfirmationContractTest

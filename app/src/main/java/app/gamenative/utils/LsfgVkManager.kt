@@ -955,6 +955,7 @@ object LsfgVkManager {
     @Volatile private var guestSuspensionContainer: Container? = null
     @Volatile private var guestSuspensionProbe: (() -> Boolean)? = null
     @Volatile private var latestNativeSnapshot: NativeRuntimeConfigSnapshot? = null
+    @Volatile private var nativeSnapshotContainer: Container? = null
     @Volatile private var nativeAppliedRevision = 0L
     @Volatile private var nativeBackendPhase = NativeBackendPhase.NATIVE_REQUESTED
     @Volatile private var nativeFailureReason: String? = null
@@ -1314,6 +1315,7 @@ object LsfgVkManager {
         }
 
         latestNativeSnapshot = snapshot
+        nativeSnapshotContainer = container
         val generation = nativeApplyGeneration.incrementAndGet()
         nativeApplyScheduledRenderer = WeakReference(renderer)
         nativeApplyScheduledRevision = snapshot.revision
@@ -1628,7 +1630,8 @@ object LsfgVkManager {
         }
 
         val currentSnapshot = latestNativeSnapshot?.takeIf {
-            it.revision == nativeConfigRevision.get() &&
+            nativeSnapshotContainer === container &&
+                it.revision == nativeConfigRevision.get() &&
                 it.backendGeneration == backendRequestSerial.get()
         }
         val alreadyApplied =
@@ -2499,6 +2502,10 @@ object LsfgVkManager {
             frameQueueTarget = frameQueueTarget,
             requestToken = requestToken,
         )
+        // Retain the winning immutable request even when the renderer is not
+        // attached yet; a later attachment must not allocate a second revision.
+        latestNativeSnapshot = snapshot
+        nativeSnapshotContainer = container
         if (!configFile(container).exists()) {
             Timber.tag(TAG).w("conf.toml not found, cannot hot-reload")
             return false

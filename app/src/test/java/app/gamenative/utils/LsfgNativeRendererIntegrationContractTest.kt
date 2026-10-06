@@ -37,6 +37,37 @@ class LsfgNativeRendererIntegrationContractTest {
     }
 
     @Test
+    fun nativeAdaptiveFlowAndFrameQueueTelemetryUsesTheLegacyComparableSchema() {
+        val root = repoRoot()
+        val manager =
+            File(root, "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt").readText()
+        val quickMenu =
+            File(root, "app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt").readText()
+        val javaRenderer =
+            File(root, "app/src/main/java/com/winlator/renderer/VulkanRenderer.java").readText()
+        val context =
+            File(root, "app/src/main/cpp/winlator/VulkanRendererContext.cpp").readText()
+        val native =
+            File(root, "app/src/main/cpp/winlator/VulkanRendererLsfg.cpp").readText()
+
+        assertTrue(manager.contains("LSFG_RUNTIME_CONFIG: event=%s"))
+        assertTrue(manager.contains("LSFG_ADAPTIVE_FLOW: event=pressure"))
+        assertTrue(manager.contains("native_pressure_forwarded=%d"))
+        assertTrue(quickMenu.contains("LSFG_RUNTIME_CONFIG: event=commit"))
+        assertTrue(javaRenderer.contains("event=runtime_apply backend=native"))
+
+        assertTrue(native.contains("adaptive_framegen=%d adaptive_flow=%d"))
+        assertTrue(native.contains("frame_queue_enabled=%d frame_queue_target=%u"))
+        assertTrue(native.contains("requested_present_mode=%d active_present_mode=%d"))
+        assertTrue(context.contains("config_revision=%llu multiplier=%u target_fps=%u"))
+        assertTrue(context.contains("generated_frame_drop_reason=%s"))
+        assertTrue(context.contains("actual_confirmation_ns=%"))
+        assertTrue(context.contains("backend=%s delivery_kind=%s"))
+        assertTrue(context.contains("LSFG_HOST_DELIVERY"))
+        assertTrue(context.contains("provenanceBackendName(provenance)"))
+    }
+
+    @Test
     fun nativeRendererStateHasItsRequiredIntegrationSeam() {
         val root = repoRoot()
         val header = File(root, "app/src/main/cpp/winlator/VulkanRendererContext.h").readText()

@@ -1572,6 +1572,8 @@ object LsfgVkManager {
         container: Container,
         context: Context,
     ) {
+        if (nativeRendererRef?.get() === renderer && nativeRendererContainer === container)
+            return
         nativeRendererRef = WeakReference(renderer)
         nativeRendererContext = context.applicationContext
         nativeRendererContainer = container

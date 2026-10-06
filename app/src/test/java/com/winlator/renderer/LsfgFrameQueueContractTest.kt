@@ -313,6 +313,18 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun persistentSuboptimalAuditIsDebouncedAndResetPerSwapchainEpoch() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("kPersistentSuboptimalRequeryNs = 1000000000ULL"))
+        assertTrue(implementation.contains("hostSuboptimalLastRequeryNs_ = 0"))
+        assertTrue(implementation.contains("hostSuboptimalConsecutive_ = 0"))
+        assertTrue(implementation.contains("hostSuboptimalWindow_.clear()"))
+        assertTrue(implementation.contains("transformChanged"))
+        assertTrue(implementation.contains("caps.currentTransform != swapchainPreTransform_"))
+    }
+
+    @Test
     fun hostDisplayTelemetryTracksTemporalFallbackAndResetsPhysicalCadencePerEpoch() {
         val header = source("VulkanRendererContext.h")
         val implementation = source("VulkanRendererContext.cpp")

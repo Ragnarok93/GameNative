@@ -238,5 +238,48 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(!javaRenderer.contains("nativeOwnsFrameQueuePolicy"))
         assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
         assertTrue(context.contains("nativeLsfgContentPending"))
+
+        // Native must preserve the same selected present-mode policy as Legacy.
+        // The previous hardcoded FIFO path poisoned admission with FIFO blocking.
+        val applyPresentStart =
+            javaRenderer.indexOf("public boolean applyFrameGenerationSettings")
+        val applyPresentEnd =
+            javaRenderer.indexOf("public void setFrameGenerationShaders", applyPresentStart)
+        val applyPresentBody =
+            javaRenderer.substring(applyPresentStart, applyPresentEnd)
+        assertTrue(applyPresentBody.contains("nativeSetPresentMode(handle, pendingPresentMode)"))
+        assertTrue(!applyPresentBody.contains("pendingPresentMode = 2"))
+        assertTrue(!applyPresentBody.contains("nativeSetPresentMode(handle, 2)"))
+        assertTrue(manager.contains("renderer.setVkPresentMode("))
+        assertTrue(manager.contains("if (snapshot.presentMode == \"mailbox\") 1 else 2"))
+
+        // Android WSI uses the surface's current transform unless it is
+        // genuinely unsupported; identity support alone is not an override.
+        assertTrue(context.contains("VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform"))
+        assertTrue(context.contains("(caps.supportedTransforms & pre) == 0"))
+        assertTrue(context.contains("transformChanged"))
+        assertTrue(context.contains("transform_changed=%d"))
+
+        // Native admission must distinguish presenter service from blocked
+        // vkQueuePresentKHR tail latency. A FIFO p95 >= one source period must
+        // not automatically zero every synthetic opportunity.
+        val admissionStart2 =
+            context.indexOf("uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity")
+        val admissionEnd2 =
+            context.indexOf("void VulkanRendererContext::emitNativeLsfgPipelineTelemetry", admissionStart2)
+        val admissionBody2 = context.substring(admissionStart2, admissionEnd2)
+        assertTrue(admissionBody2.contains("p50PresentNs"))
+        assertTrue(admissionBody2.contains("p95PresentNs"))
+        assertTrue(admissionBody2.contains("serviceEstimateNs"))
+        assertTrue(admissionBody2.contains("hostRefreshPeriodNs_"))
+        assertTrue(admissionBody2.contains("std::min(serviceEstimateNs, refreshBoundNs)"))
+        assertTrue(!admissionBody2.contains("occupied) * p95PresentNs"))
+        assertTrue(context.contains("admission_service_estimate_ms="))
+
+        // Structural presenter/admission loss is allowed to reduce Adaptive FG
+        // density even when lowering Flow cannot fix the rejected temporal slot.
+        assertTrue(vkr.contains("structural_presentation_pressure"))
+        assertTrue(vkr.contains("presentation_pressure || lsfg->synthetic_drop_pressure"))
+        assertTrue(vkr.contains("adaptive_generation_cap < VKR_LSFG_MAX_GENERATIONS"))
     }
 }

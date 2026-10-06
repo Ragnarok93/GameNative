@@ -152,6 +152,9 @@ jobs:
             grep -aFq 'LSFG_FRAME_QUEUE'
           unzip -p "$staged_apk" 'lib/arm64-v8a/libvulkan_renderer.so' |
             grep -aFq 'gamenative-native-lsfg-v1.3-complete'
+          packaged_renderer="$stage/libvulkan_renderer.so"
+          unzip -p "$staged_apk" 'lib/arm64-v8a/libvulkan_renderer.so' > "$packaged_renderer"
+          bash tools/verify-native-lsfg-jni.sh "$packaged_renderer"
 
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
           aapt="$(

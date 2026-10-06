@@ -57,6 +57,8 @@ runs:
         test -n "${built:-}"
         test -s "$built"
 
+        bash tools/verify-native-lsfg-jni.sh "$built"
+
         if ! grep -aFq "$marker" "$built"; then
           echo "ERROR: rebuilt Vulkan renderer does not contain $marker" >&2
           exit 1
@@ -68,6 +70,7 @@ runs:
           cp "$built" "$destination"
           test -s "$destination"
           grep -aFq "$marker" "$destination"
+          bash tools/verify-native-lsfg-jni.sh "$destination"
         done
 
         grep -aFq 'gamenative-native-lsfg-v1.3-complete' "$built"

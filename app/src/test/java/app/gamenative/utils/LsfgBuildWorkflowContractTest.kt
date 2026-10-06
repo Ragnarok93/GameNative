@@ -153,6 +153,23 @@ class LsfgBuildWorkflowContractTest {
         )
         assertTrue(workflow.contains("lib/arm64-v8a/libvulkan_renderer.so"))
         assertTrue(workflow.contains("gamenative-host-display-confirmation-v3-split-present-worker"))
+        assertTrue(workflow.contains("verify-native-lsfg-jni.sh"))
+
+        val standaloneCmake =
+            repoFile("app/src/main/cpp/vulkan-renderer-build/CMakeLists.txt").readText()
+        assertTrue(standaloneCmake.contains("\${LSFG_DIR}/lsfg_probe.c"))
+        assertTrue(standaloneCmake.contains("\${LSFG_DIR}/lsfg_jni.c"))
+
+        val jniVerifier = repoFile("tools/verify-native-lsfg-jni.sh").readText()
+        listOf(
+            "LosslessScaling_nativeBuildCache",
+            "LosslessScaling_nativeCacheMatchesSource",
+            "LosslessScaling_nativeSupportsFp16",
+            "Machine:",
+            "AArch64",
+        ).forEach { token ->
+            assertTrue("Native JNI verifier is missing $token", jniVerifier.contains(token))
+        }
 
         listOf(
             "glslang-tools",
@@ -160,6 +177,7 @@ class LsfgBuildWorkflowContractTest {
             "--target vulkan_renderer",
             "libvulkan_renderer.so",
             "gamenative-host-display-confirmation-v3-split-present-worker",
+            "verify-native-lsfg-jni.sh",
         ).forEach { token ->
             assertTrue("Vulkan renderer preparation action is missing $token", action.contains(token))
         }

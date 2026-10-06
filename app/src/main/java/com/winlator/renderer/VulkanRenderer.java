@@ -52,7 +52,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         new ReentrantReadWriteLock();
     private volatile boolean frameGenerationSupportedSnapshot = false;
     private volatile boolean nativeSurfaceSnapshot = false;
-    private volatile boolean nativeOwnsFrameQueuePolicy = false;
     private volatile boolean pendingFramegenArmed = false;
     private volatile boolean pendingFramegenEnabled = false;
     private volatile String pendingFramegenShaders = "";
@@ -286,10 +285,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     nativeSetPresentMode(nativeHandle, pendingPresentMode);
                     nativeSetLsfgFrameQueue(
                         nativeHandle,
-                        nativeOwnsFrameQueuePolicy
-                            ? false : pendingLsfgFrameQueueEnabled,
-                        nativeOwnsFrameQueuePolicy
-                            ? 0 : pendingLsfgFrameQueueTarget);
+                        pendingLsfgFrameQueueEnabled,
+                        pendingLsfgFrameQueueTarget);
                     nativeSurfaceSnapshot = true;
                     frameGenerationSupportedSnapshot =
                         nativeIsFrameGenerationSupported(nativeHandle);
@@ -1055,7 +1052,6 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         pendingFramegenConfigRevision = Math.max(0L, configRevision);
         pendingFramegenRefreshRate = refreshRate;
         pendingPresentMode = 2;
-        nativeOwnsFrameQueuePolicy = true;
 
         // applyFrameGenerationSettings used to route through
         // setFrameGenerationEnabled(), whose post also forces compositor
@@ -1074,15 +1070,18 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             if (!stillRequested.getAsBoolean() || nativeHandle == 0) return false;
             final long handle = nativeHandle;
             nativeSetPresentMode(handle, 2);
-            // Native owns a strictly bounded shallow presenter queue. Preserve
-            // persisted Legacy preferences but never apply them to the live renderer.
-            nativeSetLsfgFrameQueue(handle, false, 0);
+            // Native and Legacy share the same GameNative Frame Queue policy.
+            // Native adds only pre-acquire stale-slot admission; it does not
+            // substitute a second buffering state machine.
+            nativeSetLsfgFrameQueue(
+                handle,
+                pendingLsfgFrameQueueEnabled,
+                pendingLsfgFrameQueueTarget);
             android.util.Log.i(
                 "LSFG_FRAME_QUEUE",
-                "event=policy-ownership owner=native stored_enabled="
-                    + (pendingLsfgFrameQueueEnabled ? 1 : 0)
-                    + " stored_target=" + pendingLsfgFrameQueueTarget
-                    + " live_enabled=0 live_target=0");
+                "event=policy-ownership owner=shared-host-frame-queue"
+                    + " enabled=" + (pendingLsfgFrameQueueEnabled ? 1 : 0)
+                    + " requested_target=" + pendingLsfgFrameQueueTarget);
             nativeArmFrameGeneration(handle);
             nativeSetFrameGenerationMode(
                 handle, pendingFramegenMultiplier, pendingFramegenTargetRate,
@@ -1222,42 +1221,11 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         nativeLifetimeLock.readLock().lock();
         try {
             if (nativeHandle != 0) {
-                if (nativeOwnsFrameQueuePolicy) {
-                    android.util.Log.i(
-                        "LSFG_FRAME_QUEUE",
-                        "event=legacy-policy-retained owner=native stored_enabled="
-                            + (pendingLsfgFrameQueueEnabled ? 1 : 0)
-                            + " stored_target=" + pendingLsfgFrameQueueTarget
-                            + " live_enabled=0 live_target=0");
-                } else {
-                    nativeSetLsfgFrameQueue(
-                        nativeHandle,
-                        pendingLsfgFrameQueueEnabled,
-                        pendingLsfgFrameQueueTarget);
-                }
-            }
-        } finally {
-            nativeLifetimeLock.readLock().unlock();
-        }
-    }
-
-    public void setNativeFrameQueuePolicyOwned(boolean owned) {
-        nativeOwnsFrameQueuePolicy = owned;
-        nativeLifetimeLock.readLock().lock();
-        try {
-            if (nativeHandle != 0) {
                 nativeSetLsfgFrameQueue(
                     nativeHandle,
-                    owned ? false : pendingLsfgFrameQueueEnabled,
-                    owned ? 0 : pendingLsfgFrameQueueTarget);
+                    pendingLsfgFrameQueueEnabled,
+                    pendingLsfgFrameQueueTarget);
             }
-            android.util.Log.i(
-                "LSFG_FRAME_QUEUE",
-                "event=policy-ownership owner=" + (owned ? "native" : "legacy")
-                    + " stored_enabled=" + (pendingLsfgFrameQueueEnabled ? 1 : 0)
-                    + " stored_target=" + pendingLsfgFrameQueueTarget
-                    + " live_enabled=" + (owned ? 0 : (pendingLsfgFrameQueueEnabled ? 1 : 0))
-                    + " live_target=" + (owned ? 0 : pendingLsfgFrameQueueTarget));
         } finally {
             nativeLifetimeLock.readLock().unlock();
         }

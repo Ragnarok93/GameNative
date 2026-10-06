@@ -491,22 +491,6 @@ fun QuickMenu(
                 ?: app.gamenative.utils.LsfgQuickMenuHelper.FrameQueueTarget.UNBUFFERED
         )
     }
-    LaunchedEffect(
-        lsfgMultiplier,
-        lsfgFrameQueueEnabled,
-        lsfgFrameQueueTarget,
-        lsfgPresentMode,
-        renderer,
-        container,
-    ) {
-        container?.let { activeContainer ->
-            app.gamenative.utils.LsfgQuickMenuHelper.applyFrameQueueToRenderer(
-                activeContainer,
-                renderer,
-            )
-        }
-    }
-
     var selectedTab by rememberSaveable {
         mutableIntStateOf(
             when {
@@ -959,10 +943,13 @@ fun QuickMenu(
                                                     app.gamenative.utils.LsfgQuickMenuHelper
                                                         .setFrameQueueEnabled(it, enabled)
                                                 }
-                                                renderer?.setLsfgFrameQueue(
-                                                    lsfgMultiplier >= 2 && enabled,
-                                                    lsfgFrameQueueTarget.depth,
-                                                )
+                                                container?.let { activeContainer ->
+                                                    LsfgVkManager.applyFrameQueuePolicy(
+                                                        activeContainer,
+                                                        enabledOverride = lsfgMultiplier >= 2 && enabled,
+                                                        targetOverride = lsfgFrameQueueTarget.depth,
+                                                    )
+                                                }
                                             },
                                             onFrameQueueTargetChanged = { target ->
                                                 lsfgFrameQueueTarget = target
@@ -970,10 +957,13 @@ fun QuickMenu(
                                                     app.gamenative.utils.LsfgQuickMenuHelper
                                                         .setFrameQueueTarget(it, target)
                                                 }
-                                                renderer?.setLsfgFrameQueue(
-                                                    lsfgMultiplier >= 2 && lsfgFrameQueueEnabled,
-                                                    target.depth,
-                                                )
+                                                container?.let { activeContainer ->
+                                                    LsfgVkManager.applyFrameQueuePolicy(
+                                                        activeContainer,
+                                                        enabledOverride = lsfgMultiplier >= 2 && lsfgFrameQueueEnabled,
+                                                        targetOverride = target.depth,
+                                                    )
+                                                }
                                             },
                                             presentMode = lsfgPresentMode,
                                             onPresentModeChanged = { mode ->
@@ -983,11 +973,7 @@ fun QuickMenu(
                                                         activeContainer,
                                                         mode,
                                                     )
-                                                    app.gamenative.utils.LsfgQuickMenuHelper
-                                                        .applyFrameQueueToRenderer(
-                                                            activeContainer,
-                                                            renderer,
-                                                        )
+                                                    LsfgVkManager.applyFrameQueuePolicy(activeContainer)
                                                     val view = app.gamenative.PluviaApp.xServerView
                                                     val vulkanView =
                                                         view as? com.winlator.widget.XServerView

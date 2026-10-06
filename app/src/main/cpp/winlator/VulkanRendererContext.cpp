@@ -829,16 +829,51 @@ void VulkanRendererContext::createSwapchain() {
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = oldSwapchain;
 
+    if (lsfgBackendTransitionId_ != 0)
+        ++lsfgBackendTransitionRecreationAttempts_;
     const VkResult createResult =
         vk_.CreateSwapchainKHR(device, &ci, nullptr, &swapchain);
-    if (createResult != VK_SUCCESS)
+    if (createResult != VK_SUCCESS) {
+        if (lsfgBackendTransitionId_ != 0 &&
+            lsfgBackendTransitionRecreationAttempts_ == 1) {
+            lsfgBackendTransitionFirstRecreationFailed_ = true;
+            __android_log_print(
+                ANDROID_LOG_WARN, "LSFG_BACKEND_TX",
+                "event=swapchain_recreation_failed transaction_id=%" PRIu64
+                " revision=%" PRIu64 " result=%d generation=%" PRIu64,
+                lsfgBackendTransitionId_, lsfgBackendTransitionRevision_,
+                static_cast<int>(createResult), hostSwapchainGeneration_);
+        }
         throw std::runtime_error("swapchain");
+    }
 
     if (oldSwapchain != VK_NULL_HANDLE) {
         flushHostDisplayConfirmationsUnknown("swapchain-recreated");
         resetHostPhysicalCadenceTelemetry("swapchain-recreated");
     }
     ++hostSwapchainGeneration_;
+    if (lsfgBackendTransitionId_ != 0) {
+        ++lsfgBackendTransitionRecreationCount_;
+        const bool invariantOk =
+            lsfgBackendTransitionRecreationCount_ <= 1
+            || lsfgBackendTransitionFirstRecreationFailed_;
+        __android_log_print(
+            invariantOk ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            "LSFG_BACKEND_TX",
+            "event=swapchain_recreation transaction_id=%" PRIu64
+            " revision=%" PRIu64 " generation_before=%" PRIu64
+            " generation_after=%" PRIu64 " recreation_attempts=%u"
+            " recreation_count=%u first_recreation_failed=%d invariant_ok=%d",
+            lsfgBackendTransitionId_, lsfgBackendTransitionRevision_,
+            lsfgBackendTransitionStartGeneration_, hostSwapchainGeneration_,
+            lsfgBackendTransitionRecreationAttempts_,
+            lsfgBackendTransitionRecreationCount_,
+            lsfgBackendTransitionFirstRecreationFailed_ ? 1 : 0,
+            invariantOk ? 1 : 0);
+#ifndef NDEBUG
+        assert(invariantOk && "one LSFG backend transition caused multiple swapchain generations");
+#endif
+    }
     nativePresentationSurfaceReady_.store(true, std::memory_order_release);
     lastAcceptedDesiredPresentTimeNs_ = 0;
     hostSuboptimalConsecutive_ = 0;

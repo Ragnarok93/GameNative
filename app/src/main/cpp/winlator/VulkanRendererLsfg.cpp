@@ -393,6 +393,51 @@ void VulkanRendererContext::armFrameGeneration() {
     framegenArmed = true;
 }
 
+void VulkanRendererContext::beginLsfgBackendTransition(
+        uint64_t transactionId, uint64_t revision) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
+    lsfgBackendTransitionId_ = transactionId;
+    lsfgBackendTransitionRevision_ = revision;
+    lsfgBackendTransitionStartGeneration_ = hostSwapchainGeneration_;
+    lsfgBackendTransitionRecreationAttempts_ = 0;
+    lsfgBackendTransitionRecreationCount_ = 0;
+    lsfgBackendTransitionFirstRecreationFailed_ = false;
+    RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_begin transaction_id=%llu "
+         "revision=%llu generation_before=%llu",
+         (unsigned long long)transactionId, (unsigned long long)revision,
+         (unsigned long long)hostSwapchainGeneration_);
+}
+
+void VulkanRendererContext::completeLsfgBackendTransition(
+        uint64_t transactionId, const char* reason) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
+    if (lsfgBackendTransitionId_ != transactionId) return;
+    const bool invariantOk =
+        lsfgBackendTransitionRecreationCount_ <= 1
+        || lsfgBackendTransitionFirstRecreationFailed_;
+    RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_complete transaction_id=%llu "
+         "revision=%llu generation_before=%llu generation_after=%llu "
+         "recreation_attempts=%u recreation_count=%u first_recreation_failed=%d "
+         "invariant_ok=%d completion_reason=%s",
+         (unsigned long long)transactionId,
+         (unsigned long long)lsfgBackendTransitionRevision_,
+         (unsigned long long)lsfgBackendTransitionStartGeneration_,
+         (unsigned long long)hostSwapchainGeneration_,
+         lsfgBackendTransitionRecreationAttempts_,
+         lsfgBackendTransitionRecreationCount_,
+         lsfgBackendTransitionFirstRecreationFailed_ ? 1 : 0,
+         invariantOk ? 1 : 0, reason ? reason : "unknown");
+#ifndef NDEBUG
+    assert(invariantOk && "one LSFG backend transition caused multiple swapchain generations");
+#endif
+    lsfgBackendTransitionId_ = 0;
+    lsfgBackendTransitionRevision_ = 0;
+    lsfgBackendTransitionStartGeneration_ = hostSwapchainGeneration_;
+    lsfgBackendTransitionRecreationAttempts_ = 0;
+    lsfgBackendTransitionRecreationCount_ = 0;
+    lsfgBackendTransitionFirstRecreationFailed_ = false;
+}
+
 void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
     std::unique_lock<std::shared_mutex> fl(frameMutex);
     framegenArmed = true;

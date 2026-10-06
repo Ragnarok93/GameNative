@@ -210,6 +210,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native long nativeGetSourceDisplayConfirmedFrameCount(long handle);
     private native boolean nativeIsDisplayConfirmationAvailable(long handle);
     private native void nativeSetFrameGenerationEnabled(long handle, boolean enabled);
+    private native void nativeBeginLsfgBackendTransition(long handle, long transactionId, long revision);
+    private native void nativeCompleteLsfgBackendTransition(long handle, long transactionId, String reason);
     private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
     private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
     private native void nativeSetFrameGenerationMode(long handle, int multiplier, int targetRate,
@@ -263,6 +265,9 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         nativeHandle = 0;
                         xrTargetAhbPtr = 0;
                     } else {
+                        nativeSetPresentMode(nativeHandle, pendingPresentMode);
+                        nativeSetLsfgFrameQueue(nativeHandle, pendingLsfgFrameQueueEnabled, pendingLsfgFrameQueueTarget);
+                        replayFrameGenerationLocked();
                         nativeSurfaceSnapshot = true;
                         frameGenerationSupportedSnapshot =
                             nativeIsFrameGenerationSupported(nativeHandle);
@@ -281,12 +286,12 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     nativeLibDir,
                     "");
                 if (nativeHandle != 0) {
-                    replayFrameGenerationLocked();
                     nativeSetPresentMode(nativeHandle, pendingPresentMode);
                     nativeSetLsfgFrameQueue(
                         nativeHandle,
                         pendingLsfgFrameQueueEnabled,
                         pendingLsfgFrameQueueTarget);
+                    replayFrameGenerationLocked();
                     nativeSurfaceSnapshot = true;
                     frameGenerationSupportedSnapshot =
                         nativeIsFrameGenerationSupported(nativeHandle);
@@ -1008,6 +1013,27 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         nativeLifetimeLock.readLock().lock();
         try {
             if (nativeHandle != 0) nativeArmFrameGeneration(nativeHandle);
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public void beginLsfgBackendTransition(long transactionId, long revision) {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            if (nativeHandle != 0)
+                nativeBeginLsfgBackendTransition(nativeHandle, transactionId, revision);
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public void completeLsfgBackendTransition(long transactionId, String reason) {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            if (nativeHandle != 0)
+                nativeCompleteLsfgBackendTransition(
+                    nativeHandle, transactionId, reason == null ? "unknown" : reason);
         } finally {
             nativeLifetimeLock.readLock().unlock();
         }

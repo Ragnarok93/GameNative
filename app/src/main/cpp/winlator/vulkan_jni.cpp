@@ -348,6 +348,26 @@ Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationEnabled(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeBeginLsfgBackendTransition(
+        JNIEnv*, jobject, jlong handle, jlong transactionId, jlong revision) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->beginLsfgBackendTransition(
+            static_cast<uint64_t>(transactionId),
+            static_cast<uint64_t>(revision));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeCompleteLsfgBackendTransition(
+        JNIEnv* env, jobject, jlong handle, jlong transactionId, jstring reason) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    if (!renderer) return;
+    const char* chars = reason ? env->GetStringUTFChars(reason, nullptr) : nullptr;
+    renderer->completeLsfgBackendTransition(
+        static_cast<uint64_t>(transactionId), chars ? chars : "unknown");
+    if (chars) env->ReleaseStringUTFChars(reason, chars);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationShaders(
         JNIEnv* env, jobject, jlong handle, jstring cachePath) {
     auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);

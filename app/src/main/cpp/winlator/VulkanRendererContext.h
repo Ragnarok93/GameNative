@@ -360,6 +360,8 @@ public:
 
     void armFrameGeneration();
     void setFrameGenerationEnabled(bool enabled);
+    void beginLsfgBackendTransition(uint64_t transactionId, uint64_t revision);
+    void completeLsfgBackendTransition(uint64_t transactionId, const char* reason);
     bool isFrameGenerationSupported() const;
     void setFrameGenerationShaders(const std::string& cachePath);
     void setFrameGenerationRefreshRate(float hz);
@@ -483,6 +485,12 @@ private:
     uint64_t hostTemporalBacklogTotal_ = 0;
     uint64_t hostRefreshCycleQueryFailureTotal_ = 0;
     uint64_t hostSwapchainGeneration_ = 0;
+    uint64_t lsfgBackendTransitionId_ = 0;
+    uint64_t lsfgBackendTransitionRevision_ = 0;
+    uint64_t lsfgBackendTransitionStartGeneration_ = 0;
+    uint32_t lsfgBackendTransitionRecreationAttempts_ = 0;
+    uint32_t lsfgBackendTransitionRecreationCount_ = 0;
+    bool lsfgBackendTransitionFirstRecreationFailed_ = false;
     uint64_t hostPhysicalCadenceEpoch_ = 0;
     uint64_t hostConfirmationPendingHighWater_ = 0;
     uint64_t hostConfirmationExpiredTotal_ = 0;

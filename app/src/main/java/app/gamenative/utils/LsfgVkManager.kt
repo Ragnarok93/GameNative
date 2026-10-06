@@ -2200,12 +2200,19 @@ object LsfgVkManager {
             refreshNativeRuntime(container, snapshot) { result ->
                 if ((result == "source-only-applied" || result == "legacy-restored")
                     && isSnapshotRevisionCurrent(snapshot)) {
-                    val restored = publishLegacyRuntimeConfig(
-                        container,
-                        snapshot,
-                        allowGeneration = true,
-                        reason = "native-retired",
-                    )
+                    val restored = if (result == "legacy-restored") {
+                        true
+                    } else {
+                        // Compatibility fallback for an older/non-owning disable
+                        // path. The current Legacy snapshot normally performs the
+                        // authoritative restore before invoking this callback.
+                        publishLegacyRuntimeConfig(
+                            container,
+                            snapshot,
+                            allowGeneration = true,
+                            reason = "native-retired",
+                        )
+                    }
                     Timber.i(
                         "LSFG_BACKEND: event=handoff_complete direction=native-to-legacy " +
                             "requested_revision=%d backend_generation=%d legacy_restored=%d",

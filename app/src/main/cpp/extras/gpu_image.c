@@ -128,7 +128,7 @@ Java_com_winlator_renderer_GPUImage_isHardwareBufferConfigurationSupported(
         return JNI_FALSE;
 
     typedef int (*AhbIsSupportedFn)(const AHardwareBuffer_Desc*);
-    static AhbIsSupportedFn isSupportedFn =
+    const AhbIsSupportedFn isSupportedFn =
         (AhbIsSupportedFn)dlsym(RTLD_DEFAULT, "AHardwareBuffer_isSupported");
     if (!isSupportedFn) {
         __android_log_print(

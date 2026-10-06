@@ -15,6 +15,27 @@ class LsfgNativeRendererIntegrationContractTest {
     }
 
     @Test
+    fun nativeTimedPresentationPrefersMailboxAndLegacyRestoreIsRevisionSafe() {
+        val manager =
+            File(root, "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt").readText()
+        val context =
+            File(root, "app/src/main/cpp/winlator/VulkanRendererContext.cpp").readText()
+
+        assertTrue(manager.contains("renderer.setVkPresentMode(1)"))
+        assertTrue(manager.contains("native-retired-current-snapshot"))
+        assertTrue(manager.contains("legacy_restore_after_native_retire"))
+        assertTrue(manager.contains("result == \"legacy-restored\""))
+
+        assertTrue(
+            "GameNative compositor must not double-apply Android ROTATE_90",
+            context.contains(
+                "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",
+            ),
+        )
+        assertTrue(context.contains("const bool transformChanged = false"))
+    }
+
+    @Test
     fun nativeRendererStateHasItsRequiredIntegrationSeam() {
         val root = repoRoot()
         val header = File(root, "app/src/main/cpp/winlator/VulkanRendererContext.h").readText()

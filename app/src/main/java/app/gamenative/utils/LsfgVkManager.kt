@@ -186,6 +186,7 @@ object LsfgVkManager {
         Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-stats").apply { isDaemon = true } }
     }
     private val runtimeInstallLock = Any()
+    private val lastRuntimePressureLogMs = AtomicLong(0L)
 
     // Environment variables consumed by the lsfg-vk layer / Vulkan loader.
     private const val ENV_DISABLE = "DISABLE_LSFG"
@@ -601,18 +602,54 @@ object LsfgVkManager {
         )
         val nativeContainer = nativeRendererContainer
         val renderer = nativeRendererRef?.get()
-        if (renderer != null && nativeContainer != null &&
+        val runtimeSnapshot = latestNativeSnapshot
+        val nativeRuntimeActive = renderer != null && nativeContainer != null &&
             nativeContainer.rootDir.absolutePath == root.absolutePath &&
-            latestNativeSnapshot?.backend == BACKEND_NATIVE
-        ) {
+            runtimeSnapshot?.backend == BACKEND_NATIVE
+        val nativeOutputFps = if (nativeRuntimeActive && nativeContainer != null) {
+            readNativeOutputFps(nativeContainer) ?: 0f
+        } else {
+            0f
+        }
+        if (nativeRuntimeActive && renderer != null) {
             renderer.setFrameGenerationPressure(
                 gpu,
                 snapshot.thermalStatus ?: -1,
                 snapshot.fps,
-                readNativeOutputFps(nativeContainer) ?: 0f,
+                nativeOutputFps,
                 snapshot.frameTimeP95Ms,
                 slowRatio.toFloat(),
             )
+        }
+        val nowMs = System.currentTimeMillis()
+        val previousLogMs = lastRuntimePressureLogMs.get()
+        if (previousLogMs == 0L || nowMs - previousLogMs >= 2_000L) {
+            if (lastRuntimePressureLogMs.compareAndSet(previousLogMs, nowMs)) {
+                val config = runtimeSnapshot
+                Timber.i(
+                    "LSFG_ADAPTIVE_FLOW: event=pressure timestamp_ms=%d backend=%s " +
+                        "generation_mode=%s adaptive_framegen=%d flow_mode=%s flow_preset=%s " +
+                        "requested_scale=%.2f gpu_usage_percent=%.1f thermal_status=%d " +
+                        "source_fps=%.2f output_fps=%.2f frame_time_p95_ms=%.2f " +
+                        "slow_frame_ratio=%.4f pressure_file_write_ok=%d " +
+                        "native_pressure_forwarded=%d",
+                    snapshot.timestampMs,
+                    config?.backend ?: nativeContainer?.let(::backend) ?: BACKEND_LEGACY,
+                    config?.generationMode ?: "unknown",
+                    if (config?.generationMode == MODE_ADAPTIVE) 1 else 0,
+                    config?.flowMode ?: "unknown",
+                    config?.flowPreset ?: "unknown",
+                    config?.requestedFlowScale ?: 0f,
+                    gpu,
+                    snapshot.thermalStatus ?: -1,
+                    snapshot.fps,
+                    if (nativeRuntimeActive) nativeOutputFps else 0f,
+                    snapshot.frameTimeP95Ms,
+                    slowRatio,
+                    if (written) 1 else 0,
+                    if (nativeRuntimeActive) 1 else 0,
+                )
+            }
         }
         return written
     }
@@ -1104,6 +1141,33 @@ object LsfgVkManager {
     private fun logNativeSnapshot(snapshot: NativeRuntimeConfigSnapshot, event: String) {
         val nativeEnabled =
             snapshot.backend == BACKEND_NATIVE && snapshot.enabled && snapshot.multiplier >= 2
+        Timber.i(
+            "LSFG_RUNTIME_CONFIG: event=%s requested_revision=%d applied_revision=%d " +
+                "backend_generation=%d backend=%s enabled=%d requested_enabled=%d " +
+                "generation_mode=%s multiplier=%d target_fps=%d flow_mode=%s flow_preset=%s " +
+                "requested_scale=%.2f performance_mode=%d requested_present_mode=%s " +
+                "presentation_policy=%s frame_queue_enabled=%d frame_queue_target=%d " +
+                "display_refresh=%.2f",
+            event,
+            snapshot.revision,
+            nativeAppliedRevision,
+            snapshot.backendGeneration,
+            snapshot.backend,
+            if (snapshot.enabled) 1 else 0,
+            if (snapshot.enabled) 1 else 0,
+            snapshot.generationMode,
+            snapshot.multiplier,
+            snapshot.targetFps,
+            snapshot.flowMode,
+            snapshot.flowPreset,
+            snapshot.requestedFlowScale,
+            if (snapshot.performanceMode) 1 else 0,
+            snapshot.presentMode,
+            if (nativeEnabled) "mailbox" else snapshot.presentMode,
+            if (snapshot.frameQueueEnabled) 1 else 0,
+            snapshot.frameQueueTarget,
+            snapshot.displayRefresh,
+        )
         Timber.i(
             "LSFG_NATIVE_CONFIG: event=%s requested_revision=%d applied_revision=%d backend_generation=%d " +
                 "backend=%s enabled=%d requested_enabled=%d generation_mode=%s multiplier=%d target_fps=%d " +

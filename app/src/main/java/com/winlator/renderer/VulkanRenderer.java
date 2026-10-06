@@ -916,7 +916,12 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     public void setVkPresentMode(int mode) {
         pendingPresentMode = mode;
-        synchronized (lock) { if (nativeHandle != 0) nativeSetPresentMode(nativeHandle, mode); }
+        nativeLifetimeLock.readLock().lock();
+        try {
+            if (nativeHandle != 0) nativeSetPresentMode(nativeHandle, mode);
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
     }
 
     private void replayFrameGenerationLocked() {

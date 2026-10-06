@@ -1203,7 +1203,11 @@ object LsfgVkManager {
                     return@execute
                 }
 
-                // Native reuses the same GameNative Frame Queue policy as Legacy.
+                // Native reuses the same GameNative present-mode and Frame Queue
+                // policy as Legacy. Do not force FIFO during Native arming.
+                renderer.setVkPresentMode(
+                    if (snapshot.presentMode == "mailbox") 1 else 2,
+                )
                 // FIFO still makes Smooth fall back through the shared renderer's
                 // existing compatibility path; Native stale-slot admission is an
                 // additional pre-acquire safety guard, not a replacement queue.

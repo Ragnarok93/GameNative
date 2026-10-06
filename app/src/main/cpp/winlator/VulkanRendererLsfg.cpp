@@ -409,6 +409,8 @@ void VulkanRendererContext::beginLsfgBackendTransition(
         fbResized.exchange(false, std::memory_order_acq_rel);
     lsfgBackendTransitionPolicyDirty_ = false;
     lsfgBackendTransitionPolicyCommitted_ = false;
+    lsfgBackendTransitionPolicyApplied_ = false;
+    lsfgBackendTransitionExpectedGeneration_ = hostSwapchainGeneration_;
     RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_begin transaction_id=%llu "
          "revision=%llu generation_before=%llu absorbed_pending_rebuild=%d",
          (unsigned long long)transactionId, (unsigned long long)revision,
@@ -443,16 +445,34 @@ void VulkanRendererContext::commitLsfgBackendTransitionPolicy(
     lsfgBackendTransitionPolicyCommitted_ = true;
     const bool rebuild = lsfgBackendTransitionRebuildPending_;
     lsfgBackendTransitionRebuildPending_ = false;
+    lsfgBackendTransitionPolicyApplied_ = !rebuild;
+    lsfgBackendTransitionExpectedGeneration_ = rebuild
+        && hostSwapchainGeneration_ != UINT64_MAX
+        ? hostSwapchainGeneration_ + 1 : hostSwapchainGeneration_;
     RLOG("LSFG_BACKEND_TX: event=presentation_policy_committed transaction_id=%llu "
-         "revision=%llu generation=%llu rebuild_pending=%d",
+         "revision=%llu generation=%llu expected_generation=%llu rebuild_pending=%d "
+         "policy_applied=%d",
          (unsigned long long)transactionId,
          (unsigned long long)lsfgBackendTransitionRevision_,
          (unsigned long long)hostSwapchainGeneration_,
-         rebuild ? 1 : 0);
+         (unsigned long long)lsfgBackendTransitionExpectedGeneration_,
+         rebuild ? 1 : 0,
+         lsfgBackendTransitionPolicyApplied_ ? 1 : 0);
     if (rebuild) {
         fbResized.store(true, std::memory_order_release);
         dirtyCV.notify_one();
     }
+}
+
+bool VulkanRendererContext::isLsfgBackendTransitionPolicyApplied(
+        uint64_t transactionId) const {
+    std::shared_lock<std::shared_mutex> fl(frameMutex);
+    if (lsfgBackendTransitionId_ == 0
+            || lsfgBackendTransitionId_ != transactionId) {
+        return true;
+    }
+    return lsfgBackendTransitionPolicyCommitted_
+        && lsfgBackendTransitionPolicyApplied_;
 }
 
 void VulkanRendererContext::completeLsfgBackendTransition(
@@ -471,7 +491,8 @@ void VulkanRendererContext::completeLsfgBackendTransition(
     RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_complete transaction_id=%llu "
          "revision=%llu generation_before=%llu generation_after=%llu "
          "recreation_attempts=%u recreation_count=%u first_recreation_failed=%d "
-         "policy_dirty=%d policy_committed=%d rebuild_pending=%d "
+         "policy_dirty=%d policy_committed=%d policy_applied=%d "
+         "expected_generation=%llu rebuild_pending=%d "
          "policy_ok=%d invariant_ok=%d completion_reason=%s",
          (unsigned long long)transactionId,
          (unsigned long long)lsfgBackendTransitionRevision_,
@@ -482,6 +503,8 @@ void VulkanRendererContext::completeLsfgBackendTransition(
          lsfgBackendTransitionFirstRecreationFailed_ ? 1 : 0,
          lsfgBackendTransitionPolicyDirty_ ? 1 : 0,
          lsfgBackendTransitionPolicyCommitted_ ? 1 : 0,
+         lsfgBackendTransitionPolicyApplied_ ? 1 : 0,
+         (unsigned long long)lsfgBackendTransitionExpectedGeneration_,
          lsfgBackendTransitionRebuildPending_ ? 1 : 0,
          policyOk ? 1 : 0,
          invariantOk ? 1 : 0, reason ? reason : "unknown");
@@ -498,6 +521,8 @@ void VulkanRendererContext::completeLsfgBackendTransition(
     lsfgBackendTransitionRebuildPending_ = false;
     lsfgBackendTransitionPolicyDirty_ = false;
     lsfgBackendTransitionPolicyCommitted_ = false;
+    lsfgBackendTransitionPolicyApplied_ = false;
+    lsfgBackendTransitionExpectedGeneration_ = hostSwapchainGeneration_;
     if (releaseInheritedRebuild) {
         // A switch that aborts before touching WSI policy must not swallow an
         // unrelated surface resize that was pending when the transaction began.

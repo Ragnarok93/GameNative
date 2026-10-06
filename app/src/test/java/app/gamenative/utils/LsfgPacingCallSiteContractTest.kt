@@ -87,6 +87,7 @@ class LsfgPacingCallSiteContractTest {
         assertTrue(handoff.contains("runtimeState.readyForGeneration"))
         assertTrue(handoff.contains("runtimeState.readyForSourceOnly"))
         assertTrue(handoff.contains("LsfgVkManager.backend(container) == backend"))
+        assertTrue(handoff.contains("isBackendTransitionPresentationReady"))
         assertTrue(handoff.contains("completeBackendTransition"))
         assertTrue(handoff.contains("\$backend-source-only-timeout"))
         assertTrue(controller.contains("registerGuestSuspensionProbe"))

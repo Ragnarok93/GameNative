@@ -212,6 +212,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetFrameGenerationEnabled(long handle, boolean enabled);
     private native void nativeBeginLsfgBackendTransition(long handle, long transactionId, long revision);
     private native void nativeCommitLsfgBackendTransitionPolicy(long handle, long transactionId);
+    private native boolean nativeIsLsfgBackendTransitionPolicyApplied(long handle, long transactionId);
     private native void nativeCompleteLsfgBackendTransition(long handle, long transactionId, String reason);
     private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
     private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
@@ -1034,6 +1035,16 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         try {
             if (nativeHandle != 0)
                 nativeCommitLsfgBackendTransitionPolicy(nativeHandle, transactionId);
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public boolean isLsfgBackendTransitionPolicyApplied(long transactionId) {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            return nativeHandle == 0
+                || nativeIsLsfgBackendTransitionPolicyApplied(nativeHandle, transactionId);
         } finally {
             nativeLifetimeLock.readLock().unlock();
         }

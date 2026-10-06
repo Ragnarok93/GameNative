@@ -500,6 +500,17 @@ object LsfgVkManager {
     }
 
     @JvmStatic
+    fun isBackendTransitionPresentationReady(
+        request: BackendTransitionRequest,
+    ): Boolean {
+        val renderer = nativeRendererRef?.get() ?: return true
+        if (nativeRendererContainer == null) return true
+        return renderer.isLsfgBackendTransitionPolicyApplied(
+            request.transactionId,
+        )
+    }
+
+    @JvmStatic
     @Synchronized
     fun completeBackendTransition(
         request: BackendTransitionRequest,

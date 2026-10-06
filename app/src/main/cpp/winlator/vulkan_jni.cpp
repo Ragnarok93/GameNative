@@ -364,6 +364,16 @@ Java_com_winlator_renderer_VulkanRenderer_nativeCommitLsfgBackendTransitionPolic
             static_cast<uint64_t>(transactionId));
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeIsLsfgBackendTransitionPolicyApplied(
+        JNIEnv*, jobject, jlong handle, jlong transactionId) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return !renderer
+        || renderer->isLsfgBackendTransitionPolicyApplied(
+            static_cast<uint64_t>(transactionId))
+        ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeCompleteLsfgBackendTransition(
         JNIEnv* env, jobject, jlong handle, jlong transactionId, jstring reason) {

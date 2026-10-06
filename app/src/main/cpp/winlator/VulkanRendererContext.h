@@ -366,6 +366,7 @@ public:
     void setFrameGenerationEnabled(bool enabled);
     void beginLsfgBackendTransition(uint64_t transactionId, uint64_t revision);
     void commitLsfgBackendTransitionPolicy(uint64_t transactionId);
+    bool isLsfgBackendTransitionPolicyApplied(uint64_t transactionId) const;
     void completeLsfgBackendTransition(uint64_t transactionId, const char* reason);
     bool isFrameGenerationSupported() const;
     void setFrameGenerationShaders(const std::string& cachePath);
@@ -499,6 +500,8 @@ private:
     bool lsfgBackendTransitionRebuildPending_ = false;
     bool lsfgBackendTransitionPolicyDirty_ = false;
     bool lsfgBackendTransitionPolicyCommitted_ = false;
+    bool lsfgBackendTransitionPolicyApplied_ = false;
+    uint64_t lsfgBackendTransitionExpectedGeneration_ = 0;
     uint64_t hostPhysicalCadenceEpoch_ = 0;
     uint64_t legacyGeneratedSlotContextEpoch_ = 0;
     std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>

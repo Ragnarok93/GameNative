@@ -93,7 +93,10 @@ class LsfgRuntimeHandoffController(
                     LsfgVkManager.readRuntimeState(container)
                 }
                 val backendMatches = LsfgVkManager.backend(container) == backend
-                observed = backendMatches && if (active) {
+                val presentationReady = transition?.let {
+                    LsfgVkManager.isBackendTransitionPresentationReady(it)
+                } ?: true
+                observed = backendMatches && presentationReady && if (active) {
                     runtimeState.readyForGeneration
                 } else {
                     runtimeState.readyForSourceOnly

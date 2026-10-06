@@ -854,6 +854,21 @@ void VulkanRendererContext::createSwapchain() {
     ++hostSwapchainGeneration_;
     if (lsfgBackendTransitionId_ != 0) {
         ++lsfgBackendTransitionRecreationCount_;
+        if (lsfgBackendTransitionPolicyCommitted_
+                && !lsfgBackendTransitionPolicyApplied_
+                && hostSwapchainGeneration_
+                    >= lsfgBackendTransitionExpectedGeneration_) {
+            lsfgBackendTransitionPolicyApplied_ = true;
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_BACKEND_TX",
+                "event=presentation_policy_applied transaction_id=%" PRIu64
+                " revision=%" PRIu64 " generation=%" PRIu64
+                " expected_generation=%" PRIu64,
+                lsfgBackendTransitionId_,
+                lsfgBackendTransitionRevision_,
+                hostSwapchainGeneration_,
+                lsfgBackendTransitionExpectedGeneration_);
+        }
         const bool invariantOk =
             lsfgBackendTransitionRecreationCount_ <= 1
             || lsfgBackendTransitionFirstRecreationFailed_;

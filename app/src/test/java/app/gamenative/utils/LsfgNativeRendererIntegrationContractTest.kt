@@ -292,8 +292,10 @@ class LsfgNativeRendererIntegrationContractTest {
                 root,
                 "app/src/main/cpp/lsfg-vk-android/src/adaptive_flow_controller.cpp",
             ).readText()
+        val normalizedSharedFlowController =
+            sharedFlowController.replace(Regex("\\s+"), " ")
         assertTrue(
-            sharedFlowController.contains(
+            normalizedSharedFlowController.contains(
                 "!downstepBaselineWsiPressure_ || observation.adaptiveFramegenMode",
             ),
         )

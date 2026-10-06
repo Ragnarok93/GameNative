@@ -928,7 +928,7 @@ object LsfgVkManager {
             snapshot.flowPreset,
             snapshot.requestedFlowScale,
             snapshot.displayRefresh,
-            if (nativeEnabled) "fifo" else "disabled",
+            if (nativeEnabled) snapshot.presentMode else "disabled",
             if (nativeEnabled) "shared-host-frame-queue+native-admission" else "disabled",
             snapshot.presentMode,
             if (snapshot.frameQueueEnabled) 1 else 0,

@@ -3378,6 +3378,21 @@ ok=true;}catch(...){}
             : 0;
     if (!toXr) {
         enforceFrameQueueSubmissionBudget(frameQueueTarget);
+        bool retiredAfterWait = false;
+        {
+            std::lock_guard<std::mutex> lk(renderMutex);
+            retiredAfterWait =
+                pruneMissedLegacyGeneratedOutputSlots(monotonicTimeNs());
+        }
+        if (retiredAfterWait
+                && pendingLsfgHostDeliveryCount_.load(
+                    std::memory_order_acquire) == 0) {
+            __android_log_print(
+                ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+                "event=legacy-output-slot-pre-acquire action=skip-present"
+                " generated_frame_drop_reason=missed-after-host-wait");
+            return;
+        }
     }
 
     uint32_t imgIdx = 0;

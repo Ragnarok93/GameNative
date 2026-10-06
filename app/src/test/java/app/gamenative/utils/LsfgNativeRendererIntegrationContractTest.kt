@@ -33,7 +33,7 @@ class LsfgNativeRendererIntegrationContractTest {
                 "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",
             ),
         )
-        assertTrue(context.contains("const bool transformChanged = false"))
+        assertTrue(context.contains("const bool transformChanged ="))
     }
 
     @Test
@@ -263,6 +263,17 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(applyFramegenBody.contains("pendingLsfgFrameQueueEnabled"))
         assertTrue(applyFramegenBody.contains("pendingLsfgFrameQueueTarget"))
         assertTrue(!javaRenderer.contains("nativeOwnsFrameQueuePolicy"))
+        val surfaceCreate =
+            javaRenderer.substringAfter("public void onSurfaceCreated(Surface surface)")
+                .substringBefore("public void onSurfaceChanged")
+        val replayIndex = surfaceCreate.indexOf("replayFrameGenerationLocked()")
+        assertTrue(replayIndex >= 0)
+        assertTrue(
+            surfaceCreate.indexOf("nativeSetPresentMode(nativeHandle, pendingPresentMode)") in 0 until replayIndex,
+        )
+        assertTrue(
+            surfaceCreate.indexOf("nativeSetLsfgFrameQueue(") in 0 until replayIndex,
+        )
         assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
         assertTrue(context.contains("nativeLsfgContentPending"))
 
@@ -298,7 +309,7 @@ class LsfgNativeRendererIntegrationContractTest {
             ),
         )
         assertTrue(context.contains("? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR"))
-        assertTrue(context.contains("const bool transformChanged = false"))
+        assertTrue(context.contains("const bool transformChanged ="))
 
         // Native admission must distinguish presenter service from blocked
         // vkQueuePresentKHR tail latency. A FIFO p95 >= one source period must

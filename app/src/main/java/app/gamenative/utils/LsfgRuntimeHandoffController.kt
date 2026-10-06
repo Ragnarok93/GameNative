@@ -112,22 +112,26 @@ class LsfgRuntimeHandoffController(
             if (remainingSettleMs > 0L) delay(remainingSettleMs)
             if (generation != transitionGeneration) return@launch
 
-            if (active && !observed) {
+            if (!observed) {
                 onStateChanged(
                     false,
                     1,
                     LsfgRuntimeMode.DEGRADED,
                 )
                 Timber.w(
-                    "LSFG runtime handoff timed out after %d active ms: generation=%d multiplier=%d",
+                    "LSFG runtime handoff timed out after %d active ms: generation=%d active=%b backend=%s multiplier=%d",
                     activePollingElapsedMs,
                     generation,
+                    active,
+                    backend,
                     multiplier,
                 )
                 transition?.let {
                     LsfgVkManager.completeBackendTransition(
                         it,
-                        completionReason = "$backend-activation-timeout",
+                        completionReason =
+                            if (active) "$backend-activation-timeout"
+                            else "$backend-source-only-timeout",
                         effectiveMultiplier = 1,
                     )
                 }

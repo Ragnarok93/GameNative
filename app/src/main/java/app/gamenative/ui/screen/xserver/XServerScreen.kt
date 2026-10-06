@@ -602,6 +602,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             is VulkanRenderer -> {
                 applyScreenEffectsConfig(renderer, screenEffectsConfig)
                 LsfgQuickMenuHelper.applyFrameQueueToRenderer(container, renderer)
+                LsfgVkManager.applyNativeRuntime(renderer, container, context)
             }
             is GLRenderer -> applyScreenEffectsConfig(renderer, screenEffectsConfig)
         }
@@ -758,16 +759,21 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
         lsfgBackend = request.backend
 
         val renderer = xServerView?.renderer as? VulkanRenderer
+        if (request.backend == LsfgVkManager.BACKEND_LEGACY) renderer?.setFrameGenerationEnabled(false)
+        LsfgVkManager.updateConfigAtRuntime(container, lsfgMultiplier >= 2,
+            lsfgMultiplier, lsfgFlowScale, lsfgPerformanceMode)
         if (request.backend == LsfgVkManager.BACKEND_NATIVE && renderer != null) {
             LsfgVkManager.applyNativeRuntime(
                 renderer = renderer,
                 container = container,
                 context = xServerView!!.context,
-            )
-            LsfgVkManager.recordBackendRuntimeApplied(
-                request = request,
-                runtimeBackend = LsfgVkManager.BACKEND_NATIVE,
-                result = "runtime-applied",
+                onApplied = { result ->
+                    LsfgVkManager.recordBackendRuntimeApplied(
+                        request = request,
+                        runtimeBackend = LsfgVkManager.BACKEND_NATIVE,
+                        result = result,
+                    )
+                },
             )
         } else if (request.backend == LsfgVkManager.BACKEND_NATIVE) {
             LsfgVkManager.recordBackendRuntimeApplied(
@@ -776,7 +782,9 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
                 result = "runtime-bridge-unavailable",
             )
         } else {
-            renderer?.setFrameGenerationEnabled(false)
+            if (renderer != null) {
+                LsfgVkManager.applyNativeRuntime(renderer, container, xServerView!!.context)
+            }
             LsfgVkManager.recordBackendRuntimeApplied(
                 request = request,
                 runtimeBackend = LsfgVkManager.BACKEND_LEGACY,
@@ -6102,3 +6110,4 @@ private fun setImagefsContainerVariant(context: Context, container: Container) {
     val containerVariant = container.containerVariant
     imageFs.createVariantFile(containerVariant)
 }
+

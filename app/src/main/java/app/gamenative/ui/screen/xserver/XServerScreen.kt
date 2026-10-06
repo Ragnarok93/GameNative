@@ -1969,7 +1969,23 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             } else {
                 XServerView(context, xServerToUse, container.displayRenderer)
             }
-            PluviaApp.xServerView = xServerView
+            xServerView = xServerViewInstance
+            PluviaApp.xServerView = xServerViewInstance
+
+            xServerViewInstance.getxServer().winHandler = WinHandler(
+                xServerViewInstance.getxServer(),
+                xServerViewInstance,
+            )
+            win32AppWorkarounds = Win32AppWorkarounds(xServerViewInstance.getxServer())
+            touchMouse = TouchMouse(xServerViewInstance.getxServer())
+            keyboard = Keyboard(xServerViewInstance.getxServer())
+
+            if (!bootToContainer) {
+                xServerViewInstance.renderer.setUnviewableWMClasses("explorer.exe")
+                if (container.executablePath.isNotBlank()) {
+                    xServerViewInstance.renderer.forceFullscreenWMClass = Paths.get(container.executablePath).name
+                }
+            }
 
             val windowModificationListener = installWindowModificationListener(
                 xServerViewInstance,

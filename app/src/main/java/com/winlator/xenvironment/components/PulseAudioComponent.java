@@ -42,6 +42,14 @@ public class PulseAudioComponent extends EnvironmentComponent {
     private final UnixSocketConfig socketConfig;
     private final String SINK_NAME = "AAudioSink";
 
+    /** Bundled runtime payload consumed by XServer startup. */
+    public static final String BUNDLED_ASSET_NAME =
+        "pulseaudio-gamenative-20260919.tzst";
+    private static final String NATIVE_PROTOCOL_MODULE =
+        "module-native-protocol-unix.so";
+    private static final String AAUDIO_SINK_MODULE =
+        "module-aaudio-sink.so";
+
     /** Name of the microphone source exposed to Wine/Proton. */
     public static final String MIC_SOURCE_NAME = "GameNativeMic";
     /** Stock PulseAudio module used to publish the Android microphone as a capture device. */
@@ -82,6 +90,15 @@ public class PulseAudioComponent extends EnvironmentComponent {
      */
     public static boolean isMicModuleAvailable(Context context) {
         return new File(getWorkingDir(context), "modules/" + PIPE_SOURCE_MODULE).isFile();
+    }
+
+    public static boolean isRuntimeAvailable(Context context, boolean requireOutput) {
+        File modulesDir = new File(getWorkingDir(context), "modules");
+        boolean protocolAvailable =
+            new File(modulesDir, NATIVE_PROTOCOL_MODULE).isFile();
+        boolean sinkAvailable =
+            !requireOutput || new File(modulesDir, AAUDIO_SINK_MODULE).isFile();
+        return protocolAvailable && sinkAvailable;
     }
 
     private void killAllPulseAudioProcesses() {
@@ -195,6 +212,18 @@ public class PulseAudioComponent extends EnvironmentComponent {
             FileUtils.delete(configDir);
         }
 
+        File modulesDir = new File(workingDir, "modules");
+        if (!isRuntimeAvailable(context, enableAudioOutput)) {
+            Timber.tag("PulseAudioComponent").e(
+                "PulseAudio runtime incomplete after extraction: asset=%s protocol_module=%s sink_module=%s require_output=%s working_dir=%s",
+                BUNDLED_ASSET_NAME,
+                new File(modulesDir, NATIVE_PROTOCOL_MODULE).isFile(),
+                new File(modulesDir, AAUDIO_SINK_MODULE).isFile(),
+                enableAudioOutput,
+                workingDir.getAbsolutePath());
+            return;
+        }
+
         File configFile = new File(workingDir, "default.pa");
 
         List<String> configLines = new ArrayList<>();
@@ -217,8 +246,6 @@ public class PulseAudioComponent extends EnvironmentComponent {
         }
 
         FileUtils.writeString(configFile, String.join("\n", configLines));
-
-        File modulesDir = new File(workingDir, "modules");
 
         EnvVars envVars = new EnvVars();
         envVars.put("LD_LIBRARY_PATH", "/system/lib64:"+nativeLibraryDir+":"+modulesDir);

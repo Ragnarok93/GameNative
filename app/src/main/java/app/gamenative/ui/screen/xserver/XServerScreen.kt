@@ -1971,6 +1971,12 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             }
             xServerView = xServerViewInstance
             PluviaApp.xServerView = xServerViewInstance
+            initializeXServerViewRuntime(
+                controller = controller,
+                xServerView = xServerViewInstance,
+                frameLayout = frameLayout,
+                useGLRenderer = useGLRenderer,
+            )
 
             xServerViewInstance.getxServer().winHandler = WinHandler(
                 xServerViewInstance.getxServer(),
@@ -2004,6 +2010,11 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
                 xServerView = xServerViewInstance,
                 windowModificationListener = windowModificationListener,
                 screenWidth = screenWidth,
+            )
+            startWineEnvironmentSetup(
+                controller = controller,
+                xServerView = xServerViewInstance,
+                appLaunchInfo = appLaunchInfo,
             )
 
             val gameHost = FrameLayout(context).apply {
@@ -3402,6 +3413,304 @@ private fun shiftXEnvironmentToContext(
     // environment.startEnvironmentComponents()
 
     return environment
+}
+
+
+/**
+ * Host-renderer bootstrap extracted from XServerScreenRuntime so Android 13 ART
+ * does not pay the register cost of these locals in the giant composable.
+ */
+private fun initializeXServerViewRuntime(
+    controller: XServerScreenController,
+    xServerView: XServerRendererView,
+    frameLayout: FrameLayout,
+    useGLRenderer: Boolean,
+) {
+    with(controller) {
+        val initialLimit = if (fpsLimiterEnabled) fpsLimiterTarget else 0
+        xServerView.setFrameRateLimit(effectiveSourceFpsCap(initialLimit))
+        val renderer = xServerView.renderer
+        if (!useGLRenderer && renderer is VulkanRenderer) {
+            val pm = container.rendererPresentMode.ifEmpty { "fifo" }
+            val vkMode = when (pm.lowercase(Locale.getDefault())) {
+                "mailbox" -> 1
+                "immediate" -> 0
+                "relaxed" -> 3
+                else -> 2
+            }
+            renderer.setVkPresentMode(vkMode)
+        }
+        if (renderer is ASurfaceRenderer) {
+            renderer.setSfCompatMode(container.sfCompatMode)
+        }
+        renderer.setCursorVisible(
+            !container.isDisableMouseInput &&
+                (!container.isTouchscreenMode || currentGestureConfig.showCursorInTouchscreenMode),
+        )
+        renderer.setOnFrameRenderedListener {
+            if (shouldTrackDisplayedFrames.get()) {
+                (context as? Activity)?.runOnUiThread {
+                    frameRating?.update()
+                }
+            }
+        }
+        xServerView.getxServer().renderer = renderer
+        PluviaApp.touchpadView = TouchpadView(context, xServerView.getxServer(), PrefManager.getBoolean("capture_pointer_on_external_mouse", true))
+        PluviaApp.touchpadView?.setMoveCursorToTouchpoint(PrefManager.getBoolean("move_cursor_to_touchpoint", false))
+
+        // Wire keyboard toggle callback for gesture "Show Keyboard" action.
+        // Mirrors the QuickMenuAction.KEYBOARD external-display routing
+        // (uses imeInputReceiver on external displays) but skips the
+        // 500ms post-delay used by the menu path — a gesture is already
+        // a direct touch interaction and should respond immediately.
+        PluviaApp.touchpadView?.setShowKeyboardCallback {
+            val anchor = PluviaApp.touchpadView ?: return@setShowKeyboardCallback
+            anchor.post {
+                if (anchor.windowToken == null) return@post
+                val isExternalDisplaySession =
+                    (anchor.display?.displayId ?: android.view.Display.DEFAULT_DISPLAY) != android.view.Display.DEFAULT_DISPLAY
+                val inputMethodManager =
+                    context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                if (isExternalDisplaySession) {
+                    imeInputReceiver?.showKeyboard()
+                        ?: inputMethodManager.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                } else {
+                    inputMethodManager.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+                }
+            }
+        }
+
+        // Add invisible IME receiver to capture system keyboard input when keyboard is on external display
+        val imeDisplayContext = context.display?.let { display ->
+            context.createDisplayContext(display)
+        } ?: context
+
+        val imeReceiver = app.gamenative.externaldisplay.IMEInputReceiver(
+            context = context,
+            displayContext = imeDisplayContext,
+            xServer = xServerView.getxServer(),
+        ).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            alpha = 0f
+            isClickable = false
+        }
+        frameLayout.addView(imeReceiver)
+        imeInputReceiver = imeReceiver
+
+    }
+}
+
+/**
+ * Guest/Wine startup must remain outside XServerScreenRuntime for verifier
+ * safety, but it must still run after the XServer view and WinHandler exist.
+ */
+private fun startWineEnvironmentSetup(
+    controller: XServerScreenController,
+    xServerView: XServerRendererView,
+    appLaunchInfo: LaunchInfo?,
+) {
+    with(controller) {
+        if (PluviaApp.xEnvironment == null) {
+            // Launch all blocking wine setup operations on a background thread to avoid blocking main thread
+            val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                Thread(r, "WineSetup-Thread").apply { isDaemon = false }
+            }
+
+            setupExecutor.submit {
+                try {
+                    val containerManager = ContainerManager(context)
+                    // Configure WinHandler with container's input API settings
+                    val handler = xServerView.getxServer().winHandler
+                    if (container.inputType !in 0..3) {
+                        container.inputType = PreferredInputApi.BOTH.ordinal
+                        container.saveData()
+                    }
+                    handler.setPreferredInputApi(PreferredInputApi.values()[container.inputType])
+                    handler.setDInputMapperType(container.dinputMapperType)
+                    if (container.isDisableMouseInput()) {
+                        PluviaApp.touchpadView?.setTouchscreenMouseDisabled(true)
+                    } else if (container.isTouchscreenMode()) {
+                        PluviaApp.touchpadView?.setTouchscreenMode(true)
+                        // Apply per-game gesture configuration
+                        val gestureConfig = app.gamenative.data.TouchGestureConfig.fromJson(container.getGestureConfig())
+                        PluviaApp.touchpadView?.setGestureConfig(gestureConfig)
+                    }
+                    Timber.d("WinHandler configured: preferredInputApi=%s, dinputMapperType=0x%02x", PreferredInputApi.values()[container.inputType], container.dinputMapperType)
+                    // Timber.d("1 Container drives: ${container.drives}")
+                    containerManager.activateContainer(container)
+                    // Timber.d("2 Container drives: ${container.drives}")
+                    val imageFs = ImageFs.find(context)
+
+                    taskAffinityMask = ProcessHelper.getAffinityMask(container.getCPUList(true)).toShort().toInt()
+                    taskAffinityMaskWoW64 = ProcessHelper.getAffinityMask(container.getCPUListWoW64(true)).toShort().toInt()
+                    win32AppWorkarounds?.setTaskAffinityMasks(taskAffinityMask, taskAffinityMaskWoW64)
+                    val appliedVariantSeen = container.getExtra("appliedContainerVariant")
+                    val appliedWineVersionSeen = container.getExtra("appliedWineVersion")
+                    val markersAvail = appliedVariantSeen.isNotEmpty() && appliedWineVersionSeen.isNotEmpty()
+                    val variantMismatch = markersAvail && container.containerVariant != appliedVariantSeen
+                    val wineVersionMismatch = markersAvail && container.wineVersion != appliedWineVersionSeen
+                    val imgVersionMismatch = container.getExtra("imgVersion") != imageFs.getVersion().toString()
+                    containerVariantChanged = variantMismatch || wineVersionMismatch || imgVersionMismatch
+                    firstTimeBoot = container.getExtra("appVersion").isEmpty() || containerVariantChanged
+                    needsUnpacking = container.isNeedsUnpacking
+                    Timber.i("First time boot: $firstTimeBoot")
+
+                    val wineVersion = container.wineVersion
+                    Timber.i("Wine version is: $wineVersion")
+                    val contentsManager = ContentsManager(context)
+                    contentsManager.syncContents()
+                    Timber.i("Wine info is: " + WineInfo.fromIdentifier(context, contentsManager, wineVersion))
+                    xServerState.value = xServerState.value.copy(
+                        wineInfo = WineInfo.fromIdentifier(context, contentsManager, wineVersion),
+                    )
+                    Timber.i("xServerState.value.wineInfo is: " + xServerState.value.wineInfo)
+                    Timber.i("WineInfo.MAIN_WINE_VERSION is: " + WineInfo.MAIN_WINE_VERSION)
+                    Timber.i("Wine path for wineinfo is " + xServerState.value.wineInfo.path)
+
+                    if (!xServerState.value.wineInfo.isMainWineVersion()) {
+                        Timber.i("Settings wine path to: ${xServerState.value.wineInfo.path}")
+                        imageFs.setWinePath(xServerState.value.wineInfo.path)
+                    } else {
+                        imageFs.setWinePath(imageFs.rootDir.path + "/opt/wine")
+                    }
+
+                    val onExtractFileListener = if (!xServerState.value.wineInfo.isWin64) {
+                        object : OnExtractFileListener {
+                            override fun onExtractFile(destination: File?, size: Long): File? {
+                                return destination?.path?.let {
+                                    if (it.contains("system32/")) {
+                                        null
+                                    } else {
+                                        File(it.replace("syswow64/", "system32/"))
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        null
+                    }
+
+                    vkbasaltConfig = buildVkBasaltConfig(
+                        effect = container.getExtra("sharpnessEffect", "None"),
+                        sharpnessLevel = container.getExtra("sharpnessLevel", "100").toIntOrNull() ?: 100,
+                        sharpnessDenoise = container.getExtra("sharpnessDenoise", "100").toIntOrNull() ?: 100,
+                    )
+
+                    Timber.i("Doing things once")
+                    val envVars = EnvVars()
+
+                    runBlocking {
+                        setupWineSystemFiles(
+                            context,
+                            firstTimeBoot,
+                            xServerView.getxServer().screenInfo,
+                            xServerState,
+                            container,
+                            containerManager,
+                            envVars,
+                            contentsManager,
+                            onExtractFileListener,
+                        )
+                    }
+                    extractArm64ecInputDLLs(context, container) // REQUIRED: Uses updated xinput1_3 main.c from x86_64 build, prevents crashes with 3+ players, avoids need for input shim dlls.
+                    extractx86_64InputDlls(context, container)
+
+                    runBlocking {
+                        extractGraphicsDriverFiles(
+                            context,
+                            xServerState.value.graphicsDriver,
+                            xServerState.value.dxwrapper,
+                            xServerState.value.dxwrapperConfig!!,
+                            container,
+                            envVars,
+                            firstTimeBoot,
+                            vkbasaltConfig,
+                        )
+                    }
+
+                    changeWineAudioDriver(xServerState.value.audioDriver, container, ImageFs.find(context))
+                    setImagefsContainerVariant(context, container)
+                    PluviaApp.xEnvironment = setupXEnvironment(
+                        context,
+                        appId,
+                        bootToContainer,
+                        testGraphics,
+                        diagnostics,
+                        debugRun,
+                        xServerState,
+                        envVars,
+                        container,
+                        appLaunchInfo,
+                        xServerView.getxServer(),
+                        containerVariantChanged,
+                        onGameLaunchError,
+                        isOffline
+                    )
+
+                    // Autostart performance driver after environment is set up
+                    PowerManager.autoStart(container.rootDir)
+
+                    if (debugRun) {
+                        app.gamenative.utils.PerfSampler.start(
+                            context,
+                            fpsProvider = {
+                                val raw = frameRating?.currentFPS ?: 0f
+                                if (isLsfgAvailable && lsfgMultiplier >= 2) {
+                                    LsfgVkManager.readMeasuredFps(container) ?: raw
+                                } else raw
+                            },
+                            drives = container.drives,
+                        )
+                    }
+
+                    // Pin game process to performance cores (CPUs 4-7)
+                    container.executablePath
+                        .substringAfterLast('/')
+                        .substringAfterLast('\\')
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { name ->
+                            // Remove .exe extension if present, then add it back
+                            val baseName = name.replace(Regex("\\.exe$", RegexOption.IGNORE_CASE), "")
+                            PowerManager.pinGameWithRetry(
+                                processName = "$baseName.exe",
+                                maxRetries = 10,
+                                retryDelayMs = 5000
+                            )
+                            Timber.tag("XServerScreen").i("Initiated CPU pinning for: $baseName.exe")
+                        }
+
+                    // Pin Background processes for better performance
+                    PowerManager.pinBackgroundProcesses()
+
+                    if (!PluviaApp.isActivityInForeground && !neverSuspend) {
+                        PluviaApp.xEnvironment?.onPause()
+                        if (manualResumeMode) {
+                            view.post {
+                                PluviaApp.isOverlayPaused = true
+                                Timber.d("Game paused after environment setup while app was backgrounded (manual resume required)")
+                            }
+                        } else {
+                            Timber.d("Game paused after environment setup while app was backgrounded")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Timber.e(e, "Error during wine setup operations")
+                    try {
+                        PluviaApp.xEnvironment?.stopEnvironmentComponents()
+                    } catch (cleanupEx: Exception) {
+                        Timber.e(cleanupEx, "Error cleaning up environment after setup failure")
+                    }
+                    PluviaApp.xEnvironment = null
+                    onGameLaunchError?.invoke("Failed to setup wine: ${e.message}")
+                } finally {
+                    setupExecutor.shutdown()
+                }
+            }
+        }
+    }
 }
 
 private fun setupXEnvironment(

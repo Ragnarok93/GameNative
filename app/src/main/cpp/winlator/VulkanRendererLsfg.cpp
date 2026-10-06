@@ -291,7 +291,10 @@ void VulkanRendererContext::setFrameGenerationShaders(const std::string& cachePa
         return;
     std::unique_lock<std::shared_mutex> fl(frameMutex);
     std::lock_guard<std::mutex> lk(renderMutex);
-    if (device) vk_.DeviceWaitIdle(device);
+    // Cache-path changes before Native LSFG is created must not stall the
+    // renderer. Only an existing native context can own GPU work that requires
+    // a conservative teardown wait here.
+    if (lsfg != nullptr && device) vk_.DeviceWaitIdle(device);
     destroyLsfg();
     lsfgCachePath = cachePath;
     if (framegenRequested && device && !lsfgCachePath.empty()) {

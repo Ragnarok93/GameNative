@@ -769,15 +769,18 @@ void VulkanRendererContext::createSwapchain() {
         }
     }
 
-    VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform;
+    // GameNative's compositor already renders in the Android surface's logical
+    // landscape orientation. Applying currentTransform (ROTATE_90 on phones)
+    // rotates that content a second time. Prefer IDENTITY whenever supported;
+    // only inherit currentTransform when the surface cannot accept identity.
+    VkSurfaceTransformFlagBitsKHR pre =
+        (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+            : caps.currentTransform;
     if ((caps.supportedTransforms & pre) == 0) {
-        if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
-            pre = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-        } else {
-            const VkSurfaceTransformFlagsKHR supported = caps.supportedTransforms;
-            pre = static_cast<VkSurfaceTransformFlagBitsKHR>(
-                supported & (~supported + 1U));
-        }
+        const VkSurfaceTransformFlagsKHR supported = caps.supportedTransforms;
+        pre = static_cast<VkSurfaceTransformFlagBitsKHR>(
+            supported & (~supported + 1U));
     }
     swapchainPreTransform_ = pre;
 
@@ -4789,9 +4792,7 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
             || caps.currentExtent.height != swapchainExt.height);
     const bool transformInvalid =
         (caps.supportedTransforms & swapchainPreTransform_) == 0;
-    const bool transformChanged =
-        caps.currentTransform != 0
-        && caps.currentTransform != swapchainPreTransform_;
+    const bool transformChanged = false; // identity is intentional when supported
     const bool alphaInvalid =
         (caps.supportedCompositeAlpha & swapchainCompositeAlpha_) == 0;
     const bool usageInvalid =
@@ -4831,7 +4832,7 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
             == modes.end();
 
     const bool incompatible =
-        extentChanged || transformInvalid || transformChanged
+        extentChanged || transformInvalid
         || alphaInvalid || usageInvalid || imageCountInvalid
         || formatInvalid || modeInvalid;
     const double suboptimalRate = hostSuboptimalWindow_.empty() ? 0.0

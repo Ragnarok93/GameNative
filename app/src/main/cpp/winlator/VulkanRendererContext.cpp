@@ -841,6 +841,7 @@ void VulkanRendererContext::createSwapchain() {
     hostSuboptimalConsecutive_ = 0;
     hostSuboptimalWindow_.clear();
     hostSuboptimalLastRequeryNs_ = 0;
+    hostSuboptimalLastAuditGeneration_ = UINT64_MAX;
     hostPresentLatencySamplesNs_.clear();
     hostPresenterQueueAgeSamplesNs_.clear();
     nativeLastAdmissionP50PresentNs_ = 0;
@@ -4757,16 +4758,15 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
 
     const uint64_t nowNs = monotonicTimeNs();
     // Surface capability queries can themselves trigger vendor gralloc/AHB
-    // probes on Android. Once SUBOPTIMAL is sustained, one audit per second is
-    // sufficient because recreation is already debounced at the same scale.
-    // A fresh swapchain resets this timestamp so the first new streak is still
-    // inspected promptly.
-    constexpr uint64_t kPersistentSuboptimalRequeryNs = 1000000000ULL;
+    // probes on Android. Audit a persistent SUBOPTIMAL streak once per
+    // swapchain generation; repeating an unchanged query cannot improve the
+    // current swapchain and caused continuous 4x4 vendor probe allocations.
+    // Resize/out-of-date/recreation advances the generation and re-arms this
+    // audit without polling the render path.
     if (nowNs == 0
-            || (hostSuboptimalLastRequeryNs_ != 0
-                && nowNs - hostSuboptimalLastRequeryNs_
-                    < kPersistentSuboptimalRequeryNs))
+            || hostSuboptimalLastAuditGeneration_ == hostSwapchainGeneration_)
         return;
+    hostSuboptimalLastAuditGeneration_ = hostSwapchainGeneration_;
     hostSuboptimalLastRequeryNs_ = nowNs;
 
     VkSurfaceCapabilitiesKHR caps{};

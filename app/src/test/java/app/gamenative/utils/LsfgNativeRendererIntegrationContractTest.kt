@@ -29,15 +29,15 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(header.contains("createCompositeTargets"))
         assertTrue(cmake.contains("winlator/VulkanRendererLsfg.cpp"))
 
-        assertTrue(context.contains("#include \"../lsfg/vk_dispatch.h\""))
+        assertTrue(native.contains("#include \"../lsfg/vk_dispatch.h\""))
         val createDeviceEnd = context.indexOf("vk_.GetDeviceQueue(device,graphicsQueueFamilyIndex,0,&graphicsQueue);")
         val createDeviceBody = context.substring(0, createDeviceEnd)
         assertTrue(!createDeviceBody.contains("vkd_load(instance, device, gipa)"))
 
-        assertTrue(context.contains("vkd_load(instance, device, gipa)"))
+        assertTrue(native.contains("vkd_load(instance, device, gipa)"))
         assertTrue(context.contains("vkd_unload()"))
         assertTrue(native.contains("vkr_lsfg_create"))
-        assertTrue(native.contains("vkr_lsfg_generate_into"))
+        assertTrue(context.contains("vkr_lsfg_generate_into"))
         assertTrue(context.contains("nativeExtraAcquireSems_"))
         assertTrue(context.contains("nativeGeneratedAcquireSemaphore"))
         assertTrue(context.contains("nativeGeneratedImgIdx"))
@@ -50,5 +50,28 @@ class LsfgNativeRendererIntegrationContractTest {
         val renderEnd = context.indexOf("void VulkanRendererContext::", renderStart + 8)
         val renderBody = context.substring(renderStart, if (renderEnd > renderStart) renderEnd else context.length)
         assertTrue(!renderBody.contains("DeviceWaitIdle"))
+        assertTrue(
+            Regex("ensureNativeExtraAcquireSemaphores\\\\(\\\\)")
+                .findAll(renderBody)
+                .count() == 1,
+        )
+
+        val createSyncStart = context.indexOf("void VulkanRendererContext::createSyncObjects()")
+        val createSyncEnd = context.indexOf(
+            "bool VulkanRendererContext::ensureNativeExtraAcquireSemaphores()",
+            createSyncStart,
+        )
+        assertTrue(createSyncStart >= 0)
+        assertTrue(createSyncEnd > createSyncStart)
+        val createSyncBody = context.substring(createSyncStart, createSyncEnd)
+        assertTrue(!createSyncBody.contains("nativeExtraAcquireSems_"))
+
+        val shaderStart = native.indexOf("void VulkanRendererContext::setFrameGenerationShaders")
+        val shaderEnd = native.indexOf("void VulkanRendererContext::setSourceFrameCount", shaderStart)
+        assertTrue(shaderStart >= 0)
+        assertTrue(shaderEnd > shaderStart)
+        val shaderBody = native.substring(shaderStart, shaderEnd)
+        assertTrue(shaderBody.contains("if (lsfg != nullptr && device) vk_.DeviceWaitIdle(device);"))
+        assertTrue(!shaderBody.contains("if (device) vk_.DeviceWaitIdle(device);"))
     }
 }

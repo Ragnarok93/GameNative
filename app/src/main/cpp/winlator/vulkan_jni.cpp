@@ -309,6 +309,37 @@ Java_com_winlator_renderer_VulkanRenderer_nativeGetGeneratedPresentedFrameCount(
     return renderer ? static_cast<jlong>(renderer->getGeneratedPresentedFrameCount()) : 0;
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetDisplayConfirmedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? static_cast<jlong>(renderer->getDisplayConfirmedFrameCount()) : 0;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetGeneratedDisplayConfirmedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer
+        ? static_cast<jlong>(renderer->getGeneratedDisplayConfirmedFrameCount()) : 0;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetSourceDisplayConfirmedFrameCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer
+        ? static_cast<jlong>(renderer->getSourceDisplayConfirmedFrameCount()) : 0;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeIsDisplayConfirmationAvailable(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer && renderer->isDisplayConfirmationAvailable()
+        ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationEnabled(
         JNIEnv*, jobject, jlong handle, jboolean enabled) {

@@ -118,7 +118,10 @@ object LsfgVkManager {
         NATIVE_REQUESTED,
         NATIVE_INITIALIZING,
         NATIVE_READY,
+        NATIVE_WSI_GENERATING,
         NATIVE_GENERATING,
+        NATIVE_PRESENTATION_DEGRADED,
+        NATIVE_CONFIRMATION_UNAVAILABLE,
         NATIVE_DEGRADED,
         NATIVE_FAILED,
     }
@@ -262,6 +265,10 @@ object LsfgVkManager {
         val synchronizationPath: String? = null,
         val ahbMode: String? = null,
         val rejectionReason: String? = null,
+        val wsiGenerating: Boolean = false,
+        val displayConfirmedGenerating: Boolean = false,
+        val displayConfirmationAvailable: Boolean = false,
+        val presentationDegraded: Boolean = false,
     ) {
         val readyForGeneration: Boolean
             get() = fresh && resident && generationReady && multiplier >= 2 && !degraded &&
@@ -536,38 +543,135 @@ object LsfgVkManager {
     }
 
     fun readRuntimeState(container: Container): RuntimeState {
-        if (!isNativeBackend(container)) return readLegacyRuntimeState(container);
-        val renderer = nativeRendererRef?.get() ?: return unknownRuntimeState(false);
-        if (nativeRendererContainer !== container) return unknownRuntimeState(false);
+        if (!isNativeBackend(container)) return readLegacyRuntimeState(container)
+        val renderer = nativeRendererRef?.get() ?: return unknownRuntimeState(false)
+        if (nativeRendererContainer !== container) return unknownRuntimeState(false)
+
         val initialized = renderer.isFrameGenerationSupported()
-        val presented = renderer.getGeneratedPresentedFrameCount() > 0
-        val snapshot = latestNativeSnapshot?.takeIf { nativeRendererContainer === container }
+        val wsiGeneratedCount = renderer.getGeneratedPresentedFrameCount()
+        val confirmedGeneratedCount =
+            renderer.getGeneratedDisplayConfirmedFrameCount()
+        val confirmationAvailable = renderer.isDisplayConfirmationAvailable()
+        val snapshot = latestNativeSnapshot?.takeIf {
+            nativeRendererContainer === container
+        }
         val enabled = snapshot?.let {
             it.backend == BACKEND_NATIVE && it.enabled && it.multiplier >= 2
         } ?: (isArmed(container) && multiplier(container) >= 2)
-        val failed = nativeApplyFailed || (nativeApplyComplete && renderer.hasNativeSurface() && !initialized && enabled)
-        if (initialized && presented && snapshot != null && snapshot.revision == nativeAppliedRevision) {
-            transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_GENERATING, "generated-output-wsi-accepted")
+        val failed =
+            nativeApplyFailed ||
+                (nativeApplyComplete && renderer.hasNativeSurface() &&
+                    !initialized && enabled)
+
+        val nowNs = System.nanoTime()
+        if (nativeStateRenderer?.get() !== renderer ||
+            wsiGeneratedCount < nativeStateSampleWsiGenerated ||
+            confirmedGeneratedCount < nativeStateSampleConfirmedGenerated
+        ) {
+            nativeStateRenderer = WeakReference(renderer)
+            nativeStateSampleNs = nowNs
+            nativeStateSampleWsiGenerated = wsiGeneratedCount
+            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
+            nativeConfirmedDeliveryWindows = 0
+            nativeDeliveryLossWindows = 0
+        } else if (nativeStateSampleNs == 0L) {
+            nativeStateSampleNs = nowNs
+            nativeStateSampleWsiGenerated = wsiGeneratedCount
+            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
+        } else if (nowNs - nativeStateSampleNs >= 500_000_000L) {
+            val wsiDelta =
+                (wsiGeneratedCount - nativeStateSampleWsiGenerated)
+                    .coerceAtLeast(0L)
+            val confirmedDelta =
+                (confirmedGeneratedCount - nativeStateSampleConfirmedGenerated)
+                    .coerceAtLeast(0L)
+            if (confirmationAvailable && wsiDelta > 0L && confirmedDelta > 0L) {
+                nativeConfirmedDeliveryWindows =
+                    (nativeConfirmedDeliveryWindows + 1).coerceAtMost(4)
+                nativeDeliveryLossWindows =
+                    (nativeDeliveryLossWindows - 1).coerceAtLeast(0)
+            } else if (confirmationAvailable && wsiDelta >= 2L &&
+                confirmedDelta == 0L
+            ) {
+                nativeDeliveryLossWindows =
+                    (nativeDeliveryLossWindows + 1).coerceAtMost(4)
+                nativeConfirmedDeliveryWindows = 0
+            } else if (!confirmationAvailable) {
+                nativeConfirmedDeliveryWindows = 0
+                nativeDeliveryLossWindows = 0
+            }
+            nativeStateSampleNs = nowNs
+            nativeStateSampleWsiGenerated = wsiGeneratedCount
+            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
         }
+
+        val wsiGenerating = initialized && wsiGeneratedCount > 0L
+        val confirmedGenerating =
+            initialized && confirmationAvailable &&
+                nativeConfirmedDeliveryWindows >= 2
+        val presentationDegraded =
+            initialized && confirmationAvailable &&
+                nativeDeliveryLossWindows >= 2 && wsiGenerating
+
+        if (snapshot != null && snapshot.revision == nativeAppliedRevision) {
+            when {
+                presentationDegraded -> transitionNativePhase(
+                    snapshot,
+                    NativeBackendPhase.NATIVE_PRESENTATION_DEGRADED,
+                    "generated-wsi-without-sustained-display-delivery",
+                )
+                confirmedGenerating -> transitionNativePhase(
+                    snapshot,
+                    NativeBackendPhase.NATIVE_GENERATING,
+                    "sustained-generated-display-confirmation",
+                )
+                wsiGenerating && !confirmationAvailable -> transitionNativePhase(
+                    snapshot,
+                    NativeBackendPhase.NATIVE_CONFIRMATION_UNAVAILABLE,
+                    "wsi-generating-display-confirmation-unavailable",
+                )
+                wsiGenerating -> transitionNativePhase(
+                    snapshot,
+                    NativeBackendPhase.NATIVE_WSI_GENERATING,
+                    "generated-output-wsi-accepted-awaiting-confirmation",
+                )
+            }
+        }
+
         return RuntimeState(
             status = when {
                 !enabled -> RuntimeStatus.SOURCE_ONLY
-                initialized && presented -> RuntimeStatus.GENERATING
+                presentationDegraded -> RuntimeStatus.DEGRADED
+                confirmedGenerating -> RuntimeStatus.GENERATING
                 failed -> RuntimeStatus.DEGRADED
                 else -> RuntimeStatus.UNKNOWN
             },
             resident = initialized || !enabled,
             sourceOnly = !enabled,
-            generationReady = initialized && presented,
+            generationReady = confirmedGenerating,
             generationInitialized = initialized,
-            generatedPresented = presented,
-            degraded = enabled && failed,
-            multiplier = if (enabled) snapshot?.multiplier ?: multiplier(container) else 1,
+            generatedPresented =
+                if (confirmationAvailable)
+                    confirmedGeneratedCount > 0L
+                else
+                    wsiGeneratedCount > 0L,
+            degraded = enabled && (failed || presentationDegraded),
+            multiplier =
+                if (enabled) snapshot?.multiplier ?: multiplier(container)
+                else 1,
             fresh = true,
             framegenSupportKnown = initialized || failed,
             framegenSupported = initialized,
             vulkanPath = "native-host-compositor",
-            rejectionReason = if (failed) nativeFailureReason ?: "native-initialization-failed" else null,
+            rejectionReason = when {
+                presentationDegraded -> "native-presentation-degraded"
+                failed -> nativeFailureReason ?: "native-initialization-failed"
+                else -> null
+            },
+            wsiGenerating = wsiGenerating,
+            displayConfirmedGenerating = confirmedGenerating,
+            displayConfirmationAvailable = confirmationAvailable,
+            presentationDegraded = presentationDegraded,
         )
     }
 
@@ -672,19 +776,36 @@ object LsfgVkManager {
     @Volatile private var nativeAppliedRevision = 0L
     @Volatile private var nativeBackendPhase = NativeBackendPhase.NATIVE_REQUESTED
     @Volatile private var nativeFailureReason: String? = null
+    private var nativeStateSampleNs = 0L
+    private var nativeStateSampleWsiGenerated = 0L
+    private var nativeStateSampleConfirmedGenerated = 0L
+    private var nativeConfirmedDeliveryWindows = 0
+    private var nativeDeliveryLossWindows = 0
+    private var nativeStateRenderer: WeakReference<VulkanRenderer>? = null
     private var nativeFpsSampleNs = 0L
     private var nativeFpsSampleCount = 0L
     private var nativeFpsRenderer: WeakReference<VulkanRenderer>? = null
     private var nativeFpsValue: Float? = null
 
-    // Count only unique outputs accepted by host WSI, never a multiplier times
-    // source FPS. Physical confirmation remains separately observable in logs.
+    // Prefer physical display confirmation whenever the renderer exposes a
+    // trustworthy asynchronous confirmation backend. WSI acceptance remains
+    // available as pipeline telemetry and is only the rate fallback when
+    // physical confirmation is unavailable on the device.
     private fun readNativeOutputFps(container: Container): Float? {
         val renderer = nativeRendererRef?.get() ?: return null
-        if (nativeRendererContainer !== container || !renderer.isFrameGenerationSupported()) return null
-        val count = renderer.getPresentedFrameCount()
+        if (nativeRendererContainer !== container ||
+            !renderer.isFrameGenerationSupported()
+        ) return null
+        val confirmationAvailable = renderer.isDisplayConfirmationAvailable()
+        val count = if (confirmationAvailable) {
+            renderer.getDisplayConfirmedFrameCount()
+        } else {
+            renderer.getPresentedFrameCount()
+        }
         val now = System.nanoTime()
-        if (nativeFpsRenderer?.get() !== renderer || count < nativeFpsSampleCount || nativeFpsSampleNs == 0L) {
+        if (nativeFpsRenderer?.get() !== renderer ||
+            count < nativeFpsSampleCount || nativeFpsSampleNs == 0L
+        ) {
             nativeFpsRenderer = WeakReference(renderer)
             nativeFpsSampleCount = count
             nativeFpsSampleNs = now
@@ -693,12 +814,18 @@ object LsfgVkManager {
         }
         val elapsed = now - nativeFpsSampleNs
         if (elapsed >= 500_000_000L) {
-            nativeFpsValue = ((count - nativeFpsSampleCount) * 1_000_000_000.0 / elapsed).toFloat()
+            nativeFpsValue =
+                ((count - nativeFpsSampleCount) * 1_000_000_000.0 / elapsed)
+                    .toFloat()
             nativeFpsSampleCount = count
             nativeFpsSampleNs = now
             Timber.d(
-                "LSFG_NATIVE_PRESENT: event=output_rate wsi_accepted_output_fps=%.2f measurement=wsi-accepted",
+                "LSFG_NATIVE_PRESENT: event=output_rate output_fps=%.2f measurement=%s " +
+                    "display_confirmation_available=%d",
                 nativeFpsValue,
+                if (confirmationAvailable) "display-confirmed"
+                else "wsi-accepted-confirmation-unavailable",
+                if (confirmationAvailable) 1 else 0,
             )
         }
         return nativeFpsValue
@@ -979,6 +1106,7 @@ object LsfgVkManager {
                 val enabled = requested && snapshot.enabled && snapshot.multiplier >= 2
                 if (!requested || !enabled) {
                     renderer.setFrameGenerationEnabled(false)
+                    renderer.setNativeFrameQueuePolicyOwned(false)
                     renderer.setVkPresentMode(if (snapshot.presentMode == "mailbox") 1 else 2)
                     renderer.setLsfgFrameQueue(
                         !requested && snapshot.frameQueueEnabled && snapshot.enabled,

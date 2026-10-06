@@ -26,6 +26,8 @@ public final class LosslessScaling {
     private static long memoCacheLength;
     private static long memoCacheModified;
     private static String memoSourceSha256 = "unknown";
+    private static String memoCapabilityDriverIdentity;
+    private static Boolean memoFp16Capability;
 
     static {
         try {
@@ -161,28 +163,44 @@ public final class LosslessScaling {
         }
 
         final String sourceIdentity = sourceIdentity(dll);
-        boolean fp16;
-        try {
-            fp16 = nativeSupportsFp16(driverName, context);
+        final String driverIdentity =
+            driverName == null || driverName.isEmpty() ? "system" : driverName;
+        final boolean fp16;
+        if (driverIdentity.equals(memoCapabilityDriverIdentity)
+                && memoFp16Capability != null) {
+            fp16 = memoFp16Capability.booleanValue();
             Log.i(
                 JNI_TAG,
-                "event=capability_probe function=nativeSupportsFp16 resolved=1 supported="
-                    + (fp16 ? 1 : 0) + " abi=" + primaryAbi()
+                "event=capability_probe function=nativeSupportsFp16 resolved=1 source=memoized"
+                    + " supported=" + (fp16 ? 1 : 0)
+                    + " driver=" + driverIdentity + " abi=" + primaryAbi()
             );
-        } catch (UnsatisfiedLinkError error) {
-            logMissingNative("nativeSupportsFp16", error);
-            Log.e(
-                CACHE_TAG,
-                "event=cache_build_failed stage=jni-registration reason=missing-nativeSupportsFp16"
-            );
-            return null;
-        } catch (Throwable t) {
-            Log.e(
-                CACHE_TAG,
-                "event=cache_build_failed stage=capability-probe reason="
-                    + t.getClass().getSimpleName() + " detail=" + safeMessage(t)
-            );
-            return null;
+        } else {
+            try {
+                fp16 = nativeSupportsFp16(driverName, context);
+                memoCapabilityDriverIdentity = driverIdentity;
+                memoFp16Capability = Boolean.valueOf(fp16);
+                Log.i(
+                    JNI_TAG,
+                    "event=capability_probe function=nativeSupportsFp16 resolved=1 source=driver-probe"
+                        + " supported=" + (fp16 ? 1 : 0)
+                        + " driver=" + driverIdentity + " abi=" + primaryAbi()
+                );
+            } catch (UnsatisfiedLinkError error) {
+                logMissingNative("nativeSupportsFp16", error);
+                Log.e(
+                    CACHE_TAG,
+                    "event=cache_build_failed stage=jni-registration reason=missing-nativeSupportsFp16"
+                );
+                return null;
+            } catch (Throwable t) {
+                Log.e(
+                    CACHE_TAG,
+                    "event=cache_build_failed stage=capability-probe reason="
+                        + t.getClass().getSimpleName() + " detail=" + safeMessage(t)
+                );
+                return null;
+            }
         }
 
         File store = new File(context.getFilesDir(), STORE_DIR);
@@ -195,8 +213,6 @@ public final class LosslessScaling {
             return null;
         }
         File cache = new File(store, fp16 ? CACHE_FP16 : CACHE_FP32);
-        final String driverIdentity =
-            driverName == null || driverName.isEmpty() ? "system" : driverName;
         final String memoIdentity =
             dll.getAbsolutePath() + "|" + sourceIdentity + "|" + driverIdentity + "|" + fp16;
         if (memoMatches(memoIdentity, cache)) {

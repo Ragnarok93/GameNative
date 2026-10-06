@@ -23,6 +23,7 @@ import com.winlator.xenvironment.ImageFs;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class VulkanRenderer implements WindowManager.OnWindowModificationListener,
                                        Pointer.OnPointerMotionListener,
@@ -47,9 +48,14 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     public final XServerView xServerView;
     private final XServer xServer;
     private long nativeHandle = 0;
-    private boolean pendingFramegenArmed = false;
+    private final ReentrantReadWriteLock nativeLifetimeLock =
+        new ReentrantReadWriteLock();
+    private volatile boolean frameGenerationSupportedSnapshot = false;
+    private volatile boolean nativeSurfaceSnapshot = false;
+    private volatile boolean nativeOwnsFrameQueuePolicy = false;
+    private volatile boolean pendingFramegenArmed = false;
     private volatile boolean pendingFramegenEnabled = false;
-    private String pendingFramegenShaders = "";
+    private volatile String pendingFramegenShaders = "";
     public static final int LSFG_FLOW_FIXED = 0;
     public static final int LSFG_FLOW_ADAPTIVE = 1;
     public static final int LSFG_FLOW_PRESET_QUALITY = 0;
@@ -57,15 +63,15 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     public static final int LSFG_FLOW_PRESET_LOW = 2;
     public static final int LSFG_FLOW_PRESET_AUTO = 3;
 
-    private int pendingFramegenMultiplier = 2, pendingFramegenTargetRate = 0, pendingFramegenFlowScale = 70;
-    private int pendingFramegenFlowMode = LSFG_FLOW_FIXED;
-    private int pendingFramegenFlowPreset = LSFG_FLOW_PRESET_QUALITY;
-    private long pendingFramegenConfigRevision = 0L;
-    private float pendingFramegenRefreshRate = 60.0f;
-    private float pendingFramegenGpuUsage = -1.0f, pendingFramegenSourceFps = 0.0f;
-    private float pendingFramegenOutputFps = 0.0f, pendingFramegenP95Ms = 0.0f;
-    private float pendingFramegenSlowRatio = 0.0f;
-    private int pendingFramegenThermalStatus = -1;
+    private volatile int pendingFramegenMultiplier = 2, pendingFramegenTargetRate = 0, pendingFramegenFlowScale = 70;
+    private volatile int pendingFramegenFlowMode = LSFG_FLOW_FIXED;
+    private volatile int pendingFramegenFlowPreset = LSFG_FLOW_PRESET_QUALITY;
+    private volatile long pendingFramegenConfigRevision = 0L;
+    private volatile float pendingFramegenRefreshRate = 60.0f;
+    private volatile float pendingFramegenGpuUsage = -1.0f, pendingFramegenSourceFps = 0.0f;
+    private volatile float pendingFramegenOutputFps = 0.0f, pendingFramegenP95Ms = 0.0f;
+    private volatile float pendingFramegenSlowRatio = 0.0f;
+    private volatile int pendingFramegenThermalStatus = -1;
     private final Object lock = new Object();
 
     public final ViewTransformation viewTransformation = new ViewTransformation();
@@ -200,6 +206,10 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeArmFrameGeneration(long handle);
     private native boolean nativeIsFrameGenerationSupported(long handle);
     private native long nativeGetGeneratedPresentedFrameCount(long handle);
+    private native long nativeGetDisplayConfirmedFrameCount(long handle);
+    private native long nativeGetGeneratedDisplayConfirmedFrameCount(long handle);
+    private native long nativeGetSourceDisplayConfirmedFrameCount(long handle);
+    private native boolean nativeIsDisplayConfirmationAvailable(long handle);
     private native void nativeSetFrameGenerationEnabled(long handle, boolean enabled);
     private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
     private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
@@ -243,6 +253,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         initExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
         initExecutor.execute(() -> {
             synchronized (lock) {
+                nativeLifetimeLock.writeLock().lock();
+                try {
                 if (nativeHandle != 0) {
                     boolean ok = nativeReattachSurface(nativeHandle, surface);
                     if (!ok) {
@@ -250,6 +262,9 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         nativeHandle = 0;
                         xrTargetAhbPtr = 0;
                     } else {
+                        nativeSurfaceSnapshot = true;
+                        frameGenerationSupportedSnapshot =
+                            nativeIsFrameGenerationSupported(nativeHandle);
                         enableXrTargetLocked();
                         initComplete = true;
                         xServerView.queueEvent(this::updateScene);
@@ -269,8 +284,13 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                     nativeSetPresentMode(nativeHandle, pendingPresentMode);
                     nativeSetLsfgFrameQueue(
                         nativeHandle,
-                        pendingLsfgFrameQueueEnabled,
-                        pendingLsfgFrameQueueTarget);
+                        nativeOwnsFrameQueuePolicy
+                            ? false : pendingLsfgFrameQueueEnabled,
+                        nativeOwnsFrameQueuePolicy
+                            ? 0 : pendingLsfgFrameQueueTarget);
+                    nativeSurfaceSnapshot = true;
+                    frameGenerationSupportedSnapshot =
+                        nativeIsFrameGenerationSupported(nativeHandle);
                     nativeSetFilterMode(nativeHandle, pendingFilterMode);
                     nativeSetSwapRB(nativeHandle, pendingSwapRB);
                     nativeSetEffect(nativeHandle, pendingEffectId, pendingSharpness,
@@ -315,6 +335,9 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                         });
                     }
                 }
+                } finally {
+                    nativeLifetimeLock.writeLock().unlock();
+                }
             }
             synchronized (lock) {
                 if (nativeHandle != 0) {
@@ -351,15 +374,22 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             initExecutor = null;
         }
         synchronized (lock) {
-            if (nativeHandle != 0) {
-                if (nativeMode) {
-                    nativeDestroyScanout(nativeHandle);
-                    nativeDestroy(nativeHandle);
-                    nativeHandle = 0;
-                    xrTargetAhbPtr = 0;
-                } else {
-                    nativeDetachSurface(nativeHandle);
+            nativeLifetimeLock.writeLock().lock();
+            try {
+                if (nativeHandle != 0) {
+                    if (nativeMode) {
+                        nativeDestroyScanout(nativeHandle);
+                        nativeDestroy(nativeHandle);
+                        nativeHandle = 0;
+                        xrTargetAhbPtr = 0;
+                    } else {
+                        nativeDetachSurface(nativeHandle);
+                    }
                 }
+                nativeSurfaceSnapshot = false;
+                frameGenerationSupportedSnapshot = false;
+            } finally {
+                nativeLifetimeLock.writeLock().unlock();
             }
         }
         if (nativeMode) xServerView.post(this::releaseScanoutSurfaces);
@@ -906,36 +936,87 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     }
 
     public boolean isFrameGenerationSupported() {
-        synchronized (lock) {
-            return nativeHandle != 0
-                && nativeHasPresentationSurface(nativeHandle)
-                && nativeIsFrameGenerationSupported(nativeHandle);
-        }
+        return nativeSurfaceSnapshot && frameGenerationSupportedSnapshot;
     }
 
     public boolean hasNativeSurface() {
-        synchronized (lock) {
-            return nativeHandle != 0 && nativeHasPresentationSurface(nativeHandle);
-        }
+        return nativeSurfaceSnapshot;
     }
 
     public long getGeneratedPresentedFrameCount() {
-        synchronized (lock) {
-            return nativeHandle != 0 ? nativeGetGeneratedPresentedFrameCount(nativeHandle) : 0L;
+        nativeLifetimeLock.readLock().lock();
+        try {
+            return nativeHandle != 0
+                ? nativeGetGeneratedPresentedFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public long getDisplayConfirmedFrameCount() {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            return nativeHandle != 0
+                ? nativeGetDisplayConfirmedFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public long getGeneratedDisplayConfirmedFrameCount() {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            return nativeHandle != 0
+                ? nativeGetGeneratedDisplayConfirmedFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public long getSourceDisplayConfirmedFrameCount() {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            return nativeHandle != 0
+                ? nativeGetSourceDisplayConfirmedFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public boolean isDisplayConfirmationAvailable() {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            return nativeHandle != 0
+                && nativeIsDisplayConfirmationAvailable(nativeHandle);
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public void armFrameGeneration() {
-        synchronized (lock) {
-            pendingFramegenArmed = true;
+        pendingFramegenArmed = true;
+        nativeLifetimeLock.readLock().lock();
+        try {
             if (nativeHandle != 0) nativeArmFrameGeneration(nativeHandle);
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public void setFrameGenerationEnabled(boolean enabled) {
-        synchronized (lock) {
-            pendingFramegenEnabled = enabled;
-            if (nativeHandle != 0) nativeSetFrameGenerationEnabled(nativeHandle, enabled);
+        pendingFramegenEnabled = enabled;
+        nativeLifetimeLock.readLock().lock();
+        try {
+            if (nativeHandle != 0) {
+                nativeSetFrameGenerationEnabled(nativeHandle, enabled);
+                frameGenerationSupportedSnapshot =
+                    nativeSurfaceSnapshot
+                    && nativeIsFrameGenerationSupported(nativeHandle);
+            } else {
+                frameGenerationSupportedSnapshot = false;
+            }
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
         // Native Rendering+ scanout bypasses compute entirely. Keep the
         // compositor active for LSFG, and restore scanout on disable.
@@ -951,34 +1032,76 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     public boolean applyFrameGenerationSettings(String cachePath, int multiplier, int targetRate,
             int flowScalePct, int flowMode, int flowPreset, long configRevision, float refreshRate,
             java.util.function.BooleanSupplier stillRequested) {
-        synchronized (lock) {
+        if (!stillRequested.getAsBoolean()) return false;
+
+        pendingFramegenArmed = true;
+        pendingFramegenEnabled = true;
+        pendingFramegenShaders = cachePath == null ? "" : cachePath;
+        pendingFramegenMultiplier = Math.max(2, Math.min(4, multiplier));
+        pendingFramegenTargetRate = Math.max(0, targetRate);
+        pendingFramegenFlowScale = Math.max(25, Math.min(100, flowScalePct));
+        pendingFramegenFlowMode =
+            flowMode == LSFG_FLOW_ADAPTIVE ? LSFG_FLOW_ADAPTIVE : LSFG_FLOW_FIXED;
+        pendingFramegenFlowPreset = Math.max(
+            LSFG_FLOW_PRESET_QUALITY, Math.min(LSFG_FLOW_PRESET_AUTO, flowPreset));
+        pendingFramegenConfigRevision = Math.max(0L, configRevision);
+        pendingFramegenRefreshRate = refreshRate;
+        pendingPresentMode = 2;
+        nativeOwnsFrameQueuePolicy = true;
+
+        nativeLifetimeLock.readLock().lock();
+        try {
+            if (!stillRequested.getAsBoolean() || nativeHandle == 0) return false;
+            final long handle = nativeHandle;
+            nativeSetPresentMode(handle, 2);
+            // Native owns a strictly bounded shallow presenter queue. Preserve
+            // persisted Legacy preferences but never apply them to the live renderer.
+            nativeSetLsfgFrameQueue(handle, false, 0);
+            android.util.Log.i(
+                "LSFG_FRAME_QUEUE",
+                "event=policy-ownership owner=native stored_enabled="
+                    + (pendingLsfgFrameQueueEnabled ? 1 : 0)
+                    + " stored_target=" + pendingLsfgFrameQueueTarget
+                    + " live_enabled=0 live_target=0");
+            nativeArmFrameGeneration(handle);
+            nativeSetFrameGenerationMode(
+                handle, pendingFramegenMultiplier, pendingFramegenTargetRate,
+                pendingFramegenFlowScale, pendingFramegenFlowMode,
+                pendingFramegenFlowPreset, pendingFramegenConfigRevision);
+            nativeSetFrameGenerationRefreshRate(handle, pendingFramegenRefreshRate);
+            if (!pendingFramegenShaders.isEmpty())
+                nativeSetFrameGenerationShaders(handle, pendingFramegenShaders);
             if (!stillRequested.getAsBoolean()) return false;
-            setVkPresentMode(2);
-            setLsfgFrameQueue(false, 0);
-            armFrameGeneration();
-            setFrameGenerationMode(multiplier, targetRate, flowScalePct, flowMode, flowPreset,
-                configRevision);
-            setFrameGenerationRefreshRate(refreshRate);
-            setFrameGenerationShaders(cachePath);
-            setFrameGenerationEnabled(true);
-            return nativeHandle != 0
-                && nativeHasPresentationSurface(nativeHandle)
-                && nativeIsFrameGenerationSupported(nativeHandle);
+            nativeSetFrameGenerationEnabled(handle, true);
+            nativeSurfaceSnapshot = nativeHasPresentationSurface(handle);
+            frameGenerationSupportedSnapshot =
+                nativeSurfaceSnapshot && nativeIsFrameGenerationSupported(handle);
+            return frameGenerationSupportedSnapshot;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public void setFrameGenerationShaders(String cachePath) {
         if (cachePath == null || cachePath.isEmpty()) return;
-        synchronized (lock) {
-            pendingFramegenShaders = cachePath;
-            if (nativeHandle != 0) nativeSetFrameGenerationShaders(nativeHandle, cachePath);
+        pendingFramegenShaders = cachePath;
+        nativeLifetimeLock.readLock().lock();
+        try {
+            if (nativeHandle != 0)
+                nativeSetFrameGenerationShaders(nativeHandle, cachePath);
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public void setFrameGenerationRefreshRate(float hz) {
-        synchronized (lock) {
-            pendingFramegenRefreshRate = hz;
-            if (nativeHandle != 0) nativeSetFrameGenerationRefreshRate(nativeHandle, hz);
+        pendingFramegenRefreshRate = hz;
+        nativeLifetimeLock.readLock().lock();
+        try {
+            if (nativeHandle != 0)
+                nativeSetFrameGenerationRefreshRate(nativeHandle, hz);
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
@@ -997,74 +1120,126 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct,
             int flowMode, int flowPreset, long configRevision) {
-        synchronized (lock) {
-            pendingFramegenMultiplier = Math.max(2, Math.min(4, multiplier));
-            pendingFramegenTargetRate = Math.max(0, targetRate);
-            pendingFramegenFlowScale = Math.max(25, Math.min(100, flowScalePct));
-            pendingFramegenFlowMode =
-                flowMode == LSFG_FLOW_ADAPTIVE ? LSFG_FLOW_ADAPTIVE : LSFG_FLOW_FIXED;
-            pendingFramegenFlowPreset = Math.max(
-                LSFG_FLOW_PRESET_QUALITY, Math.min(LSFG_FLOW_PRESET_AUTO, flowPreset));
-            pendingFramegenConfigRevision = Math.max(0L, configRevision);
+        pendingFramegenMultiplier = Math.max(2, Math.min(4, multiplier));
+        pendingFramegenTargetRate = Math.max(0, targetRate);
+        pendingFramegenFlowScale = Math.max(25, Math.min(100, flowScalePct));
+        pendingFramegenFlowMode =
+            flowMode == LSFG_FLOW_ADAPTIVE ? LSFG_FLOW_ADAPTIVE : LSFG_FLOW_FIXED;
+        pendingFramegenFlowPreset = Math.max(
+            LSFG_FLOW_PRESET_QUALITY, Math.min(LSFG_FLOW_PRESET_AUTO, flowPreset));
+        pendingFramegenConfigRevision = Math.max(0L, configRevision);
+        nativeLifetimeLock.readLock().lock();
+        try {
             if (nativeHandle != 0) {
                 nativeSetFrameGenerationMode(nativeHandle, pendingFramegenMultiplier,
                     pendingFramegenTargetRate, pendingFramegenFlowScale,
                     pendingFramegenFlowMode, pendingFramegenFlowPreset,
                     pendingFramegenConfigRevision);
             }
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public void setFrameGenerationPressure(float gpuUsagePercent, int thermalStatus,
             float sourceFps, float outputFps, float frameTimeP95Ms, float slowFrameRatio) {
-        synchronized (lock) {
-            pendingFramegenGpuUsage = gpuUsagePercent;
-            pendingFramegenThermalStatus = thermalStatus;
-            pendingFramegenSourceFps = sourceFps;
-            pendingFramegenOutputFps = outputFps;
-            pendingFramegenP95Ms = frameTimeP95Ms;
-            pendingFramegenSlowRatio = slowFrameRatio;
+        pendingFramegenGpuUsage = gpuUsagePercent;
+        pendingFramegenThermalStatus = thermalStatus;
+        pendingFramegenSourceFps = sourceFps;
+        pendingFramegenOutputFps = outputFps;
+        pendingFramegenP95Ms = frameTimeP95Ms;
+        pendingFramegenSlowRatio = slowFrameRatio;
+        nativeLifetimeLock.readLock().lock();
+        try {
             if (nativeHandle != 0) {
                 nativeSetFrameGenerationPressure(nativeHandle, gpuUsagePercent, thermalStatus,
                     sourceFps, outputFps, frameTimeP95Ms, slowFrameRatio);
             }
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public long getGeneratedFrameCount() {
-        synchronized (lock) {
+        nativeLifetimeLock.readLock().lock();
+        try {
             return nativeHandle != 0 ? nativeGetGeneratedFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public long getPresentedFrameCount() {
-        synchronized (lock) {
+        nativeLifetimeLock.readLock().lock();
+        try {
             return nativeHandle != 0 ? nativeGetPresentedFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public long getRealFrameCount() {
-        synchronized (lock) {
+        nativeLifetimeLock.readLock().lock();
+        try {
             return nativeHandle != 0 ? nativeGetRealFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public long getSourceFrameCount() {
-        synchronized (lock) {
+        nativeLifetimeLock.readLock().lock();
+        try {
             return nativeHandle != 0 ? nativeGetSourceFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
     public void setLsfgFrameQueue(boolean enabled, int target) {
         pendingLsfgFrameQueueEnabled = enabled;
         pendingLsfgFrameQueueTarget = Math.max(0, Math.min(2, target));
-        synchronized (lock) {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            if (nativeHandle != 0) {
+                if (nativeOwnsFrameQueuePolicy) {
+                    android.util.Log.i(
+                        "LSFG_FRAME_QUEUE",
+                        "event=legacy-policy-retained owner=native stored_enabled="
+                            + (pendingLsfgFrameQueueEnabled ? 1 : 0)
+                            + " stored_target=" + pendingLsfgFrameQueueTarget
+                            + " live_enabled=0 live_target=0");
+                } else {
+                    nativeSetLsfgFrameQueue(
+                        nativeHandle,
+                        pendingLsfgFrameQueueEnabled,
+                        pendingLsfgFrameQueueTarget);
+                }
+            }
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public void setNativeFrameQueuePolicyOwned(boolean owned) {
+        nativeOwnsFrameQueuePolicy = owned;
+        nativeLifetimeLock.readLock().lock();
+        try {
             if (nativeHandle != 0) {
                 nativeSetLsfgFrameQueue(
                     nativeHandle,
-                    pendingLsfgFrameQueueEnabled,
-                    pendingLsfgFrameQueueTarget);
+                    owned ? false : pendingLsfgFrameQueueEnabled,
+                    owned ? 0 : pendingLsfgFrameQueueTarget);
             }
+            android.util.Log.i(
+                "LSFG_FRAME_QUEUE",
+                "event=policy-ownership owner=" + (owned ? "native" : "legacy")
+                    + " stored_enabled=" + (pendingLsfgFrameQueueEnabled ? 1 : 0)
+                    + " stored_target=" + pendingLsfgFrameQueueTarget
+                    + " live_enabled=" + (owned ? 0 : (pendingLsfgFrameQueueEnabled ? 1 : 0))
+                    + " live_target=" + (owned ? 0 : pendingLsfgFrameQueueTarget));
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
         }
     }
 
@@ -1101,8 +1276,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     // from fpsLimit, which remains the real/source frame-rate contract.
     private int lsfgPresentationFrameRateHint = 0;
     private int     pendingPresentMode    = 2;
-    private boolean pendingLsfgFrameQueueEnabled = false;
-    private int     pendingLsfgFrameQueueTarget = 0;
+    private volatile boolean pendingLsfgFrameQueueEnabled = false;
+    private volatile int     pendingLsfgFrameQueueTarget = 0;
     private int     pendingFilterMode     = 0;
     private boolean pendingSwapRB         = false;
     private int     pendingEffectId       = EFFECT_NONE;

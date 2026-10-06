@@ -1809,14 +1809,17 @@ uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
     const uint32_t queued = static_cast<uint32_t>(
         std::min<std::size_t>(
             pendingHostPresents_.size(), MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH));
-    // One slot is always reserved for the real/source output. This makes the
-    // admission decision before LSFG compute and guarantees that a full 4x
-    // batch remains bounded to exactly source + three synthetic presents.
-    if (queued + 1 >= MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH)
+    const uint32_t occupied = std::min<uint32_t>(
+        MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH,
+        queued + (hostPresenterBusy_.load(std::memory_order_acquire) ? 1u : 0u));
+    // One slot is always reserved for the real/source output. The active
+    // presenter item counts as occupied too, so total Native presentation work
+    // stays bounded to source + at most three synthetic frames.
+    if (occupied + 1 >= MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH)
         return 0;
     return std::min<uint32_t>(
         VKR_LSFG_MAX_GENERATIONS,
-        MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH - queued - 1);
+        MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH - occupied - 1);
 }
 
 void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) {
@@ -1874,7 +1877,7 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         "source_wsi_accepted=%llu source_display_confirmed=%llu "
         "generated_wsi_submitted=%llu generated_wsi_accepted=%llu "
         "generated_display_confirmed=%llu generated_wsi_rejected=%llu "
-        "queue_depth=%zu queue_high_water=%u",
+        "queue_depth=%u queue_high_water=%u",
         reason ? reason : "periodic",
         (unsigned long long)nativeSourceWsiSubmitted_.load(std::memory_order_relaxed),
         (unsigned long long)nativeSourceWsiAccepted_.load(std::memory_order_relaxed),
@@ -1919,6 +1922,11 @@ VkResult VulkanRendererContext::enqueueHostPresent(
     hostPresentEnqueueWaitNsTotal_.fetch_add(
         present.hostPresentEnqueueWaitNs, std::memory_order_relaxed);
     hostPresentEnqueueWaitCount_.fetch_add(1, std::memory_order_relaxed);
+    if (nativePresent) {
+        nativeHostWaitNsTotal_.fetch_add(
+            present.hostPresentEnqueueWaitNs, std::memory_order_relaxed);
+        nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+    }
     uint32_t observed = hostPresentQueueHighWater_.load(std::memory_order_relaxed);
     while (observed < present.hostPresentQueueDepth
             && !hostPresentQueueHighWater_.compare_exchange_weak(
@@ -2995,6 +3003,16 @@ ok=true;}catch(...){}
         blitCompositeToSwapchain(cb, composite[currentFrame], swapchainImages[imgIdx]);
         const VkResult endStatus = vk_.EndCommandBuffer(cb);
         if (endStatus != VK_SUCCESS) {
+            if (nativeGenerations > 0) {
+                nativeGeneratedDroppedAfter_.fetch_add(
+                    nativeGenerations, std::memory_order_relaxed);
+                RLOG_E(
+                    "LSFG_NATIVE_GENERATION: event=post_generation_drop reason=command-buffer-end "
+                    "source_index=%llu count=%u result=%d",
+                    (unsigned long long)nativeSourceFrame,
+                    nativeGenerations,
+                    endStatus);
+            }
             RLOG_E("LSFG_NATIVE: event=command_buffer_failed result=%d", endStatus);
             recoverNativeAcquiredFrame();
             return;
@@ -3082,6 +3100,16 @@ ok=true;}catch(...){}
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - submitStart).count());
     if (submitResult!=VK_SUCCESS) {
+        if (nativeRuntimeActive && nativeGenerations > 0) {
+            nativeGeneratedDroppedAfter_.fetch_add(
+                nativeGenerations, std::memory_order_relaxed);
+            RLOG_E(
+                "LSFG_NATIVE_GENERATION: event=post_generation_drop reason=queue-submit "
+                "source_index=%llu count=%u result=%d",
+                (unsigned long long)nativeSourceFrame,
+                nativeGenerations,
+                submitResult);
+        }
         __android_log_print(
             ANDROID_LOG_WARN, "LSFG_FRAME_QUEUE",
             "event=graphics-queue-submit"

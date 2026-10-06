@@ -1,5 +1,6 @@
 package com.winlator.renderer;
 
+import android.util.Log;
 import androidx.annotation.Keep;
 import com.winlator.xserver.Drawable;
 import java.nio.ByteBuffer;
@@ -95,10 +96,27 @@ public class GPUImage extends NativeTexture {
     }
 
     public static void checkIsSupported() {
-        final short size = 8;
+        // This is a generic GL/EGL GPUImage capability check, not a Native LSFG
+        // Vulkan requirement. Avoid tiny 4x4/8x8 allocations that some Android
+        // gralloc implementations reject even though realistic buffers work.
+        final short size = 64;
+        final boolean descriptorSupported =
+            isHardwareBufferConfigurationSupported(size, size);
+        if (!descriptorSupported) {
+            supported = false;
+            Log.i("GPUImageProbe",
+                "event=support-probe descriptor_supported=0 allocation_attempted=0 size=" + size);
+            return;
+        }
+
         GPUImage gpuImage = new GPUImage(size, size);
         gpuImage.allocateTexture(size, size, null);
-        supported = gpuImage.hardwareBufferPtr != 0 && gpuImage.imageKHRPtr != 0 && gpuImage.virtualData != null;
+        supported = gpuImage.hardwareBufferPtr != 0
+            && gpuImage.imageKHRPtr != 0
+            && gpuImage.virtualData != null;
+        Log.i("GPUImageProbe",
+            "event=support-probe descriptor_supported=1 allocation_attempted=1 size="
+                + size + " supported=" + (supported ? 1 : 0));
         gpuImage.destroy();
     }
 
@@ -122,6 +140,9 @@ public class GPUImage extends NativeTexture {
     }
 
     private native long hardwareBufferFromSocket(int fd);
+
+    private static native boolean isHardwareBufferConfigurationSupported(
+        short width, short height);
 
     private native long createHardwareBuffer(short width, short height);
 

@@ -113,8 +113,19 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(context.contains("recoverNativeAcquiredFrame()"))
         assertTrue(context.contains("generatedProvenance.uniqueDelivery = true"))
         val generatedPresent = context.indexOf("const VkResult generatedPresentResult = enqueueHostPresent")
-        val sourcePresent = context.indexOf("res = enqueueHostPresent(PendingHostPresent{", generatedPresent)
+        val generatedDesiredValidation =
+            context.indexOf("validatedHostDesiredPresentTime({generatedProvenance})")
+        val sourceDesiredValidation =
+            context.indexOf("desiredDecision = validatedHostDesiredPresentTime(frameProvenance)", generatedDesiredValidation)
+        val sourcePresent =
+            context.indexOf("res = enqueueHostPresent(PendingHostPresent{", generatedPresent)
         assertTrue(generatedPresent >= 0 && sourcePresent > generatedPresent)
+        assertTrue(
+            "Native desired-time cursor must advance generated slots before source",
+            generatedDesiredValidation >= 0 &&
+                sourceDesiredValidation > generatedDesiredValidation &&
+                sourcePresent > sourceDesiredValidation,
+        )
         val renderStart = context.indexOf("void VulkanRendererContext::renderFrame()")
         val renderEnd = context.indexOf("void VulkanRendererContext::", renderStart + 8)
         val renderBody = context.substring(renderStart, if (renderEnd > renderStart) renderEnd else context.length)

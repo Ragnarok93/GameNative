@@ -3372,8 +3372,9 @@ ok=true;}catch(...){}
         [](const LsfgFrameProvenance& provenance) {
             return provenance.uniqueDelivery;
         });
-    const HostDesiredPresentDecision desiredDecision =
-        validatedHostDesiredPresentTime(frameProvenance);
+    HostDesiredPresentDecision desiredDecision{};
+    if (!nativeRuntimeActive)
+        desiredDecision = validatedHostDesiredPresentTime(frameProvenance);
 
     std::array<VkSemaphore, 1 + VKR_LSFG_MAX_GENERATIONS> wSem{};
     std::array<VkSemaphore, 1 + VKR_LSFG_MAX_GENERATIONS> sSem{};
@@ -3581,6 +3582,12 @@ ok=true;}catch(...){}
             hostPresentId = hostPresentId_++;
             googlePresentId = hostGooglePresentId_++;
         }
+        // Validate the real/source boundary only after every generated slot.
+        // validatedHostDesiredPresentTime() owns the monotonic WSI desired-time
+        // cursor, so validating source first would phase-shift earlier
+        // interpolation slots past their source boundary.
+        if (nativeRuntimeActive)
+            desiredDecision = validatedHostDesiredPresentTime(frameProvenance);
         res = enqueueHostPresent(PendingHostPresent{
             .frameSlot = currentFrame,
             .imageIndex = imgIdx,

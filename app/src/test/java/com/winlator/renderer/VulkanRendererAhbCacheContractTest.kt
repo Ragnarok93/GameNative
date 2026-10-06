@@ -95,12 +95,34 @@ class VulkanRendererAhbCacheContractTest {
     }
 
     @Test
+    fun gpuImageProbeChecksDescriptorSupportBeforeRepresentativeAllocation() {
+        val gpuImageJava = repoSource("app/src/main/java/com/winlator/renderer/GPUImage.java")
+        val gpuImageNative = repoSource("app/src/main/cpp/extras/gpu_image.c")
+
+        assertTrue(gpuImageJava.contains("final short size = 64"))
+        assertTrue(gpuImageJava.contains("isHardwareBufferConfigurationSupported(size, size)"))
+        val capability = gpuImageJava.indexOf("isHardwareBufferConfigurationSupported(size, size)")
+        val allocation = gpuImageJava.indexOf("new GPUImage(size, size)")
+        assertTrue(capability >= 0 && allocation > capability)
+        assertTrue(gpuImageNative.contains("AHardwareBuffer_isSupported"))
+        assertTrue(gpuImageNative.contains("dlsym(RTLD_DEFAULT"))
+        assertTrue(gpuImageNative.contains("event=descriptor-capability"))
+    }
+
+    @Test
     fun transitionsBetweenCpuAndAhbBuffersReleasePreviousOwnership() {
         val implementation = source("VulkanRendererContext.cpp")
 
         assertTrue(implementation.contains("releaseWindowAhbImports(id)"))
         assertTrue(implementation.contains("updateWindowContentAHB"))
         assertTrue(implementation.contains("destroyWinTex(wt)"))
+    }
+
+    private fun repoSource(path: String): String {
+        val candidates = listOf(Paths.get(path), Paths.get("..").resolve(path))
+        val source: Path = candidates.firstOrNull { Files.isRegularFile(it) }
+            ?: error("Unable to locate repository source: $path")
+        return String(Files.readAllBytes(source), Charsets.UTF_8)
     }
 
     private fun source(name: String): String {

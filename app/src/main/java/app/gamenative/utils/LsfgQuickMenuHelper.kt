@@ -198,7 +198,8 @@ object LsfgQuickMenuHelper {
             },
         )
         renderer.setLsfgFrameQueue(
-            !LsfgVkManager.isNativeBackend(container) && frameQueueEnabled(container) && sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2,
+            frameQueueEnabled(container) &&
+                LsfgVkManager.isArmed(container),
             frameQueueTarget(container).depth,
         )
     }

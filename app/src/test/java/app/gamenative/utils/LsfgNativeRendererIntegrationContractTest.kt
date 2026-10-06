@@ -261,8 +261,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
         assertTrue(context.contains("nativeLsfgContentPending"))
 
-        // Native must preserve the same selected present-mode policy as Legacy.
-        // The previous hardcoded FIFO path poisoned admission with FIFO blocking.
+        // Native uses the shared present-mode setter but timed Native delivery
+        // requests Mailbox; stored Legacy preference is restored on handoff.
         val applyPresentStart =
             javaRenderer.indexOf("public boolean applyFrameGenerationSettings")
         val applyPresentEnd =
@@ -280,15 +280,20 @@ class LsfgNativeRendererIntegrationContractTest {
             javaRenderer.substring(presentSetterStart, presentSetterEnd)
         assertTrue(presentSetter.contains("nativeLifetimeLock.readLock().lock()"))
         assertTrue(!presentSetter.contains("synchronized (lock)"))
-        assertTrue(manager.contains("renderer.setVkPresentMode("))
-        assertTrue(manager.contains("if (snapshot.presentMode == \"mailbox\") 1 else 2"))
+        assertTrue(manager.contains("renderer.setVkPresentMode(1)"))
+        assertTrue(
+            manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
+        )
 
-        // Android WSI uses the surface's current transform unless it is
-        // genuinely unsupported; identity support alone is not an override.
-        assertTrue(context.contains("VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform"))
-        assertTrue(context.contains("(caps.supportedTransforms & pre) == 0"))
-        assertTrue(context.contains("transformChanged"))
-        assertTrue(context.contains("transform_changed=%d"))
+        // GameNative already composites in logical landscape. Prefer identity
+        // when Android exposes it so ROTATE_90 is not applied a second time.
+        assertTrue(
+            context.contains(
+                "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",
+            ),
+        )
+        assertTrue(context.contains("? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR"))
+        assertTrue(context.contains("const bool transformChanged = false"))
 
         // Native admission must distinguish presenter service from blocked
         // vkQueuePresentKHR tail latency. A FIFO p95 >= one source period must

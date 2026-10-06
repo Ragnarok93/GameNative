@@ -80,6 +80,39 @@ const char* provenanceKindName(uint8_t kind) {
     return kind == 1 ? "generated" : "source";
 }
 
+const char* provenanceBackendName(const LsfgFrameProvenance* provenance) {
+    return provenance == nullptr ? "none"
+        : provenance->nativeImplementation ? "native" : "legacy";
+}
+
+const char* deliveryBackendName(
+        const std::vector<LsfgFrameProvenance>& provenance) {
+    bool hasNative = false;
+    bool hasLegacy = false;
+    for (const auto& frame : provenance) {
+        if (frame.nativeImplementation) hasNative = true;
+        else hasLegacy = true;
+    }
+    if (hasNative && hasLegacy) return "mixed";
+    if (hasNative) return "native";
+    if (hasLegacy) return "legacy";
+    return "none";
+}
+
+const char* deliveryKindName(
+        const std::vector<LsfgFrameProvenance>& provenance) {
+    bool hasSource = false;
+    bool hasGenerated = false;
+    for (const auto& frame : provenance) {
+        if (frame.kind == 1) hasGenerated = true;
+        else hasSource = true;
+    }
+    if (hasSource && hasGenerated) return "mixed";
+    if (hasGenerated) return "generated";
+    if (hasSource) return "source";
+    return "none";
+}
+
 enum class HostDisplayFeedbackStatus : uint8_t {
     Unknown = 0,
     Confirmed = 1,
@@ -1507,7 +1540,7 @@ void VulkanRendererContext::emitHostDeliveryAccounting(
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_HOST_DELIVERY",
         "event=delivery-accounting reason=%s delivery_id=%" PRIu64
-        " context_epoch=%" PRIu64 " kind=%s pending=%u pending_high_water=%" PRIu64
+        " context_epoch=%" PRIu64 " backend=%s kind=%s pending=%u pending_high_water=%" PRIu64
         " host_received=%" PRIu64 " host_snapshot_created=%" PRIu64
         " host_coalesced_drop=%" PRIu64 " host_backlog_drop=%" PRIu64
         " host_stale_drop=%" PRIu64 " host_ahb_reuse_drop=%" PRIu64
@@ -1524,6 +1557,7 @@ void VulkanRendererContext::emitHostDeliveryAccounting(
         reason ? reason : "none",
         provenance ? provenance->deliveryId : 0,
         provenance ? provenance->contextEpoch : 0,
+        provenanceBackendName(provenance),
         provenance ? provenanceKindName(provenance->kind) : "none",
         pendingLsfgHostDeliveryCount_.load(std::memory_order_relaxed),
         hostDeliveryPendingHighWater_.load(std::memory_order_relaxed),
@@ -2086,6 +2120,7 @@ CompletedHostPresent VulkanRendererContext::executeHostPresent(
             ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
             "event=present-queue-op"
             " implementation=host-compositor"
+            " backend=%s delivery_kind=%s"
             " graphics_queue_submit_serial=%" PRIu64
             " graphics_queue_submit_ms=%.3f"
             " present_queue_present_serial=%" PRIu64
@@ -2098,6 +2133,8 @@ CompletedHostPresent VulkanRendererContext::executeHostPresent(
             " render_complete_semaphore=0x%" PRIx64
             " host_present_id=%" PRIu64
             " result=%d",
+            deliveryBackendName(present.frameProvenance),
+            deliveryKindName(present.frameProvenance),
             present.submissionSerial,
             static_cast<double>(present.submitCallNs) / 1000000.0,
             presentQueuePresentSerial,
@@ -2195,7 +2232,8 @@ void VulkanRendererContext::finalizeHostPresent(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
                 "event=present telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
                 "mode=%s smooth_fallback=%d fallback_reason=%s requested_present_mode=%d "
-                "active_present_mode=%d swapchain_generation=%llu active_slots=%u unique_content=%d "
+                "active_present_mode=%d backend=%s delivery_kind=%s "
+                "swapchain_generation=%llu active_slots=%u unique_content=%d "
                 "present_queue_split=%d present_queue_index=%u host_present_worker=%d "
                 "host_present_queue_depth=%u host_present_enqueue_wait_ms=%.3f "
                 "gpu_outstanding=%u max_gpu_outstanding=%u frame_slot=%u submission_serial=%llu "
@@ -2210,6 +2248,8 @@ void VulkanRendererContext::finalizeHostPresent(
                 smoothFallback ? 1 : 0, fallbackReason,
                 static_cast<int>(requestedPresentMode),
                 static_cast<int>(activePresentMode),
+                deliveryBackendName(present.frameProvenance),
+                deliveryKindName(present.frameProvenance),
                 static_cast<unsigned long long>(present.swapchainGeneration),
                 present.hasUniqueLsfgDelivery
                     ? activeFrameSlotCount() : BASE_FRAMES_IN_FLIGHT,
@@ -2402,6 +2442,14 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         nativeGpuCompletionSamples_.load(std::memory_order_relaxed);
     const uint64_t hostWaitSamples =
         nativeHostWaitSamples_.load(std::memory_order_relaxed);
+    const bool frameQueueEnabled =
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire);
+    const uint32_t requestedFrameQueueTarget =
+        std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
+    const uint32_t effectiveFrameQueueTargetValue =
+        frameQueueEnabled ? effectiveFrameQueueTarget() : 0U;
+    const bool adaptiveFramegen = framegenTargetRate != 0;
+    const bool adaptiveFlow = framegenFlowMode == VKR_LSFG_FLOW_ADAPTIVE;
 
     const uint64_t nowNs = monotonicTimeNs();
     if (nativePresentRateSampleNs_ == 0) {
@@ -2441,7 +2489,12 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         "LSFG_NATIVE_GENERATION: event=pipeline reason=%s source_received=%llu "
         "generated_requested=%llu generated_admitted=%llu generated_dispatched=%llu "
         "generated_completed=%llu dropped_before_generation=%llu dropped_after_generation=%llu "
-        "superseded=%llu stale=%llu deadline_rejected=%llu backlog_rejected=%llu",
+        "superseded=%llu stale=%llu deadline_rejected=%llu backlog_rejected=%llu "
+        "config_revision=%llu multiplier=%u target_fps=%u flow_mode=%s flow_preset=%u "
+        "flow_scale=%.2f adaptive_framegen=%d adaptive_flow=%d "
+        "frame_queue_enabled=%d frame_queue_target=%u effective_frame_queue_target=%u "
+        "requested_present_mode=%d active_present_mode=%d swapchain_generation=%llu "
+        "refresh_period_ns=%llu",
         reason ? reason : "periodic",
         (unsigned long long)nativeSourceReceived_.load(std::memory_order_relaxed),
         (unsigned long long)requested,
@@ -2453,7 +2506,22 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         (unsigned long long)nativeGeneratedSuperseded_.load(std::memory_order_relaxed),
         (unsigned long long)nativeGeneratedStale_.load(std::memory_order_relaxed),
         (unsigned long long)nativeGeneratedDeadlineRejected_.load(std::memory_order_relaxed),
-        (unsigned long long)nativeGeneratedBacklogRejected_.load(std::memory_order_relaxed));
+        (unsigned long long)nativeGeneratedBacklogRejected_.load(std::memory_order_relaxed),
+        (unsigned long long)framegenConfigRevision,
+        framegenMultiplier,
+        framegenTargetRate,
+        adaptiveFlow ? "adaptive" : "fixed",
+        framegenFlowPreset,
+        static_cast<double>(framegenFlowScale),
+        adaptiveFramegen ? 1 : 0,
+        adaptiveFlow ? 1 : 0,
+        frameQueueEnabled ? 1 : 0,
+        requestedFrameQueueTarget,
+        effectiveFrameQueueTargetValue,
+        static_cast<int>(requestedPresentMode),
+        static_cast<int>(activePresentMode),
+        static_cast<unsigned long long>(hostSwapchainGeneration_),
+        static_cast<unsigned long long>(hostRefreshPeriodNs_));
 
     RLOG(
         "LSFG_NATIVE_SYNC: event=aggregate path=binary-semaphore-gpu-dependency+fence-retirement "
@@ -2486,7 +2554,12 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         "presenter_queue_age_p50_ms=%.3f presenter_queue_age_p95_ms=%.3f "
         "suboptimal_streak=%u suboptimal_total=%" PRIu64 " queue_depth=%u queue_high_water=%u "
         "admission_present_p50_ms=%.3f admission_present_p95_ms=%.3f "
-        "admission_service_estimate_ms=%.3f admission_source_interval_ms=%.3f",
+        "admission_service_estimate_ms=%.3f admission_source_interval_ms=%.3f "
+        "config_revision=%llu multiplier=%u target_fps=%u flow_mode=%s flow_preset=%u "
+        "flow_scale=%.2f adaptive_framegen=%d adaptive_flow=%d "
+        "frame_queue_enabled=%d frame_queue_target=%u effective_frame_queue_target=%u "
+        "requested_present_mode=%d active_present_mode=%d swapchain_generation=%llu "
+        "refresh_period_ns=%llu",
         reason ? reason : "periodic",
         (unsigned long long)nativeSourceWsiSubmitted_.load(std::memory_order_relaxed),
         (unsigned long long)sourceWsiAccepted,
@@ -2526,7 +2599,22 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         static_cast<double>(nativeLastAdmissionP50PresentNs_) / 1000000.0,
         static_cast<double>(nativeLastAdmissionP95PresentNs_) / 1000000.0,
         static_cast<double>(nativeLastAdmissionServiceEstimateNs_) / 1000000.0,
-        static_cast<double>(nativeLastAdmissionSourceIntervalNs_) / 1000000.0);
+        static_cast<double>(nativeLastAdmissionSourceIntervalNs_) / 1000000.0,
+        static_cast<unsigned long long>(framegenConfigRevision),
+        framegenMultiplier,
+        framegenTargetRate,
+        adaptiveFlow ? "adaptive" : "fixed",
+        framegenFlowPreset,
+        static_cast<double>(framegenFlowScale),
+        adaptiveFramegen ? 1 : 0,
+        adaptiveFlow ? 1 : 0,
+        frameQueueEnabled ? 1 : 0,
+        requestedFrameQueueTarget,
+        effectiveFrameQueueTargetValue,
+        static_cast<int>(requestedPresentMode),
+        static_cast<int>(activePresentMode),
+        static_cast<unsigned long long>(hostSwapchainGeneration_),
+        static_cast<unsigned long long>(hostRefreshPeriodNs_));
 }
 
 VkResult VulkanRendererContext::enqueueHostPresent(
@@ -5075,7 +5163,10 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
             " source_delivery_efficiency=%.3f confirmation_timeout_rate=%.3f"
             " output_target_deficit_ratio=%.3f source_confirmed_fps=%.2f"
             " generated_confirmed_fps=%.2f generated_wsi_window=%zu"
-            " generated_resolved_window=%zu generated_rejected_window=%zu",
+            " generated_resolved_window=%zu generated_rejected_window=%zu"
+            " config_revision=%llu multiplier=%u target_fps=%u flow_mode=%s"
+            " flow_preset=%u flow_scale=%.2f adaptive_framegen=%d adaptive_flow=%d"
+            " frame_queue_enabled=%d frame_queue_target=%u",
             nativePresentationPressureActive_ ? 1 : 0,
             rawPressure ? 1 : 0,
             nativePresentationPressureStrikes_,
@@ -5084,7 +5175,17 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
             generatedEfficiency, sourceEfficiency, timeoutRate,
             deficitRatio, sourceConfirmedFps, generatedConfirmedFps,
             nativeGeneratedWsiEventNs_.size(),
-            generatedResolved, nativeGeneratedRejectedEventNs_.size());
+            generatedResolved, nativeGeneratedRejectedEventNs_.size(),
+            static_cast<unsigned long long>(framegenConfigRevision),
+            framegenMultiplier,
+            framegenTargetRate,
+            framegenFlowMode == VKR_LSFG_FLOW_ADAPTIVE ? "adaptive" : "fixed",
+            framegenFlowPreset,
+            static_cast<double>(framegenFlowScale),
+            framegenTargetRate != 0 ? 1 : 0,
+            framegenFlowMode == VKR_LSFG_FLOW_ADAPTIVE ? 1 : 0,
+            lsfgFrameQueueEnabled_.load(std::memory_order_acquire) ? 1 : 0,
+            std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire)));
     }
 }
 
@@ -5582,9 +5683,28 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         if (provenance.nativeImplementation) {
             __android_log_print(ANDROID_LOG_INFO, "LSFG_NATIVE",
                 "event=display_confirmation implementation=native-lsfg delivery_id=%" PRIu64
-                " kind=%s confirmed=%d unknown=%d backend=%s source_index=%" PRIu64,
+                " kind=%s confirmed=%d unknown=%d backend=%s source_index=%" PRIu64
+                " intended_present_ns=%" PRIu64 " submitted_present_ns=%" PRIu64
+                " actual_confirmation_ns=%" PRIu64 " lateness_ms=%.3f"
+                " confirmation_age_ms=%.3f swapchain_generation=%" PRIu64
+                " generated_frame_drop_reason=%s",
                 provenance.deliveryId, provenanceKindName(provenance.kind), confirmed, unknown,
-                hostDisplayBackendName(confirmation.backend), provenance.sourceIndex);
+                hostDisplayBackendName(confirmation.backend), provenance.sourceIndex,
+                confirmation.provenanceDesiredPresentTimeNs,
+                confirmation.submittedDesiredPresentTimeNs,
+                confirmation.actualPresentTimeNs,
+                confirmation.actualPresentTimeNs != 0
+                        && confirmation.provenanceDesiredPresentTimeNs != 0
+                    ? static_cast<double>(
+                        static_cast<int64_t>(confirmation.actualPresentTimeNs)
+                        - static_cast<int64_t>(
+                            confirmation.provenanceDesiredPresentTimeNs))
+                        / 1000000.0 : 0.0,
+                static_cast<double>(confirmationAgeNs) / 1000000.0,
+                confirmation.swapchainGeneration,
+                provenance.kind == 1
+                    ? (confirmed ? "none" : (reason ? reason : "unknown"))
+                    : "none");
         }
         publishLsfgHostDisplayFeedback(
             confirmation, provenance, confirmed);

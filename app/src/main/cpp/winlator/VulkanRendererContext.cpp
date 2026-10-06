@@ -876,6 +876,24 @@ void VulkanRendererContext::createSwapchain() {
     }
     nativePresentationSurfaceReady_.store(true, std::memory_order_release);
     lastAcceptedDesiredPresentTimeNs_ = 0;
+    if (hostSuboptimalActive_) {
+        const uint64_t episodeEndNs = monotonicTimeNs();
+        const double durationMs =
+            episodeEndNs != 0 && hostSuboptimalStartNs_ != 0
+                && episodeEndNs >= hostSuboptimalStartNs_
+            ? static_cast<double>(episodeEndNs - hostSuboptimalStartNs_)
+                / 1000000.0 : 0.0;
+        __android_log_print(
+            ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+            "event=suboptimal-transition state=end reason=swapchain-recreated"
+            " episode=%" PRIu64 " duration_ms=%.3f"
+            " start_generation=%" PRIu64 " end_generation=%" PRIu64,
+            hostSuboptimalEpisodeCount_, durationMs,
+            hostSuboptimalStartGeneration_, hostSwapchainGeneration_);
+    }
+    hostSuboptimalActive_ = false;
+    hostSuboptimalStartNs_ = 0;
+    hostSuboptimalStartGeneration_ = 0;
     hostSuboptimalConsecutive_ = 0;
     hostSuboptimalWindow_.clear();
     hostSuboptimalLastRequeryNs_ = 0;
@@ -5004,27 +5022,83 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
     while (hostSuboptimalWindow_.size() > 120)
         hostSuboptimalWindow_.pop_front();
 
+    const uint64_t nowNs = monotonicTimeNs();
+    const int bufferWidth = window ? ANativeWindow_getWidth(window) : 0;
+    const int bufferHeight = window ? ANativeWindow_getHeight(window) : 0;
+    const int bufferFormat = window ? ANativeWindow_getFormat(window) : 0;
+
     if (!suboptimal) {
-        if (result == VK_SUCCESS)
+        if (result == VK_SUCCESS) {
+            if (hostSuboptimalActive_) {
+                const double durationMs =
+                    nowNs != 0 && hostSuboptimalStartNs_ != 0
+                        && nowNs >= hostSuboptimalStartNs_
+                    ? static_cast<double>(nowNs - hostSuboptimalStartNs_)
+                        / 1000000.0 : 0.0;
+                __android_log_print(
+                    ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
+                    "event=suboptimal-transition state=end reason=vk-success"
+                    " episode=%" PRIu64 " duration_ms=%.3f streak=%u"
+                    " start_generation=%" PRIu64 " end_generation=%" PRIu64
+                    " android_buffer=%dx%d format=%d surface=%dx%d",
+                    hostSuboptimalEpisodeCount_, durationMs,
+                    hostSuboptimalConsecutive_,
+                    hostSuboptimalStartGeneration_, hostSwapchainGeneration_,
+                    bufferWidth, bufferHeight, bufferFormat,
+                    surfaceWidth, surfaceHeight);
+            }
+            hostSuboptimalActive_ = false;
+            hostSuboptimalStartNs_ = 0;
+            hostSuboptimalStartGeneration_ = 0;
             hostSuboptimalConsecutive_ = 0;
+        }
         return;
     }
 
     ++hostSuboptimalTotal_;
     ++hostSuboptimalConsecutive_;
-    if (hostSuboptimalConsecutive_ < 8)
+    if (!hostSuboptimalActive_) {
+        hostSuboptimalActive_ = true;
+        hostSuboptimalStartNs_ = nowNs;
+        hostSuboptimalStartGeneration_ = hostSwapchainGeneration_;
+        ++hostSuboptimalEpisodeCount_;
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "event=suboptimal-transition state=start episode=%" PRIu64
+            " generation=%" PRIu64 " surface=%dx%d android_buffer=%dx%d"
+            " buffer_format=%d swapchain_extent=%ux%u"
+            " requested_present_mode=%d selected_present_mode=%d"
+            " pre_transform=0x%x refresh_period_ns=%" PRIu64
+            " google_display_timing=%d present_wait=%d",
+            hostSuboptimalEpisodeCount_, hostSwapchainGeneration_,
+            surfaceWidth, surfaceHeight, bufferWidth, bufferHeight,
+            bufferFormat, swapchainExt.width, swapchainExt.height,
+            static_cast<int>(requestedPresentMode),
+            static_cast<int>(activePresentMode),
+            swapchainPreTransform_, hostRefreshPeriodNs_,
+            hostGoogleDisplayTimingEnabled ? 1 : 0,
+            hostPresentWaitEnabled ? 1 : 0);
+    }
+
+    if (hostSuboptimalConsecutive_ < 8 || nowNs == 0)
         return;
 
-    const uint64_t nowNs = monotonicTimeNs();
-    // Surface capability queries can themselves trigger vendor gralloc/AHB
-    // probes on Android. Audit a persistent SUBOPTIMAL streak once per
-    // swapchain generation; repeating an unchanged query cannot improve the
-    // current swapchain and caused continuous 4x4 vendor probe allocations.
-    // Resize/out-of-date/recreation advances the generation and re-arms this
-    // audit without polling the render path.
-    if (nowNs == 0
-            || hostSuboptimalLastAuditGeneration_ == hostSwapchainGeneration_)
+    const bool saturatedWindow =
+        hostSuboptimalWindow_.size() >= 120
+        && std::all_of(
+            hostSuboptimalWindow_.begin(), hostSuboptimalWindow_.end(),
+            [](uint8_t value) { return value != 0; });
+    const bool newGenerationAudit =
+        hostSuboptimalLastAuditGeneration_ != hostSwapchainGeneration_;
+    // A permanent 100% SUBOPTIMAL episode stays diagnostically active, but
+    // capability re-query is capped to once per 10s to avoid the vendor AHB
+    // probe churn previously caused by per-present revalidation.
+    const bool periodicSaturatedAudit =
+        saturatedWindow && hostSuboptimalLastRequeryNs_ != 0
+        && nowNs - hostSuboptimalLastRequeryNs_ >= 10000000000ULL;
+    if (!newGenerationAudit && !periodicSaturatedAudit)
         return;
+
     hostSuboptimalLastAuditGeneration_ = hostSwapchainGeneration_;
     hostSuboptimalLastRequeryNs_ = nowNs;
 
@@ -5036,19 +5110,23 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
         __android_log_print(
             ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
             "event=persistent-suboptimal action=requery-failed result=%d"
-            " streak=%u total=%" PRIu64,
+            " streak=%u total=%" PRIu64 " episode=%" PRIu64
+            " generation=%" PRIu64 " android_buffer=%dx%d format=%d",
             static_cast<int>(capsResult),
-            hostSuboptimalConsecutive_, hostSuboptimalTotal_);
+            hostSuboptimalConsecutive_, hostSuboptimalTotal_,
+            hostSuboptimalEpisodeCount_, hostSwapchainGeneration_,
+            bufferWidth, bufferHeight, bufferFormat);
         return;
     }
 
-    bool extentChanged =
+    const bool extentChanged =
         caps.currentExtent.width != UINT32_MAX
         && (caps.currentExtent.width != swapchainExt.width
             || caps.currentExtent.height != swapchainExt.height);
     const bool transformInvalid =
         (caps.supportedTransforms & swapchainPreTransform_) == 0;
-    const bool transformChanged = false; // identity is intentional when supported
+    const bool transformChanged =
+        caps.currentTransform != swapchainPreTransform_;
     const bool alphaInvalid =
         (caps.supportedCompositeAlpha & swapchainCompositeAlpha_) == 0;
     const bool usageInvalid =
@@ -5087,6 +5165,10 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
         && std::find(modes.begin(), modes.end(), activePresentMode)
             == modes.end();
 
+    // currentTransform differing from an explicitly selected supported
+    // preTransform is diagnostic by itself; only an unsupported transform is
+    // a recreate trigger. This keeps SUBOPTIMAL investigation separate from
+    // cadence and avoids speculative rebuild loops.
     const bool incompatible =
         extentChanged || transformInvalid
         || alphaInvalid || usageInvalid || imageCountInvalid
@@ -5100,18 +5182,30 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
         && hostSuboptimalRecreateGeneration_ != hostSwapchainGeneration_
         && (hostSuboptimalLastRecreateNs_ == 0
             || nowNs - hostSuboptimalLastRecreateNs_ >= 1000000000ULL);
+    const double episodeDurationMs =
+        hostSuboptimalStartNs_ != 0 && nowNs >= hostSuboptimalStartNs_
+            ? static_cast<double>(nowNs - hostSuboptimalStartNs_)
+                / 1000000.0 : 0.0;
+    const char* action = recreateAllowed ? "recreate-debounced"
+        : incompatible ? "debounced"
+        : saturatedWindow ? "diagnostic-hold-100pct"
+        : "observe";
 
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
         "event=persistent-suboptimal action=%s streak=%u total=%" PRIu64
-        " rolling_rate=%.3f generation=%" PRIu64
+        " rolling_rate=%.3f episode=%" PRIu64 " episode_duration_ms=%.3f"
+        " generation=%" PRIu64
         " extent_changed=%d transform_invalid=%d transform_changed=%d alpha_invalid=%d"
         " usage_invalid=%d image_count_invalid=%d format_invalid=%d"
-        " present_mode_invalid=%d current_extent=%ux%u"
-        " active_extent=%ux%u supported_usage=0x%x active_usage=0x%x",
-        recreateAllowed ? "recreate-debounced"
-            : (incompatible ? "debounced" : "observe"),
-        hostSuboptimalConsecutive_, hostSuboptimalTotal_, suboptimalRate,
+        " present_mode_invalid=%d current_extent=%ux%u active_extent=%ux%u"
+        " surface=%dx%d android_buffer=%dx%d buffer_format=%d"
+        " current_transform=0x%x pre_transform=0x%x supported_transforms=0x%x"
+        " requested_present_mode=%d selected_present_mode=%d"
+        " refresh_period_ns=%" PRIu64 " google_display_timing=%d present_wait=%d"
+        " supported_usage=0x%x active_usage=0x%x",
+        action, hostSuboptimalConsecutive_, hostSuboptimalTotal_, suboptimalRate,
+        hostSuboptimalEpisodeCount_, episodeDurationMs,
         hostSwapchainGeneration_,
         extentChanged ? 1 : 0, transformInvalid ? 1 : 0,
         transformChanged ? 1 : 0,
@@ -5120,7 +5214,24 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
         modeInvalid ? 1 : 0,
         caps.currentExtent.width, caps.currentExtent.height,
         swapchainExt.width, swapchainExt.height,
+        surfaceWidth, surfaceHeight, bufferWidth, bufferHeight, bufferFormat,
+        caps.currentTransform, swapchainPreTransform_, caps.supportedTransforms,
+        static_cast<int>(requestedPresentMode),
+        static_cast<int>(activePresentMode),
+        hostRefreshPeriodNs_,
+        hostGoogleDisplayTimingEnabled ? 1 : 0,
+        hostPresentWaitEnabled ? 1 : 0,
         caps.supportedUsageFlags, swapchainImageUsage_);
+
+    if (saturatedWindow && !incompatible) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+            "event=permanent-suboptimal-observed episode=%" PRIu64
+            " generation=%" PRIu64 " rolling_rate=1.000"
+            " action=retain-swapchain-no-capability-mismatch"
+            " next_requery_after_ms=10000",
+            hostSuboptimalEpisodeCount_, hostSwapchainGeneration_);
+    }
 
     if (recreateAllowed) {
         hostSuboptimalRecreateGeneration_ = hostSwapchainGeneration_;

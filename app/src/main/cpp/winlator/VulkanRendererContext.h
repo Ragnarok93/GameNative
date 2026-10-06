@@ -512,6 +512,10 @@ private:
     uint64_t hostInvalidPresentMarginTotal_ = 0;
     uint64_t hostSuboptimalTotal_ = 0;
     uint32_t hostSuboptimalConsecutive_ = 0;
+    bool hostSuboptimalActive_ = false;
+    uint64_t hostSuboptimalStartNs_ = 0;
+    uint64_t hostSuboptimalStartGeneration_ = 0;
+    uint64_t hostSuboptimalEpisodeCount_ = 0;
     uint64_t hostSuboptimalLastRequeryNs_ = 0;
     uint64_t hostSuboptimalLastAuditGeneration_ = UINT64_MAX;
     uint64_t hostSuboptimalLastRecreateNs_ = 0;

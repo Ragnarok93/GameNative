@@ -161,6 +161,7 @@ class LsfgBuildWorkflowContractTest {
         assertTrue(standaloneCmake.contains("\${LSFG_DIR}/lsfg_jni.c"))
 
         val jniVerifier = repoFile("tools/verify-native-lsfg-jni.sh").readText()
+        val gpuImageVerifier = repoFile("tools/verify-gpuimage-jni.sh").readText()
         listOf(
             "LosslessScaling_nativeBuildCache",
             "LosslessScaling_nativeCacheMatchesSource",
@@ -172,12 +173,26 @@ class LsfgBuildWorkflowContractTest {
         }
 
         listOf(
+            "GPUImage_isHardwareBufferConfigurationSupported",
+            "GPUImage_createHardwareBuffer",
+            "GPUImage_lockHardwareBuffer",
+            "GPUImage_createImageKHR",
+            "Machine:",
+            "AArch64",
+        ).forEach { token ->
+            assertTrue("GPUImage JNI verifier is missing $token", gpuImageVerifier.contains(token))
+        }
+
+        listOf(
             "glslang-tools",
             "cmake --build",
             "--target vulkan_renderer",
+            "--target extras",
             "libvulkan_renderer.so",
+            "libextras.so",
             "gamenative-host-display-confirmation-v3-split-present-worker",
             "verify-native-lsfg-jni.sh",
+            "verify-gpuimage-jni.sh",
         ).forEach { token ->
             assertTrue("Vulkan renderer preparation action is missing $token", action.contains(token))
         }
@@ -249,7 +264,9 @@ class LsfgBuildWorkflowContractTest {
 
         val verifier = repoFile("tools/verify-native-lsfg-apk.sh").readText()
         assertTrue(verifier.contains("lib/arm64-v8a/libvulkan_renderer.so"))
+        assertTrue(verifier.contains("lib/arm64-v8a/libextras.so"))
         assertTrue(verifier.contains("verify-native-lsfg-jni.sh"))
+        assertTrue(verifier.contains("verify-gpuimage-jni.sh"))
         assertTrue(verifier.contains("unzip -p"))
     }
 

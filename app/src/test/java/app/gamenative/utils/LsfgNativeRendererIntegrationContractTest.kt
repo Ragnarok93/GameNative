@@ -140,13 +140,15 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(native.contains("nextImages > previous_images"))
         assertTrue(native.contains("stage=native-renderer"))
         assertTrue(native.contains("configRevision < framegenConfigRevision"))
-        val backlogAdmission = context.indexOf("rejection_reason=host-present-backlog")
+        val backlogAdmission = context.indexOf("event=admission source_index=")
         assertTrue(backlogAdmission >= 0)
         val backlogWindow = context.substring(
-            (backlogAdmission - 1200).coerceAtLeast(0),
-            (backlogAdmission + 400).coerceAtMost(context.length),
+            (backlogAdmission - 1800).coerceAtLeast(0),
+            (backlogAdmission + 800).coerceAtMost(context.length),
         )
         assertTrue(backlogWindow.contains("nativeGeneratedBacklogRejected_"))
+        assertTrue(backlogWindow.contains("rejection_reason=%s"))
+        assertTrue(backlogWindow.contains("nativeLastAdmissionReason_"))
         assertTrue(!backlogWindow.contains("nativeGeneratedDeadlineRejected_"))
 
         val shaderStart = native.indexOf("void VulkanRendererContext::setFrameGenerationShaders")
@@ -156,5 +158,47 @@ class LsfgNativeRendererIntegrationContractTest {
         val shaderBody = native.substring(shaderStart, shaderEnd)
         assertTrue(shaderBody.contains("if (lsfg != nullptr && device) waitNativeResources();"))
         assertTrue(!shaderBody.contains("if (device) vk_.DeviceWaitIdle(device);"))
+
+        // Native desired-presentation ownership is explicit for both synthetic
+        // outputs and their source boundary; no generated present may carry an
+        // empty HostDesiredPresentDecision.
+        assertTrue(context.contains("buildNativePresentationSchedule("))
+        assertTrue(context.contains("generatedProvenance.desiredPresentTimeNs"))
+        assertTrue(context.contains("nativeSource.desiredPresentTimeNs"))
+        assertTrue(context.contains("validatedHostDesiredPresentTime({generatedProvenance})"))
+        assertTrue(!context.contains(".desiredDecision = HostDesiredPresentDecision{}"))
+
+        // Adaptive Flow receives physical-delivery pressure and can temporarily
+        // degrade to source-only without marking the backend failed.
+        assertTrue(vkr.contains("vkr_lsfg_set_presentation_pressure"))
+        assertTrue(vkr.contains("adaptive_generation_cap > 0"))
+        assertTrue(vkr.contains("physical-delivery-pressure"))
+        assertTrue(vkr.contains("source-only-probe"))
+        assertTrue(vkr.contains("presentation_pressure.pressure_active"))
+
+        // NATIVE_GENERATING is physical-delivery qualified, not a one-present
+        // WSI-acceptance latch.
+        assertTrue(manager.contains("NATIVE_WSI_GENERATING"))
+        assertTrue(manager.contains("NATIVE_PRESENTATION_DEGRADED"))
+        assertTrue(manager.contains("NATIVE_CONFIRMATION_UNAVAILABLE"))
+        assertTrue(manager.contains("sustained-generated-display-confirmation"))
+        assertTrue(manager.contains("getGeneratedDisplayConfirmedFrameCount"))
+        assertTrue(manager.contains("measurement=%s"))
+        assertTrue(manager.contains("\"display-confirmed\""))
+
+        // Pressure/support control-plane calls cannot convoy behind the
+        // frame-wide native shared_mutex or the Java renderer monitor.
+        val javaRenderer =
+            File(root, "app/src/main/java/com/winlator/renderer/VulkanRenderer.java").readText()
+        val pressureStart = native.indexOf("void VulkanRendererContext::setFrameGenerationPressure")
+        val pressureEnd = native.indexOf("uint64_t VulkanRendererContext::getGeneratedFrameCount", pressureStart)
+        val pressureBody = native.substring(pressureStart, pressureEnd)
+        assertTrue(!pressureBody.contains("frameMutex"))
+        val supportStart = javaRenderer.indexOf("public boolean isFrameGenerationSupported()")
+        val supportEnd = javaRenderer.indexOf("public boolean hasNativeSurface()", supportStart)
+        val supportBody = javaRenderer.substring(supportStart, supportEnd)
+        assertTrue(!supportBody.contains("synchronized (lock)"))
+        assertTrue(!supportBody.contains("nativeIsFrameGenerationSupported"))
+        assertTrue(javaRenderer.contains("ReentrantReadWriteLock nativeLifetimeLock"))
     }
 }

@@ -250,6 +250,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             try { initExecutor.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS); }
             catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
         }
+        nativeSurfaceSnapshot = false;
+        frameGenerationSupportedSnapshot = false;
         initExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
         initExecutor.execute(() -> {
             synchronized (lock) {

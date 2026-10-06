@@ -9,6 +9,7 @@ test = r'''
 #include "lsfg_pacer.hpp"
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 using namespace lsfg;
 using Clock = std::chrono::steady_clock;
@@ -16,6 +17,32 @@ auto timestamp(double seconds) {
     return Clock::time_point{} + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
 }
 int main() {
+    auto near = [](double a, double b) {
+        return std::abs(a - b) < 1e-9;
+    };
+    // Desired-presentation slots are constructed from the actual selected
+    // synthetic density, not the configured maximum multiplier.
+    {
+        auto x2 = BuildPresentationSlots(1);
+        assert(x2.generated_count == 1);
+        assert(near(x2.generated[0], 0.5));
+        assert(near(x2.source, 1.0));
+
+        auto x3 = BuildPresentationSlots(2);
+        assert(x3.generated_count == 2);
+        assert(near(x3.generated[0], 1.0 / 3.0));
+        assert(near(x3.generated[1], 2.0 / 3.0));
+
+        auto x4 = BuildPresentationSlots(3);
+        assert(x4.generated_count == 3);
+        assert(near(x4.generated[0], 0.25));
+        assert(near(x4.generated[1], 0.50));
+        assert(near(x4.generated[2], 0.75));
+
+        auto bounded = BuildPresentationSlots(99);
+        assert(bounded.generated_count == 3);
+    }
+
     // Fixed output supports every exposed multiplier and respects WSI capacity.
     for (unsigned multiplier = 2; multiplier <= 4; ++multiplier) {
         for (unsigned capacity = 0; capacity <= 3; ++capacity) {
@@ -34,7 +61,12 @@ int main() {
         pacer.SetConfig({4, target, 120});
         for (unsigned frame = 0; frame < 120; ++frame) {
             auto plan = pacer.PlanAt(3, frame + 1, timestamp(frame / 60.0));
-            if (frame > 30) assert(plan.generations == 1);
+            if (frame > 30) {
+                assert(plan.generations == 1);
+                auto selected = BuildPresentationSlots(plan.generations);
+                assert(selected.generated_count == 1);
+                assert(near(selected.generated[0], 0.5));
+            }
         }
         assert(pacer.Stats().rates_settled);
         assert(pacer.Stats().source_rate > 59 && pacer.Stats().source_rate < 61);
@@ -62,7 +94,7 @@ int main() {
     assert(!fractional.Stats().rates_settled);
     assert(fractional.PlanAt(3, 123, timestamp(6)).generations == 0);
     assert(fractional.PlanAt(0, 124, timestamp(6.1)).generations == 0);
-    std::cout << "native LSFG pacer: fixed 2x/3x/4x, capacity, adaptive panel limit, fractional credit, reset passed\n";
+    std::cout << "native LSFG pacer: explicit slots, fixed 2x/3x/4x, adaptive selected density, capacity, fractional credit, reset passed\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix="native-lsfg-pacer-") as directory:

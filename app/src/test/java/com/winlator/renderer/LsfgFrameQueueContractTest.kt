@@ -594,6 +594,32 @@ class LsfgFrameQueueContractTest {
         assertTrue(branch.contains("releaseWindowAhbReference(queued.ahb)"))
     }
 
+    @Test
+    fun nativeOwnsLiveQueuePolicyWithoutOverwritingLegacyPreference() {
+        val renderer =
+            repoSource("app/src/main/java/com/winlator/renderer/VulkanRenderer.java")
+        val manager =
+            repoSource("app/src/main/java/app/gamenative/utils/LsfgVkManager.kt")
+
+        assertTrue(renderer.contains("nativeOwnsFrameQueuePolicy"))
+        assertTrue(renderer.contains("setNativeFrameQueuePolicyOwned(boolean owned)"))
+        assertTrue(renderer.contains("event=legacy-policy-retained owner=native"))
+        assertTrue(renderer.contains("event=policy-ownership owner="))
+        assertTrue(renderer.contains("owned ? false : pendingLsfgFrameQueueEnabled"))
+        assertTrue(renderer.contains("owned ? 0 : pendingLsfgFrameQueueTarget"))
+
+        val applyStart = renderer.indexOf("public boolean applyFrameGenerationSettings")
+        val applyEnd = renderer.indexOf("public void setFrameGenerationShaders", applyStart)
+        assertTrue(applyStart >= 0 && applyEnd > applyStart)
+        val apply = renderer.substring(applyStart, applyEnd)
+        assertTrue(apply.contains("nativeOwnsFrameQueuePolicy = true"))
+        assertTrue(apply.contains("nativeSetLsfgFrameQueue(handle, false, 0)"))
+        assertFalse(apply.contains("pendingLsfgFrameQueueEnabled = false"))
+        assertFalse(apply.contains("pendingLsfgFrameQueueTarget = 0"))
+
+        assertTrue(manager.contains("renderer.setNativeFrameQueuePolicyOwned(false)"))
+    }
+
     private fun source(name: String): String {
         val candidates = listOf(
             Paths.get("src/main/cpp/winlator").resolve(name),

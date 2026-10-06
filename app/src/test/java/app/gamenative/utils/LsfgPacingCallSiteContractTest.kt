@@ -51,6 +51,19 @@ class LsfgPacingCallSiteContractTest {
     }
 
     @Test
+    fun rendererAttachmentIsManagerOwnedAndCannotDuplicateRuntimeApplication() {
+        val source = read("app/gamenative/ui/screen/xserver/XServerScreen.kt")
+        val attachment = source.substringAfter("LaunchedEffect(xServerView?.renderer)")
+            .substringBefore("fun applyFpsLimiterToEngines")
+        val manager = read("app/gamenative/utils/LsfgVkManager.kt")
+
+        assertTrue(attachment.contains("LsfgVkManager.attachRenderer("))
+        assertFalse(attachment.contains("LsfgQuickMenuHelper.applyFrameQueueToRenderer"))
+        assertFalse(attachment.contains("LsfgVkManager.applyNativeRuntime"))
+        assertTrue(manager.contains("fun attachRenderer("))
+    }
+
+    @Test
     fun backendTransactionTelemetryCarriesOneRevisionAndCompletionReason() {
         val manager = read("app/gamenative/utils/LsfgVkManager.kt")
 

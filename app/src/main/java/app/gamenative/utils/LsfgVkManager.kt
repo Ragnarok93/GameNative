@@ -1300,6 +1300,11 @@ object LsfgVkManager {
                         !requested && snapshot.frameQueueEnabled && snapshot.enabled,
                         snapshot.frameQueueTarget,
                     )
+                    // Release the transaction's single coalesced WSI rebuild
+                    // before Legacy generation is restored below.
+                    renderer.commitLsfgBackendTransitionPolicy(
+                        snapshot.backendGeneration,
+                    )
                     if (!snapshotIsCurrent(snapshot, generation)) {
                         discardStaleSnapshot(snapshot, "source-only")
                         return@execute
@@ -1455,25 +1460,34 @@ object LsfgVkManager {
                     snapshot.frameQueueEnabled,
                     snapshot.frameQueueTarget,
                 )
-                val initialized = renderer.applyFrameGenerationSettings(
-                    cache,
-                    snapshot.multiplier,
-                    snapshot.targetFps,
-                    (snapshot.requestedFlowScale * 100f).toInt(),
-                    if (snapshot.flowMode == FLOW_MODE_ADAPTIVE) {
-                        VulkanRenderer.LSFG_FLOW_ADAPTIVE
-                    } else {
-                        VulkanRenderer.LSFG_FLOW_FIXED
-                    },
-                    when (snapshot.flowPreset) {
-                        ADAPTIVE_FLOW_PRESET_BALANCED -> VulkanRenderer.LSFG_FLOW_PRESET_BALANCED
-                        ADAPTIVE_FLOW_PRESET_LOW -> VulkanRenderer.LSFG_FLOW_PRESET_LOW
-                        ADAPTIVE_FLOW_PRESET_AUTO -> VulkanRenderer.LSFG_FLOW_PRESET_AUTO
-                        else -> VulkanRenderer.LSFG_FLOW_PRESET_QUALITY
-                    },
-                    snapshot.revision,
-                    snapshot.displayRefresh,
-                ) { snapshotIsCurrent(snapshot, generation) }
+                val initialized = try {
+                    renderer.applyFrameGenerationSettings(
+                        cache,
+                        snapshot.multiplier,
+                        snapshot.targetFps,
+                        (snapshot.requestedFlowScale * 100f).toInt(),
+                        if (snapshot.flowMode == FLOW_MODE_ADAPTIVE) {
+                            VulkanRenderer.LSFG_FLOW_ADAPTIVE
+                        } else {
+                            VulkanRenderer.LSFG_FLOW_FIXED
+                        },
+                        when (snapshot.flowPreset) {
+                            ADAPTIVE_FLOW_PRESET_BALANCED -> VulkanRenderer.LSFG_FLOW_PRESET_BALANCED
+                            ADAPTIVE_FLOW_PRESET_LOW -> VulkanRenderer.LSFG_FLOW_PRESET_LOW
+                            ADAPTIVE_FLOW_PRESET_AUTO -> VulkanRenderer.LSFG_FLOW_PRESET_AUTO
+                            else -> VulkanRenderer.LSFG_FLOW_PRESET_QUALITY
+                        },
+                        snapshot.revision,
+                        snapshot.displayRefresh,
+                    ) { snapshotIsCurrent(snapshot, generation) }
+                } finally {
+                    // Present mode, frame queue, shader/cache and framegen state
+                    // are staged while the backend transaction owns WSI policy.
+                    // This releases at most one rebuild after the full policy is set.
+                    renderer.commitLsfgBackendTransitionPolicy(
+                        snapshot.backendGeneration,
+                    )
+                }
 
                 if (!snapshotIsCurrent(snapshot, generation)) {
                     discardStaleSnapshot(snapshot, "after-native-arm")

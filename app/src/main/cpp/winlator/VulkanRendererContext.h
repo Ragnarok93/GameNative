@@ -492,6 +492,7 @@ private:
     uint64_t hostSuboptimalTotal_ = 0;
     uint32_t hostSuboptimalConsecutive_ = 0;
     uint64_t hostSuboptimalLastRequeryNs_ = 0;
+    uint64_t hostSuboptimalLastAuditGeneration_ = UINT64_MAX;
     uint64_t hostSuboptimalLastRecreateNs_ = 0;
     uint64_t hostSuboptimalRecreateGeneration_ = 0;
     VkColorSpaceKHR swapchainColorSpace_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;

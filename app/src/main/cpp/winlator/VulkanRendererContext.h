@@ -129,6 +129,8 @@ static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
 static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
 static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
 static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
+static constexpr uint32_t MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH =
+    VKR_LSFG_MAX_GENERATIONS + 1;
 static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = 6;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
@@ -715,6 +717,30 @@ private:
     std::atomic<uint64_t> framegenMadeFrames{0};
     std::atomic<uint64_t> nativeGeneratedPresentedFrames_{0};
     std::atomic<uint64_t> presentedFrames{0};
+    std::atomic<uint64_t> nativeSourceReceived_{0};
+    std::atomic<uint64_t> nativeSourceWsiSubmitted_{0};
+    std::atomic<uint64_t> nativeSourceWsiAccepted_{0};
+    std::atomic<uint64_t> nativeSourceDisplayConfirmed_{0};
+    std::atomic<uint64_t> nativeGeneratedRequested_{0};
+    std::atomic<uint64_t> nativeGeneratedAdmitted_{0};
+    std::atomic<uint64_t> nativeGeneratedDispatched_{0};
+    std::atomic<uint64_t> nativeGeneratedCompleted_{0};
+    std::atomic<uint64_t> nativeGeneratedWsiSubmitted_{0};
+    std::atomic<uint64_t> nativeGeneratedWsiAccepted_{0};
+    std::atomic<uint64_t> nativeGeneratedDisplayConfirmed_{0};
+    std::atomic<uint64_t> nativeGeneratedDroppedBefore_{0};
+    std::atomic<uint64_t> nativeGeneratedDroppedAfter_{0};
+    std::atomic<uint64_t> nativeGeneratedSuperseded_{0};
+    std::atomic<uint64_t> nativeGeneratedStale_{0};
+    std::atomic<uint64_t> nativeGeneratedDeadlineRejected_{0};
+    std::atomic<uint64_t> nativeGeneratedWsiRejected_{0};
+    std::atomic<uint64_t> nativeGeneratedBacklogRejected_{0};
+    std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> nativeGeneratedSubmittedByFrame_{};
+    std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> nativeSubmissionStartedNs_{};
+    std::atomic<uint64_t> nativeGpuCompletionLatencyNsTotal_{0};
+    std::atomic<uint64_t> nativeGpuCompletionSamples_{0};
+    std::atomic<uint64_t> nativeHostWaitNsTotal_{0};
+    std::atomic<uint64_t> nativeHostWaitSamples_{0};
     bool nativeSwapchainTransferSupported_ = false;
     bool nativeComputeSupported_ = false;
     uint32_t nativeMinImageCount_ = 0;
@@ -823,6 +849,8 @@ private:
     void hostPresenterLoop();
     void processHostPresentCompletions();
     void drainHostPresenter(const char* reason);
+    uint32_t nativeHostSyntheticAdmissionCapacity();
+    void emitNativeLsfgPipelineTelemetry(const char* reason);
 
     bool  createWinTexResources(WinTex& wt, int w, int h);
     bool  importAHBToWinTex(WinTex& wt, AHardwareBuffer* ahb);

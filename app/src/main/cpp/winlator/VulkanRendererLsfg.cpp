@@ -181,6 +181,30 @@ void VulkanRendererContext::destroyLsfg() {
     framegenMadeFrames = 0;
     nativeGeneratedPresentedFrames_.store(0);
     presentedFrames.store(0);
+    nativeSourceReceived_.store(0);
+    nativeSourceWsiSubmitted_.store(0);
+    nativeSourceWsiAccepted_.store(0);
+    nativeSourceDisplayConfirmed_.store(0);
+    nativeGeneratedRequested_.store(0);
+    nativeGeneratedAdmitted_.store(0);
+    nativeGeneratedDispatched_.store(0);
+    nativeGeneratedCompleted_.store(0);
+    nativeGeneratedWsiSubmitted_.store(0);
+    nativeGeneratedWsiAccepted_.store(0);
+    nativeGeneratedDisplayConfirmed_.store(0);
+    nativeGeneratedDroppedBefore_.store(0);
+    nativeGeneratedDroppedAfter_.store(0);
+    nativeGeneratedSuperseded_.store(0);
+    nativeGeneratedStale_.store(0);
+    nativeGeneratedDeadlineRejected_.store(0);
+    nativeGeneratedWsiRejected_.store(0);
+    nativeGeneratedBacklogRejected_.store(0);
+    nativeGpuCompletionLatencyNsTotal_.store(0);
+    nativeGpuCompletionSamples_.store(0);
+    nativeHostWaitNsTotal_.store(0);
+    nativeHostWaitSamples_.store(0);
+    nativeGeneratedSubmittedByFrame_.fill(0);
+    nativeSubmissionStartedNs_.fill(0);
     framegenSupported = false;
 }
 

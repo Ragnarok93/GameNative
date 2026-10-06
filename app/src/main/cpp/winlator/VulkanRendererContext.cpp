@@ -212,8 +212,10 @@ VulkanRendererContext::VulkanRendererContext(
             __android_log_print(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
                 "event=present-worker-start host_present_worker=1 "
-                "present_queue_split=1 present_queue_index=%u max_queue_depth=%u",
-                hostPresentQueueIndex_, MAX_HOST_PRESENT_QUEUE_DEPTH);
+                "present_queue_split=1 present_queue_index=%u legacy_max_queue_depth=%u "
+                "native_max_queue_depth=%u",
+                hostPresentQueueIndex_, MAX_HOST_PRESENT_QUEUE_DEPTH,
+                MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH);
         } catch (...) {
             hostPresenterRunning_.store(false, std::memory_order_release);
             hostAsyncPresenterActive_ = false;
@@ -1671,7 +1673,23 @@ void VulkanRendererContext::finalizeHostPresent(
             && !frameQueueMaxGpuOutstanding_.compare_exchange_weak(
                 observedMax, present.gpuOutstanding, std::memory_order_relaxed)) {}
 
+    bool nativeGeneratedPresent = false;
+    bool nativeSourcePresent = false;
+    for (const auto& provenance : present.frameProvenance) {
+        if (!provenance.nativeImplementation || !provenance.uniqueDelivery) continue;
+        if (provenance.kind == 1) nativeGeneratedPresent = true;
+        else nativeSourcePresent = true;
+    }
+    if (nativeGeneratedPresent)
+        nativeGeneratedWsiSubmitted_.fetch_add(1, std::memory_order_relaxed);
+    if (nativeSourcePresent)
+        nativeSourceWsiSubmitted_.fetch_add(1, std::memory_order_relaxed);
+
     if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+        if (nativeGeneratedPresent)
+            nativeGeneratedWsiAccepted_.fetch_add(1, std::memory_order_relaxed);
+        if (nativeSourcePresent)
+            nativeSourceWsiAccepted_.fetch_add(1, std::memory_order_relaxed);
         const uint64_t presented =
             frameQueuePresentedTotal_.fetch_add(1, std::memory_order_relaxed) + 1;
         recordHostPresent(present, presentNs);
@@ -1757,6 +1775,19 @@ void VulkanRendererContext::finalizeHostPresent(
                     present.desiredDecision.phaseAdvanceNs) / 1000000.0,
                 present.desiredDecision.temporalBacklog ? 1 : 0);
         }
+    } else if (nativeGeneratedPresent) {
+        nativeGeneratedWsiRejected_.fetch_add(1, std::memory_order_relaxed);
+        nativeGeneratedDroppedAfter_.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (nativeGeneratedPresent || nativeSourcePresent) {
+        const uint64_t accepted =
+            nativeGeneratedWsiAccepted_.load(std::memory_order_relaxed);
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR
+                || accepted <= 8 || (accepted % 120) == 0) {
+            emitNativeLsfgPipelineTelemetry(
+                result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR
+                    ? "wsi-accepted" : "wsi-rejected");
+        }
     }
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
         fbResized.store(true, std::memory_order_release);
@@ -1770,16 +1801,105 @@ VkResult VulkanRendererContext::presentHostFrame(
     return result;
 }
 
+uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
+    if (!hostAsyncPresenterActive_)
+        return VKR_LSFG_MAX_GENERATIONS;
+
+    std::lock_guard<std::mutex> lock(hostPresenterMutex_);
+    const uint32_t queued = static_cast<uint32_t>(
+        std::min<std::size_t>(
+            pendingHostPresents_.size(), MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH));
+    // One slot is always reserved for the real/source output. This makes the
+    // admission decision before LSFG compute and guarantees that a full 4x
+    // batch remains bounded to exactly source + three synthetic presents.
+    if (queued + 1 >= MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH)
+        return 0;
+    return std::min<uint32_t>(
+        VKR_LSFG_MAX_GENERATIONS,
+        MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH - queued - 1);
+}
+
+void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) {
+    const uint64_t requested = nativeGeneratedRequested_.load(std::memory_order_relaxed);
+    const uint64_t admitted = nativeGeneratedAdmitted_.load(std::memory_order_relaxed);
+    const uint64_t dispatched = nativeGeneratedDispatched_.load(std::memory_order_relaxed);
+    const uint64_t completed = nativeGeneratedCompleted_.load(std::memory_order_relaxed);
+    const uint64_t wsiSubmitted = nativeGeneratedWsiSubmitted_.load(std::memory_order_relaxed);
+    const uint64_t wsiAccepted = nativeGeneratedWsiAccepted_.load(std::memory_order_relaxed);
+    const uint64_t displayConfirmed =
+        nativeGeneratedDisplayConfirmed_.load(std::memory_order_relaxed);
+    const uint64_t completionSamples =
+        nativeGpuCompletionSamples_.load(std::memory_order_relaxed);
+    const uint64_t hostWaitSamples =
+        nativeHostWaitSamples_.load(std::memory_order_relaxed);
+
+    RLOG(
+        "LSFG_NATIVE_GENERATION: event=pipeline reason=%s source_received=%llu "
+        "generated_requested=%llu generated_admitted=%llu generated_dispatched=%llu "
+        "generated_completed=%llu dropped_before_generation=%llu dropped_after_generation=%llu "
+        "superseded=%llu stale=%llu deadline_rejected=%llu backlog_rejected=%llu",
+        reason ? reason : "periodic",
+        (unsigned long long)nativeSourceReceived_.load(std::memory_order_relaxed),
+        (unsigned long long)requested,
+        (unsigned long long)admitted,
+        (unsigned long long)dispatched,
+        (unsigned long long)completed,
+        (unsigned long long)nativeGeneratedDroppedBefore_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedDroppedAfter_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedSuperseded_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedStale_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedDeadlineRejected_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeGeneratedBacklogRejected_.load(std::memory_order_relaxed));
+
+    RLOG(
+        "LSFG_NATIVE_SYNC: event=aggregate path=binary-semaphore-gpu-dependency+fence-retirement "
+        "dispatch_gpu_timing=unavailable-no-timestamp-query gpu_completion_avg_ms=%.3f "
+        "host_wait_avg_ms=%.3f outstanding_submissions=%u present_queue_high_water=%u",
+        completionSamples > 0
+            ? (double)nativeGpuCompletionLatencyNsTotal_.load(std::memory_order_relaxed)
+                / (double)completionSamples / 1000000.0 : 0.0,
+        hostWaitSamples > 0
+            ? (double)nativeHostWaitNsTotal_.load(std::memory_order_relaxed)
+                / (double)hostWaitSamples / 1000000.0 : 0.0,
+        countOutstandingFrameSubmissions(false),
+        hostPresentQueueHighWater_.load(std::memory_order_relaxed));
+
+    RLOG(
+        "LSFG_NATIVE_PRESENT: event=pipeline reason=%s source_wsi_submitted=%llu "
+        "source_wsi_accepted=%llu source_display_confirmed=%llu "
+        "generated_wsi_submitted=%llu generated_wsi_accepted=%llu "
+        "generated_display_confirmed=%llu generated_wsi_rejected=%llu "
+        "queue_depth=%zu queue_high_water=%u",
+        reason ? reason : "periodic",
+        (unsigned long long)nativeSourceWsiSubmitted_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeSourceWsiAccepted_.load(std::memory_order_relaxed),
+        (unsigned long long)nativeSourceDisplayConfirmed_.load(std::memory_order_relaxed),
+        (unsigned long long)wsiSubmitted,
+        (unsigned long long)wsiAccepted,
+        (unsigned long long)displayConfirmed,
+        (unsigned long long)nativeGeneratedWsiRejected_.load(std::memory_order_relaxed),
+        pendingHostPresents_.size(),
+        hostPresentQueueHighWater_.load(std::memory_order_relaxed));
+}
+
 VkResult VulkanRendererContext::enqueueHostPresent(
         PendingHostPresent present) {
     if (!hostAsyncPresenterActive_)
         return presentHostFrame(present);
 
+    const bool nativePresent = std::any_of(
+        present.frameProvenance.begin(), present.frameProvenance.end(),
+        [](const LsfgFrameProvenance& provenance) {
+            return provenance.nativeImplementation;
+        });
+    const uint32_t queueLimit = nativePresent
+        ? MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH
+        : MAX_HOST_PRESENT_QUEUE_DEPTH;
     const auto waitStart = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lock(hostPresenterMutex_);
-    hostPresenterSpaceCv_.wait(lock, [this] {
+    hostPresenterSpaceCv_.wait(lock, [this, queueLimit] {
         return !hostPresenterRunning_.load(std::memory_order_acquire)
-            || pendingHostPresents_.size() < MAX_HOST_PRESENT_QUEUE_DEPTH;
+            || pendingHostPresents_.size() < queueLimit;
     });
     if (!hostPresenterRunning_.load(std::memory_order_acquire)) {
         lock.unlock();
@@ -2565,6 +2685,7 @@ ok=true;}catch(...){}
         ? std::min<uint32_t>(VKR_LSFG_MAX_GENERATIONS,
             static_cast<uint32_t>(swapchainImages.size()) - nativeMinImageCount_) : 0;
     uint32_t nativeGenerations = 0;
+    uint32_t nativeRequestedGenerations = 0;
     if (nativeRuntimeActive && nativeCapacity == 0) {
         nativeRuntimeActive = false;
         framegenSupported = false;
@@ -2640,8 +2761,38 @@ ok=true;}catch(...){}
                     "rebuild_reason=none",
                     (unsigned long long)nativeLsfgContextEpoch_);
             }
-            if (nativeFreshSource)
+            if (nativeFreshSource) {
+                nativeSourceReceived_.fetch_add(1, std::memory_order_relaxed);
                 nativeGenerations = vkr_lsfg_plan(lsfg, nativeCapacity, nativeSourceFrame);
+                nativeRequestedGenerations = nativeGenerations;
+                nativeGeneratedRequested_.fetch_add(
+                    nativeRequestedGenerations, std::memory_order_relaxed);
+
+                const uint32_t hostCapacity =
+                    nativeHostSyntheticAdmissionCapacity();
+                if (nativeGenerations > hostCapacity) {
+                    const uint32_t rejected = nativeGenerations - hostCapacity;
+                    nativeGenerations = hostCapacity;
+                    nativeGeneratedDroppedBefore_.fetch_add(
+                        rejected, std::memory_order_relaxed);
+                    nativeGeneratedDeadlineRejected_.fetch_add(
+                        rejected, std::memory_order_relaxed);
+                    nativeGeneratedBacklogRejected_.fetch_add(
+                        rejected, std::memory_order_relaxed);
+                    vkr_lsfg_note_admission(
+                        lsfg, nativeRequestedGenerations, nativeGenerations);
+                    RLOG(
+                        "LSFG_NATIVE_GENERATION: event=admission source_index=%llu "
+                        "requested_synthetic=%u admitted=%u rejected=%u "
+                        "rejection_reason=host-present-backlog queue_capacity=%u",
+                        (unsigned long long)nativeSourceFrame,
+                        nativeRequestedGenerations,
+                        nativeGenerations,
+                        rejected,
+                        hostCapacity);
+                    emitNativeLsfgPipelineTelemetry("pre-generation-backlog-reject");
+                }
+            }
         }
     }
 
@@ -2707,16 +2858,30 @@ ok=true;}catch(...){}
             }
             imgInFlight[generatedImage] = inFlightFences[currentFrame];
         }
-        if (lsfg && plannedGenerations > 0) {
-            vkr_lsfg_note_admission(lsfg, plannedGenerations, nativeGenerations);
+        if (lsfg && nativeRequestedGenerations > 0) {
+            const uint32_t acquireRejected =
+                plannedGenerations > nativeGenerations
+                    ? plannedGenerations - nativeGenerations : 0;
+            if (acquireRejected > 0) {
+                nativeGeneratedDroppedBefore_.fetch_add(
+                    acquireRejected, std::memory_order_relaxed);
+                nativeGeneratedDeadlineRejected_.fetch_add(
+                    acquireRejected, std::memory_order_relaxed);
+            }
+            nativeGeneratedAdmitted_.fetch_add(
+                nativeGenerations, std::memory_order_relaxed);
+            vkr_lsfg_note_admission(
+                lsfg, nativeRequestedGenerations, nativeGenerations);
             RLOG(
                 "LSFG_NATIVE_GENERATION: event=admission source_index=%llu "
                 "requested_synthetic=%u admitted=%u rejected=%u rejection_reason=%s",
                 (unsigned long long)nativeSourceFrame,
-                plannedGenerations,
+                nativeRequestedGenerations,
                 nativeGenerations,
-                plannedGenerations - nativeGenerations,
-                nativeGenerations < plannedGenerations ? "wsi-acquire-deadline" : "none");
+                nativeRequestedGenerations - nativeGenerations,
+                acquireRejected > 0 ? "wsi-acquire-deadline"
+                    : (nativeGenerations < nativeRequestedGenerations
+                        ? "host-present-backlog" : "none"));
         }
     }
 
@@ -2919,6 +3084,12 @@ ok=true;}catch(...){}
         nativeLastSourceFrame_ = nativeSourceFrame;
         ++framegenRealFrames;
         framegenMadeFrames += nativeGenerations;
+        nativeGeneratedDispatched_.fetch_add(
+            nativeGenerations, std::memory_order_relaxed);
+        if (currentFrame < nativeGeneratedSubmittedByFrame_.size()) {
+            nativeGeneratedSubmittedByFrame_[currentFrame] = nativeGenerations;
+            nativeSubmissionStartedNs_[currentFrame] = monotonicTimeNs();
+        }
     }
     submissionTimeline.submitFrame(currentFrame, submissionSerial);
     renderSubmissionSerial.store(submissionSerial, std::memory_order_release);
@@ -3329,6 +3500,21 @@ void VulkanRendererContext::completeObservedFence(VkFence fence) {
     for (std::size_t i = 0; i < inFlightFences.size(); ++i) {
         if (inFlightFences[i] == fence) {
             submissionTimeline.completeFrame(static_cast<uint32_t>(i));
+            if (i < nativeGeneratedSubmittedByFrame_.size()) {
+                const uint32_t generated = nativeGeneratedSubmittedByFrame_[i];
+                if (generated > 0) {
+                    nativeGeneratedCompleted_.fetch_add(generated, std::memory_order_relaxed);
+                    const uint64_t started = nativeSubmissionStartedNs_[i];
+                    const uint64_t now = monotonicTimeNs();
+                    if (started != 0 && now >= started) {
+                        nativeGpuCompletionLatencyNsTotal_.fetch_add(
+                            now - started, std::memory_order_relaxed);
+                        nativeGpuCompletionSamples_.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    nativeGeneratedSubmittedByFrame_[i] = 0;
+                    nativeSubmissionStartedNs_[i] = 0;
+                }
+            }
             return;
         }
     }
@@ -3852,8 +4038,15 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             }
             lastUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
             ++uniquePhysicalPresent_;
-            if (provenance.kind == 1) ++generatedUniquePhysicalPresent_;
-            else ++sourceUniquePhysicalPresent_;
+            if (provenance.kind == 1) {
+                ++generatedUniquePhysicalPresent_;
+                if (provenance.nativeImplementation)
+                    nativeGeneratedDisplayConfirmed_.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                ++sourceUniquePhysicalPresent_;
+                if (provenance.nativeImplementation)
+                    nativeSourceDisplayConfirmed_.fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
         std::vector<uint64_t> sortedCadenceErrors(

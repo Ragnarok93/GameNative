@@ -305,9 +305,16 @@ object LsfgVkManager {
         val presentationDegraded: Boolean = false,
         val nativeHealthState: NativeHealthState = NativeHealthState.NOT_APPLICABLE,
     ) {
-        val readyForGeneration: Boolean
+        /**
+         * Native activation readiness is WSI-based. Physical display confirmation
+         * is reported by nativeHealthState and never gates this property.
+         */
+        val nativeActivationReady: Boolean
             get() = fresh && resident && generationReady && multiplier >= 2 && !degraded &&
                 (!framegenSupportKnown || framegenSupported)
+
+        val readyForGeneration: Boolean
+            get() = nativeActivationReady
 
         val readyForSourceOnly: Boolean
             get() = fresh && resident && sourceOnly && !generationReady && !degraded
@@ -441,6 +448,7 @@ object LsfgVkManager {
         )
         backendTransitionTelemetry[transition.transactionId] =
             BackendTransitionTelemetry(transition)
+        activeBackendTransition = transition
         nativeRendererRef?.get()?.beginLsfgBackendTransition(
             transition.transactionId, transition.revision)
         Timber.i(
@@ -521,6 +529,9 @@ object LsfgVkManager {
             ?: BackendTransitionTelemetry(request)
         nativeRendererRef?.get()?.completeLsfgBackendTransition(
             request.transactionId, completionReason)
+        if (activeBackendTransition?.transactionId == request.transactionId) {
+            activeBackendTransition = null
+        }
         Timber.i(
             "LSFG_BACKEND_TX: event=handoff_complete transaction_id=%d revision=%d " +
                 "old_backend=%s new_backend=%s requested_multiplier=%d effective_multiplier=%d " +
@@ -1012,6 +1023,11 @@ object LsfgVkManager {
     private val nativeApplyExecutor by lazy {
         Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-native-apply").apply { isDaemon = true } }
     }
+    @Volatile private var nativeApplyScheduledRenderer: WeakReference<VulkanRenderer>? = null
+    @Volatile private var nativeApplyScheduledRevision = 0L
+    @Volatile private var nativeApplyScheduledBackendGeneration = 0L
+    @Volatile private var nativeApplyScheduledGeneration = 0L
+    @Volatile private var activeBackendTransition: BackendTransitionRequest? = null
 
     private fun displayRefreshRate(context: Context): Float =
         runCatching {
@@ -1271,6 +1287,7 @@ object LsfgVkManager {
      * Push one immutable Native-LSFG settings snapshot into the host compositor.
      * Shader-cache construction is kept off the render/launch critical path.
      */
+    @Synchronized
     private fun applyNativeRuntime(
         renderer: VulkanRenderer,
         container: Container,
@@ -1281,8 +1298,27 @@ object LsfgVkManager {
         nativeRendererRef = WeakReference(renderer)
         nativeRendererContext = context.applicationContext
         nativeRendererContainer = container
+        val alreadyScheduled =
+            nativeApplyScheduledRenderer?.get() === renderer &&
+                nativeApplyScheduledRevision == snapshot.revision &&
+                nativeApplyScheduledBackendGeneration == snapshot.backendGeneration &&
+                nativeApplyScheduledGeneration == nativeApplyGeneration.get()
+        if (alreadyScheduled) {
+            Timber.i(
+                "LSFG_NATIVE_CONFIG: event=coalesced_runtime_application requested_revision=%d " +
+                    "backend_generation=%d",
+                snapshot.revision,
+                snapshot.backendGeneration,
+            )
+            return
+        }
+
         latestNativeSnapshot = snapshot
         val generation = nativeApplyGeneration.incrementAndGet()
+        nativeApplyScheduledRenderer = WeakReference(renderer)
+        nativeApplyScheduledRevision = snapshot.revision
+        nativeApplyScheduledBackendGeneration = snapshot.backendGeneration
+        nativeApplyScheduledGeneration = generation
         nativeApplyFailed = false
         nativeApplyComplete = false
         nativeFailureReason = null
@@ -1557,6 +1593,64 @@ object LsfgVkManager {
                 }
             }
         }
+    }
+
+    /**
+     * Bind the renderer lifecycle to the manager-owned runtime transaction.
+     *
+     * Surface attachment is not a second backend transition. Reuse the current
+     * immutable snapshot when possible and coalesce repeated Compose effects
+     * while an application is already queued.
+     */
+    @JvmStatic
+    @Synchronized
+    fun attachRenderer(
+        renderer: VulkanRenderer,
+        container: Container,
+        context: Context,
+    ) {
+        val sameRenderer =
+            nativeRendererRef?.get() === renderer && nativeRendererContainer === container
+        nativeRendererRef = WeakReference(renderer)
+        nativeRendererContext = context.applicationContext
+        nativeRendererContainer = container
+
+        // A renderer created after a switch must inherit the same transaction.
+        // Do not restart the transaction when Compose merely re-runs the effect
+        // for the same renderer instance.
+        if (!sameRenderer) {
+            activeBackendTransition?.let { transition ->
+                renderer.beginLsfgBackendTransition(
+                    transition.transactionId,
+                    transition.revision,
+                )
+            }
+        }
+
+        val currentSnapshot = latestNativeSnapshot?.takeIf {
+            it.revision == nativeConfigRevision.get() &&
+                it.backendGeneration == backendRequestSerial.get()
+        }
+        val alreadyApplied =
+            sameRenderer &&
+                currentSnapshot != null &&
+                nativeApplyComplete &&
+                nativeAppliedRevision == currentSnapshot.revision &&
+                nativeApplyScheduledRenderer?.get() === renderer &&
+                nativeApplyScheduledRevision == currentSnapshot.revision &&
+                nativeApplyScheduledBackendGeneration == currentSnapshot.backendGeneration
+        if (alreadyApplied) {
+            Timber.d(
+                "LSFG_NATIVE_CONFIG: event=renderer_attachment_coalesced requested_revision=%d " +
+                    "backend_generation=%d",
+                currentSnapshot!!.revision,
+                currentSnapshot.backendGeneration,
+            )
+            return
+        }
+
+        val snapshot = currentSnapshot ?: captureNativeRuntimeSnapshot(container, context)
+        applyNativeRuntime(renderer, container, context, snapshot)
     }
 
     @JvmStatic

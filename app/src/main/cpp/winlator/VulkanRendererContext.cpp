@@ -2779,11 +2779,15 @@ ok=true;}catch(...){}
                     flow.adaptive ? "adaptive" : "fixed",
                     (double)flow.requested_scale,
                     (double)flow.active_scale);
-            } else {
+                nativeLastContextReuseRevision_ = framegenConfigRevision;
+            } else if (nativeFreshSource
+                    && nativeLastContextReuseRevision_ != framegenConfigRevision) {
+                nativeLastContextReuseRevision_ = framegenConfigRevision;
                 RLOG(
                     "LSFG_NATIVE_CONTEXT: event=context_reuse context_epoch=%llu "
-                    "rebuild_reason=none",
-                    (unsigned long long)nativeLsfgContextEpoch_);
+                    "revision=%llu rebuild_reason=none",
+                    (unsigned long long)nativeLsfgContextEpoch_,
+                    (unsigned long long)framegenConfigRevision);
             }
             if (nativeFreshSource) {
                 nativeSourceReceived_.fetch_add(1, std::memory_order_relaxed);
@@ -2798,8 +2802,6 @@ ok=true;}catch(...){}
                     const uint32_t rejected = nativeGenerations - hostCapacity;
                     nativeGenerations = hostCapacity;
                     nativeGeneratedDroppedBefore_.fetch_add(
-                        rejected, std::memory_order_relaxed);
-                    nativeGeneratedDeadlineRejected_.fetch_add(
                         rejected, std::memory_order_relaxed);
                     nativeGeneratedBacklogRejected_.fetch_add(
                         rejected, std::memory_order_relaxed);

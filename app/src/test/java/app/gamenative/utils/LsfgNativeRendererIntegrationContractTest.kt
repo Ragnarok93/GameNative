@@ -49,12 +49,18 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(!context.contains("framegenMultiplier == 2"))
         assertTrue(context.contains("uint32_t framegenFlowMode = VKR_LSFG_FLOW_FIXED"))
         assertTrue(context.contains("nativeLsfgContextEpoch_"))
+        assertTrue(header.contains("nativeLastContextReuseRevision_"))
+        assertTrue(context.contains("nativeLastContextReuseRevision_ != framegenConfigRevision"))
 
         val vkr = File(root, "app/src/main/cpp/lsfg/vkr_lsfg.cpp").readText()
         assertTrue(vkr.contains("AdaptiveFlowController"))
         assertTrue(vkr.contains("generation_density_backoff"))
         assertTrue(vkr.contains("vkr_lsfg_set_pressure"))
         assertTrue(vkr.contains("output_deficit"))
+        assertTrue(vkr.contains("bool gpu_valid{}"))
+        assertTrue(vkr.contains("bool output_valid{}"))
+        assertTrue(vkr.contains("observation.globalPressureValid = global_pressure_valid"))
+        assertTrue(vkr.contains("pressure_fresh && lsfg->pressure.output_valid"))
 
         val standaloneCmake =
             File(root, "app/src/main/cpp/vulkan-renderer-build/CMakeLists.txt").readText()
@@ -117,6 +123,18 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(createSyncEnd > createSyncStart)
         val createSyncBody = context.substring(createSyncStart, createSyncEnd)
         assertTrue(!createSyncBody.contains("nativeExtraAcquireSems_"))
+
+        assertTrue(native.contains("swapchainCapacityIncrease"))
+        assertTrue(native.contains("reason=swapchain-capacity-increase"))
+        assertTrue(native.contains("nextImages > previous_images"))
+        val backlogAdmission = context.indexOf("rejection_reason=host-present-backlog")
+        assertTrue(backlogAdmission >= 0)
+        val backlogWindow = context.substring(
+            (backlogAdmission - 1200).coerceAtLeast(0),
+            (backlogAdmission + 400).coerceAtMost(context.length),
+        )
+        assertTrue(backlogWindow.contains("nativeGeneratedBacklogRejected_"))
+        assertTrue(!backlogWindow.contains("nativeGeneratedDeadlineRejected_"))
 
         val shaderStart = native.indexOf("void VulkanRendererContext::setFrameGenerationShaders")
         val shaderEnd = native.indexOf("void VulkanRendererContext::setSourceFrameCount", shaderStart)

@@ -206,6 +206,7 @@ void VulkanRendererContext::destroyLsfg() {
     nativeHostWaitSamples_.store(0);
     nativeGeneratedSubmittedByFrame_.fill(0);
     nativeSubmissionStartedNs_.fill(0);
+    nativeLastContextReuseRevision_ = UINT64_MAX;
     framegenSupported = false;
 }
 
@@ -476,24 +477,48 @@ void VulkanRendererContext::setFrameGenerationMode(
                            framegenRefreshRate, framegenConfigRevision);
     }
 
-    // Multiplier and target-FPS changes are scheduler scalars. They must not
-    // drain fences, reset history or recreate LSFG resources. A Flow contract
-    // change is rebuilt later at the render thread's existing safe boundary.
+    const uint32_t nextImages = framegenExtraImages();
+    const bool swapchainCapacityIncrease =
+        framegenRequested && nextImages > previous_images;
+    const bool flowResourceRebuildRequired =
+        lsfg != nullptr
+        && swapchainFmt != VK_FORMAT_UNDEFINED
+        && swapchainExt.width > 0 && swapchainExt.height > 0
+        && vkr_lsfg_needs_rebuild(
+            lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt);
+    const char* flowRebuildReason = flowResourceRebuildRequired
+        ? vkr_lsfg_rebuild_reason(
+            lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt)
+        : "none";
+
+    // Multiplier and target-FPS changes are scheduler scalars and never reset
+    // LSFG history. Growing from 2x/3x to a denser mode can still require more
+    // WSI images; recreate only the swapchain/composite capacity in that case.
+    if (swapchainCapacityIncrease) {
+        fbResized.store(true, std::memory_order_release);
+        RLOG(
+            "LSFG_NATIVE_CONTEXT: event=surface_rebuild_requested "
+            "reason=swapchain-capacity-increase previous_extra_images=%u "
+            "requested_extra_images=%u revision=%llu",
+            previous_images,
+            nextImages,
+            (unsigned long long)framegenConfigRevision);
+    }
     RLOG(
         "LSFG_NATIVE_CONTEXT: event=config_update context_epoch=%llu revision=%llu "
         "rebuild_required=%d rebuild_reason=%s multiplier=%u target_fps=%u flow_mode=%s "
-        "flow_preset=%u requested_scale=%.2f",
+        "flow_preset=%u requested_scale=%.2f swapchain_capacity_increase=%d",
         (unsigned long long)nativeLsfgContextEpoch_,
         (unsigned long long)framegenConfigRevision,
-        flowContractChanged ? 1 : 0,
-        flowContractChanged ? "flow-contract-change" : "none",
+        flowResourceRebuildRequired ? 1 : 0,
+        flowRebuildReason,
         framegenMultiplier,
         framegenTargetRate,
         framegenFlowMode == VKR_LSFG_FLOW_ADAPTIVE ? "adaptive" : "fixed",
         framegenFlowPreset,
-        (double)framegenFlowScale);
+        (double)framegenFlowScale,
+        swapchainCapacityIncrease ? 1 : 0);
 
-    (void)previous_images;
     dirtyCV.notify_one();
 }
 

@@ -123,7 +123,13 @@ struct VkrLsfg {
         float frame_time_p95_ms{};
         float slow_frame_ratio{};
         std::chrono::steady_clock::time_point sampled_at{};
-        bool valid{};
+        bool sample_valid{};
+        bool gpu_valid{};
+        bool thermal_valid{};
+        bool source_valid{};
+        bool output_valid{};
+        bool frame_time_valid{};
+        bool slow_ratio_valid{};
     } pressure;
 
     bool synthetic_drop_pressure{};
@@ -246,15 +252,31 @@ void vkr_lsfg_set_pressure(VkrLsfg* lsfg, float gpu_usage_percent, int thermal_s
                            float slow_frame_ratio) {
     if (!lsfg) return;
     auto& pressure = lsfg->pressure;
-    pressure.gpu_usage_percent = gpu_usage_percent;
-    pressure.thermal_status = thermal_status;
-    pressure.source_fps = std::max(source_fps, 0.0f);
-    pressure.output_fps = std::max(output_fps, 0.0f);
-    pressure.frame_time_p95_ms = std::max(frame_time_p95_ms, 0.0f);
-    pressure.slow_frame_ratio = std::clamp(slow_frame_ratio, 0.0f, 1.0f);
-    pressure.sampled_at = std::chrono::steady_clock::now();
-    pressure.valid = std::isfinite(gpu_usage_percent)
+
+    pressure.gpu_valid = std::isfinite(gpu_usage_percent)
         && gpu_usage_percent >= 0.0f && gpu_usage_percent <= 100.0f;
+    pressure.thermal_valid = thermal_status >= 0 && thermal_status <= 6;
+    pressure.source_valid = std::isfinite(source_fps) && source_fps > 0.0f;
+    pressure.output_valid = std::isfinite(output_fps) && output_fps > 0.0f;
+    pressure.frame_time_valid =
+        std::isfinite(frame_time_p95_ms) && frame_time_p95_ms > 0.0f;
+    pressure.slow_ratio_valid =
+        std::isfinite(slow_frame_ratio) && slow_frame_ratio >= 0.0f
+        && slow_frame_ratio <= 1.0f;
+
+    pressure.gpu_usage_percent = pressure.gpu_valid ? gpu_usage_percent : -1.0f;
+    pressure.thermal_status = pressure.thermal_valid ? thermal_status : -1;
+    pressure.source_fps = pressure.source_valid ? source_fps : 0.0f;
+    pressure.output_fps = pressure.output_valid ? output_fps : 0.0f;
+    pressure.frame_time_p95_ms =
+        pressure.frame_time_valid ? frame_time_p95_ms : 0.0f;
+    pressure.slow_frame_ratio =
+        pressure.slow_ratio_valid ? slow_frame_ratio : 0.0f;
+    pressure.sampled_at = std::chrono::steady_clock::now();
+    pressure.sample_valid =
+        pressure.gpu_valid || pressure.thermal_valid || pressure.source_valid
+        || pressure.output_valid || pressure.frame_time_valid
+        || pressure.slow_ratio_valid;
 }
 
 void vkr_lsfg_note_admission(VkrLsfg* lsfg, uint32_t requested, uint32_t admitted) {
@@ -369,8 +391,12 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
     if (lsfg->adaptive_flow) {
         const auto now = std::chrono::steady_clock::now();
         const bool pressure_fresh =
-            lsfg->pressure.valid
+            lsfg->pressure.sample_valid
             && now - lsfg->pressure.sampled_at <= std::chrono::milliseconds(1500);
+        const bool global_pressure_valid =
+            pressure_fresh && lsfg->pressure.gpu_valid;
+        const bool thermal_pressure_valid =
+            pressure_fresh && lsfg->pressure.thermal_valid;
         const double elapsed_seconds =
             stats.last_elapsed > 0.0f ? std::min<double>(stats.last_elapsed, 0.250) : 0.0;
         const double frame_budget_ms =
@@ -383,7 +409,8 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                 : (stats.source_rate > 0.0f
                     ? stats.source_rate * static_cast<double>(lsfg->pacer.Config().multiplier)
                     : 0.0);
-        const bool output_valid = pressure_fresh && lsfg->pressure.output_fps > 0.0f;
+        const bool output_valid =
+            pressure_fresh && lsfg->pressure.output_valid;
         const bool output_satisfied =
             output_valid && output_target > 0.0
             && lsfg->pressure.output_fps >= output_target * 0.98;
@@ -391,8 +418,9 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
             output_target > 0.0 ? 1000.0 / output_target : 0.0;
         const bool slow_frame_pressure =
             pressure_fresh
-            && (lsfg->pressure.slow_frame_ratio >= 0.08f
-                || (output_period_ms > 0.0
+            && ((lsfg->pressure.slow_ratio_valid
+                    && lsfg->pressure.slow_frame_ratio >= 0.08f)
+                || (lsfg->pressure.frame_time_valid && output_period_ms > 0.0
                     && lsfg->pressure.frame_time_p95_ms > output_period_ms * 1.25));
         const bool output_deficit =
             (output_valid && output_target > 0.0 && !output_satisfied)
@@ -411,7 +439,7 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         observation.wsiPresentationPressure = lsfg->synthetic_drop_pressure;
         observation.wsiLossRate = lsfg->synthetic_drop_pressure ? 1.0 : 0.0;
         observation.sourceFps =
-            pressure_fresh && lsfg->pressure.source_fps > 0.0f
+            pressure_fresh && lsfg->pressure.source_valid
                 ? lsfg->pressure.source_fps : stats.source_rate;
         observation.adaptiveFramegenMode = stats.target_rate > 0.0f;
         observation.scheduledGenerationDensity =
@@ -424,12 +452,11 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         observation.outputTargetSatisfied = output_satisfied;
         observation.fixedMultiplierBaseTarget = stats.target_rate <= 0.0f;
         observation.globalGpuUsagePercent =
-            pressure_fresh ? lsfg->pressure.gpu_usage_percent : 0.0;
-        observation.globalPressureValid = pressure_fresh;
+            global_pressure_valid ? lsfg->pressure.gpu_usage_percent : 0.0;
+        observation.globalPressureValid = global_pressure_valid;
         observation.thermalStatus =
-            pressure_fresh ? std::max(lsfg->pressure.thermal_status, 0) : 0;
-        observation.thermalPressureValid =
-            pressure_fresh && lsfg->pressure.thermal_status >= 0;
+            thermal_pressure_valid ? lsfg->pressure.thermal_status : 0;
+        observation.thermalPressureValid = thermal_pressure_valid;
         observation.outputDeficit = output_deficit;
         observation.syntheticDropPressure = lsfg->synthetic_drop_pressure;
         observation.generatedWorkSample = false;
@@ -456,7 +483,7 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                 telemetry.stateIndex,
                 telemetry.stateCount,
                 AdaptiveFlowController::reasonName(telemetry.reason),
-                pressure_fresh ? static_cast<double>(lsfg->pressure.gpu_usage_percent) : -1.0,
+                global_pressure_valid ? static_cast<double>(lsfg->pressure.gpu_usage_percent) : -1.0,
                 output_valid ? static_cast<double>(lsfg->pressure.output_fps) : 0.0,
                 output_target);
         } else if (lsfg->flow_transition_frames > 0) {
@@ -469,7 +496,7 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         const bool severe_pressure =
             at_minimum && (
                 lsfg->synthetic_drop_pressure
-                || (pressure_fresh
+                || (global_pressure_valid
                     && lsfg->pressure.gpu_usage_percent >= 96.0f
                     && output_deficit));
         if (stats.target_rate > 0.0f && severe_pressure) {
@@ -484,13 +511,13 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                     "generation_cap=%u active_scale=%.2f gpu_pressure=%.1f output_deficit=%d",
                     lsfg->adaptive_generation_cap,
                     static_cast<double>(lsfg->active_flow_scale),
-                    pressure_fresh ? static_cast<double>(lsfg->pressure.gpu_usage_percent) : -1.0,
+                    global_pressure_valid ? static_cast<double>(lsfg->pressure.gpu_usage_percent) : -1.0,
                     output_deficit ? 1 : 0);
             }
         } else {
             lsfg->density_pressure_seconds = 0.0;
             const bool recovery =
-                stats.target_rate > 0.0f && at_minimum && pressure_fresh
+                stats.target_rate > 0.0f && at_minimum && global_pressure_valid
                 && lsfg->pressure.gpu_usage_percent <= 88.0f
                 && (!output_valid || output_satisfied)
                 && !lsfg->synthetic_drop_pressure;

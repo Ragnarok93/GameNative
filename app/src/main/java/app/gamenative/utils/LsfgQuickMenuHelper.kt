@@ -186,7 +186,8 @@ object LsfgQuickMenuHelper {
         renderer ?: return
         renderer.setVkPresentMode(
             if (LsfgVkManager.isNativeBackend(container) &&
-                LsfgVkManager.isArmed(container)
+                LsfgVkManager.isArmed(container) &&
+                sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2
             ) {
                 // Native timed presentation prefers Mailbox; native Vulkan
                 // capability selection falls back to FIFO if unsupported.
@@ -199,7 +200,8 @@ object LsfgQuickMenuHelper {
         )
         renderer.setLsfgFrameQueue(
             frameQueueEnabled(container) &&
-                LsfgVkManager.isArmed(container),
+                LsfgVkManager.isArmed(container) &&
+                sanitizeMultiplier(LsfgVkManager.multiplier(container)) >= 2,
             frameQueueTarget(container).depth,
         )
     }

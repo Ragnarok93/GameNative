@@ -2966,12 +2966,19 @@ ok=true;}catch(...){}
         return;
     }
 
-    // Frame Queue depth belongs to unique LSFG content only. The raw imported
-    // AHB is never retained as queued storage: after QueueSubmit the acquired
-    // host swapchain image is the immutable composite snapshot, and its render
-    // completion semaphore owns the handoff to WSI.
+    // Frame Queue depth belongs to unique LSFG content only. Native and Legacy
+    // share this final-output policy; Native contributes unique content directly
+    // from the host compositor instead of through the AHB delivery queue.
+    bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
+    const bool nativeLsfgContentPending =
+        !toXr
+        && framegenArmed.load(std::memory_order_acquire)
+        && framegenRequested.load(std::memory_order_acquire)
+        && framegenSupported.load(std::memory_order_acquire)
+        && lsfg != nullptr;
     bool uniqueLsfgContentPending =
-        pendingLsfgHostDeliveryCount_.load(std::memory_order_acquire) > 0;
+        nativeLsfgContentPending
+        || pendingLsfgHostDeliveryCount_.load(std::memory_order_acquire) > 0;
     if (!uniqueLsfgContentPending
             && lsfgFrameQueueEnabled_.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lk(renderMutex);
@@ -2994,7 +3001,6 @@ ok=true;}catch(...){}
     if (currentFrame >= activeSlots)
         currentFrame = 0;
     if (currentFrame >= cmdBufs.size() || cmdBufs[currentFrame] == VK_NULL_HANDLE) return;
-    bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
     bool currentFenceWaited = false;
     bool currentFenceComplete = false;
     if (toXr) {

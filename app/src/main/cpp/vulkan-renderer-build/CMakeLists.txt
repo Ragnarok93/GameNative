@@ -69,6 +69,7 @@ add_library(
     "${LSFG_DIR}/lsfg_pacer.cpp"
     "${LSFG_DIR}/lsfg_shaders.cpp"
     "${LSFG_VK_ANDROID_DIR}/src/adaptive_flow_controller.cpp"
+    "${LSFG_VK_ANDROID_DIR}/src/adaptive_scheduler.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/window_vert.h"
     "${CMAKE_CURRENT_BINARY_DIR}/window_frag.h"
 )

@@ -56,6 +56,10 @@ class LsfgQuickMenuHelperModeTest {
         assertTrue(manager.contains("else fixedMultiplier(container)"))
         assertTrue(helper.contains("Native timed presentation prefers Mailbox"))
         assertTrue(helper.contains("renderer.setVkPresentMode("))
+        assertTrue(helper.contains("renderer.setLsfgFrameQueue("))
+        assertTrue(helper.contains("frameQueueEnabled(container) &&"))
+        assertTrue(helper.contains("LsfgVkManager.isArmed(container)"))
+        assertTrue(!helper.contains("!LsfgVkManager.isNativeBackend(container) && frameQueueEnabled"))
     }
 
     @Test

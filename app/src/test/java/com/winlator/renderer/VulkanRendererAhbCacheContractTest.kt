@@ -101,9 +101,12 @@ class VulkanRendererAhbCacheContractTest {
 
         assertTrue(gpuImageJava.contains("final short size = 64"))
         assertTrue(gpuImageJava.contains("isHardwareBufferConfigurationSupported(size, size)"))
+        assertTrue(gpuImageJava.contains("catch (UnsatisfiedLinkError error)"))
+        assertTrue(gpuImageJava.contains("jni_available=0 fallback=allocation"))
         val capability = gpuImageJava.indexOf("isHardwareBufferConfigurationSupported(size, size)")
+        val fallback = gpuImageJava.indexOf("catch (UnsatisfiedLinkError error)", capability)
         val allocation = gpuImageJava.indexOf("new GPUImage(size, size)")
-        assertTrue(capability >= 0 && allocation > capability)
+        assertTrue(capability >= 0 && fallback > capability && allocation > fallback)
         assertTrue(gpuImageNative.contains("AHardwareBuffer_isSupported"))
         assertTrue(gpuImageNative.contains("dlsym(RTLD_DEFAULT"))
         assertTrue(gpuImageNative.contains("event=descriptor-capability"))

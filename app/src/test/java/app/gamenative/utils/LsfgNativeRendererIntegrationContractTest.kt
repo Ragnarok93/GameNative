@@ -61,6 +61,14 @@ class LsfgNativeRendererIntegrationContractTest {
 
         val vkr = File(root, "app/src/main/cpp/lsfg/vkr_lsfg.cpp").readText()
         assertTrue(vkr.contains("AdaptiveFlowController"))
+        val pacer =
+            File(root, "app/src/main/cpp/lsfg/lsfg_pacer.hpp").readText()
+        val pacerImpl =
+            File(root, "app/src/main/cpp/lsfg/lsfg_pacer.cpp").readText()
+        assertTrue(pacer.contains("AdaptiveFrameScheduler adaptive_scheduler"))
+        assertTrue(pacerImpl.contains("adaptive_scheduler.plan"))
+        assertTrue(pacerImpl.contains("adaptive_scheduler.configure"))
+        assertTrue(cmake.contains("lsfg-vk-android/src/adaptive_scheduler.cpp"))
         assertTrue(vkr.contains("generation_density_backoff"))
         assertTrue(vkr.contains("vkr_lsfg_set_pressure"))
         assertTrue(vkr.contains("output_deficit"))
@@ -174,6 +182,9 @@ class LsfgNativeRendererIntegrationContractTest {
         // outputs and their source boundary; no generated present may carry an
         // empty HostDesiredPresentDecision.
         assertTrue(context.contains("buildNativePresentationSchedule("))
+        assertTrue(header.contains("SourceProtectedTimeline nativeSourceTimeline_"))
+        assertTrue(context.contains("nativeSourceTimeline_.observe"))
+        assertTrue(context.contains("nativeSourceTimeline_.syntheticDesiredTimeNs"))
         assertTrue(context.contains("generatedProvenance.desiredPresentTimeNs"))
         assertTrue(context.contains("nativeSource.desiredPresentTimeNs"))
         assertTrue(context.contains("validatedHostDesiredPresentTime({generatedProvenance})"))

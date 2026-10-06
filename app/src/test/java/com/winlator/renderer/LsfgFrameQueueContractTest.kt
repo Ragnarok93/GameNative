@@ -308,12 +308,25 @@ class LsfgFrameQueueContractTest {
             quickMenu.indexOf("scrollState = lsfgScrollState"),
         )
         assertTrue(callback.contains("applyPresentMode"))
-        assertTrue(callback.contains("applyFrameQueueToRenderer"))
+        assertTrue(callback.contains("applyFrameQueuePolicy"))
         assertTrue(
             "Quick Menu must not bypass Native present-mode ownership",
             !callback.contains("renderer?.setVkPresentMode"),
         )
-        assertTrue(quickMenu.contains("applyFrameQueueToRenderer"))
+        assertTrue(quickMenu.contains("LsfgVkManager.applyFrameQueuePolicy"))
+        assertFalse(quickMenu.contains("applyFrameQueueToRenderer"))
+    }
+
+    @Test
+    fun legacyGeneratedSlotsUseAStableHighRefreshOutputClock() {
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(implementation.contains("highRefreshGeneratedSlotFloorNs"))
+        assertTrue(implementation.contains("hostRefreshPeriodNs_ * 2ULL"))
+        assertTrue(implementation.contains("legacy-output-slot-drop"))
+        assertTrue(implementation.contains("missed-usable-output-slot"))
+        assertTrue(implementation.contains("legacy-output-slot-missed-no-phase-repair"))
+        assertFalse(implementation.contains("material cadence/configuration change rebases once"))
     }
 
     @Test

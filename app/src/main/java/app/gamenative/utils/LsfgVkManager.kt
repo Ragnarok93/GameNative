@@ -187,6 +187,8 @@ object LsfgVkManager {
     }
     private val runtimeInstallLock = Any()
     private val lastRuntimePressureLogMs = AtomicLong(0L)
+    private val lastNativeRuntimeStateLogMs = AtomicLong(0L)
+    @Volatile private var lastNativeRuntimeStateLogKey: String? = null
 
     // Environment variables consumed by the lsfg-vk layer / Vulkan loader.
     private const val ENV_DISABLE = "DISABLE_LSFG"
@@ -830,6 +832,67 @@ object LsfgVkManager {
             else -> NativeHealthState.STARTING
         }
 
+        val runtimeStatus = when {
+            !enabled -> RuntimeStatus.SOURCE_ONLY
+            failed || generationStalled -> RuntimeStatus.DEGRADED
+            activationReady -> RuntimeStatus.GENERATING
+            else -> RuntimeStatus.UNKNOWN
+        }
+        val runtimeMultiplier = if (enabled) {
+            snapshot?.multiplier ?: multiplier(container)
+        } else {
+            1
+        }
+        val runtimeRejectionReason = when {
+            generationStalled -> "native-generation-stalled-with-source-progress"
+            failed -> nativeFailureReason ?: "native-initialization-failed"
+            else -> null
+        }
+        val stateLogKey = listOf(
+            healthState.name,
+            runtimeStatus.name,
+            activationReady,
+            wsiGenerating,
+            confirmedGenerating,
+            confirmationAvailable,
+            generationStalled,
+            runtimeMultiplier,
+            runtimeRejectionReason,
+        ).joinToString("|")
+        val nowMs = System.currentTimeMillis()
+        val previousStateLogMs = lastNativeRuntimeStateLogMs.get()
+        if (stateLogKey != lastNativeRuntimeStateLogKey ||
+            previousStateLogMs == 0L || nowMs - previousStateLogMs >= 2_000L
+        ) {
+            if (lastNativeRuntimeStateLogMs.compareAndSet(previousStateLogMs, nowMs)) {
+                lastNativeRuntimeStateLogKey = stateLogKey
+                Timber.i(
+                    "LSFG_NATIVE_STATE: event=runtime_observation backend=native " +
+                        "status=%s health_state=%s generation_ready=%d " +
+                        "generation_initialized=%d wsi_generating=%d " +
+                        "display_confirmed_generating=%d display_confirmation_available=%d " +
+                        "presentation_degraded=%d multiplier=%d " +
+                        "wsi_generated_count=%d display_confirmed_count=%d source_frame_count=%d " +
+                        "wsi_progress_age_ms=%.3f rejection_reason=%s",
+                    runtimeStatus,
+                    healthState,
+                    if (activationReady) 1 else 0,
+                    if (initialized) 1 else 0,
+                    if (wsiGenerating) 1 else 0,
+                    if (confirmedGenerating) 1 else 0,
+                    if (confirmationAvailable) 1 else 0,
+                    if (generationStalled) 1 else 0,
+                    runtimeMultiplier,
+                    wsiGeneratedCount,
+                    confirmedGeneratedCount,
+                    sourceFrameCount,
+                    if (nativeLastWsiProgressNs == 0L || nowNs < nativeLastWsiProgressNs) 0.0
+                    else (nowNs - nativeLastWsiProgressNs) / 1_000_000.0,
+                    runtimeRejectionReason ?: "none",
+                )
+            }
+        }
+
         if (snapshot != null && snapshot.revision == nativeAppliedRevision) {
             when {
                 failed -> transitionNativePhase(
@@ -852,28 +915,19 @@ object LsfgVkManager {
         }
 
         return RuntimeState(
-            status = when {
-                !enabled -> RuntimeStatus.SOURCE_ONLY
-                failed || generationStalled -> RuntimeStatus.DEGRADED
-                activationReady -> RuntimeStatus.GENERATING
-                else -> RuntimeStatus.UNKNOWN
-            },
+            status = runtimeStatus,
             resident = initialized || !enabled,
             sourceOnly = !enabled,
             generationReady = activationReady,
             generationInitialized = initialized,
             generatedPresented = wsiGeneratedCount > 0L,
             degraded = enabled && (failed || generationStalled),
-            multiplier = if (enabled) snapshot?.multiplier ?: multiplier(container) else 1,
+            multiplier = runtimeMultiplier,
             fresh = true,
             framegenSupportKnown = initialized || failed,
             framegenSupported = initialized,
             vulkanPath = "native-host-compositor",
-            rejectionReason = when {
-                generationStalled -> "native-generation-stalled-with-source-progress"
-                failed -> nativeFailureReason ?: "native-initialization-failed"
-                else -> null
-            },
+            rejectionReason = runtimeRejectionReason,
             wsiGenerating = wsiGenerating,
             displayConfirmedGenerating = confirmedGenerating,
             displayConfirmationAvailable = confirmationAvailable,

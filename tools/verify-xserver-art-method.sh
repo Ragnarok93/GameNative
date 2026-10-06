@@ -40,7 +40,7 @@ for dex in "$work"/classes*.dex; do
     }
     in_target &&
       $0 ~ /^[[:space:]]*name[[:space:]]*:/ &&
-      $0 ~ /'XServerScreen([^']*)'[[:space:]]*$/ {
+      $0 ~ /XServerScreen/ {
       in_method = 1
       next
     }

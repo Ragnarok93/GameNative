@@ -898,10 +898,6 @@ void VulkanRendererContext::createSyncObjects() {
         if (vk_.CreateSemaphore(device,&si,nullptr,&imgAvailSems[i])!=VK_SUCCESS||
             vk_.CreateSemaphore(device,&si,nullptr,&renderDoneSems[i])!=VK_SUCCESS||
             vk_.CreateFence(device,&fi,nullptr,&inFlightFences[i])!=VK_SUCCESS) throw std::runtime_error("sync");
-        for (auto& semaphore : nativeExtraAcquireSems_[i]) {
-            if (vk_.CreateSemaphore(device,&si,nullptr,&semaphore) != VK_SUCCESS)
-                throw std::runtime_error("native-lsfg-acquire-sync");
-        }
     }
     createFrameQueuePresentSemaphores();
 }
@@ -2515,12 +2511,6 @@ ok=true;}catch(...){}
 
     uint32_t nativeGenerations = 0;
     uint64_t nativeSourceFrame = framegenSourceFrames.load(std::memory_order_relaxed) + 1;
-    if (nativeRuntimeActive) {
-        if (!ensureNativeExtraAcquireSemaphores()) {
-            nativeRuntimeActive = false;
-            RLOG_E("Native LSFG disabled for frame: acquire semaphore initialization failed");
-        }
-    }
     if (nativeRuntimeActive) {
         if (!ensureNativeExtraAcquireSemaphores()) {
             nativeRuntimeActive = false;

@@ -1778,6 +1778,8 @@ void VulkanRendererContext::finalizeHostPresent(
     } else if (nativeGeneratedPresent) {
         nativeGeneratedWsiRejected_.fetch_add(1, std::memory_order_relaxed);
         nativeGeneratedDroppedAfter_.fetch_add(1, std::memory_order_relaxed);
+        if (lsfg)
+            vkr_lsfg_note_presentation_drop(lsfg, 1);
     }
     if (nativeGeneratedPresent || nativeSourcePresent) {
         const uint64_t accepted =
@@ -2064,6 +2066,28 @@ void VulkanRendererContext::cleanupSwapchain() {
         vkr_lsfg_forget_targets(lsfg);
         vkr_lsfg_reset(lsfg);
     }
+    // Readiness must be proven again for the new swapchain/surface epoch.
+    // Historical WSI acceptance from the old surface cannot keep Native in
+    // NATIVE_GENERATING before a new generated frame reaches presentation.
+    nativeGeneratedPresentedFrames_.store(0, std::memory_order_relaxed);
+    presentedFrames.store(0, std::memory_order_relaxed);
+    nativePresentRateSampleNs_ = 0;
+    nativePresentRateSourceAccepted_ =
+        nativeSourceWsiAccepted_.load(std::memory_order_relaxed);
+    nativePresentRateGeneratedAccepted_ =
+        nativeGeneratedWsiAccepted_.load(std::memory_order_relaxed);
+    nativePresentRateSourceConfirmed_ =
+        nativeSourceDisplayConfirmed_.load(std::memory_order_relaxed);
+    nativePresentRateGeneratedConfirmed_ =
+        nativeGeneratedDisplayConfirmed_.load(std::memory_order_relaxed);
+    nativeSourceWsiFps_ = 0.0;
+    nativeGeneratedWsiFps_ = 0.0;
+    nativeOutputWsiFps_ = 0.0;
+    nativeOutputConfirmedFps_ = 0.0;
+    RLOG(
+        "LSFG_NATIVE_STATE: event=presentation_evidence_reset reason=swapchain-recreate "
+        "context_epoch=%llu",
+        (unsigned long long)nativeLsfgContextEpoch_);
     destroyCompositeTargets();
     if (compositePass != VK_NULL_HANDLE) {
         vk_.DestroyRenderPass(device, compositePass, nullptr);

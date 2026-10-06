@@ -779,16 +779,20 @@ object LsfgVkManager {
     }
 
     private fun logNativeSnapshot(snapshot: NativeRuntimeConfigSnapshot, event: String) {
+        val nativeEnabled =
+            snapshot.backend == BACKEND_NATIVE && snapshot.enabled && snapshot.multiplier >= 2
         Timber.i(
             "LSFG_NATIVE_CONFIG: event=%s requested_revision=%d applied_revision=%d backend_generation=%d " +
-                "backend=%s enabled=%d generation_mode=%s multiplier=%d target_fps=%d flow_mode=%s " +
-                "flow_preset=%s requested_scale=%.2f display_refresh=%.2f present_policy=%s " +
-                "queue_policy=%s queue_target=%d",
+                "backend=%s enabled=%d requested_enabled=%d generation_mode=%s multiplier=%d target_fps=%d " +
+                "flow_mode=%s flow_preset=%s requested_scale=%.2f display_refresh=%.2f " +
+                "present_policy=%s queue_policy=%s legacy_present_policy=%s " +
+                "legacy_frame_queue_requested=%d legacy_queue_target=%d",
             event,
             snapshot.revision,
             nativeAppliedRevision,
             snapshot.backendGeneration,
             snapshot.backend,
+            if (nativeEnabled) 1 else 0,
             if (snapshot.enabled) 1 else 0,
             snapshot.generationMode,
             snapshot.multiplier,
@@ -797,8 +801,10 @@ object LsfgVkManager {
             snapshot.flowPreset,
             snapshot.requestedFlowScale,
             snapshot.displayRefresh,
+            if (nativeEnabled) "fifo" else "disabled",
+            if (nativeEnabled) "native-bounded-shallow" else "disabled",
             snapshot.presentMode,
-            if (snapshot.frameQueueEnabled) "requested" else "unbuffered",
+            if (snapshot.frameQueueEnabled) 1 else 0,
             snapshot.frameQueueTarget,
         )
     }

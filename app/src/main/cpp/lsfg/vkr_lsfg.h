@@ -54,6 +54,7 @@ void vkr_lsfg_set_pressure(VkrLsfg* lsfg, float gpu_usage_percent, int thermal_s
                            float slow_frame_ratio);
 
 void vkr_lsfg_note_admission(VkrLsfg* lsfg, uint32_t requested, uint32_t admitted);
+void vkr_lsfg_note_presentation_drop(VkrLsfg* lsfg, uint32_t dropped);
 
 void vkr_lsfg_set_guest_extent(VkrLsfg* lsfg, uint32_t width, uint32_t height);
 

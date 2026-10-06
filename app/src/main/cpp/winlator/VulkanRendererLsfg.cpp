@@ -461,6 +461,15 @@ void VulkanRendererContext::setFrameGenerationMode(
             flowPreset,
             static_cast<int>(VKR_LSFG_FLOW_PRESET_QUALITY),
             static_cast<int>(VKR_LSFG_FLOW_PRESET_AUTO)));
+    if (configRevision != 0 && framegenConfigRevision != 0
+            && configRevision < framegenConfigRevision) {
+        RLOG(
+            "LSFG_NATIVE_CONFIG: event=discarded_stale_revision requested_revision=%llu "
+            "current_revision=%llu stage=native-renderer",
+            (unsigned long long)configRevision,
+            (unsigned long long)framegenConfigRevision);
+        return;
+    }
     if (nextMultiplier == framegenMultiplier
             && nextTarget == framegenTargetRate
             && nextFlow == framegenFlowScale

@@ -55,6 +55,9 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(context.contains("wsi_accepted_output_fps=%.2f"))
         assertTrue(context.contains("confirmed_output_fps=%.2f"))
         assertTrue(context.contains("host_wait_total_ms=%.3f"))
+        assertTrue(context.contains("event=presentation_evidence_reset reason=swapchain-recreate"))
+        assertTrue(context.contains("nativeGeneratedPresentedFrames_.store(0"))
+        assertTrue(context.contains("vkr_lsfg_note_presentation_drop(lsfg, 1)"))
 
         val vkr = File(root, "app/src/main/cpp/lsfg/vkr_lsfg.cpp").readText()
         assertTrue(vkr.contains("AdaptiveFlowController"))
@@ -82,6 +85,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("LSFG_LEGACY_CONFIG: event=legacy_layer_state"))
         assertTrue(manager.contains("reason=native-backend"))
         assertTrue(manager.contains("LSFG_NATIVE_CONFIG: event=%s"))
+        assertTrue(manager.contains("present_policy=%s queue_policy=%s legacy_present_policy=%s"))
+        assertTrue(manager.contains("native-bounded-shallow"))
         assertTrue(manager.contains("snapshotIsCurrent"))
         assertTrue(manager.contains("reserveRuntimeRequest"))
         assertTrue(manager.contains("before-legacy-publication"))
@@ -133,6 +138,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(native.contains("swapchainCapacityIncrease"))
         assertTrue(native.contains("reason=swapchain-capacity-increase"))
         assertTrue(native.contains("nextImages > previous_images"))
+        assertTrue(native.contains("stage=native-renderer"))
+        assertTrue(native.contains("configRevision < framegenConfigRevision"))
         val backlogAdmission = context.indexOf("rejection_reason=host-present-backlog")
         assertTrue(backlogAdmission >= 0)
         val backlogWindow = context.substring(

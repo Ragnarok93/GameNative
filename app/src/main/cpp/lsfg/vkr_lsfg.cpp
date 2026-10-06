@@ -285,6 +285,14 @@ void vkr_lsfg_note_admission(VkrLsfg* lsfg, uint32_t requested, uint32_t admitte
         lsfg->synthetic_drop_pressure = true;
 }
 
+void vkr_lsfg_note_presentation_drop(VkrLsfg* lsfg, uint32_t dropped) {
+    if (!lsfg || dropped == 0) return;
+    // Downstream WSI loss is presentation pressure, not synthetic compute
+    // pressure. AdaptiveFlowController keeps that distinction and only uses
+    // Flow as an actuator when the rest of the pressure evidence supports it.
+    lsfg->synthetic_drop_pressure = true;
+}
+
 void vkr_lsfg_set_guest_extent(VkrLsfg* lsfg, uint32_t width, uint32_t height) {
     if (!lsfg || width == 0 || height == 0) return;
     lsfg->peak_guest_extent.width = std::max(lsfg->peak_guest_extent.width, width);

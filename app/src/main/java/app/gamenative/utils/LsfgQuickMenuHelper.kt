@@ -276,7 +276,6 @@ object LsfgQuickMenuHelper {
             frameQueueEnabled = enabled && snapshot.frameQueueEnabled,
             frameQueueTarget = snapshot.frameQueueTarget.depth,
         )
-        LsfgVkManager.refreshNativeRuntime(container)
     }
 }
 

@@ -104,6 +104,7 @@ import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.util.adaptivePanelWidth
 import app.gamenative.utils.MathUtils.normalizedProgress
+import app.gamenative.utils.LsfgVkManager
 import com.winlator.container.Container
 import com.winlator.renderer.GLRenderer
 import com.winlator.renderer.VulkanRenderer

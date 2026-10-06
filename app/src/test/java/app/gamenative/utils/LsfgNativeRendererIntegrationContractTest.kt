@@ -186,6 +186,7 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(vkr.contains("physical-delivery-pressure"))
         assertTrue(vkr.contains("source-only-probe"))
         assertTrue(vkr.contains("presentation_pressure.pressure_active"))
+        assertTrue(vkr.contains("lsfg->warm && generations > 0"))
 
         // NATIVE_GENERATING is physical-delivery qualified, not a one-present
         // WSI-acceptance latch.

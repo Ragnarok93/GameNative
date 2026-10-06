@@ -187,6 +187,18 @@ class VulkanRendererDisplayConfirmationContractTest {
         assertTrue(implementation.contains("output_target_deficit_ratio"))
         assertTrue(jni.contains("nativeGetDisplayConfirmedFrameCount"))
         assertTrue(jni.contains("nativeIsDisplayConfirmationAvailable"))
+
+        val confirmationStart =
+            implementation.indexOf("void VulkanRendererContext::emitHostDisplayConfirmation")
+        val confirmationEnd =
+            implementation.indexOf("void VulkanRendererContext::recordHostPresent", confirmationStart)
+        val confirmationBody =
+            implementation.substring(confirmationStart, confirmationEnd)
+        assertTrue(
+            "PresentWait confirmation must count without actualPresentTime",
+            confirmationBody.contains("if (confirmed && provenance.uniqueDelivery)") &&
+                confirmationBody.contains("if (confirmation.actualPresentTimeNs != 0)"),
+        )
     }
 
     @Test

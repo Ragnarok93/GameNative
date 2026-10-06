@@ -4977,53 +4977,66 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         }
 
         uint64_t uniquePhysicalIntervalNs = 0;
-        if (confirmed && provenance.uniqueDelivery
-                && confirmation.actualPresentTimeNs != 0) {
-            if (firstUniquePhysicalPresentNs_ == 0)
-                firstUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
-            if (lastUniquePhysicalPresentNs_ != 0
-                    && confirmation.actualPresentTimeNs
-                        > lastUniquePhysicalPresentNs_) {
-                uniquePhysicalIntervalNs =
-                    confirmation.actualPresentTimeNs
-                    - lastUniquePhysicalPresentNs_;
-            }
-            if (confirmation.provenanceDesiredPresentTimeNs != 0) {
-                physicalCadenceErrorsNs_.push_back(
-                    static_cast<uint64_t>(std::llabs(
-                        static_cast<long long>(confirmation.actualPresentTimeNs)
-                        - static_cast<long long>(
-                            confirmation.provenanceDesiredPresentTimeNs))));
-                while (physicalCadenceErrorsNs_.size() > 240)
-                    physicalCadenceErrorsNs_.pop_front();
-            }
-            if (confirmation.submittedDesiredPresentTimeNs != 0) {
-                scheduledCadenceErrorsNs_.push_back(
-                    static_cast<uint64_t>(std::llabs(
-                        static_cast<long long>(confirmation.actualPresentTimeNs)
-                        - static_cast<long long>(
-                            confirmation.submittedDesiredPresentTimeNs))));
-                while (scheduledCadenceErrorsNs_.size() > 240)
-                    scheduledCadenceErrorsNs_.pop_front();
-            }
-            lastUniquePhysicalPresentNs_ = confirmation.actualPresentTimeNs;
+        if (confirmed && provenance.uniqueDelivery) {
+            // Confirmation truth is independent of timestamp availability.
+            // VK_KHR_present_wait proves physical delivery but does not expose
+            // actualPresentTime; only cadence-error math requires that value.
             ++uniquePhysicalPresent_;
             if (provenance.kind == 1) {
                 ++generatedUniquePhysicalPresent_;
                 if (provenance.nativeImplementation) {
-                    nativeGeneratedDisplayConfirmed_.fetch_add(1, std::memory_order_relaxed);
-                    nativeGeneratedDisplayConfirmedEpoch_.fetch_add(1, std::memory_order_relaxed);
+                    nativeGeneratedDisplayConfirmed_.fetch_add(
+                        1, std::memory_order_relaxed);
+                    nativeGeneratedDisplayConfirmedEpoch_.fetch_add(
+                        1, std::memory_order_relaxed);
                     recordNativePresentationEvidence(
                         true, true, false, false, false, nowNs);
                 }
             } else {
                 ++sourceUniquePhysicalPresent_;
                 if (provenance.nativeImplementation) {
-                    nativeSourceDisplayConfirmed_.fetch_add(1, std::memory_order_relaxed);
-                    nativeSourceDisplayConfirmedEpoch_.fetch_add(1, std::memory_order_relaxed);
+                    nativeSourceDisplayConfirmed_.fetch_add(
+                        1, std::memory_order_relaxed);
+                    nativeSourceDisplayConfirmedEpoch_.fetch_add(
+                        1, std::memory_order_relaxed);
                     recordNativePresentationEvidence(
                         false, true, false, false, false, nowNs);
                 }
+            }
+
+            if (confirmation.actualPresentTimeNs != 0) {
+                if (firstUniquePhysicalPresentNs_ == 0)
+                    firstUniquePhysicalPresentNs_ =
+                        confirmation.actualPresentTimeNs;
+                if (lastUniquePhysicalPresentNs_ != 0
+                        && confirmation.actualPresentTimeNs
+                            > lastUniquePhysicalPresentNs_) {
+                    uniquePhysicalIntervalNs =
+                        confirmation.actualPresentTimeNs
+                        - lastUniquePhysicalPresentNs_;
+                }
+                if (confirmation.provenanceDesiredPresentTimeNs != 0) {
+                    physicalCadenceErrorsNs_.push_back(
+                        static_cast<uint64_t>(std::llabs(
+                            static_cast<long long>(
+                                confirmation.actualPresentTimeNs)
+                            - static_cast<long long>(
+                                confirmation.provenanceDesiredPresentTimeNs))));
+                    while (physicalCadenceErrorsNs_.size() > 240)
+                        physicalCadenceErrorsNs_.pop_front();
+                }
+                if (confirmation.submittedDesiredPresentTimeNs != 0) {
+                    scheduledCadenceErrorsNs_.push_back(
+                        static_cast<uint64_t>(std::llabs(
+                            static_cast<long long>(
+                                confirmation.actualPresentTimeNs)
+                            - static_cast<long long>(
+                                confirmation.submittedDesiredPresentTimeNs))));
+                    while (scheduledCadenceErrorsNs_.size() > 240)
+                        scheduledCadenceErrorsNs_.pop_front();
+                }
+                lastUniquePhysicalPresentNs_ =
+                    confirmation.actualPresentTimeNs;
             }
         }
 

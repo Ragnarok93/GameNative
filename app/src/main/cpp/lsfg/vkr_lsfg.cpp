@@ -355,7 +355,9 @@ bool vkr_lsfg_get_flow_state(const VkrLsfg* lsfg, VkrLsfgFlowState* out_state) {
         static_cast<uint32_t>(lsfg->adaptive_flow ? telemetry.stateCount : 1u);
     out_state->generation_cap = lsfg->adaptive_generation_cap;
     out_state->pressure_active = telemetry.computePressure || telemetry.globalPressure
-        || telemetry.outputPressure || telemetry.sourcePressure || lsfg->synthetic_drop_pressure;
+        || telemetry.outputPressure || telemetry.sourcePressure
+        || lsfg->presentation_pressure.pressure_active
+        || lsfg->synthetic_drop_pressure;
     out_state->transition = lsfg->flow_transition_frames > 0
         || std::fabs(out_state->active_scale - out_state->effective_scale) > 0.0005f;
     out_state->warm = lsfg->warm;
@@ -661,8 +663,11 @@ void vkr_lsfg_process(VkrLsfg* lsfg, VkCommandBuffer cmd, VkImage source, uint32
     lsfg->last_count = count;
     lsfg->last_generations = generations;
 
-    CopyPresentedFrame(cmd, source, lsfg->chain->Input(count), VkExtent2D{width, height});
-    if (lsfg->warm) {
+    CopyPresentedFrame(
+        cmd, source, lsfg->chain->Input(count), VkExtent2D{width, height});
+    // Keep history current while Adaptive density is zero, but do not burn
+    // Flow/refinement GPU work in the temporary degraded source-only state.
+    if (lsfg->warm && generations > 0) {
         lsfg->chain->DispatchShared(cmd, count);
     }
 }

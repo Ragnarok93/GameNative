@@ -51,7 +51,7 @@ class LsfgNativeRendererIntegrationContractTest {
         val renderBody = context.substring(renderStart, if (renderEnd > renderStart) renderEnd else context.length)
         assertTrue(!renderBody.contains("DeviceWaitIdle"))
         assertTrue(
-            Regex("ensureNativeExtraAcquireSemaphores\\\\(\\\\)")
+            Regex("ensureNativeExtraAcquireSemaphores\\(\\)")
                 .findAll(renderBody)
                 .count() == 1,
         )

@@ -47,7 +47,7 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(context.contains("signalSemaphoreCount=signalSemaphoreCount"))
         assertTrue(context.contains("nativeRuntimeActive"))
         assertTrue(!context.contains("framegenMultiplier == 2"))
-        assertTrue(context.contains("uint32_t framegenFlowMode = VKR_LSFG_FLOW_FIXED"))
+        assertTrue(header.contains("uint32_t framegenFlowMode = VKR_LSFG_FLOW_FIXED"))
         assertTrue(context.contains("nativeLsfgContextEpoch_"))
         assertTrue(header.contains("nativeLastContextReuseRevision_"))
         assertTrue(header.contains("nativePresentRateSampleNs_"))

@@ -934,7 +934,13 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             pendingFramegenP95Ms, pendingFramegenSlowRatio);
         if (!pendingFramegenShaders.isEmpty()) nativeSetFrameGenerationShaders(nativeHandle, pendingFramegenShaders);
         nativeSetFrameGenerationEnabled(nativeHandle, pendingFramegenEnabled);
-        android.util.Log.i("LSFG_NATIVE", "event=surface_settings_replayed initialized=" + nativeIsFrameGenerationSupported(nativeHandle));
+        nativeSurfaceSnapshot = nativeHasPresentationSurface(nativeHandle);
+        frameGenerationSupportedSnapshot =
+            nativeSurfaceSnapshot && nativeIsFrameGenerationSupported(nativeHandle);
+        android.util.Log.i(
+            "LSFG_NATIVE",
+            "event=surface_settings_replayed initialized="
+                + frameGenerationSupportedSnapshot);
     }
 
     public boolean isFrameGenerationSupported() {
@@ -1050,6 +1056,18 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         pendingFramegenRefreshRate = refreshRate;
         pendingPresentMode = 2;
         nativeOwnsFrameQueuePolicy = true;
+
+        // applyFrameGenerationSettings used to route through
+        // setFrameGenerationEnabled(), whose post also forces compositor
+        // presentation while Native LSFG owns generation. Preserve that
+        // behavior without holding the renderer monitor or native lifetime
+        // lock across UI routing.
+        xServerView.post(() -> {
+            setEffect(pendingEffectId, pendingSharpness, outputScalingMode,
+                pendingEffectMask, pendingBrightness, pendingContrast, pendingGamma);
+            queueSceneUpdate();
+            xServerView.requestRender();
+        });
 
         nativeLifetimeLock.readLock().lock();
         try {

@@ -35,9 +35,14 @@ methods = "\n".join(method(s) for s in (
 ))
 fixture = r'''
 import java.util.*;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class NativeBridgeTest {
     Object lock = new Object();
+    ReentrantReadWriteLock nativeLifetimeLock = new ReentrantReadWriteLock();
     long nativeHandle = 0;
+    volatile boolean nativeSurfaceSnapshot = false;
+    volatile boolean frameGenerationSupportedSnapshot = false;
+    volatile boolean nativeOwnsFrameQueuePolicy = false;
     boolean pendingFramegenArmed = false, pendingFramegenEnabled = false;
     String pendingFramegenShaders = "";
     static final int LSFG_FLOW_FIXED = 0, LSFG_FLOW_ADAPTIVE = 1;
@@ -51,6 +56,9 @@ public class NativeBridgeTest {
     float pendingFramegenGpuUsage = -1, pendingFramegenSourceFps = 0;
     float pendingFramegenOutputFps = 0, pendingFramegenP95Ms = 0, pendingFramegenSlowRatio = 0;
     int pendingFramegenThermalStatus = -1;
+    int pendingPresentMode = 2;
+    boolean pendingLsfgFrameQueueEnabled = false;
+    int pendingLsfgFrameQueueTarget = 0;
     static final int EFFECT_NONE = 0;
     int pendingEffectId = 0, pendingEffectMask = 0, pendingFilterMode = 0, outputScalingMode = 0;
     float pendingSharpness = 0, pendingBrightness = 0, pendingContrast = 0, pendingGamma = 1;
@@ -68,6 +76,12 @@ public class NativeBridgeTest {
     void queueSceneUpdate() {}
     void setVkPresentMode(int mode) { calls.add("present:" + mode); }
     void setLsfgFrameQueue(boolean enabled, int depth) { calls.add("queue:" + enabled); }
+    void nativeSetPresentMode(long handle, int mode) {
+        calls.add("present:" + handle + ":" + mode);
+    }
+    void nativeSetLsfgFrameQueue(long handle, boolean enabled, int depth) {
+        calls.add("queue:" + handle + ":" + enabled + ":" + depth);
+    }
     void nativeArmFrameGeneration(long handle) { calls.add("arm:" + handle); }
     void nativeSetFrameGenerationMode(long handle, int m, int t, int f, int flowMode,
             int flowPreset, long revision) {

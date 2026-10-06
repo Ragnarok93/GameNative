@@ -211,5 +211,14 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(!supportBody.contains("synchronized (lock)"))
         assertTrue(!supportBody.contains("nativeIsFrameGenerationSupported"))
         assertTrue(javaRenderer.contains("ReentrantReadWriteLock nativeLifetimeLock"))
+        val applyFramegenStart =
+            javaRenderer.indexOf("public boolean applyFrameGenerationSettings")
+        val applyFramegenEnd =
+            javaRenderer.indexOf("public void setFrameGenerationShaders", applyFramegenStart)
+        val applyFramegenBody =
+            javaRenderer.substring(applyFramegenStart, applyFramegenEnd)
+        assertTrue(applyFramegenBody.contains("xServerView.post"))
+        assertTrue(applyFramegenBody.contains("computeEffectsRequireCompositor") ||
+            applyFramegenBody.contains("setEffect("))
     }
 }

@@ -175,6 +175,7 @@ bool VulkanRendererContext::createCompositeTargets(uint32_t w, uint32_t h, uint3
 
 void VulkanRendererContext::destroyLsfg() {
     if (!lsfg) return;
+    emitNativeLsfgPipelineTelemetry("runtime-destroy");
     vkr_lsfg_destroy(lsfg);
     lsfg = nullptr;
     framegenRealFrames = 0;
@@ -300,11 +301,23 @@ void VulkanRendererContext::blitCompositeToSwapchain(VkCommandBuffer cmd, const 
 }
 
 void VulkanRendererContext::waitNativeResources() {
+    const auto waitStart = std::chrono::steady_clock::now();
     drainHostPresenter("native-lsfg-resource-change");
     for (auto fence : inFlightFences) {
-        if (fence != VK_NULL_HANDLE && vk_.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS)
+        if (fence != VK_NULL_HANDLE
+                && vk_.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS) {
             completeObservedFence(fence);
+        }
     }
+    const uint64_t hostWaitNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - waitStart).count());
+    nativeHostWaitNsTotal_.fetch_add(hostWaitNs, std::memory_order_relaxed);
+    nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+    RLOG(
+        "LSFG_NATIVE_SYNC: event=resource_retirement reason=native-lsfg-resource-change "
+        "host_wait_ms=%.3f steady_state=0",
+        (double)hostWaitNs / 1000000.0);
 }
 
 void VulkanRendererContext::recoverNativeAcquiredFrame() {

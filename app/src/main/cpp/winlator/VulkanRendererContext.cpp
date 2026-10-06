@@ -1820,6 +1820,11 @@ uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
 }
 
 void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) {
+    uint32_t hostPresentQueueDepth = 0;
+    {
+        std::lock_guard<std::mutex> lock(hostPresenterMutex_);
+        hostPresentQueueDepth = static_cast<uint32_t>(pendingHostPresents_.size());
+    }
     const uint64_t requested = nativeGeneratedRequested_.load(std::memory_order_relaxed);
     const uint64_t admitted = nativeGeneratedAdmitted_.load(std::memory_order_relaxed);
     const uint64_t dispatched = nativeGeneratedDispatched_.load(std::memory_order_relaxed);
@@ -1878,7 +1883,7 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         (unsigned long long)wsiAccepted,
         (unsigned long long)displayConfirmed,
         (unsigned long long)nativeGeneratedWsiRejected_.load(std::memory_order_relaxed),
-        pendingHostPresents_.size(),
+        hostPresentQueueDepth,
         hostPresentQueueHighWater_.load(std::memory_order_relaxed));
 }
 
@@ -2653,14 +2658,25 @@ ok=true;}catch(...){}
             ? vk_.GetFenceStatus(device, inFlightFences[currentFrame])
             : VK_NOT_READY;
         if (fenceStatus == VK_SUCCESS) {
-            submissionTimeline.completeFrame(currentFrame);
+            completeObservedFence(inFlightFences[currentFrame]);
             currentFenceWaited = true;
             currentFenceComplete = true;
-        } else if (vk_.WaitForFences(
-                device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX) == VK_SUCCESS) {
-            submissionTimeline.completeFrame(currentFrame);
-            currentFenceWaited = true;
-            currentFenceComplete = true;
+        } else {
+            const auto hostWaitStart = std::chrono::steady_clock::now();
+            const VkResult waitResult = vk_.WaitForFences(
+                device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX);
+            const uint64_t hostWaitNs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - hostWaitStart).count());
+            if (framegenRequested && lsfg != nullptr) {
+                nativeHostWaitNsTotal_.fetch_add(hostWaitNs, std::memory_order_relaxed);
+                nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (waitResult == VK_SUCCESS) {
+                completeObservedFence(inFlightFences[currentFrame]);
+                currentFenceWaited = true;
+                currentFenceComplete = true;
+            }
         }
     }
     if (!currentFenceComplete) return;
@@ -2852,7 +2868,16 @@ ok=true;}catch(...){}
             nativeGeneratedImgIndices[nativeGenerations++] = generatedImage;
             if (imgInFlight[generatedImage] != VK_NULL_HANDLE
                     && imgInFlight[generatedImage] != inFlightFences[currentFrame]) {
-                if (vk_.WaitForFences(device, 1, &imgInFlight[generatedImage], VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+                const auto generatedReuseWaitStart = std::chrono::steady_clock::now();
+                const VkResult generatedReuseWait = vk_.WaitForFences(
+                    device, 1, &imgInFlight[generatedImage], VK_TRUE, UINT64_MAX);
+                const uint64_t generatedReuseWaitNs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - generatedReuseWaitStart).count());
+                nativeHostWaitNsTotal_.fetch_add(
+                    generatedReuseWaitNs, std::memory_order_relaxed);
+                nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+                if (generatedReuseWait != VK_SUCCESS)
                     return;
                 completeObservedFence(imgInFlight[generatedImage]);
             }
@@ -3210,9 +3235,18 @@ ok=true;}catch(...){}
         // The XR session samples xrAhb from its own GL context with no fence handoff;
         // blocking here means the buffer is fully written whenever this thread is idle,
         // leaving only the active write window unsynchronized (a tear, not stale data).
-        if (vk_.WaitForFences(
-                device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX) == VK_SUCCESS)
-            submissionTimeline.completeFrame(currentFrame);
+        const auto xrWaitStart = std::chrono::steady_clock::now();
+        const VkResult xrWait = vk_.WaitForFences(
+            device,1,&inFlightFences[currentFrame],VK_TRUE,UINT64_MAX);
+        const uint64_t xrWaitNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - xrWaitStart).count());
+        if (framegenRequested && lsfg != nullptr) {
+            nativeHostWaitNsTotal_.fetch_add(xrWaitNs, std::memory_order_relaxed);
+            nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (xrWait == VK_SUCCESS)
+            completeObservedFence(inFlightFences[currentFrame]);
     }
     const uint32_t nextSlotCount = hasUniqueLsfgDelivery
         ? activeFrameSlotCount()

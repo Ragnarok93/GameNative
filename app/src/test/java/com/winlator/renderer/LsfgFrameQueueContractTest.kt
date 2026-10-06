@@ -455,6 +455,26 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
+    fun frameQueueOffStillRetainsOneSourcePlusMaximumSyntheticBurst() {
+        val header = source("VulkanRendererContext.h")
+        val implementation = source("VulkanRendererContext.cpp")
+
+        assertTrue(
+            header.contains(
+                "MIN_HOST_DELIVERY_QUEUE_CAPACITY =\n    VKR_LSFG_MAX_GENERATIONS + 1"
+            )
+        )
+        val capacityStart =
+            implementation.indexOf("uint32_t VulkanRendererContext::hostDeliveryQueueCapacity")
+        val capacityEnd =
+            implementation.indexOf("bool VulkanRendererContext::isLsfgHostDeliveryStale", capacityStart)
+        val capacity = implementation.substring(capacityStart, capacityEnd)
+        assertTrue(capacity.contains("MIN_HOST_DELIVERY_QUEUE_CAPACITY + requestedTarget"))
+        assertTrue(capacity.contains("? std::min<uint32_t>("))
+        assertTrue(capacity.contains(": 0U"))
+    }
+
+    @Test
     fun hostDeliveryQueueDepthUsesRequestedModeNotSmoothFallbackDepth() {
         val implementation = source("VulkanRendererContext.cpp")
 

@@ -47,6 +47,9 @@ class LsfgRuntimeHandoffController(
         applyFpsLimiter: () -> Unit,
     ) {
         val generation = ++transitionGeneration
+        // A submitted backend transaction is authoritative. The separate
+        // backend argument is retained for Off/On handoffs without a transaction.
+        val handoffBackend = transition?.backend ?: backend
         onStateChanged(
             false,
             1,
@@ -92,7 +95,7 @@ class LsfgRuntimeHandoffController(
                 val runtimeState = withContext(Dispatchers.IO) {
                     LsfgVkManager.readRuntimeState(container)
                 }
-                val backendMatches = LsfgVkManager.backend(container) == backend
+                val backendMatches = LsfgVkManager.backend(container) == handoffBackend
                 val presentationReady = transition?.let {
                     LsfgVkManager.isBackendTransitionPresentationReady(it)
                 } ?: true
@@ -129,15 +132,15 @@ class LsfgRuntimeHandoffController(
                     activePollingElapsedMs,
                     generation,
                     active,
-                    backend,
+                    handoffBackend,
                     multiplier,
                 )
                 transition?.let {
                     LsfgVkManager.completeBackendTransition(
                         it,
                         completionReason =
-                            if (active) "$backend-activation-timeout"
-                            else "$backend-source-only-timeout",
+                            if (active) "$handoffBackend-activation-timeout"
+                            else "$handoffBackend-source-only-timeout",
                         effectiveMultiplier = 1,
                     )
                 }
@@ -155,8 +158,8 @@ class LsfgRuntimeHandoffController(
                 LsfgVkManager.completeBackendTransition(
                     it,
                     completionReason =
-                        if (active) "$backend-activation-ready"
-                        else "$backend-source-only-ready",
+                        if (active) "$handoffBackend-activation-ready"
+                        else "$handoffBackend-source-only-ready",
                     effectiveMultiplier = effectiveMultiplier,
                 )
             }

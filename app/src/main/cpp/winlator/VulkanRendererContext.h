@@ -743,6 +743,15 @@ private:
     std::atomic<uint64_t> nativeGpuCompletionSamples_{0};
     std::atomic<uint64_t> nativeHostWaitNsTotal_{0};
     std::atomic<uint64_t> nativeHostWaitSamples_{0};
+    uint64_t nativePresentRateSampleNs_ = 0;
+    uint64_t nativePresentRateSourceAccepted_ = 0;
+    uint64_t nativePresentRateGeneratedAccepted_ = 0;
+    uint64_t nativePresentRateSourceConfirmed_ = 0;
+    uint64_t nativePresentRateGeneratedConfirmed_ = 0;
+    double nativeSourceWsiFps_ = 0.0;
+    double nativeGeneratedWsiFps_ = 0.0;
+    double nativeOutputWsiFps_ = 0.0;
+    double nativeOutputConfirmedFps_ = 0.0;
     bool nativeSwapchainTransferSupported_ = false;
     bool nativeComputeSupported_ = false;
     uint32_t nativeMinImageCount_ = 0;

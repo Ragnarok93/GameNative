@@ -27,12 +27,15 @@ typedef struct VkrLsfgFlowState {
     uint32_t preset;
     float requested_scale;
     float active_scale;
+    float effective_scale;
     float target_scale;
     float minimum_scale;
     uint32_t state_index;
     uint32_t state_count;
     uint32_t generation_cap;
     bool pressure_active;
+    bool transition;
+    bool warm;
     const char* reason;
 } VkrLsfgFlowState;
 

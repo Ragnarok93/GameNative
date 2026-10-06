@@ -204,6 +204,15 @@ void VulkanRendererContext::destroyLsfg() {
     nativeGpuCompletionSamples_.store(0);
     nativeHostWaitNsTotal_.store(0);
     nativeHostWaitSamples_.store(0);
+    nativePresentRateSampleNs_ = 0;
+    nativePresentRateSourceAccepted_ = 0;
+    nativePresentRateGeneratedAccepted_ = 0;
+    nativePresentRateSourceConfirmed_ = 0;
+    nativePresentRateGeneratedConfirmed_ = 0;
+    nativeSourceWsiFps_ = 0.0;
+    nativeGeneratedWsiFps_ = 0.0;
+    nativeOutputWsiFps_ = 0.0;
+    nativeOutputConfirmedFps_ = 0.0;
     nativeGeneratedSubmittedByFrame_.fill(0);
     nativeSubmissionStartedNs_.fill(0);
     nativeLastContextReuseRevision_ = UINT64_MAX;
@@ -461,10 +470,6 @@ void VulkanRendererContext::setFrameGenerationMode(
         return;
     }
 
-    const bool flowContractChanged =
-        nextFlow != framegenFlowScale
-        || nextFlowMode != framegenFlowMode
-        || nextFlowPreset != framegenFlowPreset;
     framegenMultiplier = nextMultiplier;
     framegenTargetRate = nextTarget;
     framegenFlowScale = nextFlow;

@@ -327,6 +327,9 @@ bool vkr_lsfg_get_flow_state(const VkrLsfg* lsfg, VkrLsfgFlowState* out_state) {
     out_state->preset = lsfg->flow_preset_code;
     out_state->requested_scale = lsfg->requested_flow_scale;
     out_state->active_scale = lsfg->active_flow_scale;
+    out_state->effective_scale =
+        lsfg->chain && lsfg->built_flow_scale > 0.0f
+            ? lsfg->built_flow_scale : lsfg->active_flow_scale;
     out_state->target_scale =
         lsfg->adaptive_flow ? telemetry.targetScale : lsfg->requested_flow_scale;
     out_state->minimum_scale =
@@ -338,6 +341,9 @@ bool vkr_lsfg_get_flow_state(const VkrLsfg* lsfg, VkrLsfgFlowState* out_state) {
     out_state->generation_cap = lsfg->adaptive_generation_cap;
     out_state->pressure_active = telemetry.computePressure || telemetry.globalPressure
         || telemetry.outputPressure || telemetry.sourcePressure || lsfg->synthetic_drop_pressure;
+    out_state->transition = lsfg->flow_transition_frames > 0
+        || std::fabs(out_state->active_scale - out_state->effective_scale) > 0.0005f;
+    out_state->warm = lsfg->warm;
     out_state->reason = lsfg->adaptive_flow
         ? AdaptiveFlowController::reasonName(telemetry.reason) : "fixed";
     return true;
@@ -565,18 +571,22 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                   stats.rates_settled ? (lsfg->warm ? "" : " cold") : " sampling");
         LSFG_FLOW_LOG(
             "event=state mode=%s preset=%u requested_scale=%.2f active_scale=%.2f "
-            "target_scale=%.2f minimum_scale=%.2f state_index=%u state_count=%u "
-            "generation_cap=%u pressure_state=%s",
+            "effective_scale=%.2f target_scale=%.2f minimum_scale=%.2f "
+            "state_index=%u state_count=%u generation_cap=%u pressure_state=%s "
+            "transition=%d warm=%d",
             flow.adaptive ? "adaptive" : "fixed",
             flow.preset,
             static_cast<double>(flow.requested_scale),
             static_cast<double>(flow.active_scale),
+            static_cast<double>(flow.effective_scale),
             static_cast<double>(flow.target_scale),
             static_cast<double>(flow.minimum_scale),
             flow.state_index,
             flow.state_count,
             flow.generation_cap,
-            flow.reason ? flow.reason : "none");
+            flow.reason ? flow.reason : "none",
+            flow.transition ? 1 : 0,
+            flow.warm ? 1 : 0);
     }
 
     return lsfg->generated ? static_cast<uint32_t>(lsfg->plan.generations) : 0;

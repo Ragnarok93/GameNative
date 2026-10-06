@@ -50,7 +50,11 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(context.contains("uint32_t framegenFlowMode = VKR_LSFG_FLOW_FIXED"))
         assertTrue(context.contains("nativeLsfgContextEpoch_"))
         assertTrue(header.contains("nativeLastContextReuseRevision_"))
+        assertTrue(header.contains("nativePresentRateSampleNs_"))
         assertTrue(context.contains("nativeLastContextReuseRevision_ != framegenConfigRevision"))
+        assertTrue(context.contains("wsi_accepted_output_fps=%.2f"))
+        assertTrue(context.contains("confirmed_output_fps=%.2f"))
+        assertTrue(context.contains("host_wait_total_ms=%.3f"))
 
         val vkr = File(root, "app/src/main/cpp/lsfg/vkr_lsfg.cpp").readText()
         assertTrue(vkr.contains("AdaptiveFlowController"))
@@ -61,6 +65,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(vkr.contains("bool output_valid{}"))
         assertTrue(vkr.contains("observation.globalPressureValid = global_pressure_valid"))
         assertTrue(vkr.contains("pressure_fresh && lsfg->pressure.output_valid"))
+        assertTrue(vkr.contains("effective_scale"))
+        assertTrue(vkr.contains("transition=%d warm=%d"))
 
         val standaloneCmake =
             File(root, "app/src/main/cpp/vulkan-renderer-build/CMakeLists.txt").readText()

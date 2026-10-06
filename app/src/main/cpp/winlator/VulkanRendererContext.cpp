@@ -1836,10 +1836,48 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
     const uint64_t wsiAccepted = nativeGeneratedWsiAccepted_.load(std::memory_order_relaxed);
     const uint64_t displayConfirmed =
         nativeGeneratedDisplayConfirmed_.load(std::memory_order_relaxed);
+    const uint64_t sourceWsiAccepted =
+        nativeSourceWsiAccepted_.load(std::memory_order_relaxed);
+    const uint64_t sourceDisplayConfirmed =
+        nativeSourceDisplayConfirmed_.load(std::memory_order_relaxed);
     const uint64_t completionSamples =
         nativeGpuCompletionSamples_.load(std::memory_order_relaxed);
     const uint64_t hostWaitSamples =
         nativeHostWaitSamples_.load(std::memory_order_relaxed);
+
+    const uint64_t nowNs = monotonicTimeNs();
+    if (nativePresentRateSampleNs_ == 0) {
+        nativePresentRateSampleNs_ = nowNs;
+        nativePresentRateSourceAccepted_ = sourceWsiAccepted;
+        nativePresentRateGeneratedAccepted_ = wsiAccepted;
+        nativePresentRateSourceConfirmed_ = sourceDisplayConfirmed;
+        nativePresentRateGeneratedConfirmed_ = displayConfirmed;
+    } else if (nowNs > nativePresentRateSampleNs_
+            && nowNs - nativePresentRateSampleNs_ >= 500000000ULL) {
+        const double seconds =
+            static_cast<double>(nowNs - nativePresentRateSampleNs_) / 1000000000.0;
+        const uint64_t sourceAcceptedDelta =
+            sourceWsiAccepted - nativePresentRateSourceAccepted_;
+        const uint64_t generatedAcceptedDelta =
+            wsiAccepted - nativePresentRateGeneratedAccepted_;
+        const uint64_t sourceConfirmedDelta =
+            sourceDisplayConfirmed - nativePresentRateSourceConfirmed_;
+        const uint64_t generatedConfirmedDelta =
+            displayConfirmed - nativePresentRateGeneratedConfirmed_;
+        nativeSourceWsiFps_ =
+            static_cast<double>(sourceAcceptedDelta) / seconds;
+        nativeGeneratedWsiFps_ =
+            static_cast<double>(generatedAcceptedDelta) / seconds;
+        nativeOutputWsiFps_ =
+            static_cast<double>(sourceAcceptedDelta + generatedAcceptedDelta) / seconds;
+        nativeOutputConfirmedFps_ =
+            static_cast<double>(sourceConfirmedDelta + generatedConfirmedDelta) / seconds;
+        nativePresentRateSampleNs_ = nowNs;
+        nativePresentRateSourceAccepted_ = sourceWsiAccepted;
+        nativePresentRateGeneratedAccepted_ = wsiAccepted;
+        nativePresentRateSourceConfirmed_ = sourceDisplayConfirmed;
+        nativePresentRateGeneratedConfirmed_ = displayConfirmed;
+    }
 
     RLOG(
         "LSFG_NATIVE_GENERATION: event=pipeline reason=%s source_received=%llu "
@@ -1862,13 +1900,17 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
     RLOG(
         "LSFG_NATIVE_SYNC: event=aggregate path=binary-semaphore-gpu-dependency+fence-retirement "
         "dispatch_gpu_timing=unavailable-no-timestamp-query gpu_completion_avg_ms=%.3f "
-        "host_wait_avg_ms=%.3f outstanding_submissions=%u present_queue_high_water=%u",
+        "gpu_completion_samples=%llu host_wait_avg_ms=%.3f host_wait_total_ms=%.3f "
+        "host_wait_samples=%llu outstanding_submissions=%u present_queue_high_water=%u",
         completionSamples > 0
             ? (double)nativeGpuCompletionLatencyNsTotal_.load(std::memory_order_relaxed)
                 / (double)completionSamples / 1000000.0 : 0.0,
+        (unsigned long long)completionSamples,
         hostWaitSamples > 0
             ? (double)nativeHostWaitNsTotal_.load(std::memory_order_relaxed)
                 / (double)hostWaitSamples / 1000000.0 : 0.0,
+        (double)nativeHostWaitNsTotal_.load(std::memory_order_relaxed) / 1000000.0,
+        (unsigned long long)hostWaitSamples,
         countOutstandingFrameSubmissions(false),
         hostPresentQueueHighWater_.load(std::memory_order_relaxed));
 
@@ -1877,15 +1919,22 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         "source_wsi_accepted=%llu source_display_confirmed=%llu "
         "generated_wsi_submitted=%llu generated_wsi_accepted=%llu "
         "generated_display_confirmed=%llu generated_wsi_rejected=%llu "
+        "source_fps=%.2f generated_fps=%.2f wsi_accepted_output_fps=%.2f "
+        "confirmed_output_fps=%.2f confirmed_available=%d "
         "queue_depth=%u queue_high_water=%u",
         reason ? reason : "periodic",
         (unsigned long long)nativeSourceWsiSubmitted_.load(std::memory_order_relaxed),
-        (unsigned long long)nativeSourceWsiAccepted_.load(std::memory_order_relaxed),
-        (unsigned long long)nativeSourceDisplayConfirmed_.load(std::memory_order_relaxed),
+        (unsigned long long)sourceWsiAccepted,
+        (unsigned long long)sourceDisplayConfirmed,
         (unsigned long long)wsiSubmitted,
         (unsigned long long)wsiAccepted,
         (unsigned long long)displayConfirmed,
         (unsigned long long)nativeGeneratedWsiRejected_.load(std::memory_order_relaxed),
+        nativeSourceWsiFps_,
+        nativeGeneratedWsiFps_,
+        nativeOutputWsiFps_,
+        nativeOutputConfirmedFps_,
+        (hostPresentWaitEnabled || hostGoogleDisplayTimingEnabled) ? 1 : 0,
         hostPresentQueueDepth,
         hostPresentQueueHighWater_.load(std::memory_order_relaxed));
 }
@@ -2768,7 +2817,8 @@ ok=true;}catch(...){}
                 RLOG(
                     "LSFG_NATIVE_CONTEXT: event=context_rebuild context_epoch=%llu action=%s "
                     "rebuild_reason=%s init_ms=%.3f width=%u height=%u format=%d "
-                    "flow_mode=%s requested_scale=%.2f active_scale=%.2f",
+                    "flow_mode=%s requested_scale=%.2f active_scale=%.2f "
+                    "effective_scale=%.2f transition=%d warm=%d",
                     (unsigned long long)nativeLsfgContextEpoch_,
                     nativeLsfgContextEpoch_ == 1 ? "create" : "rebuild",
                     nativeRebuildReason,
@@ -2778,7 +2828,10 @@ ok=true;}catch(...){}
                     (int)swapchainFmt,
                     flow.adaptive ? "adaptive" : "fixed",
                     (double)flow.requested_scale,
-                    (double)flow.active_scale);
+                    (double)flow.active_scale,
+                    (double)flow.effective_scale,
+                    flow.transition ? 1 : 0,
+                    flow.warm ? 1 : 0);
                 nativeLastContextReuseRevision_ = framegenConfigRevision;
             } else if (nativeFreshSource
                     && nativeLastContextReuseRevision_ != framegenConfigRevision) {

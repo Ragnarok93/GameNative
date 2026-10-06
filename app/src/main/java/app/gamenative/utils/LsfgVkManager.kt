@@ -857,7 +857,7 @@ object LsfgVkManager {
             backend = backend(container),
             enabled = enabled,
             generationMode = generationMode,
-            multiplier = if (generationMode == MODE_ADAPTIVE) 4 else multiplier(container).coerceIn(2, 4),
+            multiplier = if (generationMode == MODE_ADAPTIVE) 4 else fixedMultiplier(container),
             targetFps = if (generationMode == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,
             flowMode = flowScaleMode(container),
             flowPreset = adaptiveFlowPreset(container),

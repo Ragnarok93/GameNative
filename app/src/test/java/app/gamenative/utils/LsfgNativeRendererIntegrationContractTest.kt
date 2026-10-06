@@ -94,7 +94,7 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("reason = \"native-backend\""))
         assertTrue(manager.contains("LSFG_NATIVE_CONFIG: event=%s"))
         assertTrue(manager.contains("present_policy=%s queue_policy=%s legacy_present_policy=%s"))
-        assertTrue(manager.contains("native-bounded-shallow"))
+        assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
         assertTrue(manager.contains("snapshotIsCurrent"))
         assertTrue(manager.contains("reserveRuntimeRequest"))
         assertTrue(manager.contains("before-legacy-publication"))

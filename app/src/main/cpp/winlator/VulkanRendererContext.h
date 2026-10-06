@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include "../lsfg/vkr_lsfg.h"
+#include "adaptive_scheduler.hpp"
 #include <list>
 #include <vulkan/vulkan_android.h>
 
@@ -789,9 +790,10 @@ private:
         uint32_t sourceRefreshCycles = 0;
         uint64_t phaseAdvanceCycles = 0;
     };
+    SourceProtectedTimeline nativeSourceTimeline_{};
+    SourceTimelineSample nativeSourceTimelineSample_{};
     uint64_t nativeTimelineLastSourceArrivalNs_ = 0;
     uint64_t nativeTimelineSourceIntervalNs_ = 0;
-    uint64_t nativeTimelineLastSourceBoundaryNs_ = 0;
     uint64_t nativeTimelineGeneration_ = 0;
     std::string nativeLastAdmissionReason_{"none"};
     std::deque<uint64_t> nativeSourceWsiEventNs_;

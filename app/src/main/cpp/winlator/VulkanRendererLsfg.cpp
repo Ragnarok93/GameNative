@@ -340,7 +340,7 @@ void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
 }
 
 bool VulkanRendererContext::isFrameGenerationSupported() const {
-    std::shared_lock<std::shared_mutex> fl(const_cast<VulkanRendererContext*>(this)->frameMutex);
+    std::shared_lock<std::shared_mutex> fl(frameMutex);
     return framegenRequested && framegenArmed && framegenSupported && lsfg != nullptr;
 }
 
@@ -401,7 +401,7 @@ void VulkanRendererContext::setFrameGenerationMode(int multiplier, int targetRat
 }
 
 uint64_t VulkanRendererContext::getGeneratedFrameCount() const {
-    std::shared_lock<std::shared_mutex> fl(const_cast<VulkanRendererContext*>(this)->frameMutex);
+    std::shared_lock<std::shared_mutex> fl(frameMutex);
     return framegenMadeFrames;
 }
 
@@ -414,7 +414,7 @@ uint64_t VulkanRendererContext::getPresentedFrameCount() const {
 }
 
 uint64_t VulkanRendererContext::getRealFrameCount() const {
-    std::shared_lock<std::shared_mutex> fl(const_cast<VulkanRendererContext*>(this)->frameMutex);
+    std::shared_lock<std::shared_mutex> fl(frameMutex);
     return framegenRealFrames;
 }
 

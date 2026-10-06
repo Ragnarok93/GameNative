@@ -2565,6 +2565,12 @@ ok=true;}catch(...){}
         ? std::min<uint32_t>(VKR_LSFG_MAX_GENERATIONS,
             static_cast<uint32_t>(swapchainImages.size()) - nativeMinImageCount_) : 0;
     uint32_t nativeGenerations = 0;
+    if (nativeRuntimeActive && nativeCapacity == 0) {
+        nativeRuntimeActive = false;
+        framegenSupported = false;
+        RLOG_E("LSFG_NATIVE: event=initialization_failed reason=insufficient-wsi-images images=%zu min_images=%u",
+            swapchainImages.size(), nativeMinImageCount_);
+    }
     const uint64_t nativeSourceFrame = framegenSourceFrames.load(std::memory_order_acquire);
     const bool nativeFreshSource = nativeSourceFrame != nativeLastSourceFrame_;
     if (nativeRuntimeActive && !ensureNativeExtraAcquireSemaphores()) {

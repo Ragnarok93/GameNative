@@ -919,6 +919,22 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         });
     }
 
+    /** Apply one native request atomically against surface teardown/backend disable. */
+    public boolean applyFrameGenerationSettings(String cachePath, int multiplier, int targetRate,
+            int flowScalePct, float refreshRate, java.util.function.BooleanSupplier stillRequested) {
+        synchronized (lock) {
+            if (!stillRequested.getAsBoolean()) return false;
+            setVkPresentMode(2);
+            setLsfgFrameQueue(false, 0);
+            armFrameGeneration();
+            setFrameGenerationMode(multiplier, targetRate, flowScalePct);
+            setFrameGenerationRefreshRate(refreshRate);
+            setFrameGenerationShaders(cachePath);
+            setFrameGenerationEnabled(true);
+            return nativeHandle != 0 && nativeIsFrameGenerationSupported(nativeHandle);
+        }
+    }
+
     public void setFrameGenerationShaders(String cachePath) {
         if (cachePath == null || cachePath.isEmpty()) return;
         synchronized (lock) {

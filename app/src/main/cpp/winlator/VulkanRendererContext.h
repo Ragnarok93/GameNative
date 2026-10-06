@@ -682,9 +682,8 @@ private:
     std::vector<VkFence>     imgInFlight;
     uint32_t                 currentFrame = 0;
 
-    // Native LSFG state is intentionally inert until the renderer is explicitly
-    // armed by a future backend-control seam. This keeps the legacy path unchanged
-    // while the compositor integration is brought up incrementally.
+    // Allocate native state only after explicit backend selection. Legacy and
+    // source-only launches retain the ordinary compositor resource topology.
     VkrLsfg* lsfg = nullptr;
     std::string lsfgCachePath;
     bool framegenArmed = false;
@@ -723,7 +722,7 @@ private:
     std::mutex        renderMutex;
     std::mutex        dirtyMutex;
     std::condition_variable dirtyCV;
-    std::shared_mutex frameMutex;
+    mutable std::shared_mutex frameMutex;
 
     void createInstance();
     void createSurface();

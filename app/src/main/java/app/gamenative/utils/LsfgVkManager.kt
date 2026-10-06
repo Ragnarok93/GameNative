@@ -291,6 +291,7 @@ object LsfgVkManager {
     fun isNativeBackend(container: Container): Boolean = backend(container) == BACKEND_NATIVE
 
     fun setBackend(container: Container, backend: String): BackendRequest {
+        nativeApplyGeneration.incrementAndGet()
         val sanitized = sanitizeBackend(backend)
         val previous = this.backend(container)
         val request = BackendRequest(
@@ -479,11 +480,12 @@ object LsfgVkManager {
         val initialized = renderer.isFrameGenerationSupported()
         val presented = renderer.getGeneratedPresentedFrameCount() > 0
         val enabled = isArmed(container) && multiplier(container) >= 2
+        val failed = nativeApplyFailed || (nativeApplyComplete && renderer.hasNativeSurface() && !initialized && enabled)
         return RuntimeState(
             status = when {
                 !enabled -> RuntimeStatus.SOURCE_ONLY
                 initialized && presented -> RuntimeStatus.GENERATING
-                nativeApplyFailed -> RuntimeStatus.DEGRADED
+                failed -> RuntimeStatus.DEGRADED
                 else -> RuntimeStatus.UNKNOWN
             },
             resident = initialized || !enabled,
@@ -491,13 +493,13 @@ object LsfgVkManager {
             generationReady = initialized && presented,
             generationInitialized = initialized,
             generatedPresented = presented,
-            degraded = enabled && nativeApplyFailed,
+            degraded = enabled && failed,
             multiplier = if (enabled) multiplier(container) else 1,
             fresh = true,
-            framegenSupportKnown = initialized || nativeApplyFailed,
+            framegenSupportKnown = initialized || failed,
             framegenSupported = initialized,
             vulkanPath = "native-host-compositor",
-            rejectionReason = if (nativeApplyFailed) "native-initialization-failed" else null,
+            rejectionReason = if (failed) "native-initialization-failed" else null,
         )
     }
 
@@ -623,6 +625,7 @@ object LsfgVkManager {
     }
 
     @Volatile private var nativeApplyFailed = false
+    @Volatile private var nativeApplyComplete = false
     private val nativeApplyGeneration = java.util.concurrent.atomic.AtomicLong()
     private val nativeApplyExecutor by lazy {
         Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-native-apply").apply { isDaemon = true } }
@@ -651,6 +654,7 @@ object LsfgVkManager {
         nativeRendererContainer = container
         val generation = nativeApplyGeneration.incrementAndGet()
         nativeApplyFailed = false
+        nativeApplyComplete = false
         nativeApplyExecutor.execute {
           try {
             if (generation != nativeApplyGeneration.get()) return@execute
@@ -697,19 +701,16 @@ object LsfgVkManager {
             if (generation != nativeApplyGeneration.get() || !isNativeBackend(container)) return@execute
             // FIFO retains every output in temporal order. The layer's Mailbox
             // preference remains persisted for switching back to Legacy.
-            renderer.setVkPresentMode(2)
-            renderer.setLsfgFrameQueue(false, 0)
-            renderer.armFrameGeneration()
-            renderer.setFrameGenerationMode(
+            val initialized = renderer.applyFrameGenerationSettings(
+                cache,
                 multiplier(container).coerceIn(2, 4),
                 if (generationMode(container) == MODE_ADAPTIVE) adaptiveTargetFps(container) else 0,
                 (flowScale(container) * 100f).toInt(),
-            )
-            renderer.setFrameGenerationRefreshRate(displayRefreshRate(context))
-            renderer.setFrameGenerationShaders(cache)
-            renderer.setFrameGenerationEnabled(true)
-            val initialized = renderer.isFrameGenerationSupported()
+                displayRefreshRate(context),
+            ) { generation == nativeApplyGeneration.get() && isNativeBackend(container) }
+            if (generation != nativeApplyGeneration.get()) return@execute
             nativeApplyFailed = renderer.hasNativeSurface() && !initialized
+            nativeApplyComplete = true
             Timber.i("LSFG_NATIVE: event=runtime_initialization initialized=%b generation=%d backend=%s", initialized, generation, backend(container))
             // A missing surface leaves replayable settings pending; it is not a
             // native success. Actual generation readiness uses accepted output.

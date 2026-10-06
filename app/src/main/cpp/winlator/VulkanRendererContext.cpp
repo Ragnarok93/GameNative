@@ -4293,6 +4293,8 @@ std::vector<LsfgFrameProvenance> VulkanRendererContext::classifyHostPresentProve
 
 
 
+namespace {
+
 uint64_t rollingPercentileNs(const std::deque<uint64_t>& samples, unsigned percentile) {
     if (samples.empty()) return 0;
     std::vector<uint64_t> sorted(samples.begin(), samples.end());
@@ -4307,6 +4309,8 @@ void trimEvidence(std::deque<uint64_t>& events, uint64_t cutoffNs) {
     while (!events.empty() && events.front() < cutoffNs)
         events.pop_front();
 }
+
+} // namespace
 void VulkanRendererContext::resetNativePresentationTimeline(const char* reason) {
     nativeTimelineLastSourceArrivalNs_ = 0;
     nativeTimelineSourceIntervalNs_ = 0;

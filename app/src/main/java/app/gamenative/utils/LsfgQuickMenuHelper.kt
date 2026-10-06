@@ -250,17 +250,27 @@ object LsfgQuickMenuHelper {
         }
 
         Timber.i(
-            "LSFG runtime snapshot revision=%d backend_generation=%d backend=%s generationMode=%s multiplier=%d adaptiveTarget=%d flowMode=%s flowPreset=%s flowScale=%.2f enabled=%b",
+            "LSFG_RUNTIME_CONFIG: event=commit requested_revision=%d backend_generation=%d " +
+                "backend=%s enabled=%d requested_enabled=%d generation_mode=%s " +
+                "requested_multiplier=%d effective_multiplier=%d target_fps=%d " +
+                "flow_mode=%s flow_preset=%s requested_scale=%.2f performance_mode=%d " +
+                "requested_present_mode=%s frame_queue_enabled=%d frame_queue_target=%d",
             request.revision,
             request.backendGeneration,
             request.backend,
+            if (enabled) 1 else 0,
+            if (snapshot.armed) 1 else 0,
             snapshot.generationMode,
-            effectiveMultiplier,
+            snapshot.multiplier,
+            if (enabled) effectiveMultiplier else 1,
             snapshot.adaptiveTargetFps,
             snapshot.flowScaleMode,
             snapshot.adaptiveFlowPreset,
             snapshot.flowScale,
-            enabled,
+            if (snapshot.performanceMode) 1 else 0,
+            snapshot.presentMode,
+            if (enabled && snapshot.frameQueueEnabled) 1 else 0,
+            snapshot.frameQueueTarget.depth,
         )
         LsfgVkManager.updateConfigAtRuntimeCaptured(
             container = container,

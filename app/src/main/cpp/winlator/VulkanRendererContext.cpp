@@ -1314,6 +1314,17 @@ bool VulkanRendererContext::assignLegacyGeneratedOutputSlot(
     uint64_t& nextNs = legacyGeneratedSlotNextNs_[lane];
     uint64_t& slotCounter = legacyGeneratedSlotIndex_[lane];
 
+    // At high refresh rates the Legacy layer can report the generated frame's
+    // desired time on the immediately following 120-Hz tick. That is not a
+    // stable generated-output cadence: for 2x at 120 Hz the host owns one
+    // generated output slot every two refresh cycles (~16.67 ms). Establish a
+    // floor once, then let the slot clock advance independently of arrival
+    // jitter. The clock is reset on swapchain/context cadence changes.
+    const uint64_t highRefreshGeneratedSlotFloorNs =
+        hostRefreshPeriodNs_ != 0
+            && hostRefreshPeriodNs_ <= 10000000ULL
+            && hostRefreshPeriodNs_ <= UINT64_MAX / 2ULL
+        ? hostRefreshPeriodNs_ * 2ULL : 0ULL;
     uint64_t stepCount = 1;
     if (lastRawNs != 0 && rawDesiredNs > lastRawNs) {
         const uint64_t rawDeltaNs = rawDesiredNs - lastRawNs;
@@ -1325,33 +1336,23 @@ bool VulkanRendererContext::assignLegacyGeneratedOutputSlot(
                         / static_cast<double>(hostRefreshPeriodNs_))));
             candidatePeriodNs = cycles * hostRefreshPeriodNs_;
         }
+        if (highRefreshGeneratedSlotFloorNs != 0)
+            candidatePeriodNs = std::max(
+                candidatePeriodNs, highRefreshGeneratedSlotFloorNs);
         if (candidatePeriodNs >= 4000000ULL
                 && candidatePeriodNs <= 250000000ULL) {
             if (periodNs == 0) {
                 periodNs = candidatePeriodNs;
             } else {
-                const uint64_t estimatedSteps = std::max<uint64_t>(
+                // Arrival timestamps describe when a frame became available,
+                // not a new presentation phase. Keep the established clock;
+                // only advance by whole slots when the raw source cadence
+                // clearly skipped one or more slots. A late frame therefore
+                // cannot rebase the next slot onto an 8.33-ms refresh tick.
+                stepCount = std::max<uint64_t>(
                     1, static_cast<uint64_t>(std::llround(
                         static_cast<double>(rawDeltaNs)
                             / static_cast<double>(periodNs))));
-                const uint64_t expectedDeltaNs =
-                    estimatedSteps <= UINT64_MAX / periodNs
-                        ? estimatedSteps * periodNs : UINT64_MAX;
-                const uint64_t errorNs = expectedDeltaNs > rawDeltaNs
-                    ? expectedDeltaNs - rawDeltaNs
-                    : rawDeltaNs - expectedDeltaNs;
-                const uint64_t toleranceNs = hostRefreshPeriodNs_ != 0
-                    ? std::max<uint64_t>(1000000ULL, hostRefreshPeriodNs_ / 2ULL)
-                    : std::max<uint64_t>(1000000ULL, periodNs / 8ULL);
-                if (errorNs <= toleranceNs) {
-                    stepCount = estimatedSteps;
-                } else {
-                    // A material cadence/configuration change rebases once;
-                    // ordinary lateness never moves the clock.
-                    periodNs = candidatePeriodNs;
-                    nextNs = 0;
-                    stepCount = 1;
-                }
             }
         }
     }

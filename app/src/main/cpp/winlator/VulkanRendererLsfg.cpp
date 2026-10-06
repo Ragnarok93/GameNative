@@ -665,7 +665,10 @@ void VulkanRendererContext::setFrameGenerationMode(
     RLOG(
         "LSFG_NATIVE_CONTEXT: event=config_update context_epoch=%llu revision=%llu "
         "rebuild_required=%d rebuild_reason=%s multiplier=%u target_fps=%u flow_mode=%s "
-        "flow_preset=%u requested_scale=%.2f swapchain_capacity_increase=%d",
+        "flow_preset=%u requested_scale=%.2f adaptive_framegen=%d adaptive_flow=%d "
+        "frame_queue_enabled=%d frame_queue_target=%u effective_frame_queue_target=%u "
+        "requested_present_mode=%d active_present_mode=%d swapchain_generation=%llu "
+        "refresh_period_ns=%llu swapchain_capacity_increase=%d",
         (unsigned long long)nativeLsfgContextEpoch_,
         (unsigned long long)framegenConfigRevision,
         flowResourceRebuildRequired ? 1 : 0,
@@ -675,6 +678,15 @@ void VulkanRendererContext::setFrameGenerationMode(
         framegenFlowMode == VKR_LSFG_FLOW_ADAPTIVE ? "adaptive" : "fixed",
         framegenFlowPreset,
         (double)framegenFlowScale,
+        framegenTargetRate != 0 ? 1 : 0,
+        framegenFlowMode == VKR_LSFG_FLOW_ADAPTIVE ? 1 : 0,
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire) ? 1 : 0,
+        std::min<uint32_t>(2, lsfgFrameQueueTarget_.load(std::memory_order_acquire)),
+        effectiveFrameQueueTarget(),
+        static_cast<int>(requestedPresentMode),
+        static_cast<int>(activePresentMode),
+        (unsigned long long)hostSwapchainGeneration_,
+        (unsigned long long)hostRefreshPeriodNs_,
         swapchainCapacityIncrease ? 1 : 0);
 
     dirtyCV.notify_one();

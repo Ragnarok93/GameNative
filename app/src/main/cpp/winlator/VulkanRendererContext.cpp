@@ -770,8 +770,15 @@ void VulkanRendererContext::createSwapchain() {
     }
 
     VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform;
-    if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
-        pre = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    if ((caps.supportedTransforms & pre) == 0) {
+        if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+            pre = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        } else {
+            const VkSurfaceTransformFlagsKHR supported = caps.supportedTransforms;
+            pre = static_cast<VkSurfaceTransformFlagBitsKHR>(
+                supported & (~supported + 1U));
+        }
+    }
     swapchainPreTransform_ = pre;
 
     constexpr VkCompositeAlphaFlagBitsKHR alphaPreferences[] = {
@@ -831,6 +838,12 @@ void VulkanRendererContext::createSwapchain() {
     ++hostSwapchainGeneration_;
     nativePresentationSurfaceReady_.store(true, std::memory_order_release);
     lastAcceptedDesiredPresentTimeNs_ = 0;
+    hostPresentLatencySamplesNs_.clear();
+    hostPresenterQueueAgeSamplesNs_.clear();
+    nativeLastAdmissionP50PresentNs_ = 0;
+    nativeLastAdmissionP95PresentNs_ = 0;
+    nativeLastAdmissionServiceEstimateNs_ = 0;
+    nativeLastAdmissionSourceIntervalNs_ = 0;
     resetNativePresentationTimeline(
         oldSwapchain == VK_NULL_HANDLE ? "swapchain-created" : "swapchain-recreated");
 
@@ -1154,17 +1167,17 @@ uint32_t VulkanRendererContext::effectiveFrameQueueTarget() const {
 
 
 uint32_t VulkanRendererContext::hostDeliveryQueueCapacity() const {
-    if (!lsfgFrameQueueEnabled_.load(std::memory_order_acquire))
-        return MIN_HOST_DELIVERY_QUEUE_CAPACITY;
-
     // Pre-composition delivery retention is a correctness boundary, not a GPU
-    // submission-depth control. Keep the requested delivery depth even when
-    // Smooth falls back to Balanced WSI/GPU pacing after a present stall.
-    const uint32_t requestedTarget = std::min<uint32_t>(
-        2, lsfgFrameQueueTarget_.load(std::memory_order_acquire));
+    // submission-depth control. Always retain one source plus a full synthetic
+    // burst even when the user-facing Frame Queue setting is Off.
+    const uint32_t requestedTarget =
+        lsfgFrameQueueEnabled_.load(std::memory_order_acquire)
+            ? std::min<uint32_t>(
+                2, lsfgFrameQueueTarget_.load(std::memory_order_acquire))
+            : 0U;
     return std::min<uint32_t>(
         MAX_HOST_DELIVERY_QUEUE_CAPACITY,
-        requestedTarget + MIN_HOST_DELIVERY_QUEUE_CAPACITY);
+        MIN_HOST_DELIVERY_QUEUE_CAPACITY + requestedTarget);
 }
 
 bool VulkanRendererContext::isLsfgHostDeliveryStale(
@@ -1975,18 +1988,42 @@ uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
             VKR_LSFG_MAX_GENERATIONS,
             MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH - occupied - 1));
 
+    const uint64_t p50PresentNs =
+        rollingPercentileNs(hostPresentLatencySamplesNs_, 50);
     const uint64_t p95PresentNs =
         rollingPercentileNs(hostPresentLatencySamplesNs_, 95);
     uint64_t sourceIntervalNs = nativeTimelineSourceIntervalNs_;
     if (sourceIntervalNs == 0) {
         const float sourceFps =
             framegenSourceFps_.load(std::memory_order_relaxed);
-        if (sourceFps > 1.0f)
+        if (sourceFps > 1.0f) {
             sourceIntervalNs = static_cast<uint64_t>(
                 std::llround(
                     1000000000.0 / static_cast<double>(sourceFps)));
+        }
     }
-    if (p95PresentNs != 0 && sourceIntervalNs != 0) {
+
+    // On Android FIFO, vkQueuePresentKHR wall time can include waiting for the
+    // presentation engine. Treating a blocked p95 tail as serial presenter
+    // service caused p95~=34 ms to zero admission for a ~=33 ms source period.
+    // Bound service cost to one refresh period while queue age/depth continue
+    // to protect against real backlog and stale synthetic output.
+    uint64_t serviceEstimateNs = p95PresentNs;
+    if (serviceEstimateNs != 0) {
+        const uint64_t refreshBoundNs =
+            hostRefreshPeriodNs_ != 0
+                ? hostRefreshPeriodNs_
+                : std::max<uint64_t>(p50PresentNs, 8'333'333ULL);
+        serviceEstimateNs = std::min(serviceEstimateNs, refreshBoundNs);
+        serviceEstimateNs = std::max(serviceEstimateNs, p50PresentNs);
+    }
+
+    nativeLastAdmissionP50PresentNs_ = p50PresentNs;
+    nativeLastAdmissionP95PresentNs_ = p95PresentNs;
+    nativeLastAdmissionServiceEstimateNs_ = serviceEstimateNs;
+    nativeLastAdmissionSourceIntervalNs_ = sourceIntervalNs;
+
+    if (serviceEstimateNs != 0 && sourceIntervalNs != 0) {
         uint64_t oldestAgeNs = 0;
         if (!pendingHostPresents_.empty()
                 && pendingHostPresents_.front().enqueuedAtNs != 0) {
@@ -1996,23 +2033,27 @@ uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
                     nowNs - pendingHostPresents_.front().enqueuedAtNs;
         }
         const uint64_t workAheadNs =
-            oldestAgeNs + static_cast<uint64_t>(occupied) * p95PresentNs;
+            oldestAgeNs
+            + static_cast<uint64_t>(occupied) * serviceEstimateNs;
         uint32_t timeCapacity = 0;
         if (workAheadNs < sourceIntervalNs) {
             const uint64_t availableNs = sourceIntervalNs - workAheadNs;
-            const uint64_t presentSlots = availableNs / p95PresentNs;
+            const uint64_t presentSlots =
+                availableNs / serviceEstimateNs;
             // Always reserve one serial present slot for the real source.
-            if (presentSlots > 1)
+            if (presentSlots > 1) {
                 timeCapacity = static_cast<uint32_t>(
                     std::min<uint64_t>(
                         VKR_LSFG_MAX_GENERATIONS,
                         presentSlots - 1));
+            }
         }
         if (timeCapacity < capacity) {
             capacity = timeCapacity;
             nativeLastAdmissionReason_ = "predicted-temporal-stale";
         }
     }
+
     if (capacity == 0 && nativeLastAdmissionReason_ == "none")
         nativeLastAdmissionReason_ = "host-present-backlog";
     return capacity;
@@ -4732,6 +4773,9 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
             || caps.currentExtent.height != swapchainExt.height);
     const bool transformInvalid =
         (caps.supportedTransforms & swapchainPreTransform_) == 0;
+    const bool transformChanged =
+        caps.currentTransform != 0
+        && caps.currentTransform != swapchainPreTransform_;
     const bool alphaInvalid =
         (caps.supportedCompositeAlpha & swapchainCompositeAlpha_) == 0;
     const bool usageInvalid =
@@ -4771,8 +4815,9 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
             == modes.end();
 
     const bool incompatible =
-        extentChanged || transformInvalid || alphaInvalid || usageInvalid
-        || imageCountInvalid || formatInvalid || modeInvalid;
+        extentChanged || transformInvalid || transformChanged
+        || alphaInvalid || usageInvalid || imageCountInvalid
+        || formatInvalid || modeInvalid;
     const double suboptimalRate = hostSuboptimalWindow_.empty() ? 0.0
         : static_cast<double>(std::count(
             hostSuboptimalWindow_.begin(), hostSuboptimalWindow_.end(), 1))
@@ -4787,7 +4832,7 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
         ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
         "event=persistent-suboptimal action=%s streak=%u total=%" PRIu64
         " rolling_rate=%.3f generation=%" PRIu64
-        " extent_changed=%d transform_invalid=%d alpha_invalid=%d"
+        " extent_changed=%d transform_invalid=%d transform_changed=%d alpha_invalid=%d"
         " usage_invalid=%d image_count_invalid=%d format_invalid=%d"
         " present_mode_invalid=%d current_extent=%ux%u"
         " active_extent=%ux%u supported_usage=0x%x active_usage=0x%x",
@@ -4796,6 +4841,7 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
         hostSuboptimalConsecutive_, hostSuboptimalTotal_, suboptimalRate,
         hostSwapchainGeneration_,
         extentChanged ? 1 : 0, transformInvalid ? 1 : 0,
+        transformChanged ? 1 : 0,
         alphaInvalid ? 1 : 0, usageInvalid ? 1 : 0,
         imageCountInvalid ? 1 : 0, formatInvalid ? 1 : 0,
         modeInvalid ? 1 : 0,

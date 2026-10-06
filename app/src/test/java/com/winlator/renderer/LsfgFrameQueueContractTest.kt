@@ -341,7 +341,7 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("hostSuboptimalLastRequeryNs_ = 0"))
         assertTrue(implementation.contains("hostSuboptimalConsecutive_ = 0"))
         assertTrue(implementation.contains("hostSuboptimalWindow_.clear()"))
-        assertTrue(implementation.contains("const bool transformChanged = false"))
+        assertTrue(implementation.contains("const bool transformChanged =\n        caps.currentTransform != swapchainPreTransform_"))
         assertTrue(
             implementation.contains(
                 "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",

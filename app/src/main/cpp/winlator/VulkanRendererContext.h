@@ -127,8 +127,13 @@ static constexpr uint32_t MAX_BUFFERED_GPU_SUBMISSIONS = 2;
 static constexpr uint64_t SMOOTH_PRESENT_STALL_NS = 8'000'000ULL;
 static constexpr uint32_t SMOOTH_PRESENT_STALL_STRIKES = 2;
 static constexpr uint64_t MAX_HOST_TEMPORAL_STALE_NS = 250'000'000ULL;
-static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY = 1;
-static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY = 3;
+// Pre-composition correctness buffering must accommodate one real source plus
+// the maximum Native/Legacy synthetic burst. User-facing Frame Queue controls
+// GPU/WSI buffering and must not collapse this ordered handoff to one entry.
+static constexpr uint32_t MIN_HOST_DELIVERY_QUEUE_CAPACITY =
+    VKR_LSFG_MAX_GENERATIONS + 1;
+static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY =
+    MIN_HOST_DELIVERY_QUEUE_CAPACITY + 2;
 static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
 static constexpr uint32_t MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH =
     VKR_LSFG_MAX_GENERATIONS + 1;
@@ -796,6 +801,10 @@ private:
     uint64_t nativeTimelineSourceIntervalNs_ = 0;
     uint64_t nativeTimelineGeneration_ = 0;
     std::string nativeLastAdmissionReason_{"none"};
+    uint64_t nativeLastAdmissionP50PresentNs_ = 0;
+    uint64_t nativeLastAdmissionP95PresentNs_ = 0;
+    uint64_t nativeLastAdmissionServiceEstimateNs_ = 0;
+    uint64_t nativeLastAdmissionSourceIntervalNs_ = 0;
     std::deque<uint64_t> nativeSourceWsiEventNs_;
     std::deque<uint64_t> nativeGeneratedWsiEventNs_;
     std::deque<uint64_t> nativeSourceConfirmedEventNs_;

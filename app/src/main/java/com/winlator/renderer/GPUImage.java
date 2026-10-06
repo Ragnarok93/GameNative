@@ -100,8 +100,19 @@ public class GPUImage extends NativeTexture {
         // Vulkan requirement. Avoid tiny 4x4/8x8 allocations that some Android
         // gralloc implementations reject even though realistic buffers work.
         final short size = 64;
-        final boolean descriptorSupported =
-            isHardwareBufferConfigurationSupported(size, size);
+        boolean descriptorSupported = true;
+        try {
+            descriptorSupported =
+                isHardwareBufferConfigurationSupported(size, size);
+        } catch (UnsatisfiedLinkError error) {
+            // The descriptor query is only an optimization/early rejection.
+            // Allocation remains the authoritative compatibility check, so a
+            // stale prebuilt libextras must never make surface creation fatal.
+            Log.w(
+                "GPUImageProbe",
+                "event=descriptor-capability jni_available=0 fallback=allocation size=" + size,
+                error);
+        }
         if (!descriptorSupported) {
             supported = false;
             Log.i("GPUImageProbe",

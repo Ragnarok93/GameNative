@@ -527,13 +527,22 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         const bool presentation_pressure =
             lsfg->presentation_pressure.confirmation_available
             && lsfg->presentation_pressure.pressure_active;
+        // Adaptive FG density is the next actuator after Flow for compute/GPU
+        // pressure, but structural presenter admission loss is different: a
+        // cheaper optical-flow graph cannot make a rejected temporal slot
+        // presentable. Sustained synthetic admission loss plus an output
+        // deficit may therefore back density off even before Flow reaches its
+        // floor. This still reuses the shared Adaptive FG density controller
+        // and never changes Fixed multiplier semantics.
+        const bool structural_presentation_pressure =
+            output_deficit
+            && (presentation_pressure || lsfg->synthetic_drop_pressure);
         const bool severe_pressure =
-            at_minimum && (
-                presentation_pressure
-                || lsfg->synthetic_drop_pressure
-                || (global_pressure_valid
-                    && lsfg->pressure.gpu_usage_percent >= 96.0f
-                    && output_deficit));
+            structural_presentation_pressure
+            || (at_minimum
+                && global_pressure_valid
+                && lsfg->pressure.gpu_usage_percent >= 96.0f
+                && output_deficit);
         if (stats.target_rate > 0.0f && severe_pressure) {
             lsfg->density_pressure_seconds += elapsed_seconds;
             lsfg->density_recovery_seconds = 0.0;
@@ -574,7 +583,10 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                     ? true
                     : (!output_valid || output_satisfied);
             const bool recovery =
-                stats.target_rate > 0.0f && at_minimum && global_pressure_valid
+                stats.target_rate > 0.0f
+                && (at_minimum
+                    || lsfg->adaptive_generation_cap < VKR_LSFG_MAX_GENERATIONS)
+                && global_pressure_valid
                 && lsfg->pressure.gpu_usage_percent <= 88.0f
                 && output_recovered
                 && confirmation_recovered

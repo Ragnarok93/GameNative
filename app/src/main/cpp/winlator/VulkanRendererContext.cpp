@@ -4004,11 +4004,20 @@ void VulkanRendererContext::pollHostDisplayConfirmations() {
         uint32_t count = 0;
         VkResult query = vk_.GetPastPresentationTimingGOOGLE(
             device, swapchain, &count, nullptr);
-        if (query == VK_SUCCESS && count > 0) {
+        if ((query == VK_SUCCESS || query == VK_INCOMPLETE) && count > 0) {
             std::vector<VkPastPresentationTimingGOOGLE> timings(count);
             query = vk_.GetPastPresentationTimingGOOGLE(
                 device, swapchain, &count, timings.data());
-            if (query == VK_SUCCESS) {
+            // The presentation engine can publish more records between the
+            // count and data calls. VK_INCOMPLETE still returns valid records;
+            // consume them now and leave the remainder for the next poll.
+            if (query == VK_SUCCESS || query == VK_INCOMPLETE) {
+                if (query == VK_INCOMPLETE) {
+                    __android_log_print(
+                        ANDROID_LOG_DEBUG, "LSFG_HOST_DISPLAY",
+                        "event=display-timing-query-partial result=%d returned=%u capacity=%zu",
+                        static_cast<int>(query), count, timings.size());
+                }
                 for (uint32_t i = 0; i < count; ++i) {
                     const auto& timing = timings[i];
                     auto it = std::find_if(
@@ -4043,9 +4052,23 @@ void VulkanRendererContext::pollHostDisplayConfirmations() {
                 }
             } else {
                 ++hostDisplayTimingQueryFailureTotal_;
+                if (hostDisplayTimingQueryFailureTotal_ <= 5
+                        || hostDisplayTimingQueryFailureTotal_ % 120 == 0) {
+                    __android_log_print(
+                        ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                        "event=display-timing-query-failed stage=data result=%d failures=%" PRIu64,
+                        static_cast<int>(query), hostDisplayTimingQueryFailureTotal_);
+                }
             }
-        } else if (query != VK_SUCCESS) {
+        } else if (query != VK_SUCCESS && query != VK_INCOMPLETE) {
             ++hostDisplayTimingQueryFailureTotal_;
+            if (hostDisplayTimingQueryFailureTotal_ <= 5
+                    || hostDisplayTimingQueryFailureTotal_ % 120 == 0) {
+                __android_log_print(
+                    ANDROID_LOG_WARN, "LSFG_HOST_DISPLAY",
+                    "event=display-timing-query-failed stage=count result=%d failures=%" PRIu64,
+                    static_cast<int>(query), hostDisplayTimingQueryFailureTotal_);
+            }
         }
     }
 
@@ -4477,3 +4500,4 @@ std::vector<int> VulkanRendererContext::getSupportedPresentModes() const {
 }
 
 #pragma GCC diagnostic pop
+

@@ -407,10 +407,26 @@ object LsfgVkManager {
             appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
             appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
         }
-        return writeConfigAtomic(
+        val written = writeConfigAtomic(
             File(root, RUNTIME_PRESSURE_RELATIVE_PATH),
             text,
         )
+        val nativeContainer = nativeRendererContainer
+        val renderer = nativeRendererRef?.get()
+        if (renderer != null && nativeContainer != null &&
+            nativeContainer.rootDir.absolutePath == root.absolutePath &&
+            latestNativeSnapshot?.backend == BACKEND_NATIVE
+        ) {
+            renderer.setFrameGenerationPressure(
+                gpu,
+                snapshot.thermalStatus ?: -1,
+                snapshot.fps,
+                readNativeOutputFps(nativeContainer) ?: 0f,
+                snapshot.frameTimeP95Ms,
+                slowRatio.toFloat(),
+            )
+        }
+        return written
     }
 
     /**
@@ -976,6 +992,17 @@ object LsfgVkManager {
                     snapshot.multiplier,
                     snapshot.targetFps,
                     (snapshot.requestedFlowScale * 100f).toInt(),
+                    if (snapshot.flowMode == FLOW_MODE_ADAPTIVE) {
+                        VulkanRenderer.LSFG_FLOW_ADAPTIVE
+                    } else {
+                        VulkanRenderer.LSFG_FLOW_FIXED
+                    },
+                    when (snapshot.flowPreset) {
+                        ADAPTIVE_FLOW_PRESET_BALANCED -> VulkanRenderer.LSFG_FLOW_PRESET_BALANCED
+                        ADAPTIVE_FLOW_PRESET_LOW -> VulkanRenderer.LSFG_FLOW_PRESET_LOW
+                        ADAPTIVE_FLOW_PRESET_AUTO -> VulkanRenderer.LSFG_FLOW_PRESET_AUTO
+                        else -> VulkanRenderer.LSFG_FLOW_PRESET_QUALITY
+                    },
                     snapshot.displayRefresh,
                 ) { snapshotIsCurrent(snapshot, generation) }
 

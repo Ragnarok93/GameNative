@@ -67,16 +67,18 @@ add_library(vulkan_renderer SHARED
             lsfg/lsfg_chain.cpp
             lsfg/lsfg_pacer.cpp
             lsfg/vkr_lsfg.cpp
+            lsfg-vk-android/src/adaptive_flow_controller.cpp
             ${CMAKE_CURRENT_BINARY_DIR}/window_vert.h
             ${CMAKE_CURRENT_BINARY_DIR}/window_frag.h)
 
 target_include_directories(vulkan_renderer PRIVATE
                            ${CMAKE_CURRENT_BINARY_DIR}
                            ${CMAKE_CURRENT_SOURCE_DIR}/winlator
-                           ${CMAKE_CURRENT_SOURCE_DIR}/lsfg)
+                           ${CMAKE_CURRENT_SOURCE_DIR}/lsfg
+                           ${CMAKE_CURRENT_SOURCE_DIR}/lsfg-vk-android/include)
 
 set_target_properties(vulkan_renderer PROPERTIES
-                      CXX_STANDARD 17
+                      CXX_STANDARD 20
                       CXX_STANDARD_REQUIRED ON)
 
 target_compile_options(vulkan_renderer PRIVATE

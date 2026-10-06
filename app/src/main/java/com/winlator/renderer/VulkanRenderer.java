@@ -50,8 +50,21 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private boolean pendingFramegenArmed = false;
     private volatile boolean pendingFramegenEnabled = false;
     private String pendingFramegenShaders = "";
+    public static final int LSFG_FLOW_FIXED = 0;
+    public static final int LSFG_FLOW_ADAPTIVE = 1;
+    public static final int LSFG_FLOW_PRESET_QUALITY = 0;
+    public static final int LSFG_FLOW_PRESET_BALANCED = 1;
+    public static final int LSFG_FLOW_PRESET_LOW = 2;
+    public static final int LSFG_FLOW_PRESET_AUTO = 3;
+
     private int pendingFramegenMultiplier = 2, pendingFramegenTargetRate = 0, pendingFramegenFlowScale = 70;
+    private int pendingFramegenFlowMode = LSFG_FLOW_FIXED;
+    private int pendingFramegenFlowPreset = LSFG_FLOW_PRESET_QUALITY;
     private float pendingFramegenRefreshRate = 60.0f;
+    private float pendingFramegenGpuUsage = -1.0f, pendingFramegenSourceFps = 0.0f;
+    private float pendingFramegenOutputFps = 0.0f, pendingFramegenP95Ms = 0.0f;
+    private float pendingFramegenSlowRatio = 0.0f;
+    private int pendingFramegenThermalStatus = -1;
     private final Object lock = new Object();
 
     public final ViewTransformation viewTransformation = new ViewTransformation();
@@ -188,7 +201,11 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetFrameGenerationEnabled(long handle, boolean enabled);
     private native void nativeSetFrameGenerationShaders(long handle, String cachePath);
     private native void nativeSetFrameGenerationRefreshRate(long handle, float hz);
-    private native void nativeSetFrameGenerationMode(long handle, int multiplier, int targetRate, int flowScalePct);
+    private native void nativeSetFrameGenerationMode(long handle, int multiplier, int targetRate,
+        int flowScalePct, int flowMode, int flowPreset);
+    private native void nativeSetFrameGenerationPressure(long handle, float gpuUsagePercent,
+        int thermalStatus, float sourceFps, float outputFps, float frameTimeP95Ms,
+        float slowFrameRatio);
     private native long nativeGetGeneratedFrameCount(long handle);
     private native long nativeGetPresentedFrameCount(long handle);
     private native long nativeGetRealFrameCount(long handle);
@@ -874,8 +891,13 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private void replayFrameGenerationLocked() {
         if (!pendingFramegenArmed || nativeHandle == 0) return;
         nativeArmFrameGeneration(nativeHandle);
-        nativeSetFrameGenerationMode(nativeHandle, pendingFramegenMultiplier, pendingFramegenTargetRate, pendingFramegenFlowScale);
+        nativeSetFrameGenerationMode(nativeHandle, pendingFramegenMultiplier,
+            pendingFramegenTargetRate, pendingFramegenFlowScale, pendingFramegenFlowMode,
+            pendingFramegenFlowPreset);
         nativeSetFrameGenerationRefreshRate(nativeHandle, pendingFramegenRefreshRate);
+        nativeSetFrameGenerationPressure(nativeHandle, pendingFramegenGpuUsage,
+            pendingFramegenThermalStatus, pendingFramegenSourceFps, pendingFramegenOutputFps,
+            pendingFramegenP95Ms, pendingFramegenSlowRatio);
         if (!pendingFramegenShaders.isEmpty()) nativeSetFrameGenerationShaders(nativeHandle, pendingFramegenShaders);
         nativeSetFrameGenerationEnabled(nativeHandle, pendingFramegenEnabled);
         android.util.Log.i("LSFG_NATIVE", "event=surface_settings_replayed initialized=" + nativeIsFrameGenerationSupported(nativeHandle));
@@ -921,13 +943,14 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     /** Apply one native request atomically against surface teardown/backend disable. */
     public boolean applyFrameGenerationSettings(String cachePath, int multiplier, int targetRate,
-            int flowScalePct, float refreshRate, java.util.function.BooleanSupplier stillRequested) {
+            int flowScalePct, int flowMode, int flowPreset, float refreshRate,
+            java.util.function.BooleanSupplier stillRequested) {
         synchronized (lock) {
             if (!stillRequested.getAsBoolean()) return false;
             setVkPresentMode(2);
             setLsfgFrameQueue(false, 0);
             armFrameGeneration();
-            setFrameGenerationMode(multiplier, targetRate, flowScalePct);
+            setFrameGenerationMode(multiplier, targetRate, flowScalePct, flowMode, flowPreset);
             setFrameGenerationRefreshRate(refreshRate);
             setFrameGenerationShaders(cachePath);
             setFrameGenerationEnabled(true);
@@ -951,13 +974,40 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     }
 
     public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {
+        setFrameGenerationMode(
+            multiplier, targetRate, flowScalePct, pendingFramegenFlowMode, pendingFramegenFlowPreset);
+    }
+
+    public void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct,
+            int flowMode, int flowPreset) {
         synchronized (lock) {
             pendingFramegenMultiplier = Math.max(2, Math.min(4, multiplier));
             pendingFramegenTargetRate = Math.max(0, targetRate);
             pendingFramegenFlowScale = Math.max(25, Math.min(100, flowScalePct));
+            pendingFramegenFlowMode =
+                flowMode == LSFG_FLOW_ADAPTIVE ? LSFG_FLOW_ADAPTIVE : LSFG_FLOW_FIXED;
+            pendingFramegenFlowPreset = Math.max(
+                LSFG_FLOW_PRESET_QUALITY, Math.min(LSFG_FLOW_PRESET_AUTO, flowPreset));
             if (nativeHandle != 0) {
                 nativeSetFrameGenerationMode(nativeHandle, pendingFramegenMultiplier,
-                    pendingFramegenTargetRate, pendingFramegenFlowScale);
+                    pendingFramegenTargetRate, pendingFramegenFlowScale,
+                    pendingFramegenFlowMode, pendingFramegenFlowPreset);
+            }
+        }
+    }
+
+    public void setFrameGenerationPressure(float gpuUsagePercent, int thermalStatus,
+            float sourceFps, float outputFps, float frameTimeP95Ms, float slowFrameRatio) {
+        synchronized (lock) {
+            pendingFramegenGpuUsage = gpuUsagePercent;
+            pendingFramegenThermalStatus = thermalStatus;
+            pendingFramegenSourceFps = sourceFps;
+            pendingFramegenOutputFps = outputFps;
+            pendingFramegenP95Ms = frameTimeP95Ms;
+            pendingFramegenSlowRatio = slowFrameRatio;
+            if (nativeHandle != 0) {
+                nativeSetFrameGenerationPressure(nativeHandle, gpuUsagePercent, thermalStatus,
+                    sourceFps, outputFps, frameTimeP95Ms, slowFrameRatio);
             }
         }
     }

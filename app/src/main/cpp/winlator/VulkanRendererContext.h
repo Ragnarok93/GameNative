@@ -1,5 +1,6 @@
 #pragma once
 #include <vulkan/vulkan.h>
+#include "../lsfg/vkr_lsfg.h"
 #include <list>
 #include <vulkan/vulkan_android.h>
 
@@ -351,7 +352,11 @@ public:
     bool isFrameGenerationSupported() const;
     void setFrameGenerationShaders(const std::string& cachePath);
     void setFrameGenerationRefreshRate(float hz);
-    void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct);
+    void setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct,
+                                int flowMode, int flowPreset);
+    void setFrameGenerationPressure(float gpuUsagePercent, int thermalStatus,
+                                    float sourceFps, float outputFps,
+                                    float frameTimeP95Ms, float slowFrameRatio);
     uint64_t getGeneratedFrameCount() const;
     uint64_t getGeneratedPresentedFrameCount() const;
     uint64_t getPresentedFrameCount() const;
@@ -694,7 +699,16 @@ private:
     uint32_t framegenMultiplier = 2;
     uint32_t framegenTargetRate = 0;
     float framegenFlowScale = 0.7f;
+    uint32_t framegenFlowMode = VKR_LSFG_FLOW_FIXED;
+    uint32_t framegenFlowPreset = VKR_LSFG_FLOW_PRESET_QUALITY;
     float framegenRefreshRate = 60.0f;
+    float framegenGpuUsagePercent_ = -1.0f;
+    int framegenThermalStatus_ = -1;
+    float framegenSourceFps_ = 0.0f;
+    float framegenOutputFps_ = 0.0f;
+    float framegenFrameTimeP95Ms_ = 0.0f;
+    float framegenSlowFrameRatio_ = 0.0f;
+    uint64_t nativeLsfgContextEpoch_ = 0;
     std::atomic<uint64_t> framegenSourceFrames{0};
     std::atomic<uint64_t> framegenRealFrames{0};
     std::atomic<uint64_t> framegenMadeFrames{0};

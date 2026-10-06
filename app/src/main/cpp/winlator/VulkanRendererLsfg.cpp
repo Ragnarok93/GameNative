@@ -220,7 +220,11 @@ void VulkanRendererContext::createLsfg() {
     vkr_lsfg_configure(lsfg, framegenMultiplier ? framegenMultiplier : 2u,
                        framegenTargetRate,
                        framegenFlowScale > 0.0f ? framegenFlowScale : 0.7f,
+                       framegenFlowMode, framegenFlowPreset,
                        framegenRefreshRate);
+    vkr_lsfg_set_pressure(lsfg, framegenGpuUsagePercent_, framegenThermalStatus_,
+                          framegenSourceFps_, framegenOutputFps_,
+                          framegenFrameTimeP95Ms_, framegenSlowFrameRatio_);
 }
 
 uint32_t VulkanRendererContext::framegenExtraImages() const {
@@ -373,7 +377,8 @@ void VulkanRendererContext::setFrameGenerationRefreshRate(float hz) {
         vkr_lsfg_set_refresh_rate(lsfg, framegenRefreshRate);
 }
 
-void VulkanRendererContext::setFrameGenerationMode(int multiplier, int targetRate, int flowScalePct) {
+void VulkanRendererContext::setFrameGenerationMode(
+        int multiplier, int targetRate, int flowScalePct, int flowMode, int flowPreset) {
     std::unique_lock<std::shared_mutex> fl(frameMutex);
     if (!framegenArmed) return;
     std::lock_guard<std::mutex> lk(renderMutex);
@@ -381,22 +386,73 @@ void VulkanRendererContext::setFrameGenerationMode(int multiplier, int targetRat
     const uint32_t nextMultiplier = static_cast<uint32_t>(std::clamp(multiplier, 2, 4));
     const uint32_t nextTarget = static_cast<uint32_t>(std::max(targetRate, 0));
     const float nextFlow = static_cast<float>(std::clamp(flowScalePct, 25, 100)) / 100.0f;
-    if (nextMultiplier == framegenMultiplier && nextTarget == framegenTargetRate && nextFlow == framegenFlowScale) return;
-    if (lsfg) {
-        waitNativeResources();
-        vkr_lsfg_reset(lsfg);
-        nativeLastSourceFrame_ = 0;
+    const uint32_t nextFlowMode =
+        flowMode == static_cast<int>(VKR_LSFG_FLOW_ADAPTIVE)
+            ? VKR_LSFG_FLOW_ADAPTIVE : VKR_LSFG_FLOW_FIXED;
+    const uint32_t nextFlowPreset =
+        static_cast<uint32_t>(std::clamp(
+            flowPreset,
+            static_cast<int>(VKR_LSFG_FLOW_PRESET_QUALITY),
+            static_cast<int>(VKR_LSFG_FLOW_PRESET_AUTO)));
+    if (nextMultiplier == framegenMultiplier
+            && nextTarget == framegenTargetRate
+            && nextFlow == framegenFlowScale
+            && nextFlowMode == framegenFlowMode
+            && nextFlowPreset == framegenFlowPreset) {
+        return;
     }
+
+    const bool flowContractChanged =
+        nextFlow != framegenFlowScale
+        || nextFlowMode != framegenFlowMode
+        || nextFlowPreset != framegenFlowPreset;
     framegenMultiplier = nextMultiplier;
     framegenTargetRate = nextTarget;
     framegenFlowScale = nextFlow;
+    framegenFlowMode = nextFlowMode;
+    framegenFlowPreset = nextFlowPreset;
     if (lsfg) {
         vkr_lsfg_configure(lsfg, framegenMultiplier, framegenTargetRate,
-                           framegenFlowScale, framegenRefreshRate);
+                           framegenFlowScale, framegenFlowMode, framegenFlowPreset,
+                           framegenRefreshRate);
     }
+
+    // Multiplier and target-FPS changes are scheduler scalars. They must not
+    // drain fences, reset history or recreate LSFG resources. A Flow contract
+    // change is rebuilt later at the render thread's existing safe boundary.
+    RLOG(
+        "LSFG_NATIVE_CONTEXT: event=config_update context_epoch=%llu rebuild_required=%d "
+        "rebuild_reason=%s multiplier=%u target_fps=%u flow_mode=%s "
+        "flow_preset=%u requested_scale=%.2f",
+        (unsigned long long)nativeLsfgContextEpoch_,
+        flowContractChanged ? 1 : 0,
+        flowContractChanged ? "flow-contract-change" : "none",
+        framegenMultiplier,
+        framegenTargetRate,
+        framegenFlowMode == VKR_LSFG_FLOW_ADAPTIVE ? "adaptive" : "fixed",
+        framegenFlowPreset,
+        (double)framegenFlowScale);
+
     if (framegenExtraImages() != previous_images) {
         fbResized.store(true);
-        dirtyCV.notify_one();
+    }
+    dirtyCV.notify_one();
+}
+
+void VulkanRendererContext::setFrameGenerationPressure(
+        float gpuUsagePercent, int thermalStatus, float sourceFps, float outputFps,
+        float frameTimeP95Ms, float slowFrameRatio) {
+    std::unique_lock<std::shared_mutex> fl(frameMutex);
+    framegenGpuUsagePercent_ = gpuUsagePercent;
+    framegenThermalStatus_ = thermalStatus;
+    framegenSourceFps_ = sourceFps;
+    framegenOutputFps_ = outputFps;
+    framegenFrameTimeP95Ms_ = frameTimeP95Ms;
+    framegenSlowFrameRatio_ = slowFrameRatio;
+    if (lsfg) {
+        vkr_lsfg_set_pressure(
+            lsfg, gpuUsagePercent, thermalStatus, sourceFps, outputFps,
+            frameTimeP95Ms, slowFrameRatio);
     }
 }
 

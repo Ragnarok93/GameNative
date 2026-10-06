@@ -2580,9 +2580,26 @@ ok=true;}catch(...){}
     if (nativeRuntimeActive) {
         vkr_lsfg_set_guest_extent(lsfg, containerWidth, containerHeight);
         const uint32_t targets = MAX_FRAMES_IN_FLIGHT + nativeCapacity;
-        const bool rebuild = !compositeBuilt || compositeCount != targets
-            || composite[0].width != swapchainExt.width || composite[0].height != swapchainExt.height
-            || vkr_lsfg_needs_rebuild(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt);
+        const bool chainRebuild =
+            vkr_lsfg_needs_rebuild(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt);
+        const bool compositeRebuild =
+            !compositeBuilt || compositeCount != targets
+            || composite[0].width != swapchainExt.width
+            || composite[0].height != swapchainExt.height;
+        const bool rebuild = compositeRebuild || chainRebuild;
+        const char* nativeRebuildReason = "none";
+        if (chainRebuild) {
+            nativeRebuildReason =
+                vkr_lsfg_rebuild_reason(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt);
+        } else if (!compositeBuilt) {
+            nativeRebuildReason = "initial-create";
+        } else if (compositeCount != targets) {
+            nativeRebuildReason = "swapchain-capacity-change";
+        } else if (composite[0].width != swapchainExt.width
+                || composite[0].height != swapchainExt.height) {
+            nativeRebuildReason = "resolution-change";
+        }
+        const auto nativePrepareStart = std::chrono::steady_clock::now();
         if (rebuild) {
             waitNativeResources();
             vkr_lsfg_forget_targets(lsfg);
@@ -2591,9 +2608,40 @@ ok=true;}catch(...){}
                 || !vkr_lsfg_prepare(lsfg, swapchainExt.width, swapchainExt.height, swapchainFmt)) {
             nativeRuntimeActive = false;
             framegenSupported = false;
-            RLOG_E("LSFG_NATIVE: event=initialization_failed reason=target-or-chain-build");
-        } else if (nativeFreshSource) {
-            nativeGenerations = vkr_lsfg_plan(lsfg, nativeCapacity, nativeSourceFrame);
+            RLOG_E(
+                "LSFG_NATIVE_CONTEXT: event=context_build_failed rebuild_reason=%s "
+                "width=%u height=%u format=%d",
+                nativeRebuildReason, swapchainExt.width, swapchainExt.height, (int)swapchainFmt);
+        } else {
+            if (rebuild) {
+                ++nativeLsfgContextEpoch_;
+                const uint64_t prepareNs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - nativePrepareStart).count());
+                VkrLsfgFlowState flow{};
+                vkr_lsfg_get_flow_state(lsfg, &flow);
+                RLOG(
+                    "LSFG_NATIVE_CONTEXT: event=context_rebuild context_epoch=%llu action=%s "
+                    "rebuild_reason=%s init_ms=%.3f width=%u height=%u format=%d "
+                    "flow_mode=%s requested_scale=%.2f active_scale=%.2f",
+                    (unsigned long long)nativeLsfgContextEpoch_,
+                    nativeLsfgContextEpoch_ == 1 ? "create" : "rebuild",
+                    nativeRebuildReason,
+                    (double)prepareNs / 1000000.0,
+                    swapchainExt.width,
+                    swapchainExt.height,
+                    (int)swapchainFmt,
+                    flow.adaptive ? "adaptive" : "fixed",
+                    (double)flow.requested_scale,
+                    (double)flow.active_scale);
+            } else {
+                RLOG(
+                    "LSFG_NATIVE_CONTEXT: event=context_reuse context_epoch=%llu "
+                    "rebuild_reason=none",
+                    (unsigned long long)nativeLsfgContextEpoch_);
+            }
+            if (nativeFreshSource)
+                nativeGenerations = vkr_lsfg_plan(lsfg, nativeCapacity, nativeSourceFrame);
         }
     }
 
@@ -2658,6 +2706,17 @@ ok=true;}catch(...){}
                 completeObservedFence(imgInFlight[generatedImage]);
             }
             imgInFlight[generatedImage] = inFlightFences[currentFrame];
+        }
+        if (lsfg && plannedGenerations > 0) {
+            vkr_lsfg_note_admission(lsfg, plannedGenerations, nativeGenerations);
+            RLOG(
+                "LSFG_NATIVE_GENERATION: event=admission source_index=%llu "
+                "requested_synthetic=%u admitted=%u rejected=%u rejection_reason=%s",
+                (unsigned long long)nativeSourceFrame,
+                plannedGenerations,
+                nativeGenerations,
+                plannedGenerations - nativeGenerations,
+                nativeGenerations < plannedGenerations ? "wsi-acquire-deadline" : "none");
         }
     }
 

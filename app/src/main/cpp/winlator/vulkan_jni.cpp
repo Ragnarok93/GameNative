@@ -336,10 +336,22 @@ Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationRefreshRate(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationMode(
-        JNIEnv*, jobject, jlong handle, jint multiplier, jint targetRate, jint flowScalePct) {
+        JNIEnv*, jobject, jlong handle, jint multiplier, jint targetRate, jint flowScalePct,
+        jint flowMode, jint flowPreset) {
     if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
         renderer->setFrameGenerationMode(
-            (int)multiplier, (int)targetRate, (int)flowScalePct);
+            (int)multiplier, (int)targetRate, (int)flowScalePct,
+            (int)flowMode, (int)flowPreset);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeSetFrameGenerationPressure(
+        JNIEnv*, jobject, jlong handle, jfloat gpuUsagePercent, jint thermalStatus,
+        jfloat sourceFps, jfloat outputFps, jfloat frameTimeP95Ms, jfloat slowFrameRatio) {
+    if (auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle))
+        renderer->setFrameGenerationPressure(
+            (float)gpuUsagePercent, (int)thermalStatus, (float)sourceFps,
+            (float)outputFps, (float)frameTimeP95Ms, (float)slowFrameRatio);
 }
 
 extern "C" JNIEXPORT jlong JNICALL

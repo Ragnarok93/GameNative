@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22.1)
 
 project(GameNativeVulkanRenderer LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -68,6 +68,7 @@ add_library(
     "${LSFG_DIR}/lsfg_mipmaps.cpp"
     "${LSFG_DIR}/lsfg_pacer.cpp"
     "${LSFG_DIR}/lsfg_shaders.cpp"
+    "${LSFG_VK_ANDROID_DIR}/src/adaptive_flow_controller.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/window_vert.h"
     "${CMAKE_CURRENT_BINARY_DIR}/window_frag.h"
 )
@@ -77,6 +78,7 @@ target_include_directories(
     PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
     "${LSFG_DIR}"
+    "${LSFG_VK_ANDROID_DIR}/include"
     "${LSFG_VK_ANDROID_DIR}/thirdparty/dxbc/src/dxbc"
 )
 

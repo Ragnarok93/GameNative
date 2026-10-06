@@ -47,6 +47,19 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(context.contains("signalSemaphoreCount=signalSemaphoreCount"))
         assertTrue(context.contains("nativeRuntimeActive"))
         assertTrue(!context.contains("framegenMultiplier == 2"))
+        assertTrue(context.contains("uint32_t framegenFlowMode = VKR_LSFG_FLOW_FIXED"))
+        assertTrue(context.contains("nativeLsfgContextEpoch_"))
+
+        val vkr = File(root, "app/src/main/cpp/lsfg/vkr_lsfg.cpp").readText()
+        assertTrue(vkr.contains("AdaptiveFlowController"))
+        assertTrue(vkr.contains("generation_density_backoff"))
+        assertTrue(vkr.contains("vkr_lsfg_set_pressure"))
+        assertTrue(vkr.contains("output_deficit"))
+
+        val standaloneCmake =
+            File(root, "app/src/main/cpp/vulkan-renderer-build/CMakeLists.txt").readText()
+        assertTrue(standaloneCmake.contains("adaptive_flow_controller.cpp"))
+        assertTrue(standaloneCmake.contains("CMAKE_CXX_STANDARD 20"))
 
         val manager = File(root, "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt").readText()
         val quickMenu = File(root, "app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt").readText()
@@ -58,6 +71,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("reason=native-backend"))
         assertTrue(manager.contains("LSFG_NATIVE_CONFIG: event=%s"))
         assertTrue(manager.contains("snapshotIsCurrent"))
+        assertTrue(manager.contains("VulkanRenderer.LSFG_FLOW_ADAPTIVE"))
+        assertTrue(manager.contains("setFrameGenerationPressure"))
         val publishStart = quickMenu.indexOf("private fun publishRuntimeConfig")
         val publishBody = quickMenu.substring(publishStart)
         assertTrue(!publishBody.contains("LsfgVkManager.refreshNativeRuntime(container)"))

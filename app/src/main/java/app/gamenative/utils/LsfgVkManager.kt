@@ -1115,10 +1115,38 @@ object LsfgVkManager {
                         discardStaleSnapshot(snapshot, "source-only")
                         return@execute
                     }
+
+                    // Native -> Legacy restoration must be owned by the newest
+                    // current snapshot, not by a callback tied to an older
+                    // revision. Rapid Quick Menu updates can supersede the
+                    // transition snapshot after Native has already retired.
+                    var result = "source-only-applied"
+                    if (!requested && snapshot.backend == BACKEND_LEGACY) {
+                        val restored = publishLegacyRuntimeConfig(
+                            container,
+                            snapshot,
+                            allowGeneration = snapshot.enabled,
+                            reason = "native-retired-current-snapshot",
+                        )
+                        result = if (restored) {
+                            "legacy-restored"
+                        } else {
+                            "legacy-restore-failed"
+                        }
+                        Timber.i(
+                            "LSFG_BACKEND: event=legacy_restore_after_native_retire " +
+                                "requested_revision=%d backend_generation=%d enabled=%d restored=%d",
+                            snapshot.revision,
+                            snapshot.backendGeneration,
+                            if (snapshot.enabled) 1 else 0,
+                            if (restored) 1 else 0,
+                        )
+                    }
+
                     nativeApplyComplete = true
                     nativeAppliedRevision = snapshot.revision
                     logNativeSnapshot(snapshot, "applied")
-                    onApplied?.invoke("source-only-applied")
+                    onApplied?.invoke(result)
                     return@execute
                 }
 
@@ -2168,7 +2196,8 @@ object LsfgVkManager {
                 snapshot.backendGeneration,
             )
             refreshNativeRuntime(container, snapshot) { result ->
-                if (result == "source-only-applied" && isSnapshotRevisionCurrent(snapshot)) {
+                if ((result == "source-only-applied" || result == "legacy-restored")
+                    && isSnapshotRevisionCurrent(snapshot)) {
                     val restored = publishLegacyRuntimeConfig(
                         container,
                         snapshot,

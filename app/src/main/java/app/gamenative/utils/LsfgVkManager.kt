@@ -1654,8 +1654,10 @@ object LsfgVkManager {
 
         val snapshot = currentSnapshot ?: captureNativeRuntimeSnapshot(container, context)
         val transition = activeBackendTransition?.takeIf {
-            it.revision == snapshot.revision &&
-                it.backendGeneration == snapshot.backendGeneration &&
+            // A Quick Menu setting may supersede the transition revision while
+            // the backend generation remains the same. The backend transaction
+            // still owns the eventual runtime-apply acknowledgement.
+            it.transactionId == snapshot.backendGeneration &&
                 it.backend == snapshot.backend
         }
         applyNativeRuntime(

@@ -1587,6 +1587,7 @@ object LsfgVkManager {
 
     /** Apply the manager-owned present/frame-queue policy to the live renderer. */
     @JvmStatic
+    @Synchronized
     fun applyFrameQueuePolicy(
         container: Container,
         enabledOverride: Boolean? = null,

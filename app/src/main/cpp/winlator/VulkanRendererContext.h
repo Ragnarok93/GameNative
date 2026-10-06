@@ -497,6 +497,7 @@ private:
     uint32_t lsfgBackendTransitionRecreationCount_ = 0;
     bool lsfgBackendTransitionFirstRecreationFailed_ = false;
     bool lsfgBackendTransitionRebuildPending_ = false;
+    bool lsfgBackendTransitionPolicyDirty_ = false;
     bool lsfgBackendTransitionPolicyCommitted_ = false;
     uint64_t hostPhysicalCadenceEpoch_ = 0;
     uint64_t legacyGeneratedSlotContextEpoch_ = 0;

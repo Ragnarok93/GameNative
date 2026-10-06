@@ -407,6 +407,7 @@ void VulkanRendererContext::beginLsfgBackendTransition(
     // frameMutex guarantees a render already processing fbResized has finished.
     lsfgBackendTransitionRebuildPending_ =
         fbResized.exchange(false, std::memory_order_acq_rel);
+    lsfgBackendTransitionPolicyDirty_ = false;
     lsfgBackendTransitionPolicyCommitted_ = false;
     RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_begin transaction_id=%llu "
          "revision=%llu generation_before=%llu absorbed_pending_rebuild=%d",
@@ -419,6 +420,7 @@ void VulkanRendererContext::requestLsfgSwapchainRebuild(const char* reason) {
     if (lsfgBackendTransitionId_ != 0
             && !lsfgBackendTransitionPolicyCommitted_) {
         lsfgBackendTransitionRebuildPending_ = true;
+        lsfgBackendTransitionPolicyDirty_ = true;
         RLOG("LSFG_BACKEND_TX: event=rebuild_deferred transaction_id=%llu "
              "revision=%llu reason=%s generation=%llu",
              (unsigned long long)lsfgBackendTransitionId_,
@@ -462,11 +464,15 @@ void VulkanRendererContext::completeLsfgBackendTransition(
         || lsfgBackendTransitionFirstRecreationFailed_;
     const bool policyOk =
         lsfgBackendTransitionPolicyCommitted_
-        || !lsfgBackendTransitionRebuildPending_;
+        || !lsfgBackendTransitionPolicyDirty_;
+    const bool releaseInheritedRebuild =
+        lsfgBackendTransitionRebuildPending_
+        && !lsfgBackendTransitionPolicyCommitted_;
     RLOG("LSFG_BACKEND_TX: event=swapchain_transaction_complete transaction_id=%llu "
          "revision=%llu generation_before=%llu generation_after=%llu "
          "recreation_attempts=%u recreation_count=%u first_recreation_failed=%d "
-         "policy_committed=%d rebuild_pending=%d invariant_ok=%d completion_reason=%s",
+         "policy_dirty=%d policy_committed=%d rebuild_pending=%d "
+         "policy_ok=%d invariant_ok=%d completion_reason=%s",
          (unsigned long long)transactionId,
          (unsigned long long)lsfgBackendTransitionRevision_,
          (unsigned long long)lsfgBackendTransitionStartGeneration_,
@@ -474,8 +480,10 @@ void VulkanRendererContext::completeLsfgBackendTransition(
          lsfgBackendTransitionRecreationAttempts_,
          lsfgBackendTransitionRecreationCount_,
          lsfgBackendTransitionFirstRecreationFailed_ ? 1 : 0,
+         lsfgBackendTransitionPolicyDirty_ ? 1 : 0,
          lsfgBackendTransitionPolicyCommitted_ ? 1 : 0,
          lsfgBackendTransitionRebuildPending_ ? 1 : 0,
+         policyOk ? 1 : 0,
          invariantOk ? 1 : 0, reason ? reason : "unknown");
 #ifndef NDEBUG
     assert(invariantOk && "one LSFG backend transition caused multiple swapchain generations");
@@ -488,7 +496,14 @@ void VulkanRendererContext::completeLsfgBackendTransition(
     lsfgBackendTransitionRecreationCount_ = 0;
     lsfgBackendTransitionFirstRecreationFailed_ = false;
     lsfgBackendTransitionRebuildPending_ = false;
+    lsfgBackendTransitionPolicyDirty_ = false;
     lsfgBackendTransitionPolicyCommitted_ = false;
+    if (releaseInheritedRebuild) {
+        // A switch that aborts before touching WSI policy must not swallow an
+        // unrelated surface resize that was pending when the transaction began.
+        fbResized.store(true, std::memory_order_release);
+        dirtyCV.notify_one();
+    }
 }
 
 void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {

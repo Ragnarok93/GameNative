@@ -399,7 +399,9 @@ void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
 
 bool VulkanRendererContext::isFrameGenerationSupported() const {
     std::shared_lock<std::shared_mutex> fl(frameMutex);
-    return framegenRequested && framegenArmed && framegenSupported && lsfg != nullptr;
+    return framegenRequested && framegenArmed && framegenSupported && lsfg != nullptr
+        && !surfaceDetached.load(std::memory_order_acquire)
+        && surface != VK_NULL_HANDLE && swapchain != VK_NULL_HANDLE;
 }
 
 void VulkanRendererContext::setFrameGenerationShaders(const std::string& cachePath) {

@@ -182,6 +182,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeInitScanout(long handle);
     private native void nativeDetachSurface(long handle);
     private native boolean nativeReattachSurface(long handle, android.view.Surface surface);
+    private native boolean nativeHasPresentationSurface(long handle);
     private native void nativeDestroyScanout(long handle);
     private native void nativeScanoutSetBuffer(long handle, long ahbPtr, int x, int y, int w, int h, int fenceFd);
     private native void nativeScanoutSetCursorImage(long handle, java.nio.ByteBuffer pixels, short w, short h, short stride);
@@ -906,12 +907,16 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
 
     public boolean isFrameGenerationSupported() {
         synchronized (lock) {
-            return nativeHandle != 0 && nativeIsFrameGenerationSupported(nativeHandle);
+            return nativeHandle != 0
+                && nativeHasPresentationSurface(nativeHandle)
+                && nativeIsFrameGenerationSupported(nativeHandle);
         }
     }
 
     public boolean hasNativeSurface() {
-        synchronized (lock) { return nativeHandle != 0; }
+        synchronized (lock) {
+            return nativeHandle != 0 && nativeHasPresentationSurface(nativeHandle);
+        }
     }
 
     public long getGeneratedPresentedFrameCount() {
@@ -956,7 +961,9 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             setFrameGenerationRefreshRate(refreshRate);
             setFrameGenerationShaders(cachePath);
             setFrameGenerationEnabled(true);
-            return nativeHandle != 0 && nativeIsFrameGenerationSupported(nativeHandle);
+            return nativeHandle != 0
+                && nativeHasPresentationSurface(nativeHandle)
+                && nativeIsFrameGenerationSupported(nativeHandle);
         }
     }
 

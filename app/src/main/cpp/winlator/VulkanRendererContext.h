@@ -333,6 +333,7 @@ public:
 
     void detachSurface();
     bool reattachSurface(ANativeWindow* newWindow);
+    bool hasPresentationSurface() const;
 
     bool verboseLog = true;
     void setVerboseLog(bool v) { verboseLog = v; }

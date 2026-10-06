@@ -3290,6 +3290,11 @@ void VulkanRendererContext::onSurfaceResized(int w, int h) {
 
 void VulkanRendererContext::detachSurface() {
     surfaceDetached.store(true, std::memory_order_release);
+    nativeGeneratedPresentedFrames_.store(0, std::memory_order_relaxed);
+    presentedFrames.store(0, std::memory_order_relaxed);
+    RLOG(
+        "LSFG_NATIVE_STATE: event=surface_state state=detached generation_ready=0 "
+        "generated_presented_reset=1");
     dirtyCV.notify_all();
 
     { std::unique_lock<std::shared_mutex> frameLock(frameMutex); }
@@ -3331,12 +3336,25 @@ bool VulkanRendererContext::reattachSurface(ANativeWindow* newWindow) {
             __android_log_print(ANDROID_LOG_ERROR, "Winlator_Renderer", "reattachSurface: swapchain recreate failed");
             return false;
         }
+        framegenSupported =
+            lsfg != nullptr && compositeFormatSupported() && nativeSwapchainTransferSupported_;
         surfaceDetached.store(false, std::memory_order_release);
+        RLOG(
+            "LSFG_NATIVE_STATE: event=surface_state state=attached generation_ready=0 "
+            "capability_supported=%d settings_replay=persistent-native-context",
+            framegenSupported.load(std::memory_order_relaxed) ? 1 : 0);
     }
     needsRender.store(true, std::memory_order_release);
     dirtyCV.notify_all();
     __android_log_print(ANDROID_LOG_DEBUG, "Winlator_Renderer", "reattachSurface: OK");
     return true;
+}
+
+bool VulkanRendererContext::hasPresentationSurface() const {
+    std::shared_lock<std::shared_mutex> frameLock(frameMutex);
+    return !surfaceDetached.load(std::memory_order_acquire)
+        && surface != VK_NULL_HANDLE
+        && swapchain != VK_NULL_HANDLE;
 }
 
 void VulkanRendererContext::setTransform(float ox, float oy, float sx, float sy) {

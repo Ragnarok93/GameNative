@@ -426,3 +426,10 @@ Java_com_winlator_renderer_VulkanRenderer_nativeReattachSurface(JNIEnv* env, job
     return (jboolean)ok;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeHasPresentationSurface(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer && renderer->hasPresentationSurface() ? JNI_TRUE : JNI_FALSE;
+}
+

@@ -51,6 +51,7 @@ class LsfgNativeRendererIntegrationContractTest {
             File(root, "app/src/main/cpp/winlator/VulkanRendererLsfg.cpp").readText()
 
         assertTrue(manager.contains("LSFG_RUNTIME_CONFIG: event=%s"))
+        assertTrue(manager.contains("LSFG_NATIVE_STATE: event=runtime_observation"))
         assertTrue(manager.contains("LSFG_ADAPTIVE_FLOW: event=pressure"))
         assertTrue(manager.contains("native_pressure_forwarded=%d"))
         assertTrue(quickMenu.contains("LSFG_RUNTIME_CONFIG: event=commit"))

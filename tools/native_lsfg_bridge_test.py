@@ -42,7 +42,6 @@ public class NativeBridgeTest {
     long nativeHandle = 0;
     volatile boolean nativeSurfaceSnapshot = false;
     volatile boolean frameGenerationSupportedSnapshot = false;
-    volatile boolean nativeOwnsFrameQueuePolicy = false;
     boolean pendingFramegenArmed = false, pendingFramegenEnabled = false;
     String pendingFramegenShaders = "";
     static final int LSFG_FLOW_FIXED = 0, LSFG_FLOW_ADAPTIVE = 1;
@@ -118,6 +117,21 @@ public class NativeBridgeTest {
             "arm:1", "mode:1:4:120:80:1:3:17", "refresh:1:120.0",
             "pressure:1:-1.0:-1", "cache:1:/cache/native", "enabled:1:true")));
         require(bridge.isFrameGenerationSupported());
+
+        // Native and Legacy share the same host Frame Queue setting. A Native
+        // apply must forward the stored enable/target rather than forcing the
+        // live queue off behind a backend-specific ownership state.
+        bridge.calls.clear();
+        bridge.pendingLsfgFrameQueueEnabled = true;
+        bridge.pendingLsfgFrameQueueTarget = 2;
+        require(bridge.applyFrameGenerationSettings(
+            "/cache/native", 4, 120, 80,
+            LSFG_FLOW_ADAPTIVE, LSFG_FLOW_PRESET_AUTO, 18L, 120, () -> true));
+        require(bridge.calls.equals(Arrays.asList(
+            "present:1:2", "queue:1:true:2", "arm:1",
+            "mode:1:4:120:80:1:3:18", "refresh:1:120.0",
+            "cache:1:/cache/native", "enabled:1:true")));
+
         // Shader readiness does not manufacture an accepted generated frame.
         require(bridge.getGeneratedPresentedFrameCount() == 0);
         bridge.generatedAccepted = 7;

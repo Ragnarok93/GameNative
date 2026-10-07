@@ -203,7 +203,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-bannerlator-engine-c4ea747352046023be838e3bf8ac967bcad155e1-r20"
+        "gamenative-bannerlator-engine-d71020875666e64826375f0de401ab633bec7b49-r21"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -715,34 +715,11 @@ object LsfgVkManager {
      * active frame-generation session must never fall back to the lower source cadence.
      */
     fun readFreshOutputFps(rootDir: File?, nowMs: Long = System.currentTimeMillis()): Float? {
-        val nativeContainer = nativeRendererContainer
-        if (nativeContainer != null && isNativeBackend(nativeContainer) && rootDir == nativeContainer.rootDir) {
-            return synchronized(measuredFpsCacheLock) {
-                readNativeOutputFps(nativeContainer)?.takeIf { it > 0f }
-            }
+        val runtimeContainer = nativeRendererContainer ?: return null
+        if (rootDir != runtimeContainer.rootDir) return null
+        return synchronized(measuredFpsCacheLock) {
+            readNativeOutputFps(runtimeContainer)?.takeIf { it.isFinite() && it >= 0f }
         }
-        val statsFile = rootDir?.let { File(it, STATS_RELATIVE_PATH) } ?: return null
-        if (!statsFile.isFile || nowMs - statsFile.lastModified() !in 0L..STATS_FRESHNESS_MS) {
-            return null
-        }
-
-        return runCatching {
-            val values = statsFile.useLines { lines ->
-                lines.mapNotNull { line ->
-                    val separator = line.indexOf('=')
-                    if (separator <= 0) null
-                    else line.substring(0, separator) to line.substring(separator + 1)
-                }.toMap()
-            }
-            val generating = values["state"] == "generating" &&
-                values["active"] == "1" &&
-                values["generated_presented"] == "1"
-            if (!generating) return@runCatching null
-
-            (values["output_fps"] ?: values["fps"])
-                ?.toFloatOrNull()
-                ?.takeIf { it.isFinite() && it > 0f }
-        }.getOrNull()
     }
 
     fun readRuntimeState(container: Container): RuntimeState {
@@ -1061,14 +1038,13 @@ object LsfgVkManager {
     private fun readNativeOutputFps(container: Container): Float? {
         val renderer = nativeRendererRef?.get() ?: return null
         if (nativeRendererContainer !== container ||
-            !renderer.isFrameGenerationSupported()
+            (isNativeBackend(container) && !renderer.isFrameGenerationSupported())
         ) return null
         val confirmationAvailable = renderer.isDisplayConfirmationAvailable()
-        val count = if (confirmationAvailable) {
-            renderer.getDisplayConfirmedFrameCount()
-        } else {
-            renderer.getPresentedFrameCount()
-        }
+        // Missing physical evidence is unknown; WSI success cannot satisfy an
+        // output target. A measured zero remains a valid delivery-deficit sample.
+        if (!confirmationAvailable) return null
+        val count = renderer.getDisplayConfirmedFrameCount()
         val now = System.nanoTime()
         if (nativeFpsRenderer?.get() !== renderer ||
             count < nativeFpsSampleCount || nativeFpsSampleNs == 0L
@@ -1333,6 +1309,10 @@ object LsfgVkManager {
                 presentMode = snapshot.presentMode,
                 frameQueueEnabled = frameGenActive && snapshot.frameQueueEnabled,
                 frameQueueTarget = snapshot.frameQueueTarget,
+            ).replace(
+                "[[game]]",
+                "[[game]]\ntransaction_id = ${snapshot.backendGeneration}\n" +
+                    "configuration_revision = ${snapshot.revision}",
             )
             val ok = writeConfigAtomic(configFile(container), configText)
             Timber.i(
@@ -1400,13 +1380,17 @@ object LsfgVkManager {
         nativeRendererRef = WeakReference(renderer)
         nativeRendererContext = context.applicationContext
         nativeRendererContainer = container
+        val previousSnapshot = latestNativeSnapshot
+        val effectivePolicyUnchanged = snapshot.backend == BACKEND_NATIVE && snapshot.enabled &&
+            nativeApplyComplete && !nativeApplyFailed && renderer.isFrameGenerationSupported() &&
+            previousSnapshot?.copy(revision = snapshot.revision, presentMode = snapshot.presentMode) == snapshot
         latestNativeSnapshot = snapshot
         val generation = nativeApplyGeneration.incrementAndGet()
         nativeApplyFailed = false
         nativeApplyComplete = false
         nativeFailureReason = null
         logNativeSnapshot(snapshot, "requested")
-        if (snapshot.backend == BACKEND_NATIVE && snapshot.enabled) {
+        if (snapshot.backend == BACKEND_NATIVE && snapshot.enabled && !effectivePolicyUnchanged) {
             nativeActivationStartNs = System.nanoTime()
             nativeLastWsiProgressNs = 0L
             nativeGenerationStallWindows = 0
@@ -1419,6 +1403,27 @@ object LsfgVkManager {
             try {
                 if (!snapshotIsCurrent(snapshot, generation)) {
                     discardStaleSnapshot(snapshot, "before-apply")
+                    return@execute
+                }
+                if (effectivePolicyUnchanged) {
+                    // FIFO is a stored Legacy preference while Native owns Mailbox.
+                    // Advance attribution only; preserve activation and health evidence.
+                    renderer.setFrameGenerationMode(
+                        snapshot.multiplier, snapshot.targetFps,
+                        (snapshot.requestedFlowScale * 100f).toInt(),
+                        if (snapshot.flowMode == FLOW_MODE_ADAPTIVE) VulkanRenderer.LSFG_FLOW_ADAPTIVE
+                        else VulkanRenderer.LSFG_FLOW_FIXED,
+                        when (snapshot.flowPreset) {
+                            ADAPTIVE_FLOW_PRESET_BALANCED -> VulkanRenderer.LSFG_FLOW_PRESET_BALANCED
+                            ADAPTIVE_FLOW_PRESET_LOW -> VulkanRenderer.LSFG_FLOW_PRESET_LOW
+                            ADAPTIVE_FLOW_PRESET_AUTO -> VulkanRenderer.LSFG_FLOW_PRESET_AUTO
+                            else -> VulkanRenderer.LSFG_FLOW_PRESET_QUALITY
+                        }, snapshot.revision,
+                    )
+                    nativeAppliedRevision = snapshot.revision
+                    nativeApplyComplete = true
+                    logNativeSnapshot(snapshot, "effective-policy-unchanged")
+                    onApplied?.invoke("runtime-reused")
                     return@execute
                 }
                 val requested = snapshot.backend == BACKEND_NATIVE

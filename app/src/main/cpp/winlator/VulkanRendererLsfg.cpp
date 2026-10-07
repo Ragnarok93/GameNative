@@ -719,8 +719,7 @@ uint64_t VulkanRendererContext::getPresentedFrameCount() const {
 }
 
 uint64_t VulkanRendererContext::getDisplayConfirmedFrameCount() const {
-    return nativeSourceDisplayConfirmedEpoch_.load(std::memory_order_relaxed)
-        + nativeGeneratedDisplayConfirmedEpoch_.load(std::memory_order_relaxed);
+    return hostUniqueDisplayConfirmedEpoch_.load(std::memory_order_relaxed);
 }
 
 uint64_t VulkanRendererContext::getGeneratedDisplayConfirmedFrameCount() const {

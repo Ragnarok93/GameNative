@@ -258,7 +258,7 @@ void vkr_lsfg_set_pressure(VkrLsfg* lsfg, float gpu_usage_percent, int thermal_s
         && gpu_usage_percent >= 0.0f && gpu_usage_percent <= 100.0f;
     pressure.thermal_valid = thermal_status >= 0 && thermal_status <= 6;
     pressure.source_valid = std::isfinite(source_fps) && source_fps > 0.0f;
-    pressure.output_valid = std::isfinite(output_fps) && output_fps > 0.0f;
+    pressure.output_valid = std::isfinite(output_fps) && output_fps >= 0.0f;
     pressure.frame_time_valid =
         std::isfinite(frame_time_p95_ms) && frame_time_p95_ms > 0.0f;
     pressure.slow_ratio_valid =
@@ -548,7 +548,8 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                 || lsfg->synthetic_drop_pressure
                 || (global_pressure_valid
                     && lsfg->pressure.gpu_usage_percent >= 96.0f
-                    && output_deficit));
+                    && output_deficit))
+            && !lsfg->presentation_pressure.wsi_recovery_active;
         if (stats.target_rate > 0.0f && severe_pressure) {
             lsfg->density_pressure_seconds += elapsed_seconds;
             lsfg->density_recovery_seconds = 0.0;

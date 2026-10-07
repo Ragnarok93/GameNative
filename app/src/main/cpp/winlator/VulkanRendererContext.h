@@ -198,6 +198,8 @@ enum class HostDisplayConfirmationBackend : uint8_t {
 struct LsfgFrameProvenance {
     bool valid = false;
     bool nativeImplementation = false;
+    uint64_t transactionId = 0;
+    uint64_t configurationRevision = 0;
     uint64_t runtimeSessionId = 0;
     uint64_t contextEpoch = 0;
     uint64_t deliveryId = 0;
@@ -304,6 +306,7 @@ struct WindowPushConstants {
     float gamma;
     float outW;   // on-screen quad width  in pixels (for FSR/EASU upscale ratio)
     float outH;   // on-screen quad height in pixels
+    uint32_t surfaceTransform;
 };
 
 class VulkanRendererContext {
@@ -474,6 +477,7 @@ private:
     uint32_t hostGooglePresentId_ = 1;
     uint64_t hostWsiAccepted_ = 0;
     uint64_t hostDisplayConfirmed_ = 0;
+    std::atomic<uint64_t> hostUniqueDisplayConfirmedEpoch_{0};
     uint64_t hostDisplayUnknown_ = 0;
     uint64_t repeatedContentPresent_ = 0;
     uint64_t uniquePhysicalPresent_ = 0;
@@ -504,14 +508,7 @@ private:
     uint64_t lsfgBackendTransitionExpectedGeneration_ = 0;
     uint64_t hostPhysicalCadenceEpoch_ = 0;
     uint64_t legacyGeneratedSlotContextEpoch_ = 0;
-    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
-        legacyGeneratedSlotLastRawDesiredNs_{};
-    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
-        legacyGeneratedSlotPeriodNs_{};
-    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
-        legacyGeneratedSlotNextNs_{};
-    std::array<uint64_t, VKR_LSFG_MAX_GENERATIONS>
-        legacyGeneratedSlotIndex_{};
+    uint64_t legacyGeneratedSlotCounter_ = 0;
     uint64_t hostConfirmationPendingHighWater_ = 0;
     uint64_t hostConfirmationExpiredTotal_ = 0;
     uint64_t hostConfirmationOverflowTotal_ = 0;

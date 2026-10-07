@@ -15,6 +15,7 @@ runs:
       run: |
         set -euo pipefail
 
+        python3 tools/lsfg_presentation_regression_test.py
         python3 tools/host_display_timing_test.py
         python3 tools/native_lsfg_pacer_test.py
         python3 tools/native_lsfg_bridge_test.py

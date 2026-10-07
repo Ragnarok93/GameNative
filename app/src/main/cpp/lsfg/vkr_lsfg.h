@@ -25,6 +25,7 @@ typedef struct VkrLsfg VkrLsfg;
 typedef struct VkrLsfgPresentationPressure {
     bool confirmation_available;
     bool pressure_active;
+    bool wsi_recovery_active;
     bool source_delivery_healthy;
     float generated_delivery_efficiency;
     float source_delivery_efficiency;

@@ -212,7 +212,8 @@ class VulkanRendererDisplayConfirmationContractTest {
 
         assertTrue(header.contains("outputSlotIndex"))
         assertTrue(header.contains("outputSlotIntendedPresentTimeNs"))
-        assertTrue(header.contains("legacyGeneratedSlotNextNs_"))
+        assertTrue(header.contains("legacyGeneratedSlotCounter_"))
+        assertFalse(header.contains("legacyGeneratedSlotNextNs_"))
         assertTrue(implementation.contains("assignLegacyGeneratedOutputSlot"))
         assertTrue(implementation.contains("missed-usable-output-slot"))
         assertTrue(implementation.contains("legacy-output-slot-missed-no-phase-repair"))

@@ -31,7 +31,7 @@ const char gamenative_native_lsfg_build_marker[] = "gamenative-native-lsfg-v1.3-
 namespace {
 constexpr char LSFG_PROVENANCE_SOCKET[] = "gamenative-lsfg-provenance-v1";
 constexpr uint32_t kLsfgFrameProvenanceMagic = 0x4c534650U; // "LSFP"
-constexpr uint16_t kLsfgFrameProvenanceVersion = 2;
+constexpr uint16_t kLsfgFrameProvenanceVersion = 3;
 constexpr std::size_t kMaxPendingLsfgProvenance = 512;
 constexpr std::size_t kMaxPendingHostConfirmations = 256;
 constexpr uint64_t kMaxHostConfirmationAgeNs = 1000000000ULL;
@@ -40,7 +40,7 @@ constexpr int kLsfgProvenanceReceiveBufferBytes = 1024 * 1024;
 constexpr char LSFG_DISPLAY_FEEDBACK_SOCKET[] =
     "gamenative-lsfg-display-feedback-v1";
 constexpr uint32_t kHostDisplayFeedbackMagic = 0x4c534644U; // "LSFD"
-constexpr uint16_t kHostDisplayFeedbackVersion = 1;
+constexpr uint16_t kHostDisplayFeedbackVersion = 2;
 
 std::mutex gLsfgProvenanceSocketOwnerMutex;
 int gLsfgProvenanceSocketFd = -1;
@@ -61,8 +61,10 @@ struct LsfgFrameProvenancePacket {
     uint64_t sourceIndex;
     uint64_t batchId;
     uint64_t desiredPresentTimeNs;
+    uint64_t transactionId;
+    uint64_t configurationRevision;
 };
-static_assert(sizeof(LsfgFrameProvenancePacket) == 64);
+static_assert(sizeof(LsfgFrameProvenancePacket) == 80);
 
 const char* hostDisplayBackendName(HostDisplayConfirmationBackend backend) {
     switch (backend) {
@@ -116,6 +118,7 @@ const char* deliveryKindName(
 enum class HostDisplayFeedbackStatus : uint8_t {
     Unknown = 0,
     Confirmed = 1,
+    Unavailable = 2,
 };
 
 struct HostDisplayFeedbackPacket {
@@ -130,8 +133,10 @@ struct HostDisplayFeedbackPacket {
     uint64_t provenanceDesiredPresentTimeNs{0};
     uint64_t submittedDesiredPresentTimeNs{0};
     uint64_t swapchainGeneration{0};
+    uint64_t transactionId{0};
+    uint64_t configurationRevision{0};
 };
-static_assert(sizeof(HostDisplayFeedbackPacket) == 64);
+static_assert(sizeof(HostDisplayFeedbackPacket) == 80);
 
 uint64_t rollingPercentileNs(const std::deque<uint64_t>& samples, unsigned percentile);
 void trimEvidence(std::deque<uint64_t>& events, uint64_t cutoffNs);
@@ -193,8 +198,11 @@ void publishLsfgHostDisplayFeedback(
     HostDisplayFeedbackPacket packet{};
     packet.status = static_cast<uint8_t>(
         confirmed ? HostDisplayFeedbackStatus::Confirmed
-                  : HostDisplayFeedbackStatus::Unknown);
+            : (confirmation.backend == HostDisplayConfirmationBackend::WsiAccepted
+                ? HostDisplayFeedbackStatus::Unavailable : HostDisplayFeedbackStatus::Unknown));
     packet.kind = provenance.kind;
+    packet.transactionId = provenance.transactionId;
+    packet.configurationRevision = provenance.configurationRevision;
     packet.runtimeSessionId = provenance.runtimeSessionId;
     packet.contextEpoch = provenance.contextEpoch;
     packet.deliveryId = provenance.deliveryId;
@@ -803,14 +811,10 @@ void VulkanRendererContext::createSwapchain() {
         }
     }
 
-    // GameNative's compositor already renders in the Android surface's logical
-    // landscape orientation. Applying currentTransform (ROTATE_90 on phones)
-    // rotates that content a second time. Prefer IDENTITY whenever supported;
-    // only inherit currentTransform when the surface cannot accept identity.
-    VkSurfaceTransformFlagBitsKHR pre =
-        (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
-            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
-            : caps.currentTransform;
+    // Match Android's native surface transform; the vertex stage applies its
+    // inverse to both the scene and cursor, including Native composite inputs.
+    // Selecting IDENTITY on a rotated surface leaves WSI permanently suboptimal.
+    VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform;
     if ((caps.supportedTransforms & pre) == 0) {
         const VkSurfaceTransformFlagsKHR supported = caps.supportedTransforms;
         pre = static_cast<VkSurfaceTransformFlagBitsKHR>(
@@ -1292,10 +1296,7 @@ uint32_t VulkanRendererContext::hostDeliveryQueueCapacity() const {
 void VulkanRendererContext::resetLegacyGeneratedOutputSlotClock(
         const char* reason) {
     legacyGeneratedSlotContextEpoch_ = 0;
-    legacyGeneratedSlotLastRawDesiredNs_.fill(0);
-    legacyGeneratedSlotPeriodNs_.fill(0);
-    legacyGeneratedSlotNextNs_.fill(0);
-    legacyGeneratedSlotIndex_.fill(0);
+    legacyGeneratedSlotCounter_ = 0;
     __android_log_print(
         ANDROID_LOG_INFO, "LSFG_HOST_DISPLAY",
         "event=legacy-output-slot-reset swapchain_generation=%" PRIu64
@@ -1339,75 +1340,15 @@ bool VulkanRendererContext::assignLegacyGeneratedOutputSlot(
     if (provenance.contextEpoch != 0)
         legacyGeneratedSlotContextEpoch_ = provenance.contextEpoch;
 
-    const std::size_t lane =
-        static_cast<std::size_t>(provenance.interpolationIndex - 1);
+    // The layer's source timeline already assigns every interpolation slot a
+    // fractional position in ONE source batch. Inferring a separate clock per
+    // lane lets sparse slot 3 accumulate seconds of drift after density changes.
+    // Preserve that temporal intent: late work is retired, never moved to a
+    // newer source interval or rebased by its arrival time.
     const uint64_t rawDesiredNs = provenance.desiredPresentTimeNs;
-    uint64_t& lastRawNs = legacyGeneratedSlotLastRawDesiredNs_[lane];
-    uint64_t& periodNs = legacyGeneratedSlotPeriodNs_[lane];
-    uint64_t& nextNs = legacyGeneratedSlotNextNs_[lane];
-    uint64_t& slotCounter = legacyGeneratedSlotIndex_[lane];
-
-    // At high refresh rates the Legacy layer can report the generated frame's
-    // desired time on the immediately following 120-Hz tick. That is not a
-    // stable generated-output cadence: for 2x at 120 Hz the host owns one
-    // generated output slot every two refresh cycles (~16.67 ms). Establish a
-    // floor once, then let the slot clock advance independently of arrival
-    // jitter. The clock is reset on swapchain/context cadence changes.
-    const uint64_t highRefreshGeneratedSlotFloorNs =
-        hostRefreshPeriodNs_ != 0
-            && hostRefreshPeriodNs_ <= 10000000ULL
-            && hostRefreshPeriodNs_ <= UINT64_MAX / 2ULL
-        ? hostRefreshPeriodNs_ * 2ULL : 0ULL;
-    if (periodNs == 0 && highRefreshGeneratedSlotFloorNs != 0)
-        periodNs = highRefreshGeneratedSlotFloorNs;
-    uint64_t stepCount = 1;
-    if (lastRawNs != 0 && rawDesiredNs > lastRawNs) {
-        const uint64_t rawDeltaNs = rawDesiredNs - lastRawNs;
-        uint64_t candidatePeriodNs = rawDeltaNs;
-        if (hostRefreshPeriodNs_ != 0) {
-            const uint64_t cycles = std::max<uint64_t>(
-                1, static_cast<uint64_t>(std::llround(
-                    static_cast<double>(rawDeltaNs)
-                        / static_cast<double>(hostRefreshPeriodNs_))));
-            candidatePeriodNs = cycles * hostRefreshPeriodNs_;
-        }
-        if (highRefreshGeneratedSlotFloorNs != 0)
-            candidatePeriodNs = std::max(
-                candidatePeriodNs, highRefreshGeneratedSlotFloorNs);
-        if (candidatePeriodNs >= 4000000ULL
-                && candidatePeriodNs <= 250000000ULL) {
-            if (periodNs == 0) {
-                periodNs = candidatePeriodNs;
-            } else {
-                // Arrival timestamps describe when a frame became available,
-                // not a new presentation phase. Keep the established clock;
-                // only advance by whole slots when the raw source cadence
-                // clearly skipped one or more slots. A late frame therefore
-                // cannot rebase the next slot onto an 8.33-ms refresh tick.
-                stepCount = std::max<uint64_t>(
-                    1, static_cast<uint64_t>(std::llround(
-                        static_cast<double>(rawDeltaNs)
-                            / static_cast<double>(periodNs))));
-            }
-        }
-    }
-
-    uint64_t intendedNs = rawDesiredNs;
-    if (periodNs != 0 && nextNs != 0) {
-        intendedNs = nextNs;
-        if (stepCount > 1 && periodNs <= UINT64_MAX / (stepCount - 1)) {
-            const uint64_t skipNs = periodNs * (stepCount - 1);
-            if (intendedNs <= UINT64_MAX - skipNs)
-                intendedNs += skipNs;
-        }
-    }
-    if (periodNs != 0 && intendedNs <= UINT64_MAX - periodNs)
-        nextNs = intendedNs + periodNs;
-    else
-        nextNs = 0;
-
-    lastRawNs = rawDesiredNs;
-    slotCounter += stepCount;
+    const uint64_t intendedNs = rawDesiredNs;
+    const uint64_t periodNs = 0; // batch timestamps supply phase; no inferred lane period
+    const uint64_t slotCounter = ++legacyGeneratedSlotCounter_;
     provenance.outputSlotIndex = slotCounter;
     provenance.outputSlotIntendedPresentTimeNs = intendedNs;
     provenance.desiredPresentTimeNs = intendedNs;
@@ -2062,6 +2003,17 @@ CompletedHostPresent VulkanRendererContext::executeHostPresent(
     googlePresentTime.presentID = present.googlePresentId;
     googlePresentTime.desiredPresentTime =
         present.desiredDecision.submittedDesiredPresentTimeNs;
+    // Queueing can expire an otherwise valid scheduled slot. Submit acquired
+    // images to retire WSI ownership, without imposing a stale desired time or
+    // moving their original temporal intent to a later source interval.
+    const uint64_t dispatchNowNs = monotonicTimeNs();
+    if (googlePresentTime.desiredPresentTime != 0
+            && googlePresentTime.desiredPresentTime <= dispatchNowNs) {
+        googlePresentTime.desiredPresentTime = 0;
+        present.desiredDecision.submittedDesiredPresentTimeNs = 0;
+        present.desiredDecision.temporalBacklog = true;
+        present.desiredDecision.fallbackReason = "present-worker-slot-expired";
+    }
     VkPresentTimesInfoGOOGLE googlePresentTimes{};
     googlePresentTimes.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE;
     googlePresentTimes.swapchainCount = 1;
@@ -3168,6 +3120,7 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
         pc.ndcY0=(oy+(float)d.y*sy)/ch*2.f-1.f;
         pc.ndcX1=(ox+(float)(d.x+d.w)*sx)/cw*2.f-1.f;
         pc.ndcY1=(oy+(float)(d.y+d.h)*sy)/ch*2.f-1.f;
+        pc.surfaceTransform = toXr ? 1U : static_cast<uint32_t>(swapchainPreTransform_);
         pc.useTexAlpha = 0;
         pc.effectId = activeEffectId;
         pc.sharpness = activeSharpness;
@@ -3190,6 +3143,7 @@ void VulkanRendererContext::recordCmdBuf(VkCommandBuffer cb, uint32_t imgIdx,
         WindowPushConstants cpc{};
         cpc.ndcX0=(ox+cx*sx)/cw*2.f-1.f; cpc.ndcY0=(oy+cy*sy)/ch*2.f-1.f;
         cpc.ndcX1=(ox+(cx+curW)*sx)/cw*2.f-1.f; cpc.ndcY1=(oy+(cy+curH)*sy)/ch*2.f-1.f;
+        cpc.surfaceTransform = toXr ? 1U : static_cast<uint32_t>(swapchainPreTransform_);
         cpc.useTexAlpha = 1;
         cpc.effectId = 0;
         cpc.sharpness = 0.f;
@@ -3601,19 +3555,23 @@ ok=true;}catch(...){}
                 nativeRebuildReason, swapchainExt.width, swapchainExt.height, (int)swapchainFmt);
         } else {
             if (rebuild) {
-                ++nativeLsfgContextEpoch_;
+                const bool flowOnly = !compositeRebuild
+                    && std::strcmp(nativeRebuildReason, "flow-scale-change") == 0;
+                if (!flowOnly) ++nativeLsfgContextEpoch_;
                 const uint64_t prepareNs = static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - nativePrepareStart).count());
                 VkrLsfgFlowState flow{};
                 vkr_lsfg_get_flow_state(lsfg, &flow);
                 RLOG(
-                    "LSFG_NATIVE_CONTEXT: event=context_rebuild context_epoch=%llu action=%s "
+                    "LSFG_NATIVE_CONTEXT: event=%s context_epoch=%llu action=%s "
                     "rebuild_reason=%s init_ms=%.3f width=%u height=%u format=%d "
                     "flow_mode=%s requested_scale=%.2f active_scale=%.2f "
                     "effective_scale=%.2f transition=%d warm=%d",
+                    flowOnly ? "flow-resource-update" : "context_rebuild",
                     (unsigned long long)nativeLsfgContextEpoch_,
-                    nativeLsfgContextEpoch_ == 1 ? "create" : "rebuild",
+                    flowOnly ? "reuse-pipelines-and-source" :
+                        (nativeLsfgContextEpoch_ == 1 ? "create" : "rebuild"),
                     nativeRebuildReason,
                     (double)prepareNs / 1000000.0,
                     swapchainExt.width,
@@ -3644,7 +3602,11 @@ ok=true;}catch(...){}
                     framegenGpuUsagePercent_.load(std::memory_order_relaxed),
                     framegenThermalStatus_.load(std::memory_order_relaxed),
                     framegenSourceFps_.load(std::memory_order_relaxed),
-                    framegenOutputFps_.load(std::memory_order_relaxed),
+                    (hostGoogleDisplayTimingEnabled || hostPresentWaitEnabled)
+                        && nativePresentationEvidenceStartNs_ != 0
+                        && sourceArrivalNs - nativePresentationEvidenceStartNs_ >= 500000000ULL
+                            ? static_cast<float>(nativeSourceConfirmedFps_ + nativeGeneratedConfirmedFps_)
+                            : -1.0f,
                     framegenFrameTimeP95Ms_.load(std::memory_order_relaxed),
                     framegenSlowFrameRatio_.load(std::memory_order_relaxed));
                 vkr_lsfg_set_presentation_pressure(
@@ -3903,7 +3865,9 @@ ok=true;}catch(...){}
         nativeSource.valid = true;
         nativeSource.nativeImplementation = true;
         nativeSource.runtimeSessionId = nativeRuntimeSessionId_;
-        nativeSource.contextEpoch = hostSwapchainGeneration_;
+        nativeSource.contextEpoch = nativeLsfgContextEpoch_;
+        nativeSource.transactionId = lsfgBackendTransitionId_;
+        nativeSource.configurationRevision = framegenConfigRevision;
         nativeSource.deliveryId = (1ULL << 63) | ++nativeDeliveryId_;
         nativeSource.sourceIndex = nativeSourceFrame;
         nativeSource.swapchainImageIndex = imgIdx;
@@ -4077,7 +4041,9 @@ ok=true;}catch(...){}
             generatedProvenance.valid = true;
             generatedProvenance.nativeImplementation = true;
             generatedProvenance.runtimeSessionId = nativeRuntimeSessionId_;
-            generatedProvenance.contextEpoch = hostSwapchainGeneration_;
+            generatedProvenance.contextEpoch = nativeLsfgContextEpoch_;
+            generatedProvenance.transactionId = lsfgBackendTransitionId_;
+            generatedProvenance.configurationRevision = framegenConfigRevision;
             generatedProvenance.deliveryId = (1ULL << 63) | ++nativeDeliveryId_;
             generatedProvenance.sourceIndex = nativeSourceFrame;
             generatedProvenance.batchId = submissionSerial;
@@ -4712,6 +4678,8 @@ void VulkanRendererContext::drainLsfgProvenance() {
         LsfgFrameProvenance provenance{};
         provenance.valid = true;
         provenance.runtimeSessionId = packet.runtimeSessionId;
+        provenance.transactionId = packet.transactionId;
+        provenance.configurationRevision = packet.configurationRevision;
         provenance.contextEpoch = packet.contextEpoch;
         provenance.deliveryId = packet.deliveryId;
         provenance.sourceIndex = packet.sourceIndex;
@@ -5141,6 +5109,10 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
         confirmationAvailable;
     nativePresentationPressure_.pressure_active =
         nativePresentationPressureActive_;
+    const uint64_t presentP95Ns = rollingPercentileNs(hostPresentLatencySamplesNs_, 95);
+    nativePresentationPressure_.wsi_recovery_active =
+        hostSuboptimalConsecutive_ >= 8
+        || (hostRefreshPeriodNs_ != 0 && presentP95Ns >= hostRefreshPeriodNs_ * 2ULL);
     nativePresentationPressure_.source_delivery_healthy =
         sourceResolved >= 4 && sourceEfficiency >= 0.85
         && sourceConfirmedFps > 0.0;
@@ -5338,12 +5310,10 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
         && std::find(modes.begin(), modes.end(), activePresentMode)
             == modes.end();
 
-    // currentTransform differing from an explicitly selected supported
-    // preTransform is diagnostic by itself; only an unsupported transform is
-    // a recreate trigger. This keeps SUBOPTIMAL investigation separate from
-    // cadence and avoids speculative rebuild loops.
+    // Rebuild only for a measured surface contract change. createSwapchain()
+    // adopts currentTransform, so the mismatch is resolved by one recreation.
     const bool incompatible =
-        extentChanged || transformInvalid
+        extentChanged || transformInvalid || transformChanged
         || alphaInvalid || usageInvalid || imageCountInvalid
         || formatInvalid || modeInvalid;
     const double suboptimalRate = hostSuboptimalWindow_.empty() ? 0.0
@@ -5417,6 +5387,7 @@ void VulkanRendererContext::observeHostPresentResult(VkResult result) {
 void VulkanRendererContext::resetHostPhysicalCadenceTelemetry(
         const char* reason) {
     ++hostPhysicalCadenceEpoch_;
+    hostUniqueDisplayConfirmedEpoch_.store(0, std::memory_order_release);
     resetLegacyGeneratedOutputSlotClock(reason);
     uniquePhysicalPresent_ = 0;
     sourceUniquePhysicalPresent_ = 0;
@@ -5571,6 +5542,17 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         && confirmation.presentMarginRawNs <= kMaxSanePresentMarginNs;
 
     for (const auto& provenance : confirmation.frameProvenance) {
+        __android_log_print(
+            ANDROID_LOG_DEBUG, "LSFG_HOST_DISPLAY",
+            "event=delivery-identity transaction_id=%" PRIu64
+            " configuration_revision=%" PRIu64 " runtime_session_id=%" PRIu64
+            " context_epoch=%" PRIu64 " swapchain_generation=%" PRIu64
+            " host_present_id=%" PRIu64 " delivery_id=%" PRIu64
+            " confirmed=%d unknown=%d",
+            provenance.transactionId, provenance.configurationRevision,
+            provenance.runtimeSessionId, provenance.contextEpoch,
+            confirmation.swapchainGeneration, confirmation.hostPresentId,
+            provenance.deliveryId, confirmed ? 1 : 0, unknown ? 1 : 0);
         const bool physicalDeliveryUnknown =
             unknown && provenance.uniqueDelivery
             && confirmation.backend != HostDisplayConfirmationBackend::WsiAccepted;
@@ -5590,6 +5572,7 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             // VK_KHR_present_wait proves physical delivery but does not expose
             // actualPresentTime; only cadence-error math requires that value.
             ++uniquePhysicalPresent_;
+            hostUniqueDisplayConfirmedEpoch_.fetch_add(1, std::memory_order_relaxed);
             if (provenance.kind == 1) {
                 ++generatedUniquePhysicalPresent_;
                 if (provenance.nativeImplementation) {

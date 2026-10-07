@@ -29,9 +29,10 @@ class LsfgNativeRendererIntegrationContractTest {
 
         assertTrue(
             "GameNative compositor must not double-apply Android ROTATE_90",
-            context.contains(
-                "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",
-            ),
+            context.contains("VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform") &&
+                File(root, "app/src/main/cpp/winlator/window.vert").readText()
+                    .contains("layout(offset = 60) uint surfaceTransform"),
+
         )
         assertTrue(context.contains("const bool transformChanged ="))
     }

@@ -1,7 +1,7 @@
 # Host presentation and physical-feedback correction
 
 Based on GameNative `15b9706e24df56107fbf47133ec6bf31088414bc`.
-Pinned layer: `d71020875666e64826375f0de401ab633bec7b49`.
+Pinned layer: `926ebc1314935030d4c58278458bd26291124c4b`.
 
 ## Findings and implementation
 
@@ -15,13 +15,16 @@ Pinned layer: `d71020875666e64826375f0de401ab633bec7b49`.
 - Native Flow graph creation repeatedly compiled identical pipelines.
   Cache immutable shader/layout pipelines for the lifetime of LsfgShaders.
   Flow updates retain source images and pacer credit, retire old GPU users, and
-  replace scale-dependent resources. Flow history warms; context epoch stays fixed.
+  release retired scale-dependent allocations before creating replacements. Flow history warms; context epoch stays fixed.
   This avoids recompilation, but still allocates a new flow resource graph;
   device timing must establish the remaining update cost.
 - WSI acceptance and logical output cannot satisfy adaptive output targets.
   Native control samples the host confirmation window; Legacy consumes matched
   host feedback. Available confirmation with zero delivery is a measured deficit.
-  Unavailable confirmation remains unknown.
+  Unavailable or stale confirmation remains unknown; the feedback lease expires
+  after 250 ms without a matching host packet. Suspend recovery runs independently
+  of confirmation availability. Real Native policy changes reset the evidence
+  window and reject retired confirmations; preference-only no-ops retain it.
 - Shared WSI failure (persistent suboptimal or present p95 exceeding two refresh
   periods) inhibits density backoff driven by presentation loss. Existing Native
   admission still limits work; the compute algorithm and admission equations are

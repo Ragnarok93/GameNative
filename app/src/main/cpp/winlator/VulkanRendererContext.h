@@ -772,6 +772,7 @@ private:
     std::atomic<float> framegenFrameTimeP95Ms_{0.0f};
     std::atomic<float> framegenSlowFrameRatio_{0.0f};
     uint64_t nativeLsfgContextEpoch_ = 0;
+    uint64_t nativeFeedbackMinConfigRevision_ = 0;
     uint64_t nativeLastContextReuseRevision_ = UINT64_MAX;
     std::atomic<uint64_t> framegenSourceFrames{0};
     std::atomic<uint64_t> framegenRealFrames{0};
@@ -966,6 +967,8 @@ private:
     NativePresentationSchedule buildNativePresentationSchedule(
         uint32_t generations, uint64_t sourceIndex);
     void resetNativePresentationTimeline(const char* reason);
+    void resetNativePresentationEvidence();
+    bool nativeFeedbackIdentityCurrent(const LsfgFrameProvenance& provenance) const;
     uint32_t nativeTemporalGenerationCapacity() const;
     void recordNativePresentationEvidence(
         bool generated, bool confirmed, bool unobserved, bool wsiAccepted,

@@ -382,11 +382,15 @@ bool vkr_lsfg_prepare(VkrLsfg* lsfg, uint32_t width, uint32_t height, VkFormat f
     // Caller's fences have retired all users of the old resource graph.
     // Keep the full-resolution source pair and all compiled pipelines while
     // replacing only scale-dependent images, uniforms and descriptor sets.
-    auto previous_chain = std::move(lsfg->chain);
+    lsfg::LsfgImagePair retained_frames;
+    if (flow_only)
+        retained_frames = std::move(lsfg->chain->SourceFrames());
+    // Release retired scale-dependent allocations before allocating the new
+    // graph, so a scale update does not require two graphs' peak memory.
+    lsfg->chain.reset();
     lsfg->chain = std::make_unique<lsfg::LsfgChain>(
         lsfg->device, *lsfg->shaders, VkExtent2D{width, height}, format, scale,
-        flow_only ? &previous_chain->SourceFrames() : nullptr);
-    previous_chain.reset();
+        flow_only ? &retained_frames : nullptr);
     if (!lsfg->chain->Valid()) {
         LSFG_LOGW("chain build failed at %ux%u; frame generation unavailable", width, height);
         lsfg->chain.reset();

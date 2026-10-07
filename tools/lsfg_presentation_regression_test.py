@@ -83,6 +83,36 @@ int main() {
 }
 """)
 
+
+identity = function(host, "bool VulkanRendererContext::nativeFeedbackIdentityCurrent(")
+run("Native feedback rejects retired policies but preserves effective preference no-ops", r"""
+#include <cassert>
+#include <cstdint>
+struct LsfgFrameProvenance {
+    uint64_t runtimeSessionId=1, contextEpoch=2, transactionId=3, configurationRevision=10;
+};
+struct VulkanRendererContext {
+    uint64_t nativeRuntimeSessionId_=1, nativeLsfgContextEpoch_=2, lsfgBackendTransitionId_=3;
+    uint64_t nativeFeedbackMinConfigRevision_=10, framegenConfigRevision=10;
+    bool nativeFeedbackIdentityCurrent(const LsfgFrameProvenance&) const;
+};
+""" + identity + r"""
+int main() {
+    VulkanRendererContext c;
+    LsfgFrameProvenance p;
+    assert(c.nativeFeedbackIdentityCurrent(p));
+    c.framegenConfigRevision=11; // FIFO preference changed; effective policy unchanged.
+    assert(c.nativeFeedbackIdentityCurrent(p));
+    c.framegenConfigRevision=12; c.nativeFeedbackMinConfigRevision_=12; // New target/Flow policy.
+    assert(!c.nativeFeedbackIdentityCurrent(p));
+    p.configurationRevision=12; assert(c.nativeFeedbackIdentityCurrent(p));
+    p.configurationRevision=13; assert(!c.nativeFeedbackIdentityCurrent(p));
+    p.configurationRevision=12; p.transactionId=2; assert(!c.nativeFeedbackIdentityCurrent(p));
+    p.transactionId=3; p.contextEpoch=1; assert(!c.nativeFeedbackIdentityCurrent(p));
+    p.contextEpoch=2; p.runtimeSessionId=4; assert(!c.nativeFeedbackIdentityCurrent(p));
+}
+""")
+
 layer = (LAYER / "src/context.cpp").read_text()
 packet_start = layer.index("enum class HostDisplayFeedbackStatus")
 packet_end = layer.index("int hostDisplayFeedbackSocketFd", packet_start)
@@ -95,6 +125,7 @@ run("physical feedback filters retired revisions/epochs and distinguishes unavai
 #include <cerrno>
 #include <cstring>
 #include <deque>
+#include <chrono>
 #include <type_traits>
 #include <sys/types.h>
 constexpr int MSG_DONTWAIT=1, ANDROID_LOG_WARN=5, ANDROID_LOG_INFO=4;
@@ -129,6 +160,15 @@ int main() {
     assert(hostDisplayFeedbackStats.confirmationAvailable);
     pollHostDisplayFeedback(3,5,conf);
     assert(hostDisplayFeedbackStats.sourceConfirmedDelta==0);
+    assert(hostDisplayFeedbackStats.generatedConfirmedDelta==0);
+    // Losing the channel after one good measurement becomes unknown, while
+    // fresh Unknown packets explicitly cover a measured zero interval.
+    hostDisplayFeedbackStats.lastFeedbackReceived -= std::chrono::milliseconds(251);
+    pollHostDisplayFeedback(3,5,conf);
+    assert(!hostDisplayFeedbackStats.confirmationAvailable);
+    p.status=static_cast<uint8_t>(HostDisplayFeedbackStatus::Unknown); incoming.push_back(p);
+    pollHostDisplayFeedback(3,5,conf);
+    assert(hostDisplayFeedbackStats.confirmationAvailable);
     assert(hostDisplayFeedbackStats.generatedConfirmedDelta==0);
     p.status=static_cast<uint8_t>(HostDisplayFeedbackStatus::Unavailable); incoming.push_back(p);
     pollHostDisplayFeedback(3,5,conf);

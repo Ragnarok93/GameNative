@@ -32,3 +32,12 @@ jobs:
           python3 tools/host_display_timing_test.py
           python3 tools/native_lsfg_bridge_test.py
           python3 tools/native_lsfg_pacer_test.py
+      - name: Exercise pinned layer Android source contracts
+        run: |
+          python3 - <<'PY'
+          import pathlib, subprocess
+          tests = sorted(pathlib.Path("app/src/main/cpp/lsfg-vk-android/tests").glob("android_*_test.py"))
+          assert tests
+          for test in tests:
+              subprocess.run(["python3", str(test)], check=True)
+          PY

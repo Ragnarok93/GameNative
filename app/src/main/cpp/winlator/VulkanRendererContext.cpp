@@ -4832,6 +4832,16 @@ void VulkanRendererContext::resetNativePresentationTimeline(const char* reason) 
     nativeTimelineSourceIntervalNs_ = 0;
     nativeTimelineGeneration_ = hostSwapchainGeneration_;
     nativeLastAdmissionReason_ = "none";
+    resetNativePresentationEvidence();
+    __android_log_print(
+        ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
+        "event=timeline-reset reason=%s swapchain_generation=%" PRIu64
+        " refresh_period_ns=%" PRIu64,
+        reason ? reason : "unknown",
+        hostSwapchainGeneration_, hostRefreshPeriodNs_);
+}
+
+void VulkanRendererContext::resetNativePresentationEvidence() {
     nativePresentationEvidenceStartNs_ = 0;
     nativePresentationPressureStrikes_ = 0;
     nativePresentationRecoveryStrikes_ = 0;
@@ -4844,12 +4854,8 @@ void VulkanRendererContext::resetNativePresentationTimeline(const char* reason) 
     nativeSourceUnobservedEventNs_.clear();
     nativeGeneratedUnobservedEventNs_.clear();
     nativeGeneratedRejectedEventNs_.clear();
-    __android_log_print(
-        ANDROID_LOG_INFO, "LSFG_NATIVE_PRESENT",
-        "event=timeline-reset reason=%s swapchain_generation=%" PRIu64
-        " refresh_period_ns=%" PRIu64,
-        reason ? reason : "unknown",
-        hostSwapchainGeneration_, hostRefreshPeriodNs_);
+    nativeSourceConfirmedFps_ = 0.0;
+    nativeGeneratedConfirmedFps_ = 0.0;
 }
 
 void VulkanRendererContext::noteNativeSourceArrival(uint64_t nowNs) {
@@ -5526,6 +5532,15 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
     return decision;
 }
 
+bool VulkanRendererContext::nativeFeedbackIdentityCurrent(
+        const LsfgFrameProvenance& provenance) const {
+    return provenance.runtimeSessionId == nativeRuntimeSessionId_
+        && provenance.contextEpoch == nativeLsfgContextEpoch_
+        && provenance.transactionId == lsfgBackendTransitionId_
+        && provenance.configurationRevision >= nativeFeedbackMinConfigRevision_
+        && provenance.configurationRevision <= framegenConfigRevision;
+}
+
 void VulkanRendererContext::emitHostDisplayConfirmation(
         const HostDisplayConfirmation& confirmation,
         bool confirmed,
@@ -5542,6 +5557,16 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         && confirmation.presentMarginRawNs <= kMaxSanePresentMarginNs;
 
     for (const auto& provenance : confirmation.frameProvenance) {
+        // FIFO preference-only revisions retain the same effective Native
+        // policy. Real policy changes raise the evidence floor and reset its
+        // window, so delayed confirmations cannot steer the new controller.
+        if (provenance.nativeImplementation && !nativeFeedbackIdentityCurrent(provenance)) {
+            __android_log_print(ANDROID_LOG_DEBUG, "LSFG_HOST_DISPLAY",
+                "event=retired-native-confirmation revision=%llu current_revision=%llu",
+                (unsigned long long)provenance.configurationRevision,
+                (unsigned long long)framegenConfigRevision);
+            continue;
+        }
         __android_log_print(
             ANDROID_LOG_DEBUG, "LSFG_HOST_DISPLAY",
             "event=delivery-identity transaction_id=%" PRIu64

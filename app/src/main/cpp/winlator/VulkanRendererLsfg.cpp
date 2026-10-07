@@ -249,6 +249,7 @@ void VulkanRendererContext::createLsfg() {
     }
     const bool formatSupported = compositeFormatSupported();
     framegenSupported = formatSupported && nativeSwapchainTransferSupported_;
+    nativeFeedbackMinConfigRevision_ = framegenConfigRevision;
     nativeRuntimeSessionId_ = static_cast<uint64_t>(
         std::chrono::steady_clock::now().time_since_epoch().count());
     VkPhysicalDeviceProperties nativeProps{};
@@ -623,6 +624,16 @@ void VulkanRendererContext::setFrameGenerationMode(
         return;
     }
 
+    const bool effectivePolicyChanged = nextMultiplier != framegenMultiplier
+        || nextTarget != framegenTargetRate || nextFlow != framegenFlowScale
+        || nextFlowMode != framegenFlowMode || nextFlowPreset != framegenFlowPreset;
+    if (effectivePolicyChanged) {
+        nativeFeedbackMinConfigRevision_ = configRevision;
+        resetNativePresentationEvidence();
+        nativeSourceDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
+        nativeGeneratedDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
+        hostUniqueDisplayConfirmedEpoch_.store(0, std::memory_order_release);
+    }
     framegenMultiplier = nextMultiplier;
     framegenTargetRate = nextTarget;
     framegenFlowScale = nextFlow;

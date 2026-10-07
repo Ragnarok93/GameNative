@@ -19,7 +19,8 @@ Pinned layer: `926ebc1314935030d4c58278458bd26291124c4b`.
   This avoids recompilation, but still allocates a new flow resource graph;
   device timing must establish the remaining update cost.
 - WSI acceptance and logical output cannot satisfy adaptive output targets.
-  Native control samples the host confirmation window; Legacy consumes matched
+  Native control samples the host confirmation window; power cap and both
+  clock tuners use that same physically confirmed selection. Legacy consumes matched
   host feedback. Available confirmation with zero delivery is a measured deficit.
   Unavailable or stale confirmation remains unknown; the feedback lease expires
   after 250 ms without a matching host packet. Suspend recovery runs independently

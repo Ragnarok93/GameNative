@@ -209,8 +209,9 @@ class PerformanceAutoTuner(
         val targetFps = PowerManager.targetFps.toDouble()
         val currentFps = PowerManager.fpsForTuning(PowerManager.currentFps)?.toDouble() ?: return
 
-        // Skip tuning when targetFps is 0 (FPS limiter disabled) or currentFps is 0
-        if (targetFps == 0.0 || currentFps == 0.0) {
+        // Missing output was rejected above; a confirmed zero during LSFG is
+        // a real delivery deficit. Preserve the idle guard for source-only sessions.
+        if (targetFps == 0.0 || (currentFps == 0.0 && PowerManager.frameSampleStride <= 1)) {
             return
         }
 

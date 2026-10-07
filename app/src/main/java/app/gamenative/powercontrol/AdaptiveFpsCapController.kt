@@ -116,12 +116,16 @@ object AdaptiveFpsCapController {
         if (targetFps <= 0 ||
             snapshot == null ||
             System.currentTimeMillis() - snapshot.timestampMs > METRICS_STALE_MS ||
-            snapshot.fps <= 0f
+            (snapshot.fps <= 0f && PowerManager.frameSampleStride <= 1)
         ) {
             cap.interrupt()
             return
         }
 
+        val tuningFps = PowerManager.fpsForTuning(snapshot.fps) ?: run {
+            cap.interrupt()
+            return
+        }
         val trimmedSteps = PowerManager.tunerTrimmedSteps()
 
         // A harvest only trims domains that are not the bottleneck, so its steps are not what
@@ -132,7 +136,7 @@ object AdaptiveFpsCapController {
         val clocksOpen = trimmedSteps == null || trimmedSteps == 0 || harvesting
         val clockHeadroom = trimmedSteps == null || trimmedSteps >= AdaptiveFpsCap.MIN_TRIMMED_STEPS
 
-        val change = cap.onCycle(snapshot.fps, clocksOpen, clockHeadroom) ?: return
+        val change = cap.onCycle(tuningFps, clocksOpen, clockHeadroom) ?: return
 
         if (change.requiresApply && !PowerManager.applyFpsCapToEngines(change.toFps)) {
             if (!loggedRefusedApply) {
@@ -151,7 +155,7 @@ object AdaptiveFpsCapController {
         }
 
         cap.commit(change)
-        logChange(change, snapshot.fps, targetFps, trimmedSteps)
+        logChange(change, tuningFps, targetFps, trimmedSteps)
     }
 
     /**

@@ -426,6 +426,7 @@ object PowerManager {
             applyGpuMaxLevel = { level -> pserver.setMaxGpuPowerLevel(level) },
             metricsProvider = { latestMetrics },
             targetFpsProvider = { targetFps },
+            tuningFpsProvider = { fpsForTuning(it) },
             fanSampleProvider = { FanController.latestSample },
             strategyProvider = { currentProfile.tuningStrategy },
             fpsCapProvider = { AdaptiveFpsCapController.snapshot() },

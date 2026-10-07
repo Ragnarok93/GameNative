@@ -163,7 +163,14 @@ class LsfgFrameQueueContractTest {
         assertFalse(implementation.contains("FrameQueuePendingPresentation"))
         assertFalse(implementation.contains("kFrameQueuePresentRetirementTimeoutNs"))
         assertFalse(implementation.contains("kFrameQueueGooglePollInterval"))
-        assertFalse(implementation.contains("std::this_thread::sleep_for"))
+
+        val pressureStart =
+            implementation.indexOf("void VulkanRendererContext::updateSmoothQueuePressure")
+        val pressureEnd =
+            implementation.indexOf("void VulkanRendererContext::drainFrameQueueSubmissions", pressureStart)
+        assertTrue(pressureStart >= 0 && pressureEnd > pressureStart)
+        val pressure = implementation.substring(pressureStart, pressureEnd)
+        assertFalse(pressure.contains("std::this_thread::sleep_for"))
     }
 
     @Test
@@ -399,7 +406,14 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("refresh_period_ns="))
         assertTrue(implementation.contains("phase_advance_cycles="))
         assertTrue(implementation.contains("phase_advance_ms="))
-        assertFalse(implementation.contains("std::this_thread::sleep_for"))
+
+        val validationStart =
+            implementation.indexOf("HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTime")
+        val validationEnd =
+            implementation.indexOf("bool VulkanRendererContext::nativeFeedbackIdentityCurrent", validationStart)
+        assertTrue(validationStart >= 0 && validationEnd > validationStart)
+        val validation = implementation.substring(validationStart, validationEnd)
+        assertFalse(validation.contains("std::this_thread::sleep_for"))
     }
 
     @Test

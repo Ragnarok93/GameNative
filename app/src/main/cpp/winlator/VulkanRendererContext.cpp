@@ -2351,8 +2351,16 @@ uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
         uint32_t timeCapacity = 0;
         if (workAheadNs < sourceIntervalNs) {
             const uint64_t availableNs = sourceIntervalNs - workAheadNs;
+            // Capacity is a count of refresh-sized service opportunities inside
+            // the remaining source interval. Floor division permanently clips a
+            // ~30-FPS / ~120-Hz interval (about 32 / 8.3 ms) to three total
+            // presents, leaving only two synthetic slots after reserving source.
+            // Round up here; temporalGenerationCapacity() already quantizes the
+            // source interval to display refresh cycles, while queue age/occupancy
+            // still removes capacity when real presenter backlog exists.
             const uint64_t presentSlots =
-                availableNs / serviceEstimateNs;
+                availableNs == 0 ? 0
+                    : 1 + (availableNs - 1) / serviceEstimateNs;
             // Always reserve one serial present slot for the real source.
             if (presentSlots > 1) {
                 timeCapacity = static_cast<uint32_t>(

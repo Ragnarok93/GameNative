@@ -19,11 +19,13 @@ void main() {
     // Mirrored transforms apply the inverse rotation before the mirror.
     uint transform = pc.surfaceTransform;
     if (transform == 2u || transform == 32u) {
-        float previousX = x; x = y; y = -previousX;
+        // VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR is clockwise in surface
+        // space; compensate with the inverse (counter-clockwise) in NDC.
+        float previousX = x; x = -y; y = previousX;
     } else if (transform == 4u || transform == 64u) {
         x = -x; y = -y;
     } else if (transform == 8u || transform == 128u) {
-        float previousX = x; x = -y; y = previousX;
+        float previousX = x; x = y; y = -previousX;
     }
     if ((transform & 240u) != 0u) x = -x;
     gl_Position = vec4(x, y, 0.0, 1.0);

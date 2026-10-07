@@ -15,24 +15,24 @@ class LsfgNativeRendererIntegrationContractTest {
     }
 
     @Test
-    fun nativeTimedPresentationPrefersMailboxAndLegacyRestoreIsRevisionSafe() {
+    fun nativeTimedPresentationUsesOrderedFifoAndLegacyRestoreIsRevisionSafe() {
         val root = repoRoot()
         val manager =
             File(root, "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt").readText()
         val context =
             File(root, "app/src/main/cpp/winlator/VulkanRendererContext.cpp").readText()
 
-        assertTrue(manager.contains("renderer.setVkPresentMode(1)"))
+        assertTrue(manager.contains("renderer.setVkPresentMode(2)"))
         assertTrue(manager.contains("native-retired-current-snapshot"))
         assertTrue(manager.contains("legacy_restore_after_native_retire"))
         assertTrue(manager.contains("result == \"legacy-restored\""))
 
+        val vertex = File(root, "app/src/main/cpp/winlator/window.vert").readText()
         assertTrue(
             "GameNative compositor must not double-apply Android ROTATE_90",
             context.contains("VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform") &&
-                File(root, "app/src/main/cpp/winlator/window.vert").readText()
-                    .contains("layout(offset = 60) uint surfaceTransform"),
-
+                vertex.contains("layout(offset = 60) uint surfaceTransform") &&
+                vertex.contains("float previousX = x; x = -y; y = previousX;"),
         )
         assertTrue(context.contains("const bool transformChanged ="))
     }
@@ -316,8 +316,9 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
         assertTrue(context.contains("nativeLsfgContentPending"))
 
-        // Native uses the shared present-mode setter but timed Native delivery
-        // requests Mailbox; stored Legacy preference is restored on handoff.
+        // Native uses the shared present-mode setter but unique timed Native
+        // delivery requests ordered FIFO; stored Legacy preference is restored
+        // independently on handoff.
         val applyPresentStart =
             javaRenderer.indexOf("public boolean applyFrameGenerationSettings")
         val applyPresentEnd =
@@ -335,10 +336,12 @@ class LsfgNativeRendererIntegrationContractTest {
             javaRenderer.substring(presentSetterStart, presentSetterEnd)
         assertTrue(presentSetter.contains("nativeLifetimeLock.readLock().lock()"))
         assertTrue(!presentSetter.contains("synchronized (lock)"))
-        assertTrue(manager.contains("renderer.setVkPresentMode(1)"))
+        assertTrue(manager.contains("renderer.setVkPresentMode(2)"))
         assertTrue(
             manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
         )
+        assertTrue(manager.contains("if (nativeActive) {"))
+        assertTrue(manager.contains("Native timed outputs are unique and require ordered FIFO delivery"))
 
         // Match Android's live WSI transform to stop permanent SUBOPTIMAL.
         // The compositor passes that transform to the vertex stage so scene and
@@ -365,6 +368,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(admissionBody2.contains("hostRefreshPeriodNs_"))
         assertTrue(admissionBody2.contains("std::min(serviceEstimateNs, refreshBoundNs)"))
         assertTrue(!admissionBody2.contains("occupied) * p95PresentNs"))
+        assertTrue(admissionBody2.contains("1 + (availableNs - 1) / serviceEstimateNs"))
+        assertTrue(!admissionBody2.contains("availableNs / serviceEstimateNs"))
         assertTrue(context.contains("admission_service_estimate_ms="))
 
         // Adaptive Flow remains the first actuator. The shared controller

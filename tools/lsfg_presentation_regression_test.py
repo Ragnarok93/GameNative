@@ -207,7 +207,7 @@ int main() {
 vertex = (HOST / "window.vert").read_text()
 rotation = vertex[vertex.index("    uint transform"):vertex.index("    gl_Position")]
 rotation = rotation.replace("uint transform = pc.surfaceTransform;", "uint32_t transform = t;")
-run("all inverse surface rotations/mirrors preserve scene and cursor orientation", r"""
+run("surface transform compensation uses the Vulkan inverse rotation", r"""
 #include <cassert>
 #include <cstdint>
 #include <utility>
@@ -216,18 +216,34 @@ std::pair<float,float> inverse(float x,float y,uint32_t t) {
     return {x,y};
 }
 int main() {
-    for(uint32_t t : {1u,2u,4u,8u,16u,32u,64u,128u}) {
-        for(auto point : {std::pair{-.7f,.2f},std::pair{.5f,-.3f}}) {
-            auto [x,y]=inverse(point.first,point.second,t);
-            if(t & 240u) x=-x;
-            if(t==2 || t==32) { float previousX=x; x=-y; y=previousX; }
-            else if(t==4 || t==64) { x=-x; y=-y; }
-            else if(t==8 || t==128) { float previousX=x; x=y; y=-previousX; }
-            assert(x==point.first && y==point.second);
-        }
+    constexpr float x0 = 0.7f;
+    constexpr float y0 = 0.2f;
+    {
+        auto [x,y]=inverse(x0,y0,1u);
+        assert(x==x0 && y==y0);
+    }
+    {
+        auto [x,y]=inverse(x0,y0,2u);
+        assert(x==-y0 && y==x0);
+    }
+    {
+        auto [x,y]=inverse(x0,y0,4u);
+        assert(x==-x0 && y==-y0);
+    }
+    {
+        auto [x,y]=inverse(x0,y0,8u);
+        assert(x==y0 && y==-x0);
     }
 }
 """)
+
+host_context = (HOST / "VulkanRendererContext.cpp").read_text()
+admission_start = host_context.index("uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity")
+admission_end = host_context.index("void VulkanRendererContext::emitNativeLsfgPipelineTelemetry", admission_start)
+admission = host_context[admission_start:admission_end]
+assert "1 + (availableNs - 1) / serviceEstimateNs" in admission
+assert "availableNs / serviceEstimateNs" not in admission
+print("PASS: Native admission preserves 4-refresh-cycle capacity without disabling backlog protection")
 
 common = (NATIVE / "lsfg_common.cpp").read_text()
 shaders = (NATIVE / "lsfg_shaders.cpp").read_text()

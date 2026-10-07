@@ -444,7 +444,7 @@ object LsfgVkManager {
             requestedMultiplier = multiplier,
             effectiveMultiplier = effectiveMultiplier,
             presentationPolicy =
-                if (backendRequest.backend == BACKEND_NATIVE && enabled) "mailbox"
+                if (backendRequest.backend == BACKEND_NATIVE && enabled) "fifo"
                 else presentMode(container),
             requestedAtNs = backendRequest.requestedAtNs,
         )
@@ -1252,7 +1252,7 @@ object LsfgVkManager {
             snapshot.requestedFlowScale,
             if (snapshot.performanceMode) 1 else 0,
             snapshot.presentMode,
-            if (nativeEnabled) "mailbox" else snapshot.presentMode,
+            if (nativeEnabled) "fifo" else snapshot.presentMode,
             if (snapshot.frameQueueEnabled) 1 else 0,
             snapshot.frameQueueTarget,
             snapshot.displayRefresh,
@@ -1277,7 +1277,7 @@ object LsfgVkManager {
             snapshot.flowPreset,
             snapshot.requestedFlowScale,
             snapshot.displayRefresh,
-            if (nativeEnabled) "mailbox" else "disabled",
+            if (nativeEnabled) "fifo" else "disabled",
             if (nativeEnabled) "shared-host-frame-queue+native-admission" else "disabled",
             snapshot.presentMode,
             if (snapshot.frameQueueEnabled) 1 else 0,
@@ -1453,8 +1453,8 @@ object LsfgVkManager {
                     return@execute
                 }
                 if (nativePolicyMatches(renderer, container, snapshot)) {
-                    // FIFO is a stored Legacy preference while Native owns Mailbox.
-                    // Advance attribution only; preserve activation and health evidence.
+                    // The stored Legacy preference is independent from Native's ordered FIFO
+                    // policy. Advance attribution only; preserve activation and health evidence.
                     renderer.setFrameGenerationMode(
                         snapshot.multiplier, snapshot.targetFps,
                         (snapshot.requestedFlowScale * 100f).toInt(),
@@ -1646,14 +1646,14 @@ object LsfgVkManager {
                     return@execute
                 }
 
-                // Native reuses the shared Vulkan present-mode selection path,
-                // but timed synthetic delivery must prefer Mailbox. Android FIFO
-                // vkQueuePresentKHR can block for multiple refresh periods and a
-                // single serial presenter cannot sustain 2x/3x/4x output then.
-                // nativeSetPresentMode already falls back to FIFO when Mailbox is
-                // unsupported. The stored Legacy preference is left untouched and
-                // is restored by the source-only/Legacy branch.
-                renderer.setVkPresentMode(1)
+                // Native submits multiple unique, future-timed images from one
+                // source batch. MAILBOX may replace an older queued image before
+                // scanout, which turns successful WSI submission into lost LSFG
+                // output. Use ordered FIFO for Native; the split async presenter
+                // keeps vkQueuePresentKHR backpressure off the render thread. The
+                // stored Legacy preference remains untouched and is restored by
+                // the source-only/Legacy branch.
+                renderer.setVkPresentMode(2)
                 // Native stale-slot admission is an additional pre-acquire safety
                 // guard, not a replacement Frame Queue implementation.
                 renderer.setLsfgFrameQueue(
@@ -1790,8 +1790,10 @@ object LsfgVkManager {
             isNativeBackend(container) &&
                 isArmed(container) &&
                 multiplier(container) >= 2
-        val selectedPresentMode = if (nativeActive || presentMode(container) == "mailbox") {
-            1 // VK_PRESENT_MODE_MAILBOX_KHR; Vulkan falls back when unsupported.
+        val selectedPresentMode = if (nativeActive) {
+            2 // Native timed outputs are unique and require ordered FIFO delivery.
+        } else if (presentMode(container) == "mailbox") {
+            1 // Legacy/source-only stored preference.
         } else {
             2 // VK_PRESENT_MODE_FIFO_KHR.
         }

@@ -125,7 +125,12 @@ object LsfgVkManager {
         val frameQueueEnabled: Boolean,
         val frameQueueTarget: Int,
         val displayRefresh: Float,
-    )
+    ) {
+        fun hasSameEffectiveNativePolicy(next: NativeRuntimeConfigSnapshot): Boolean =
+            backend == BACKEND_NATIVE && next.backend == BACKEND_NATIVE &&
+                enabled && next.enabled &&
+                copy(revision = next.revision, presentMode = next.presentMode) == next
+    }
 
     enum class NativeBackendPhase {
         NATIVE_REQUESTED,
@@ -1013,6 +1018,25 @@ object LsfgVkManager {
     @Volatile private var guestSuspensionContainer: Container? = null
     @Volatile private var guestSuspensionProbe: (() -> Boolean)? = null
     @Volatile private var latestNativeSnapshot: NativeRuntimeConfigSnapshot? = null
+    // Executor-owned applied state is separate from queued requests. A pending
+    // preference update cannot hide the policy actually installed on this renderer.
+    private data class AppliedNativePolicy(
+        val snapshot: NativeRuntimeConfigSnapshot,
+        val renderer: WeakReference<VulkanRenderer>,
+        val container: Container,
+    )
+    @Volatile private var appliedNativePolicy: AppliedNativePolicy? = null
+
+    private fun nativePolicyMatches(
+        renderer: VulkanRenderer,
+        container: Container,
+        snapshot: NativeRuntimeConfigSnapshot,
+    ): Boolean {
+        val applied = appliedNativePolicy ?: return false
+        return applied.renderer.get() === renderer && applied.container === container &&
+            renderer.isFrameGenerationSupported() &&
+            applied.snapshot.hasSameEffectiveNativePolicy(snapshot)
+    }
     @Volatile private var nativeAppliedRevision = 0L
     @Volatile private var nativeBackendPhase = NativeBackendPhase.NATIVE_REQUESTED
     @Volatile private var nativeFailureReason: String? = null
@@ -1380,24 +1404,12 @@ object LsfgVkManager {
         nativeRendererRef = WeakReference(renderer)
         nativeRendererContext = context.applicationContext
         nativeRendererContainer = container
-        val previousSnapshot = latestNativeSnapshot
-        val effectivePolicyUnchanged = snapshot.backend == BACKEND_NATIVE && snapshot.enabled &&
-            nativeApplyComplete && !nativeApplyFailed && renderer.isFrameGenerationSupported() &&
-            previousSnapshot?.copy(revision = snapshot.revision, presentMode = snapshot.presentMode) == snapshot
         latestNativeSnapshot = snapshot
         val generation = nativeApplyGeneration.incrementAndGet()
         nativeApplyFailed = false
         nativeApplyComplete = false
         nativeFailureReason = null
         logNativeSnapshot(snapshot, "requested")
-        if (snapshot.backend == BACKEND_NATIVE && snapshot.enabled && !effectivePolicyUnchanged) {
-            nativeActivationStartNs = System.nanoTime()
-            nativeLastWsiProgressNs = 0L
-            nativeGenerationStallWindows = 0
-            nativeConfirmedDeliveryWindows = 0
-            nativeDeliveryLossWindows = 0
-            transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_REQUESTED, "configuration-requested")
-        }
 
         nativeApplyExecutor.execute {
             try {
@@ -1405,7 +1417,7 @@ object LsfgVkManager {
                     discardStaleSnapshot(snapshot, "before-apply")
                     return@execute
                 }
-                if (effectivePolicyUnchanged) {
+                if (nativePolicyMatches(renderer, container, snapshot)) {
                     // FIFO is a stored Legacy preference while Native owns Mailbox.
                     // Advance attribution only; preserve activation and health evidence.
                     renderer.setFrameGenerationMode(
@@ -1420,12 +1432,30 @@ object LsfgVkManager {
                             else -> VulkanRenderer.LSFG_FLOW_PRESET_QUALITY
                         }, snapshot.revision,
                     )
+                    if (!snapshotIsCurrent(snapshot, generation)) {
+                        discardStaleSnapshot(snapshot, "after-metadata-update")
+                        return@execute
+                    }
+                    appliedNativePolicy = AppliedNativePolicy(snapshot, WeakReference(renderer), container)
                     nativeAppliedRevision = snapshot.revision
                     nativeApplyComplete = true
                     logNativeSnapshot(snapshot, "effective-policy-unchanged")
                     onApplied?.invoke("runtime-reused")
                     return@execute
                 }
+                // A real apply may change queue/refresh/cache settings. Invalidate
+                // reuse before the first mutation, and publish an applied snapshot
+                // only after successful initialization on this exact renderer.
+                appliedNativePolicy = null
+                if (snapshot.backend == BACKEND_NATIVE && snapshot.enabled) {
+                    nativeActivationStartNs = System.nanoTime()
+                    nativeLastWsiProgressNs = 0L
+                    nativeGenerationStallWindows = 0
+                    nativeConfirmedDeliveryWindows = 0
+                    nativeDeliveryLossWindows = 0
+                    transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_REQUESTED, "configuration-requested")
+                }
+
                 val requested = snapshot.backend == BACKEND_NATIVE
                 val enabled = requested && snapshot.enabled && snapshot.multiplier >= 2
                 if (!requested || !enabled) {
@@ -1627,6 +1657,9 @@ object LsfgVkManager {
                 if (!snapshotIsCurrent(snapshot, generation)) {
                     discardStaleSnapshot(snapshot, "after-native-arm")
                     return@execute
+                }
+                if (initialized) {
+                    appliedNativePolicy = AppliedNativePolicy(snapshot, WeakReference(renderer), container)
                 }
                 nativeApplyFailed = renderer.hasNativeSurface() && !initialized
                 nativeApplyComplete = true

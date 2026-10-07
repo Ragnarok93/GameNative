@@ -31,6 +31,9 @@ Pinned layer: `926ebc1314935030d4c58278458bd26291124c4b`.
   unchanged.
 - A Native FIFO preference change preserves effective Mailbox policy and activation.
   Only configuration attribution advances; no cache initialization or re-arming.
+  Reuse is decided by the executor against the renderer-owned applied snapshot,
+  so superseded preference requests cannot trigger initialization or skip a real
+  queue/refresh policy change.
 - Provenance v3 and feedback v2 transport manager transaction/configuration identity.
   Native uses the compute context epoch, separately from swapchain generation.
   The final host logs the identity alongside present/delivery IDs. Legacy rejects

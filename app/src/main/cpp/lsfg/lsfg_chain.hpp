@@ -27,7 +27,7 @@ constexpr size_t LSFG_DELTA_INSTANCES = LSFG_LAST_DELTA_LEVEL + 1 - LSFG_FIRST_D
 class LsfgChain {
 public:
     LsfgChain(const Device& device, const LsfgShaders& shaders, VkExtent2D extent, VkFormat format,
-              float flow_scale);
+              float flow_scale, LsfgImagePair* retained_frames = nullptr);
     ~LsfgChain();
 
     LsfgChain(const LsfgChain&) = delete;
@@ -46,6 +46,8 @@ public:
     void ForgetTargets() {
         generate.ForgetTargets();
     }
+
+    LsfgImagePair& SourceFrames() { return frames; }
 
     void ResetHistory() {
         for (auto& a : alpha) {

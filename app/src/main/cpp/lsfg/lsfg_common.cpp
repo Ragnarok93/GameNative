@@ -443,6 +443,14 @@ void LsfgDescriptorWriter::Build(const Device& device) {
 LsfgPass::LsfgPass(const Device& device_, const LsfgShaders& shaders, uint32_t shader_id,
                    LsfgBindings bindings)
     : device{device_.Handle()} {
+    if (const auto* handles = shaders.FindPass(shader_id, bindings)) {
+        descriptor_set_layout = handles->setLayout;
+        pipeline_layout = handles->pipelineLayout;
+        pipeline = handles->pipeline;
+        descriptor_count = handles->descriptorCount;
+        cached = true;
+        return;
+    }
     std::vector<VkDescriptorSetLayoutBinding> layout_bindings;
     uint32_t index = 0;
     for (const auto& [count, type] : bindings) {
@@ -497,7 +505,11 @@ LsfgPass::LsfgPass(const Device& device_, const LsfgShaders& shaders, uint32_t s
         VK_SUCCESS) {
         pipeline = VK_NULL_HANDLE;
         Release();
+        return;
     }
+    shaders.CachePass(shader_id, bindings,
+        {descriptor_set_layout, pipeline_layout, pipeline, descriptor_count});
+    cached = true;
 }
 
 LsfgPass::~LsfgPass() {
@@ -507,7 +519,7 @@ LsfgPass::~LsfgPass() {
 LsfgPass::LsfgPass(LsfgPass&& other) noexcept
     : device{other.device}, descriptor_set_layout{other.descriptor_set_layout},
       pipeline_layout{other.pipeline_layout}, pipeline{other.pipeline},
-      descriptor_count{other.descriptor_count} {
+      descriptor_count{other.descriptor_count}, cached{other.cached} {
     other.device = VK_NULL_HANDLE;
     other.descriptor_set_layout = VK_NULL_HANDLE;
     other.pipeline_layout = VK_NULL_HANDLE;
@@ -522,6 +534,7 @@ LsfgPass& LsfgPass::operator=(LsfgPass&& other) noexcept {
         pipeline_layout = other.pipeline_layout;
         pipeline = other.pipeline;
         descriptor_count = other.descriptor_count;
+        cached = other.cached;
         other.device = VK_NULL_HANDLE;
         other.descriptor_set_layout = VK_NULL_HANDLE;
         other.pipeline_layout = VK_NULL_HANDLE;
@@ -532,9 +545,12 @@ LsfgPass& LsfgPass::operator=(LsfgPass&& other) noexcept {
 
 void LsfgPass::Release() {
     if (device == VK_NULL_HANDLE) return;
-    if (pipeline) vkd.DestroyPipeline(device, pipeline, nullptr);
-    if (pipeline_layout) vkd.DestroyPipelineLayout(device, pipeline_layout, nullptr);
-    if (descriptor_set_layout) vkd.DestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
+    if (!cached) {
+        if (pipeline) vkd.DestroyPipeline(device, pipeline, nullptr);
+        if (pipeline_layout) vkd.DestroyPipelineLayout(device, pipeline_layout, nullptr);
+        if (descriptor_set_layout) vkd.DestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
+    }
+    cached = false;
     pipeline = VK_NULL_HANDLE;
     pipeline_layout = VK_NULL_HANDLE;
     descriptor_set_layout = VK_NULL_HANDLE;

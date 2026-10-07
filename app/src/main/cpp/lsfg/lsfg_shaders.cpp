@@ -62,12 +62,37 @@ LsfgShaders::~LsfgShaders() {
 
 void LsfgShaders::Release() {
     if (device != VK_NULL_HANDLE) {
+        for (const auto& [key, pass] : passes) {
+            vkd.DestroyPipeline(device, pass.pipeline, nullptr);
+            vkd.DestroyPipelineLayout(device, pass.pipelineLayout, nullptr);
+            vkd.DestroyDescriptorSetLayout(device, pass.setLayout, nullptr);
+        }
+        passes.clear();
         for (auto& [id, module] : modules) {
             vkd.DestroyShaderModule(device, module, nullptr);
         }
     }
     modules.clear();
     valid = false;
+}
+
+namespace {
+std::vector<uint64_t> PassKey(uint32_t shader, LsfgBindings bindings) {
+    std::vector<uint64_t> key{shader};
+    for (const auto& [count, type] : bindings)
+        key.push_back((static_cast<uint64_t>(count) << 32) | static_cast<uint32_t>(type));
+    return key;
+}
+}
+
+const LsfgShaders::PassHandles* LsfgShaders::FindPass(
+        uint32_t shader, LsfgBindings bindings) const {
+    const auto it = passes.find(PassKey(shader, bindings));
+    return it == passes.end() ? nullptr : &it->second;
+}
+
+void LsfgShaders::CachePass(uint32_t shader, LsfgBindings bindings, PassHandles handles) const {
+    passes.emplace(PassKey(shader, bindings), handles);
 }
 
 VkShaderModule LsfgShaders::Get(uint32_t shader_id) const {

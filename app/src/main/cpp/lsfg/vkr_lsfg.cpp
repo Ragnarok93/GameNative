@@ -376,9 +376,17 @@ bool vkr_lsfg_prepare(VkrLsfg* lsfg, uint32_t width, uint32_t height, VkFormat f
 
     const float scale = lsfg_effective_flow_scale(lsfg, width);
 
-    lsfg->chain.reset();
+    const bool flow_only = lsfg->chain
+        && lsfg->built_extent.width == width && lsfg->built_extent.height == height
+        && lsfg->built_format == format;
+    // Caller's fences have retired all users of the old resource graph.
+    // Keep the full-resolution source pair and all compiled pipelines while
+    // replacing only scale-dependent images, uniforms and descriptor sets.
+    auto previous_chain = std::move(lsfg->chain);
     lsfg->chain = std::make_unique<lsfg::LsfgChain>(
-        lsfg->device, *lsfg->shaders, VkExtent2D{width, height}, format, scale);
+        lsfg->device, *lsfg->shaders, VkExtent2D{width, height}, format, scale,
+        flow_only ? &previous_chain->SourceFrames() : nullptr);
+    previous_chain.reset();
     if (!lsfg->chain->Valid()) {
         LSFG_LOGW("chain build failed at %ux%u; frame generation unavailable", width, height);
         lsfg->chain.reset();
@@ -389,12 +397,16 @@ bool vkr_lsfg_prepare(VkrLsfg* lsfg, uint32_t width, uint32_t height, VkFormat f
     lsfg->built_extent = VkExtent2D{width, height};
     lsfg->built_format = format;
     lsfg->built_flow_scale = scale;
-    lsfg->frame_count = 0;
-    lsfg->plan_calls = 0;
+    if (!flow_only) {
+        lsfg->frame_count = 0;
+        lsfg->plan_calls = 0;
+        lsfg->pacer.Reset();
+    }
+    // Optical-flow history changed dimensions and must warm again; source
+    // cadence and fractional scheduling credit remain valid.
     lsfg->warm_streak = 0;
     lsfg->warm = false;
     lsfg->generated = false;
-    lsfg->pacer.Reset();
     lsfg->flow_transition_frames = lsfg->adaptive_flow ? 3u : 0u;
     LSFG_LOGI("chain built at %ux%u, flow %ux%u scale %.2f (requested %.2f, guest %ux%u)", width,
               height, (unsigned)(width * lsfg->built_flow_scale),

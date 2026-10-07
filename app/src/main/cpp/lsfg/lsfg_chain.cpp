@@ -22,15 +22,16 @@ constexpr uint32_t DESCRIPTOR_SETS_PER_SLOT = 112;
 }
 
 LsfgChain::LsfgChain(const Device& device, const LsfgShaders& shaders, VkExtent2D extent,
-                     VkFormat format, float flow_scale)
+                     VkFormat format, float flow_scale, LsfgImagePair* retained_frames)
     : resources{device, flow_scale}, owner{device.Handle()} {
     descriptor_pool = CreateLsfgDescriptorPool(
         device, FIXED_DESCRIPTOR_SETS +
                     DESCRIPTOR_SETS_PER_SLOT * static_cast<uint32_t>(LSFG_GENERATION_SLOTS));
     if (descriptor_pool == VK_NULL_HANDLE) return;
 
+    if (retained_frames) frames = std::move(*retained_frames);
     for (auto& image : frames) {
-        image = LsfgImage(device, extent, format);
+        if (!image.Valid()) image = LsfgImage(device, extent, format);
         if (!image.Valid()) return;
     }
 

@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
-#include "vk_dispatch.h"
+#include "lsfg_common.hpp"
 
 namespace lsfg {
 
@@ -27,11 +27,23 @@ public:
 
     [[nodiscard]] VkShaderModule Get(uint32_t shader_id) const;
 
+    struct PassHandles {
+        VkDescriptorSetLayout setLayout;
+        VkPipelineLayout pipelineLayout;
+        VkPipeline pipeline;
+        uint32_t descriptorCount;
+    };
+    // Pipelines depend on shader + descriptor layout, never Flow Scale.
+    // The shader owner outlives all chains and owns these shared handles.
+    [[nodiscard]] const PassHandles* FindPass(uint32_t shader, LsfgBindings bindings) const;
+    void CachePass(uint32_t shader, LsfgBindings bindings, PassHandles handles) const;
+
 private:
     void Release();
 
     VkDevice device{VK_NULL_HANDLE};
     std::map<uint32_t, VkShaderModule> modules;
+    mutable std::map<std::vector<uint64_t>, PassHandles> passes;
     bool valid{};
 };
 

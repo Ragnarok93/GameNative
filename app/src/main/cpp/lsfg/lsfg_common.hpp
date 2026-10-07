@@ -309,6 +309,7 @@ private:
     VkPipelineLayout pipeline_layout{VK_NULL_HANDLE};
     VkPipeline pipeline{VK_NULL_HANDLE};
     uint32_t descriptor_count{};
+    bool cached{};
 };
 
 [[nodiscard]] VkDescriptorPool CreateLsfgDescriptorPool(const Device& device, uint32_t max_sets);

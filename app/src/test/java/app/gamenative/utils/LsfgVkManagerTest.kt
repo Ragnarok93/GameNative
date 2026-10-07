@@ -3,8 +3,6 @@ package app.gamenative.utils
 import app.gamenative.powercontrol.metrics.CpuUsageSource
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import com.winlator.container.Container
-import com.winlator.renderer.VulkanRenderer
-import java.lang.ref.WeakReference
 import com.winlator.core.envvars.EnvVars
 import java.io.File
 import java.nio.file.Files
@@ -273,38 +271,56 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun readFreshOutputFps_usesHostConfirmedDeliveryIncludingMeasuredZeroAndUnknown() {
-        val renderer = mock<VulkanRenderer>()
-        val activeContainer = container(armed = true)
-        whenever(renderer.isDisplayConfirmationAvailable()).thenReturn(true)
-        whenever(renderer.getDisplayConfirmedFrameCount()).thenReturn(22L)
-        val fields = listOf("nativeRendererRef", "nativeRendererContainer",
-            "nativeFpsRenderer", "nativeFpsSampleNs", "nativeFpsSampleCount", "nativeFpsValue")
-            .associateWith { name -> LsfgVkManager::class.java.getDeclaredField(name).apply {
-                isAccessible = true
-            } }
-        val previous = fields.mapValues { it.value.get(null) }
-        fun set(name: String, value: Any?) { fields.getValue(name).set(null, value) }
-        try {
-            set("nativeRendererRef", WeakReference(renderer))
-            set("nativeRendererContainer", activeContainer)
-            set("nativeFpsRenderer", WeakReference(renderer))
-            set("nativeFpsSampleNs", System.nanoTime() - 1_000_000_000L)
-            set("nativeFpsSampleCount", 0L)
-            set("nativeFpsValue", 70f)
-            val measured = LsfgVkManager.readFreshOutputFps(rootDir)!!
-            assertTrue(measured in 20f..22.1f)
-            assertNull(LsfgVkManager.readFreshOutputFps(File(rootDir, "other-container")))
-            whenever(renderer.isDisplayConfirmationAvailable()).thenReturn(false)
-            assertNull(LsfgVkManager.readFreshOutputFps(rootDir))
-            whenever(renderer.isDisplayConfirmationAvailable()).thenReturn(true)
-            whenever(renderer.getDisplayConfirmedFrameCount()).thenReturn(0L)
-            set("nativeFpsSampleCount", 0L)
-            set("nativeFpsSampleNs", System.nanoTime() - 1_000_000_000L)
-            assertEquals(0f, LsfgVkManager.readFreshOutputFps(rootDir))
-        } finally {
-            previous.forEach { (name, value) -> set(name, value) }
-        }
+    fun nativeOutputSampler_usesHostConfirmedDeliveryIncludingMeasuredZeroAndUnknown() {
+        var sample = LsfgVkManager.NativeOutputFpsSampleState(
+            sampleNs = 1_000_000_000L,
+            sampleCount = 0L,
+            value = 70f,
+        )
+
+        sample = LsfgVkManager.advanceNativeOutputFpsSample(
+            confirmationAvailable = true,
+            count = 22L,
+            nowNs = 2_000_000_000L,
+            state = sample,
+        )
+        assertEquals(22f, sample.value ?: -1f, 0.01f)
+
+        sample = LsfgVkManager.advanceNativeOutputFpsSample(
+            confirmationAvailable = false,
+            count = 22L,
+            nowNs = 2_100_000_000L,
+            state = sample,
+        )
+        assertNull(sample.value)
+        assertEquals(0L, sample.sampleNs)
+
+        // Reappearance of physical confirmation starts a fresh baseline; the
+        // unknown interval above must not be averaged into the next sample.
+        sample = LsfgVkManager.advanceNativeOutputFpsSample(
+            confirmationAvailable = true,
+            count = 22L,
+            nowNs = 3_000_000_000L,
+            state = sample,
+        )
+        assertNull(sample.value)
+
+        sample = LsfgVkManager.advanceNativeOutputFpsSample(
+            confirmationAvailable = true,
+            count = 22L,
+            nowNs = 4_000_000_000L,
+            state = sample,
+        )
+        assertEquals(0f, sample.value ?: -1f, 0.0f)
+
+        val regressed = LsfgVkManager.advanceNativeOutputFpsSample(
+            confirmationAvailable = true,
+            count = 3L,
+            nowNs = 5_000_000_000L,
+            state = sample,
+        )
+        assertNull(regressed.value)
+        assertEquals(3L, regressed.sampleCount)
     }
 
     @Test

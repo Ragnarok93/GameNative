@@ -1055,6 +1055,41 @@ object LsfgVkManager {
     private var nativeFpsRenderer: WeakReference<VulkanRenderer>? = null
     private var nativeFpsValue: Float? = null
 
+    internal data class NativeOutputFpsSampleState(
+        val sampleNs: Long = 0L,
+        val sampleCount: Long = 0L,
+        val value: Float? = null,
+    )
+
+    /**
+     * Advance the physically-confirmed output-rate sampler without depending on
+     * VulkanRenderer. Unknown confirmation intervals reset the measurement
+     * baseline so they can never be averaged into a later delivery deficit.
+     */
+    internal fun advanceNativeOutputFpsSample(
+        confirmationAvailable: Boolean,
+        count: Long,
+        nowNs: Long,
+        state: NativeOutputFpsSampleState,
+        reset: Boolean = false,
+    ): NativeOutputFpsSampleState {
+        if (!confirmationAvailable) return NativeOutputFpsSampleState()
+        if (reset || state.sampleNs == 0L || count < state.sampleCount || nowNs <= state.sampleNs) {
+            return NativeOutputFpsSampleState(
+                sampleNs = nowNs,
+                sampleCount = count,
+                value = null,
+            )
+        }
+        val elapsed = nowNs - state.sampleNs
+        if (elapsed < 500_000_000L) return state
+        return NativeOutputFpsSampleState(
+            sampleNs = nowNs,
+            sampleCount = count,
+            value = ((count - state.sampleCount) * 1_000_000_000.0 / elapsed).toFloat(),
+        )
+    }
+
     // Prefer physical display confirmation whenever the renderer exposes a
     // trustworthy asynchronous confirmation backend. WSI acceptance remains
     // available as pipeline telemetry and is only the rate fallback when
@@ -1064,38 +1099,38 @@ object LsfgVkManager {
         if (nativeRendererContainer !== container ||
             (isNativeBackend(container) && !renderer.isFrameGenerationSupported())
         ) return null
+
         val confirmationAvailable = renderer.isDisplayConfirmationAvailable()
+        val count = if (confirmationAvailable) renderer.getDisplayConfirmedFrameCount() else 0L
+        val now = System.nanoTime()
+        val previous = NativeOutputFpsSampleState(
+            sampleNs = nativeFpsSampleNs,
+            sampleCount = nativeFpsSampleCount,
+            value = nativeFpsValue,
+        )
+        val next = advanceNativeOutputFpsSample(
+            confirmationAvailable = confirmationAvailable,
+            count = count,
+            nowNs = now,
+            state = previous,
+            reset = nativeFpsRenderer?.get() !== renderer,
+        )
+        nativeFpsRenderer = WeakReference(renderer)
+        nativeFpsSampleNs = next.sampleNs
+        nativeFpsSampleCount = next.sampleCount
+        nativeFpsValue = next.value
+
         // Missing physical evidence is unknown; WSI success cannot satisfy an
         // output target. A measured zero remains a valid delivery-deficit sample.
         if (!confirmationAvailable) return null
-        val count = renderer.getDisplayConfirmedFrameCount()
-        val now = System.nanoTime()
-        if (nativeFpsRenderer?.get() !== renderer ||
-            count < nativeFpsSampleCount || nativeFpsSampleNs == 0L
-        ) {
-            nativeFpsRenderer = WeakReference(renderer)
-            nativeFpsSampleCount = count
-            nativeFpsSampleNs = now
-            nativeFpsValue = null
-            return null
-        }
-        val elapsed = now - nativeFpsSampleNs
-        if (elapsed >= 500_000_000L) {
-            nativeFpsValue =
-                ((count - nativeFpsSampleCount) * 1_000_000_000.0 / elapsed)
-                    .toFloat()
-            nativeFpsSampleCount = count
-            nativeFpsSampleNs = now
+        if (next.value != null && next.sampleNs != previous.sampleNs) {
             Timber.d(
-                "LSFG_NATIVE_PRESENT: event=output_rate output_fps=%.2f measurement=%s " +
-                    "display_confirmation_available=%d",
-                nativeFpsValue,
-                if (confirmationAvailable) "display-confirmed"
-                else "wsi-accepted-confirmation-unavailable",
-                if (confirmationAvailable) 1 else 0,
+                "LSFG_NATIVE_PRESENT: event=output_rate output_fps=%.2f measurement=display-confirmed " +
+                    "display_confirmation_available=1",
+                next.value,
             )
         }
-        return nativeFpsValue
+        return next.value
     }
 
     @Volatile private var nativeApplyFailed = false

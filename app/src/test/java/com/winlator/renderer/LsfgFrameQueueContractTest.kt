@@ -250,7 +250,9 @@ class LsfgFrameQueueContractTest {
         assertTrue(header.contains("lastAcceptedDesiredPresentTimeNs_"))
         assertTrue(implementation.contains("validatedHostDesiredPresentTime"))
         assertTrue(implementation.contains("googlePresentTime.desiredPresentTime ="))
-        assertFalse(implementation.contains("googlePresentTime.desiredPresentTime = 0;"))
+        assertTrue(implementation.contains("googlePresentTime.desiredPresentTime = 0;"))
+        assertTrue(implementation.contains("present-worker-slot-expired"))
+        assertTrue(implementation.contains("present.desiredDecision.submittedDesiredPresentTimeNs = 0;"))
         assertTrue(implementation.contains("CLOCK_MONOTONIC"))
         assertTrue(implementation.contains("desired_vs_actual"))
         assertTrue(implementation.contains("actual_present_time="))
@@ -318,17 +320,18 @@ class LsfgFrameQueueContractTest {
     }
 
     @Test
-    fun legacyGeneratedSlotsUseAStableHighRefreshOutputClock() {
+    fun legacyGeneratedSlotsPreserveLayerBatchTimingAndDropMissedSlots() {
         val implementation = source("VulkanRendererContext.cpp")
 
-        assertTrue(implementation.contains("highRefreshGeneratedSlotFloorNs"))
-        assertTrue(implementation.contains("hostRefreshPeriodNs_ * 2ULL"))
+        assertTrue(implementation.contains("const uint64_t intendedNs = rawDesiredNs;"))
+        assertTrue(implementation.contains("const uint64_t periodNs = 0;"))
+        assertTrue(implementation.contains("legacyGeneratedOutputSlotMissed"))
         assertTrue(implementation.contains("legacy-output-slot-drop"))
         assertTrue(implementation.contains("missed-usable-output-slot"))
-        assertTrue(implementation.contains("legacy-output-slot-missed-no-phase-repair"))
-        assertTrue(implementation.contains("droppedStaleDelivery"))
-        assertTrue(implementation.contains("same AHB through texMap"))
-        assertFalse(implementation.contains("material cadence/configuration change rebases once"))
+        assertTrue(implementation.contains("legacy-generated-output-slot-missed"))
+        assertFalse(implementation.contains("highRefreshGeneratedSlotFloorNs"))
+        assertFalse(implementation.contains("legacyGeneratedSlotPeriodNs_"))
+        assertFalse(implementation.contains("legacyGeneratedSlotNextNs_"))
     }
 
     @Test
@@ -342,11 +345,9 @@ class LsfgFrameQueueContractTest {
         assertTrue(implementation.contains("hostSuboptimalConsecutive_ = 0"))
         assertTrue(implementation.contains("hostSuboptimalWindow_.clear()"))
         assertTrue(implementation.contains("const bool transformChanged =\n        caps.currentTransform != swapchainPreTransform_"))
-        assertTrue(
-            implementation.contains(
-                "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",
-            ),
-        )
+        assertTrue(implementation.contains("VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform;"))
+        assertTrue(implementation.contains("extentChanged || transformInvalid || transformChanged"))
+        assertFalse(implementation.contains("? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR"))
     }
 
     @Test

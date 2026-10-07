@@ -340,14 +340,15 @@ class LsfgNativeRendererIntegrationContractTest {
             manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
         )
 
-        // GameNative already composites in logical landscape. Prefer identity
-        // when Android exposes it so ROTATE_90 is not applied a second time.
+        // Match Android's live WSI transform to stop permanent SUBOPTIMAL.
+        // The compositor passes that transform to the vertex stage so scene and
+        // cursor receive the inverse exactly once.
+        assertTrue(context.contains("VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform;"))
         assertTrue(
             context.contains(
-                "caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR",
+                "pc.surfaceTransform = toXr ? 1U : static_cast<uint32_t>(swapchainPreTransform_);",
             ),
         )
-        assertTrue(context.contains("? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR"))
         assertTrue(context.contains("const bool transformChanged ="))
 
         // Native admission must distinguish presenter service from blocked

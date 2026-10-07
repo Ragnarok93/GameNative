@@ -245,6 +245,22 @@ assert "1 + (availableNs - 1) / serviceEstimateNs" in admission
 assert "availableNs / serviceEstimateNs" not in admission
 print("PASS: Native admission preserves 4-refresh-cycle capacity without disabling backlog protection")
 
+manager = (ROOT / "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt").read_text()
+assert 'renderer.setVkPresentMode(if (snapshot.presentMode == "mailbox") 1 else 2)' in manager
+assert 'if (presentMode(container) == "mailbox")' in manager
+assert 'presentationPolicy = presentMode(container)' in manager
+
+header = (HOST / "VulkanRendererContext.h").read_text()
+presenter_start = host_context.index("void VulkanRendererContext::hostPresenterLoop")
+presenter_end = host_context.index("void VulkanRendererContext::processHostPresentCompletions", presenter_start)
+presenter = host_context[presenter_start:presenter_end]
+assert "VkPresentModeKHR presentMode" in header
+assert "mailboxDispatchDelayNs" in header
+assert "present.presentMode == VK_PRESENT_MODE_MAILBOX_KHR" in presenter
+assert "std::this_thread::sleep_for" in presenter
+assert "excluded from presenterQueueAgeNs/backlog feedback" in presenter
+print("PASS: Native FIFO/Mailbox selection is preserved and Mailbox dispatch is slot-paced")
+
 common = (NATIVE / "lsfg_common.cpp").read_text()
 shaders = (NATIVE / "lsfg_shaders.cpp").read_text()
 passes = common[common.index("LsfgPass::LsfgPass(const Device&"):

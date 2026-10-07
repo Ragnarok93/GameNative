@@ -15,14 +15,16 @@ class LsfgNativeRendererIntegrationContractTest {
     }
 
     @Test
-    fun nativeTimedPresentationUsesOrderedFifoAndLegacyRestoreIsRevisionSafe() {
+    fun nativeTimedPresentationHonorsSelectedModeAndLegacyRestoreIsRevisionSafe() {
         val root = repoRoot()
         val manager =
             File(root, "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt").readText()
         val context =
             File(root, "app/src/main/cpp/winlator/VulkanRendererContext.cpp").readText()
 
-        assertTrue(manager.contains("renderer.setVkPresentMode(2)"))
+        assertTrue(
+            manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
+        )
         assertTrue(manager.contains("native-retired-current-snapshot"))
         assertTrue(manager.contains("legacy_restore_after_native_retire"))
         assertTrue(manager.contains("result == \"legacy-restored\""))
@@ -316,9 +318,9 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("shared-host-frame-queue+native-admission"))
         assertTrue(context.contains("nativeLsfgContentPending"))
 
-        // Native uses the shared present-mode setter but unique timed Native
-        // delivery requests ordered FIFO; stored Legacy preference is restored
-        // independently on handoff.
+        // Native uses the shared present-mode setter and honors the selected
+        // FIFO/Mailbox policy; stored Legacy preference is restored safely on
+        // backend handoff.
         val applyPresentStart =
             javaRenderer.indexOf("public boolean applyFrameGenerationSettings")
         val applyPresentEnd =
@@ -336,12 +338,15 @@ class LsfgNativeRendererIntegrationContractTest {
             javaRenderer.substring(presentSetterStart, presentSetterEnd)
         assertTrue(presentSetter.contains("nativeLifetimeLock.readLock().lock()"))
         assertTrue(!presentSetter.contains("synchronized (lock)"))
-        assertTrue(manager.contains("renderer.setVkPresentMode(2)"))
         assertTrue(
             manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
         )
-        assertTrue(manager.contains("if (nativeActive) {"))
-        assertTrue(manager.contains("Native timed outputs are unique and require ordered FIFO delivery"))
+        assertTrue(manager.contains("if (presentMode(container) == \"mailbox\")"))
+        assertTrue(context.contains("present.presentMode == VK_PRESENT_MODE_MAILBOX_KHR"))
+        assertTrue(context.contains("event=mailbox-dispatch-pace"))
+        assertTrue(context.contains("mailboxDispatchDelayNs"))
+        assertTrue(context.contains("std::this_thread::sleep_for"))
+        assertTrue(context.contains("present_mode=%d"))
 
         // Match Android's live WSI transform to stop permanent SUBOPTIMAL.
         // The compositor passes that transform to the vertex stage so scene and

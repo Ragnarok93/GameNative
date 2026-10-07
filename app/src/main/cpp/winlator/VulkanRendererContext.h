@@ -240,6 +240,7 @@ struct HostDisplayConfirmation {
     uint32_t googlePresentId = 0;
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
     std::vector<LsfgFrameProvenance> frameProvenance;
     uint64_t provenanceDesiredPresentTimeNs = 0;
     uint64_t submittedDesiredPresentTimeNs = 0;
@@ -284,6 +285,7 @@ struct PendingHostPresent {
     uint64_t hostPresentEnqueueWaitNs = 0;
     uint64_t enqueuedAtNs = 0;
     uint64_t presenterQueueAgeNs = 0;
+    uint64_t mailboxDispatchDelayNs = 0;
     uint32_t hostPresentQueueDepth = 0;
 };
 

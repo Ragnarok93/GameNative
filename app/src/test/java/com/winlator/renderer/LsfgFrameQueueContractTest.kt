@@ -679,6 +679,11 @@ class LsfgFrameQueueContractTest {
         val presenter = implementation.substring(presenterStart, presenterEnd)
         assertTrue(presenter.contains("executeHostPresent"))
         assertFalse(presenter.contains("nativeHostPresenterLoop"))
+        assertTrue(header.contains("VkPresentModeKHR presentMode"))
+        assertTrue(header.contains("mailboxDispatchDelayNs"))
+        assertTrue(presenter.contains("present.presentMode == VK_PRESENT_MODE_MAILBOX_KHR"))
+        assertTrue(presenter.contains("std::this_thread::sleep_for"))
+        assertTrue(presenter.contains("excluded from presenterQueueAgeNs/backlog feedback"))
     }
 
     @Test

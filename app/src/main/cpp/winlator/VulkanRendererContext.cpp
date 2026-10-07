@@ -2076,7 +2076,8 @@ CompletedHostPresent VulkanRendererContext::executeHostPresent(
             " graphics_queue_submit_serial=%" PRIu64
             " graphics_queue_submit_ms=%.3f"
             " present_queue_present_serial=%" PRIu64
-            " present_queue_family=%u present_queue_index=%u"
+            " present_queue_family=%u present_queue_index=%u present_mode=%d"
+            " mailbox_dispatch_delay_ms=%.3f"
             " present_queue_present_ms=%.3f present_queue_blocked_ms=%.3f"
             " present_queue_wait_semaphore_ms=-1.000"
             " present_queue_idle_ms=-1.000"
@@ -2092,6 +2093,8 @@ CompletedHostPresent VulkanRendererContext::executeHostPresent(
             presentQueuePresentSerial,
             graphicsQueueFamilyIndex,
             hostSplitPresentQueueActive_ ? hostPresentQueueIndex_ : 0U,
+            static_cast<int>(present.presentMode),
+            static_cast<double>(present.mailboxDispatchDelayNs) / 1000000.0,
             static_cast<double>(presentNs) / 1000000.0,
             static_cast<double>(presentQueueBlockedNs) / 1000000.0,
             reinterpret_cast<uint64_t>(present.waitSemaphore),
@@ -2184,7 +2187,8 @@ void VulkanRendererContext::finalizeHostPresent(
                 ANDROID_LOG_INFO, "LSFG_FRAME_QUEUE",
                 "event=present telemetry_epoch=%llu enabled=%d requested_target=%u effective_target=%u "
                 "mode=%s smooth_fallback=%d fallback_reason=%s requested_present_mode=%d "
-                "active_present_mode=%d backend=%s delivery_kind=%s "
+                "active_present_mode=%d present_mode=%d mailbox_dispatch_delay_ms=%.3f "
+                "backend=%s delivery_kind=%s "
                 "swapchain_generation=%llu active_slots=%u unique_content=%d "
                 "present_queue_split=%d present_queue_index=%u host_present_worker=%d "
                 "host_present_queue_depth=%u host_present_enqueue_wait_ms=%.3f "
@@ -2200,6 +2204,8 @@ void VulkanRendererContext::finalizeHostPresent(
                 smoothFallback ? 1 : 0, fallbackReason,
                 static_cast<int>(requestedPresentMode),
                 static_cast<int>(activePresentMode),
+                static_cast<int>(present.presentMode),
+                static_cast<double>(present.mailboxDispatchDelayNs) / 1000000.0,
                 deliveryBackendName(present.frameProvenance),
                 deliveryKindName(present.frameProvenance),
                 static_cast<unsigned long long>(present.swapchainGeneration),
@@ -2652,6 +2658,51 @@ void VulkanRendererContext::hostPresenterLoop() {
         }
         hostPresenterSpaceCv_.notify_all();
 
+        const auto nativeIt = std::find_if(
+            present.frameProvenance.begin(), present.frameProvenance.end(),
+            [](const LsfgFrameProvenance& provenance) {
+                return provenance.nativeImplementation
+                    && provenance.uniqueDelivery;
+            });
+        const uint64_t desiredNs =
+            present.desiredDecision.submittedDesiredPresentTimeNs != 0
+                ? present.desiredDecision.submittedDesiredPresentTimeNs
+                : present.desiredDecision.provenanceDesiredPresentTimeNs;
+        const uint64_t refreshNs =
+            present.desiredDecision.refreshPeriodNs;
+
+        // FIFO can retain an ordered batch of future-timed images. MAILBOX
+        // cannot: a later QueuePresentKHR may replace an earlier image that has
+        // not reached scanout yet. Keep MAILBOX selectable by delaying each
+        // Native unique delivery until shortly before its own display slot.
+        // This wait lives only on the split present worker and is intentionally
+        // excluded from presenterQueueAgeNs/backlog feedback.
+        if (nativeIt != present.frameProvenance.end()
+                && present.presentMode == VK_PRESENT_MODE_MAILBOX_KHR
+                && presenterNowNs != 0 && desiredNs != 0 && refreshNs != 0) {
+            const uint64_t leadNs = std::clamp<uint64_t>(
+                refreshNs / 3, 1000000ULL, 4000000ULL);
+            if (desiredNs > presenterNowNs + leadNs) {
+                const uint64_t delayNs = desiredNs - leadNs - presenterNowNs;
+                std::this_thread::sleep_for(std::chrono::nanoseconds(delayNs));
+                present.mailboxDispatchDelayNs = delayNs;
+                presenterNowNs = monotonicTimeNs();
+                if (delayNs >= 1000000ULL) {
+                    __android_log_print(
+                        ANDROID_LOG_DEBUG, "LSFG_NATIVE_PRESENT",
+                        "event=mailbox-dispatch-pace desired_ns=%" PRIu64
+                        " lead_ns=%" PRIu64 " delay_ms=%.3f"
+                        " source_index=%" PRIu64 " kind=%s"
+                        " swapchain_generation=%" PRIu64,
+                        desiredNs, leadNs,
+                        static_cast<double>(delayNs) / 1000000.0,
+                        nativeIt->sourceIndex,
+                        nativeIt->kind == 1 ? "generated" : "source",
+                        present.swapchainGeneration);
+                }
+            }
+        }
+
         const auto generatedIt = std::find_if(
             present.frameProvenance.begin(), present.frameProvenance.end(),
             [](const LsfgFrameProvenance& provenance) {
@@ -2660,12 +2711,6 @@ void VulkanRendererContext::hostPresenterLoop() {
                     && provenance.kind == 1;
             });
         if (generatedIt != present.frameProvenance.end()) {
-            const uint64_t desiredNs =
-                present.desiredDecision.submittedDesiredPresentTimeNs != 0
-                    ? present.desiredDecision.submittedDesiredPresentTimeNs
-                    : present.desiredDecision.provenanceDesiredPresentTimeNs;
-            const uint64_t refreshNs =
-                present.desiredDecision.refreshPeriodNs;
             if (presenterNowNs != 0 && desiredNs != 0 && refreshNs != 0
                     && presenterNowNs > desiredNs + refreshNs) {
                 const uint64_t lateNs = presenterNowNs - desiredNs;
@@ -4072,6 +4117,7 @@ ok=true;}catch(...){}
                 .hostPresentId = g == 0 ? nativeFirstHostPresentId : hostPresentId_++,
                 .googlePresentId = g == 0 ? nativeFirstGooglePresentId : hostGooglePresentId_++,
                 .backend = confirmationBackend,
+                .presentMode = activePresentMode,
                 .frameProvenance = {generatedProvenance},
                 .desiredDecision = generatedDesiredDecision,
                 .hasUniqueLsfgDelivery = true,
@@ -4116,6 +4162,7 @@ ok=true;}catch(...){}
             .hostPresentId = hostPresentId,
             .googlePresentId = googlePresentId,
             .backend = confirmationBackend,
+            .presentMode = activePresentMode,
             .frameProvenance = std::move(frameProvenance),
             .desiredDecision = desiredDecision,
             .hasUniqueLsfgDelivery = hasUniqueLsfgDelivery,

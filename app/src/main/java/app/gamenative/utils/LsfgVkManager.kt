@@ -443,9 +443,7 @@ object LsfgVkManager {
             enabled = enabled,
             requestedMultiplier = multiplier,
             effectiveMultiplier = effectiveMultiplier,
-            presentationPolicy =
-                if (backendRequest.backend == BACKEND_NATIVE && enabled) "fifo"
-                else presentMode(container),
+            presentationPolicy = presentMode(container),
             requestedAtNs = backendRequest.requestedAtNs,
         )
         backendTransitionTelemetry[transition.transactionId] =
@@ -1252,7 +1250,7 @@ object LsfgVkManager {
             snapshot.requestedFlowScale,
             if (snapshot.performanceMode) 1 else 0,
             snapshot.presentMode,
-            if (nativeEnabled) "fifo" else snapshot.presentMode,
+            snapshot.presentMode,
             if (snapshot.frameQueueEnabled) 1 else 0,
             snapshot.frameQueueTarget,
             snapshot.displayRefresh,
@@ -1277,7 +1275,7 @@ object LsfgVkManager {
             snapshot.flowPreset,
             snapshot.requestedFlowScale,
             snapshot.displayRefresh,
-            if (nativeEnabled) "fifo" else "disabled",
+            if (nativeEnabled) snapshot.presentMode else "disabled",
             if (nativeEnabled) "shared-host-frame-queue+native-admission" else "disabled",
             snapshot.presentMode,
             if (snapshot.frameQueueEnabled) 1 else 0,
@@ -1453,8 +1451,9 @@ object LsfgVkManager {
                     return@execute
                 }
                 if (nativePolicyMatches(renderer, container, snapshot)) {
-                    // The stored Legacy preference is independent from Native's ordered FIFO
-                    // policy. Advance attribution only; preserve activation and health evidence.
+                    // Present mode is part of the effective Native policy. When the
+                    // selected policy is unchanged, advance attribution without
+                    // rebuilding the swapchain or disturbing activation/health evidence.
                     renderer.setFrameGenerationMode(
                         snapshot.multiplier, snapshot.targetFps,
                         (snapshot.requestedFlowScale * 100f).toInt(),
@@ -1646,14 +1645,11 @@ object LsfgVkManager {
                     return@execute
                 }
 
-                // Native submits multiple unique, future-timed images from one
-                // source batch. MAILBOX may replace an older queued image before
-                // scanout, which turns successful WSI submission into lost LSFG
-                // output. Use ordered FIFO for Native; the split async presenter
-                // keeps vkQueuePresentKHR backpressure off the render thread. The
-                // stored Legacy preference remains untouched and is restored by
-                // the source-only/Legacy branch.
-                renderer.setVkPresentMode(2)
+                // Native honors the selected presentation policy. FIFO may queue
+                // the timed batch in order; MAILBOX is host-paced near each
+                // desired display slot so one unique LSFG image cannot be
+                // replaced simply because the following slot was submitted early.
+                renderer.setVkPresentMode(if (snapshot.presentMode == "mailbox") 1 else 2)
                 // Native stale-slot admission is an additional pre-acquire safety
                 // guard, not a replacement Frame Queue implementation.
                 renderer.setLsfgFrameQueue(
@@ -1790,13 +1786,12 @@ object LsfgVkManager {
             isNativeBackend(container) &&
                 isArmed(container) &&
                 multiplier(container) >= 2
-        val selectedPresentMode = if (nativeActive) {
-            2 // Native timed outputs are unique and require ordered FIFO delivery.
-        } else if (presentMode(container) == "mailbox") {
-            1 // Legacy/source-only stored preference.
-        } else {
-            2 // VK_PRESENT_MODE_FIFO_KHR.
-        }
+        val selectedPresentMode =
+            if (presentMode(container) == "mailbox") {
+                1 // VK_PRESENT_MODE_MAILBOX_KHR.
+            } else {
+                2 // VK_PRESENT_MODE_FIFO_KHR.
+            }
         renderer.setVkPresentMode(selectedPresentMode)
         renderer.setLsfgFrameQueue(
             enabledOverride ?: (

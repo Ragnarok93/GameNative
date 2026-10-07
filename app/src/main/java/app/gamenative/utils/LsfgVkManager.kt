@@ -614,7 +614,7 @@ object LsfgVkManager {
             nativeContainer.rootDir.absolutePath == root.absolutePath &&
             runtimeSnapshot?.backend == BACKEND_NATIVE
         val nativeOutputFps = if (nativeRuntimeActive && nativeContainer != null) {
-            readNativeOutputFps(nativeContainer) ?: 0f
+            readNativeOutputFps(nativeContainer) ?: -1f
         } else {
             0f
         }

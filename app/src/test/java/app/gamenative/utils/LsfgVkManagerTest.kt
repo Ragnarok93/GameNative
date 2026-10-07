@@ -3,6 +3,8 @@ package app.gamenative.utils
 import app.gamenative.powercontrol.metrics.CpuUsageSource
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import com.winlator.container.Container
+import com.winlator.renderer.VulkanRenderer
+import java.lang.ref.WeakReference
 import com.winlator.core.envvars.EnvVars
 import java.io.File
 import java.nio.file.Files
@@ -217,7 +219,7 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun readFreshOutputFps_requiresFreshGeneratingPostLsfgSample() {
+    fun readFreshOutputFps_cannotUseLogicalLayerStatsWithoutHostConfirmation() {
         val nowMs = 2_000_000L
         val statsFile = File(rootDir, ".config/lsfg-vk/stats.txt").apply {
             parentFile?.mkdirs()
@@ -233,7 +235,7 @@ class LsfgVkManagerTest {
             assertTrue(setLastModified(nowMs - 500L))
         }
 
-        assertEquals(60f, LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
+        assertNull(LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
 
         assertTrue(statsFile.setLastModified(nowMs - 2_001L))
         assertNull(LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
@@ -251,7 +253,7 @@ class LsfgVkManagerTest {
     }
 
     @Test
-    fun readFreshOutputFps_acceptsCurrentNativeFpsField() {
+    fun readFreshOutputFps_cannotUseLegacyFpsFieldAsPhysicalDelivery() {
         val nowMs = 3_000_000L
         File(rootDir, ".config/lsfg-vk/stats.txt").apply {
             parentFile?.mkdirs()
@@ -267,7 +269,42 @@ class LsfgVkManagerTest {
             assertTrue(setLastModified(nowMs))
         }
 
-        assertEquals(59.75f, LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
+        assertNull(LsfgVkManager.readFreshOutputFps(rootDir, nowMs))
+    }
+
+    @Test
+    fun readFreshOutputFps_usesHostConfirmedDeliveryIncludingMeasuredZeroAndUnknown() {
+        val renderer = mock<VulkanRenderer>()
+        val activeContainer = container(armed = true)
+        whenever(renderer.isDisplayConfirmationAvailable()).thenReturn(true)
+        whenever(renderer.getDisplayConfirmedFrameCount()).thenReturn(22L)
+        val fields = listOf("nativeRendererRef", "nativeRendererContainer",
+            "nativeFpsRenderer", "nativeFpsSampleNs", "nativeFpsSampleCount", "nativeFpsValue")
+            .associateWith { name -> LsfgVkManager::class.java.getDeclaredField(name).apply {
+                isAccessible = true
+            } }
+        val previous = fields.mapValues { it.value.get(null) }
+        fun set(name: String, value: Any?) { fields.getValue(name).set(null, value) }
+        try {
+            set("nativeRendererRef", WeakReference(renderer))
+            set("nativeRendererContainer", activeContainer)
+            set("nativeFpsRenderer", WeakReference(renderer))
+            set("nativeFpsSampleNs", System.nanoTime() - 1_000_000_000L)
+            set("nativeFpsSampleCount", 0L)
+            set("nativeFpsValue", 70f)
+            val measured = LsfgVkManager.readFreshOutputFps(rootDir)!!
+            assertTrue(measured in 20f..22.1f)
+            assertNull(LsfgVkManager.readFreshOutputFps(File(rootDir, "other-container")))
+            whenever(renderer.isDisplayConfirmationAvailable()).thenReturn(false)
+            assertNull(LsfgVkManager.readFreshOutputFps(rootDir))
+            whenever(renderer.isDisplayConfirmationAvailable()).thenReturn(true)
+            whenever(renderer.getDisplayConfirmedFrameCount()).thenReturn(0L)
+            set("nativeFpsSampleCount", 0L)
+            set("nativeFpsSampleNs", System.nanoTime() - 1_000_000_000L)
+            assertEquals(0f, LsfgVkManager.readFreshOutputFps(rootDir))
+        } finally {
+            previous.forEach { (name, value) -> set(name, value) }
+        }
     }
 
     @Test

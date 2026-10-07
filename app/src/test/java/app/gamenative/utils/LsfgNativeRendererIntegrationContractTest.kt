@@ -272,8 +272,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("NATIVE_CONFIRMATION_UNAVAILABLE"))
         assertTrue(manager.contains("sustained-generated-display-confirmation"))
         assertTrue(manager.contains("getGeneratedDisplayConfirmedFrameCount"))
-        assertTrue(manager.contains("measurement=%s"))
-        assertTrue(manager.contains("\"display-confirmed\""))
+        assertTrue(manager.contains("measurement=display-confirmed"))
+        assertTrue(manager.contains("display_confirmation_available=1"))
 
         // Pressure/support control-plane calls cannot convoy behind the
         // frame-wide native shared_mutex or the Java renderer monitor.

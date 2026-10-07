@@ -240,7 +240,6 @@ struct HostDisplayConfirmation {
     uint32_t googlePresentId = 0;
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
-    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
     std::vector<LsfgFrameProvenance> frameProvenance;
     uint64_t provenanceDesiredPresentTimeNs = 0;
     uint64_t submittedDesiredPresentTimeNs = 0;
@@ -274,6 +273,7 @@ struct PendingHostPresent {
     uint32_t googlePresentId = 0;
     HostDisplayConfirmationBackend backend =
         HostDisplayConfirmationBackend::WsiAccepted;
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
     std::vector<LsfgFrameProvenance> frameProvenance;
     HostDesiredPresentDecision desiredDecision{};
     bool hasUniqueLsfgDelivery = false;

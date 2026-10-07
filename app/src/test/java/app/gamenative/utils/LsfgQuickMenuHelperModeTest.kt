@@ -43,7 +43,7 @@ class LsfgQuickMenuHelperModeTest {
     }
 
     @Test
-    fun fixedModeSnapshotsUseDedicatedFixedMultiplierAndSelectedNativePresentMode() {
+    fun fixedModeSnapshotsUseDedicatedFixedMultiplierAndBackendNeutralPresentMode() {
         val helper = repoFile(
             "app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt",
         ).readText()
@@ -55,7 +55,9 @@ class LsfgQuickMenuHelperModeTest {
         assertTrue(helper.contains("if (generationMode(container) == FrameGenerationMode.FIXED)"))
         assertTrue(manager.contains("else fixedMultiplier(container)"))
         assertTrue(manager.contains("fun applyFrameQueuePolicy("))
+        assertTrue(manager.contains("Present-mode selection is backend-neutral"))
         assertTrue(manager.contains("Native honors the selected presentation policy"))
+        assertTrue(manager.contains("presentationPolicy = presentMode(container)"))
         assertTrue(
             manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
         )

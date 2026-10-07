@@ -1782,10 +1782,8 @@ object LsfgVkManager {
     ) {
         val renderer = nativeRendererRef?.get() ?: return
         if (nativeRendererContainer !== container) return
-        val nativeActive =
-            isNativeBackend(container) &&
-                isArmed(container) &&
-                multiplier(container) >= 2
+        // Present-mode selection is backend-neutral: Legacy and Native must
+        // honor the same Quick Menu Mailbox/FIFO policy.
         val selectedPresentMode =
             if (presentMode(container) == "mailbox") {
                 1 // VK_PRESENT_MODE_MAILBOX_KHR.

@@ -43,7 +43,7 @@ class LsfgQuickMenuHelperModeTest {
     }
 
     @Test
-    fun fixedModeSnapshotsUseDedicatedFixedMultiplierAndNativeMailboxRefresh() {
+    fun fixedModeSnapshotsUseDedicatedFixedMultiplierAndNativeOrderedFifoRefresh() {
         val helper = repoFile(
             "app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt",
         ).readText()
@@ -55,7 +55,11 @@ class LsfgQuickMenuHelperModeTest {
         assertTrue(helper.contains("if (generationMode(container) == FrameGenerationMode.FIXED)"))
         assertTrue(manager.contains("else fixedMultiplier(container)"))
         assertTrue(manager.contains("fun applyFrameQueuePolicy("))
-        assertTrue(manager.contains("VK_PRESENT_MODE_MAILBOX_KHR"))
+        assertTrue(manager.contains("Native timed outputs are unique and require ordered FIFO delivery"))
+        assertTrue(manager.contains("renderer.setVkPresentMode(2)"))
+        assertTrue(
+            manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
+        )
         assertTrue(manager.contains("renderer.setVkPresentMode("))
         assertTrue(manager.contains("renderer.setLsfgFrameQueue("))
         assertTrue(manager.contains("frameQueueEnabled(container) &&"))

@@ -317,12 +317,21 @@ class LsfgFrameQueueContractTest {
             quickMenu.indexOf("scrollState = lsfgScrollState"),
         )
         assertTrue(callback.contains("applyPresentMode"))
-        assertTrue(callback.contains("applyFrameQueuePolicy"))
+        assertFalse("Present-mode changes must join the captured configuration transaction",
+            callback.contains("applyFrameQueuePolicy"))
         assertTrue(
             "Quick Menu must not bypass Native present-mode ownership",
             !callback.contains("renderer?.setVkPresentMode"),
         )
-        assertTrue(quickMenu.contains("LsfgVkManager.applyFrameQueuePolicy"))
+        assertFalse(quickMenu.contains("LsfgVkManager.applyFrameQueuePolicy"))
+        val helper = repoSource("app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt")
+        val presentModeSetter = helper.substring(
+            helper.indexOf("fun applyPresentMode("), helper.indexOf("fun sanitizeMultiplier("),
+        )
+        assertTrue(presentModeSetter.contains("scheduleRuntimeConfig(container)"))
+        val manager = repoSource("app/src/main/java/app/gamenative/utils/LsfgVkManager.kt")
+        assertTrue(manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"))
+        assertTrue(manager.contains("renderer.beginLsfgBackendTransition(snapshot.backendGeneration, snapshot.revision)"))
         assertFalse(quickMenu.contains("applyFrameQueueToRenderer"))
     }
 
@@ -749,3 +758,4 @@ class LsfgFrameQueueContractTest {
         return String(Files.readAllBytes(source), Charsets.UTF_8)
     }
 }
+

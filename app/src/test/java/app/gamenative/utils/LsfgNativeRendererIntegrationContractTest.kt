@@ -341,7 +341,9 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(
             manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
         )
-        assertTrue(manager.contains("if (presentMode(container) == \"mailbox\")"))
+        assertTrue(manager.contains("LsfgQuickMenuHelper.scheduleRuntimeConfig(container, enabledOverride, targetOverride)"))
+        assertTrue(manager.contains("renderer.beginLsfgBackendTransition(snapshot.backendGeneration, snapshot.revision)"))
+        assertTrue(manager.contains("renderer.commitLsfgBackendTransitionPolicy(snapshot.backendGeneration)"))
         assertTrue(context.contains("present.presentMode == VK_PRESENT_MODE_MAILBOX_KHR"))
         assertTrue(context.contains("event=mailbox-dispatch-pace"))
         assertTrue(context.contains("mailboxDispatchDelayNs"))
@@ -399,3 +401,4 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(!vkr.contains("structural_presentation_pressure"))
     }
 }
+

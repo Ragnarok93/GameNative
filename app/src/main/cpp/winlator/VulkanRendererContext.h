@@ -547,6 +547,11 @@ private:
     std::unordered_map<int64_t, std::deque<QueuedLsfgHostDelivery>>
         pendingLsfgHostDeliveries_;
     std::unordered_set<uint64_t> hostSnapshottedLsfgDeliveries_;
+    std::mutex legacyHostFeedbackMutex_;
+    std::unordered_set<uint64_t> legacyHostFeedbackTerminalDeliveries_;
+    std::deque<uint64_t> legacyHostFeedbackTerminalOrder_;
+    bool claimLegacyHostFeedbackDelivery(uint64_t deliveryId);
+    void resetLegacyHostFeedbackDeliveries();
     uint64_t hostDeliveryQueueContextEpoch_ = 0;
     std::atomic<uint32_t> pendingLsfgHostDeliveryCount_{0};
     std::atomic<uint64_t> hostDeliveryPendingHighWater_{0};
@@ -1021,3 +1026,4 @@ private:
                                VkPipelineStageFlags srcS, VkPipelineStageFlags dstS);
     VkShaderModule  makeShader(const uint32_t* code, size_t sz);
 };
+

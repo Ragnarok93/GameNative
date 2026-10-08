@@ -944,26 +944,12 @@ fun QuickMenu(
                                                     app.gamenative.utils.LsfgQuickMenuHelper
                                                         .setFrameQueueEnabled(it, enabled)
                                                 }
-                                                container?.let { activeContainer ->
-                                                    LsfgVkManager.applyFrameQueuePolicy(
-                                                        activeContainer,
-                                                        enabledOverride = lsfgMultiplier >= 2 && enabled,
-                                                        targetOverride = lsfgFrameQueueTarget.depth,
-                                                    )
-                                                }
                                             },
                                             onFrameQueueTargetChanged = { target ->
                                                 lsfgFrameQueueTarget = target
                                                 container?.let {
                                                     app.gamenative.utils.LsfgQuickMenuHelper
                                                         .setFrameQueueTarget(it, target)
-                                                }
-                                                container?.let { activeContainer ->
-                                                    LsfgVkManager.applyFrameQueuePolicy(
-                                                        activeContainer,
-                                                        enabledOverride = lsfgMultiplier >= 2 && lsfgFrameQueueEnabled,
-                                                        targetOverride = target.depth,
-                                                    )
                                                 }
                                             },
                                             presentMode = lsfgPresentMode,
@@ -974,7 +960,6 @@ fun QuickMenu(
                                                         activeContainer,
                                                         mode,
                                                     )
-                                                    LsfgVkManager.applyFrameQueuePolicy(activeContainer)
                                                     val view = app.gamenative.PluviaApp.xServerView
                                                     val vulkanView =
                                                         view as? com.winlator.widget.XServerView
@@ -3152,3 +3137,4 @@ private fun Preview_QuickMenu_WithController() {
         }
     }
 }
+

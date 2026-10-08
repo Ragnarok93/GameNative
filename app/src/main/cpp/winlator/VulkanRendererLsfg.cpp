@@ -420,7 +420,7 @@ void VulkanRendererContext::beginLsfgBackendTransition(
 }
 
 void VulkanRendererContext::requestLsfgSwapchainRebuild(const char* reason) {
-    if (lsfgBackendTransitionId_ != 0
+    if (lsfgBackendTransitionRevision_ != 0
             && !lsfgBackendTransitionPolicyCommitted_) {
         lsfgBackendTransitionRebuildPending_ = true;
         lsfgBackendTransitionPolicyDirty_ = true;
@@ -468,7 +468,7 @@ void VulkanRendererContext::commitLsfgBackendTransitionPolicy(
 bool VulkanRendererContext::isLsfgBackendTransitionPolicyApplied(
         uint64_t transactionId) const {
     std::shared_lock<std::shared_mutex> fl(frameMutex);
-    if (lsfgBackendTransitionId_ == 0
+    if (lsfgBackendTransitionRevision_ == 0
             || lsfgBackendTransitionId_ != transactionId) {
         return true;
     }
@@ -752,3 +752,4 @@ uint64_t VulkanRendererContext::getRealFrameCount() const {
 uint64_t VulkanRendererContext::getSourceFrameCount() const {
     return framegenSourceFrames.load(std::memory_order_relaxed);
 }
+

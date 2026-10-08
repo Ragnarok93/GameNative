@@ -55,18 +55,15 @@ class LsfgQuickMenuHelperModeTest {
         assertTrue(helper.contains("if (generationMode(container) == FrameGenerationMode.FIXED)"))
         assertTrue(manager.contains("else fixedMultiplier(container)"))
         assertTrue(manager.contains("fun applyFrameQueuePolicy("))
-        assertTrue(manager.contains("Present-mode selection is backend-neutral"))
+        assertTrue(manager.contains("LsfgQuickMenuHelper.scheduleRuntimeConfig(container, enabledOverride, targetOverride)"))
         assertTrue(manager.contains("Native honors the selected presentation policy"))
         assertTrue(manager.contains("presentationPolicy = presentMode(container)"))
         assertTrue(
             manager.contains("renderer.setVkPresentMode(if (snapshot.presentMode == \"mailbox\") 1 else 2)"),
         )
-        assertTrue(manager.contains("if (presentMode(container) == \"mailbox\")"))
-        assertTrue(manager.contains("VK_PRESENT_MODE_MAILBOX_KHR"))
-        assertTrue(manager.contains("VK_PRESENT_MODE_FIFO_KHR"))
         assertTrue(manager.contains("renderer.setVkPresentMode("))
         assertTrue(manager.contains("renderer.setLsfgFrameQueue("))
-        assertTrue(manager.contains("frameQueueEnabled(container) &&"))
+        assertTrue(manager.contains("snapshot.frameQueueEnabled && snapshot.enabled"))
         assertTrue(manager.contains("isArmed(container)"))
         assertTrue(manager.contains("multiplier(container) >= 2"))
         assertTrue(!helper.contains("renderer.setVkPresentMode("))
@@ -133,3 +130,4 @@ class LsfgQuickMenuHelperModeTest {
         assertEquals(4, LsfgQuickMenuHelper.sanitizeMultiplier(5))
     }
 }
+

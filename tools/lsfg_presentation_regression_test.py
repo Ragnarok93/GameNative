@@ -173,6 +173,15 @@ int main() {
     p.status=static_cast<uint8_t>(HostDisplayFeedbackStatus::Unavailable); incoming.push_back(p);
     pollHostDisplayFeedback(3,5,conf);
     assert(!hostDisplayFeedbackStats.confirmationAvailable);
+    // Host rejection before snapshot is a known loss, never Unknown or display evidence.
+    p.deliveryId=3;
+    p.status=static_cast<uint8_t>(HostDisplayFeedbackStatus::Dropped); incoming.push_back(p);
+    pollHostDisplayFeedback(3,5,conf);
+    assert(hostDisplayFeedbackStats.generatedDroppedDelta==1);
+    assert(hostDisplayFeedbackStats.generatedDroppedTotal==1);
+    assert(!hostDisplayFeedbackStats.confirmationAvailable);
+    pollHostDisplayFeedback(3,5,conf);
+    assert(hostDisplayFeedbackStats.generatedDroppedDelta==0);
     conf.configurationRevision=12;
     p.status=1; incoming.push_back(p);
     pollHostDisplayFeedback(3,5,conf);
@@ -247,7 +256,12 @@ print("PASS: Native admission preserves 4-refresh-cycle capacity without disabli
 
 manager = (ROOT / "app/src/main/java/app/gamenative/utils/LsfgVkManager.kt").read_text()
 assert 'renderer.setVkPresentMode(if (snapshot.presentMode == "mailbox") 1 else 2)' in manager
-assert 'if (presentMode(container) == "mailbox")' in manager
+helper = (ROOT / "app/src/main/java/app/gamenative/utils/LsfgQuickMenuHelper.kt").read_text()
+menu = (ROOT / "app/src/main/java/app/gamenative/ui/component/QuickMenu.kt").read_text()
+assert "applyFrameQueuePolicy(" not in menu
+for name in ("setFrameQueueEnabled", "setFrameQueueTarget", "applyPresentMode"):
+    assert "scheduleRuntimeConfig(container)" in function(helper, "fun " + name + "(")
+assert "renderer.beginLsfgBackendTransition(snapshot.backendGeneration, snapshot.revision)" in manager
 assert 'presentationPolicy = presentMode(container)' in manager
 
 header = (HOST / "VulkanRendererContext.h").read_text()
@@ -364,5 +378,63 @@ int main() {
         }
     }
     assert(vkd.destroyed==2);
+}
+""")
+
+
+run("whole-batch latency preserves order through slow completion and density changes",
+    (ROOT / "tools/lsfg_batch_timeline_test.cpp").read_text(),
+    extra=(LAYER / "src/adaptive_scheduler.cpp",), includes=("-I", str(LAYER / "include")))
+
+pressure = layer[layer.index("struct RuntimePressureSample"):layer.index("VkImageSubresourceRange colorSubresourceRange()")]
+run("empty source measurements are unavailable while measured zero remains valid", r"""
+#include <cassert>
+#include <filesystem>
+#include <fstream>
+#include <chrono>
+#include <cmath>
+#include <string>
+""" + pressure + r"""
+int main() {
+    auto root = std::filesystem::temp_directory_path() / "lsfg-pressure-regression";
+    std::filesystem::create_directories(root);
+    auto write = [&](int valid) {
+        std::ofstream out(root / "runtime-pressure.txt");
+        out << "timestamp_ms=1\ngpu_usage_percent=95\nsource_fps=0\n"
+            << "frame_time_p95_ms=0\nslow_frame_ratio=0\nsource_metrics_valid=" << valid << "\n";
+    };
+    write(0); assert(!readRuntimePressure(root / "conf.toml").valid);
+    write(1); assert(readRuntimePressure(root / "conf.toml").valid);
+    std::filesystem::remove_all(root);
+}
+""")
+
+claims = "\n".join(function(host, sig) for sig in (
+    "bool VulkanRendererContext::claimLegacyHostFeedbackDelivery(",
+    "void VulkanRendererContext::resetLegacyHostFeedbackDeliveries()"))
+run("terminal feedback is deduplicated and memory bounded", r"""
+#include <cassert>
+#include <cstdint>
+#include <mutex>
+#include <deque>
+#include <unordered_set>
+struct VulkanRendererContext {
+    std::mutex legacyHostFeedbackMutex_;
+    std::unordered_set<uint64_t> legacyHostFeedbackTerminalDeliveries_;
+    std::deque<uint64_t> legacyHostFeedbackTerminalOrder_;
+    bool claimLegacyHostFeedbackDelivery(uint64_t);
+    void resetLegacyHostFeedbackDeliveries();
+};
+""" + claims + r"""
+int main() {
+    VulkanRendererContext context;
+    for (uint64_t id=1; id<=100000; ++id) {
+        assert(context.claimLegacyHostFeedbackDelivery(id));
+        assert(!context.claimLegacyHostFeedbackDelivery(id));
+        assert(context.legacyHostFeedbackTerminalDeliveries_.size()<=4096);
+    }
+    context.resetLegacyHostFeedbackDeliveries();
+    assert(context.legacyHostFeedbackTerminalOrder_.empty());
+    assert(context.claimLegacyHostFeedbackDelivery(100000));
 }
 """)

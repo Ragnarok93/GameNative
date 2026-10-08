@@ -119,6 +119,7 @@ enum class HostDisplayFeedbackStatus : uint8_t {
     Unknown = 0,
     Confirmed = 1,
     Unavailable = 2,
+    Dropped = 3,
 };
 
 struct HostDisplayFeedbackPacket {
@@ -172,7 +173,7 @@ uint64_t advanceDesiredPresentPhase(
 void publishLsfgHostDisplayFeedback(
         const HostDisplayConfirmation& confirmation,
         const LsfgFrameProvenance& provenance,
-        bool confirmed) noexcept {
+        bool confirmed, bool dropped = false) noexcept {
     if (provenance.nativeImplementation || !provenance.uniqueDelivery || provenance.deliveryId == 0)
         return;
 
@@ -197,7 +198,8 @@ void publishLsfgHostDisplayFeedback(
 
     HostDisplayFeedbackPacket packet{};
     packet.status = static_cast<uint8_t>(
-        confirmed ? HostDisplayFeedbackStatus::Confirmed
+        dropped ? HostDisplayFeedbackStatus::Dropped
+            : confirmed ? HostDisplayFeedbackStatus::Confirmed
             : (confirmation.backend == HostDisplayConfirmationBackend::WsiAccepted
                 ? HostDisplayFeedbackStatus::Unavailable : HostDisplayFeedbackStatus::Unknown));
     packet.kind = provenance.kind;
@@ -867,12 +869,12 @@ void VulkanRendererContext::createSwapchain() {
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = oldSwapchain;
 
-    if (lsfgBackendTransitionId_ != 0)
+    if (lsfgBackendTransitionRevision_ != 0)
         ++lsfgBackendTransitionRecreationAttempts_;
     const VkResult createResult =
         vk_.CreateSwapchainKHR(device, &ci, nullptr, &swapchain);
     if (createResult != VK_SUCCESS) {
-        if (lsfgBackendTransitionId_ != 0 &&
+        if (lsfgBackendTransitionRevision_ != 0 &&
             lsfgBackendTransitionRecreationAttempts_ == 1) {
             lsfgBackendTransitionFirstRecreationFailed_ = true;
             __android_log_print(
@@ -890,7 +892,7 @@ void VulkanRendererContext::createSwapchain() {
         resetHostPhysicalCadenceTelemetry("swapchain-recreated");
     }
     ++hostSwapchainGeneration_;
-    if (lsfgBackendTransitionId_ != 0) {
+    if (lsfgBackendTransitionRevision_ != 0) {
         ++lsfgBackendTransitionRecreationCount_;
         if (lsfgBackendTransitionPolicyCommitted_
                 && !lsfgBackendTransitionPolicyApplied_
@@ -1451,9 +1453,49 @@ bool VulkanRendererContext::isLsfgHostDeliveryStale(
             > MAX_HOST_TEMPORAL_STALE_NS;
 }
 
+bool VulkanRendererContext::claimLegacyHostFeedbackDelivery(uint64_t deliveryId) {
+    std::lock_guard<std::mutex> lock(legacyHostFeedbackMutex_);
+    if (!legacyHostFeedbackTerminalDeliveries_.insert(deliveryId).second)
+        return false;
+    legacyHostFeedbackTerminalOrder_.push_back(deliveryId);
+    // Far beyond the bounded host queues; retain recent terminal outcomes
+    // without growing memory for the lifetime of a game session.
+    if (legacyHostFeedbackTerminalOrder_.size() > 4096) {
+        legacyHostFeedbackTerminalDeliveries_.erase(legacyHostFeedbackTerminalOrder_.front());
+        legacyHostFeedbackTerminalOrder_.pop_front();
+    }
+    return true;
+}
+
+void VulkanRendererContext::resetLegacyHostFeedbackDeliveries() {
+    std::lock_guard<std::mutex> lock(legacyHostFeedbackMutex_);
+    legacyHostFeedbackTerminalDeliveries_.clear();
+    legacyHostFeedbackTerminalOrder_.clear();
+}
+
 void VulkanRendererContext::emitHostDeliveryAccounting(
         const char* reason,
         const LsfgFrameProvenance* provenance) {
+    // Terminal rejection is known even when no host present ID was allocated.
+    // Publish it once, separately from WSI/display confirmation.
+    const bool terminalDrop = reason && (
+        strcmp(reason, "legacy-generated-output-slot-missed") == 0
+        || strcmp(reason, "stale-before-host-snapshot") == 0
+        || strcmp(reason, "queued-delivery-stale") == 0
+        || strcmp(reason, "ahb-reused-before-snapshot") == 0
+        || strcmp(reason, "generated-backlog-protect-source") == 0
+        || strcmp(reason, "host-delivery-queue-full") == 0
+        || strcmp(reason, "queued-import-missing") == 0);
+    if (terminalDrop && provenance && !provenance->nativeImplementation
+            && provenance->valid && provenance->deliveryId != 0
+            && claimLegacyHostFeedbackDelivery(provenance->deliveryId)) {
+        auto rejected = *provenance;
+        rejected.uniqueDelivery = true;
+        HostDisplayConfirmation confirmation{};
+        confirmation.swapchainGeneration = hostSwapchainGeneration_;
+        confirmation.provenanceDesiredPresentTimeNs = provenance->desiredPresentTimeNs;
+        publishLsfgHostDisplayFeedback(confirmation, rejected, false, true);
+    }
     const uint64_t sourceReceived =
         sourceDeliveryReceived_.load(std::memory_order_relaxed);
     const uint64_t generatedReceived =
@@ -1588,6 +1630,7 @@ bool VulkanRendererContext::enqueueLsfgHostDelivery(
             && provenance.contextEpoch != hostDeliveryQueueContextEpoch_) {
         dropQueuedLsfgHostDeliveries("provenance-epoch-reset");
         hostSnapshottedLsfgDeliveries_.clear();
+        resetLegacyHostFeedbackDeliveries();
     }
     if (provenance.contextEpoch != 0)
         hostDeliveryQueueContextEpoch_ = provenance.contextEpoch;
@@ -2658,11 +2701,10 @@ void VulkanRendererContext::hostPresenterLoop() {
         }
         hostPresenterSpaceCv_.notify_all();
 
-        const auto nativeIt = std::find_if(
+        const auto pacedIt = std::find_if(
             present.frameProvenance.begin(), present.frameProvenance.end(),
             [](const LsfgFrameProvenance& provenance) {
-                return provenance.nativeImplementation
-                    && provenance.uniqueDelivery;
+                return provenance.uniqueDelivery;
             });
         const uint64_t desiredNs =
             present.desiredDecision.submittedDesiredPresentTimeNs != 0
@@ -2674,10 +2716,10 @@ void VulkanRendererContext::hostPresenterLoop() {
         // FIFO can retain an ordered batch of future-timed images. MAILBOX
         // cannot: a later QueuePresentKHR may replace an earlier image that has
         // not reached scanout yet. Keep MAILBOX selectable by delaying each
-        // Native unique delivery until shortly before its own display slot.
+        // Legacy or Native unique delivery until shortly before its own display slot.
         // This wait lives only on the split present worker and is intentionally
         // excluded from presenterQueueAgeNs/backlog feedback.
-        if (nativeIt != present.frameProvenance.end()
+        if (pacedIt != present.frameProvenance.end()
                 && present.presentMode == VK_PRESENT_MODE_MAILBOX_KHR
                 && presenterNowNs != 0 && desiredNs != 0 && refreshNs != 0) {
             const uint64_t leadNs = std::clamp<uint64_t>(
@@ -2690,14 +2732,14 @@ void VulkanRendererContext::hostPresenterLoop() {
                 if (delayNs >= 1000000ULL) {
                     __android_log_print(
                         ANDROID_LOG_DEBUG, "LSFG_NATIVE_PRESENT",
-                        "event=mailbox-dispatch-pace desired_ns=%" PRIu64
+                        "event=mailbox-dispatch-pace backend=%s desired_ns=%" PRIu64
                         " lead_ns=%" PRIu64 " delay_ms=%.3f"
                         " source_index=%" PRIu64 " kind=%s"
                         " swapchain_generation=%" PRIu64,
-                        desiredNs, leadNs,
+                        pacedIt->nativeImplementation ? "native" : "legacy", desiredNs, leadNs,
                         static_cast<double>(delayNs) / 1000000.0,
-                        nativeIt->sourceIndex,
-                        nativeIt->kind == 1 ? "generated" : "source",
+                        pacedIt->sourceIndex,
+                        pacedIt->kind == 1 ? "generated" : "source",
                         present.swapchainGeneration);
                 }
             }
@@ -3448,7 +3490,7 @@ ok=true;}catch(...){}
     // whose render-complete semaphore owns the final handoff to WSI.
     bool toXr = xrTargetActive.load() && xrFb!=VK_NULL_HANDLE;
     const bool backendPolicyReady =
-        lsfgBackendTransitionId_ == 0
+        lsfgBackendTransitionRevision_ == 0
         || lsfgBackendTransitionPolicyCommitted_;
     const bool nativeLsfgContentPending =
         !toXr
@@ -4685,6 +4727,7 @@ void VulkanRendererContext::drainLsfgProvenance() {
             pendingLsfgProvenance.clear();
             hostDeliveryQueueContextEpoch_ = packet.contextEpoch;
             hostSnapshottedLsfgDeliveries_.clear();
+            resetLegacyHostFeedbackDeliveries();
             lsfgSwapchainImageAhbs.clear();
             consumedLsfgDeliveries_.clear();
             lastAcceptedDesiredPresentTimeNs_ = 0;
@@ -5769,8 +5812,10 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                     ? (confirmed ? "none" : (reason ? reason : "unknown"))
                     : "none");
         }
-        publishLsfgHostDisplayFeedback(
-            confirmation, provenance, confirmed);
+        if (provenance.uniqueDelivery && !provenance.nativeImplementation
+                && claimLegacyHostFeedbackDelivery(provenance.deliveryId)) {
+            publishLsfgHostDisplayFeedback(confirmation, provenance, confirmed);
+        }
 
         if (!provenance.nativeImplementation && provenance.kind == 1
                 && provenance.outputSlotIndex != 0) {
@@ -6321,6 +6366,7 @@ void VulkanRendererContext::cleanupAllAHBCache() {
     pendingLsfgHostDeliveries_.clear();
     pendingLsfgHostDeliveryCount_.store(0, std::memory_order_relaxed);
     hostSnapshottedLsfgDeliveries_.clear();
+    resetLegacyHostFeedbackDeliveries();
 }
 
 
@@ -6531,3 +6577,4 @@ std::vector<int> VulkanRendererContext::getSupportedPresentModes() const {
 }
 
 #pragma GCC diagnostic pop
+

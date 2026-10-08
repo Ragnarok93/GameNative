@@ -169,13 +169,13 @@ object LsfgQuickMenuHelper {
     fun setFrameQueueEnabled(container: Container, enabled: Boolean) {
         container.putExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_ENABLED, enabled.toString())
         container.saveData()
-        // Host-only setting: do not rewrite conf.toml just to change queue depth.
-        // This avoids an unnecessary LSFG runtime/config transition.
+        scheduleRuntimeConfig(container)
     }
 
     fun setFrameQueueTarget(container: Container, target: FrameQueueTarget) {
         container.putExtra(LsfgVkManager.EXTRA_FRAME_QUEUE_TARGET, target.depth.toString())
         container.saveData()
+        scheduleRuntimeConfig(container)
     }
 
     fun applyPresentMode(container: Container, mode: String) {
@@ -216,10 +216,20 @@ object LsfgQuickMenuHelper {
         frameQueueTarget = frameQueueTarget(container),
     )
 
-    private fun scheduleRuntimeConfig(container: Container) {
+    internal fun scheduleRuntimeConfig(
+        container: Container,
+        enabledOverride: Boolean? = null,
+        targetOverride: Int? = null,
+    ) {
         // Capture every coupled LSFG mode before entering the debounce queue.
         // A Flow-only update must not reread framegen mode later and vice versa.
-        val snapshot = snapshotRuntimeConfig(container)
+        val captured = snapshotRuntimeConfig(container)
+        val snapshot = captured.copy(
+            frameQueueEnabled = enabledOverride ?: captured.frameQueueEnabled,
+            frameQueueTarget = targetOverride?.let { depth ->
+                FrameQueueTarget.entries.first { it.depth == depth.coerceIn(0, 2) }
+            } ?: captured.frameQueueTarget,
+        )
         runtimeConfigDebouncer.submit {
             // The winning debounced operation allocates the revision at commit,
             // so canceled slider updates never create stale revisions.
@@ -289,4 +299,5 @@ object LsfgQuickMenuHelper {
         )
     }
 }
+
 

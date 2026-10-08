@@ -208,7 +208,7 @@ object LsfgVkManager {
     // Current runtime package revision. Keep the exact native gitlink revision
     // in the marker so loader-visible copies cannot masquerade as another build.
     private const val RUNTIME_VERSION =
-        "gamenative-bannerlator-engine-926ebc1314935030d4c58278458bd26291124c4b-r22"
+        "gamenative-bannerlator-engine-202f40b873e895220ae376379ff0e6d4e39b047b-r23"
 
     // Asset path for manifest (still in assets)
     private const val ASSET_DIR = "lsfg_vk/android_arm64_v8a"
@@ -597,6 +597,7 @@ object LsfgVkManager {
             snapshot.thermalStatus?.takeIf { it in 0..6 }?.let {
                 appendLine("thermal_status=$it")
             }
+            appendLine("source_metrics_valid=${if (totalFrames > 0) 1 else 0}")
             appendLine("source_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
             appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
             appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
@@ -620,7 +621,7 @@ object LsfgVkManager {
             renderer.setFrameGenerationPressure(
                 gpu,
                 snapshot.thermalStatus ?: -1,
-                snapshot.fps,
+                if (totalFrames > 0) snapshot.fps else -1f,
                 nativeOutputFps,
                 snapshot.frameTimeP95Ms,
                 slowRatio.toFloat(),
@@ -689,10 +690,12 @@ object LsfgVkManager {
                     if (statsFile.isFile &&
                         System.currentTimeMillis() - statsFile.lastModified() <= STATS_FRESHNESS_MS
                     ) {
-                        statsFile.readLines()
-                            .firstOrNull { it.startsWith("fps=") }
-                            ?.substringAfter("fps=")
-                            ?.toFloatOrNull()
+                        val values = statsFile.readLines().mapNotNull { line ->
+                            val split = line.indexOf('=')
+                            if (split > 0) line.substring(0, split) to line.substring(split + 1) else null
+                        }.toMap()
+                        if (values["confirmed_output_valid"] == "0") null
+                        else values["fps"]?.toFloatOrNull()?.takeIf { it.isFinite() && it >= 0f }
                     } else {
                         null
                     }
@@ -1481,6 +1484,7 @@ object LsfgVkManager {
                 // reuse before the first mutation, and publish an applied snapshot
                 // only after successful initialization on this exact renderer.
                 appliedNativePolicy = null
+                renderer.beginLsfgBackendTransition(snapshot.backendGeneration, snapshot.revision)
                 if (snapshot.backend == BACKEND_NATIVE && snapshot.enabled) {
                     nativeActivationStartNs = System.nanoTime()
                     nativeLastWsiProgressNs = 0L
@@ -1743,6 +1747,10 @@ object LsfgVkManager {
                 } else {
                     discardStaleSnapshot(snapshot, "exception-after-stale")
                 }
+            } finally {
+                // An initialization failure must not leave presentation policy
+                // deferred indefinitely. A newer backend ID rejects this commit.
+                renderer.commitLsfgBackendTransitionPolicy(snapshot.backendGeneration)
             }
         }
     }
@@ -1780,25 +1788,8 @@ object LsfgVkManager {
         enabledOverride: Boolean? = null,
         targetOverride: Int? = null,
     ) {
-        val renderer = nativeRendererRef?.get() ?: return
-        if (nativeRendererContainer !== container) return
-        // Present-mode selection is backend-neutral: Legacy and Native must
-        // honor the same Quick Menu Mailbox/FIFO policy.
-        val selectedPresentMode =
-            if (presentMode(container) == "mailbox") {
-                1 // VK_PRESENT_MODE_MAILBOX_KHR.
-            } else {
-                2 // VK_PRESENT_MODE_FIFO_KHR.
-            }
-        renderer.setVkPresentMode(selectedPresentMode)
-        renderer.setLsfgFrameQueue(
-            enabledOverride ?: (
-                frameQueueEnabled(container) &&
-                    isArmed(container) &&
-                    multiplier(container) >= 2
-                ),
-            (targetOverride ?: frameQueueTarget(container)).coerceIn(0, 2),
-        )
+        // Compatibility callers join the same captured, debounced transaction.
+        LsfgQuickMenuHelper.scheduleRuntimeConfig(container, enabledOverride, targetOverride)
     }
 
     @JvmStatic
@@ -2747,3 +2738,4 @@ object LsfgVkManager {
         return published
     }
 }
+

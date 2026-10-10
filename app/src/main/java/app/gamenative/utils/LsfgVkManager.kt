@@ -129,7 +129,7 @@ object LsfgVkManager {
         fun hasSameEffectiveNativePolicy(next: NativeRuntimeConfigSnapshot): Boolean =
             backend == BACKEND_NATIVE && next.backend == BACKEND_NATIVE &&
                 enabled && next.enabled &&
-                copy(revision = next.revision, presentMode = next.presentMode) == next
+                copy(revision = next.revision) == next
     }
 
     enum class NativeBackendPhase {
@@ -990,6 +990,14 @@ object LsfgVkManager {
         fresh = fresh,
     )
 
+    internal fun shouldAwaitLegacySourceOnly(
+        liveLegacyTransition: Boolean,
+        legacyState: RuntimeState,
+        acknowledgedForOwner: Boolean,
+    ): Boolean =
+        (legacyState.fresh && legacyState.resident && !legacyState.readyForSourceOnly) ||
+            (liveLegacyTransition && !acknowledgedForOwner)
+
     /**
      * Warm the native renderer shader cache off the launch-critical path.
      * Upstream 1.3 invokes this during Bionic startup; keep it best-effort so
@@ -1027,6 +1035,15 @@ object LsfgVkManager {
         val container: Container,
     )
     @Volatile private var appliedNativePolicy: AppliedNativePolicy? = null
+
+    private data class LegacySourceOnlyOwner(
+        val backendGeneration: Long,
+        val renderer: WeakReference<VulkanRenderer>,
+        val container: Container,
+    )
+    // Acknowledgement belongs to a backend owner, not every settings revision.
+    // Quick Menu suspension can age its telemetry without undoing the barrier.
+    @Volatile private var legacySourceOnlyOwner: LegacySourceOnlyOwner? = null
 
     private fun nativePolicyMatches(
         renderer: VulkanRenderer,
@@ -1483,6 +1500,11 @@ object LsfgVkManager {
                 // A real apply may change queue/refresh/cache settings. Invalidate
                 // reuse before the first mutation, and publish an applied snapshot
                 // only after successful initialization on this exact renderer.
+                val sourceOnlyOwner = legacySourceOnlyOwner
+                val acknowledgedForOwner = sourceOnlyOwner?.let {
+                    it.renderer.get() === renderer && it.container === container &&
+                        it.backendGeneration == snapshot.backendGeneration
+                } == true
                 appliedNativePolicy = null
                 renderer.beginLsfgBackendTransition(snapshot.backendGeneration, snapshot.revision)
                 if (snapshot.backend == BACKEND_NATIVE && snapshot.enabled) {
@@ -1497,6 +1519,7 @@ object LsfgVkManager {
                 val requested = snapshot.backend == BACKEND_NATIVE
                 val enabled = requested && snapshot.enabled && snapshot.multiplier >= 2
                 if (!requested || !enabled) {
+                    if (!requested) legacySourceOnlyOwner = null
                     renderer.setFrameGenerationEnabled(false)
                     renderer.setVkPresentMode(if (snapshot.presentMode == "mailbox") 1 else 2)
                     renderer.setLsfgFrameQueue(
@@ -1555,14 +1578,14 @@ object LsfgVkManager {
                 val liveLegacyTransition =
                     backendRequest?.previousBackend == BACKEND_LEGACY
                 val legacyAckRequired =
-                    liveLegacyTransition ||
-                        (legacyStateBefore.fresh &&
-                            legacyStateBefore.resident &&
-                            !legacyStateBefore.readyForSourceOnly)
+                    shouldAwaitLegacySourceOnly(
+                        liveLegacyTransition, legacyStateBefore, acknowledgedForOwner)
+                if (legacyAckRequired) legacySourceOnlyOwner = null
 
                 // Native compute cannot arm until the resident implicit layer has
                 // been commanded source-only. This prevents double generation.
                 if (!publishLegacySourceOnlyForNative(container, snapshot)) {
+                    legacySourceOnlyOwner = null
                     renderer.setFrameGenerationEnabled(false)
                     nativeApplyFailed = true
                     nativeApplyComplete = true
@@ -1648,6 +1671,9 @@ object LsfgVkManager {
                     discardStaleSnapshot(snapshot, "before-native-arm")
                     return@execute
                 }
+
+                legacySourceOnlyOwner = LegacySourceOnlyOwner(
+                    snapshot.backendGeneration, WeakReference(renderer), container)
 
                 // Native honors the selected presentation policy. FIFO may queue
                 // the timed batch in order; MAILBOX is host-paced near each

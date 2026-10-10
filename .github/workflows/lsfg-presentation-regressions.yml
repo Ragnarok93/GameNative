@@ -5,11 +5,13 @@ on:
     paths:
       - "app/src/main/cpp/**"
       - "tools/*lsfg*test.py"
+      - "tools/native_*regression_test.py"
       - ".github/workflows/lsfg-presentation-regressions.yml"
   pull_request:
     paths:
       - "app/src/main/cpp/**"
       - "tools/*lsfg*test.py"
+      - "tools/native_*regression_test.py"
       - ".github/workflows/lsfg-presentation-regressions.yml"
 permissions:
   contents: read
@@ -29,6 +31,8 @@ jobs:
         run: |
           python3 tools/lsfg_presentation_regression_test.py
           python3 tools/lsfg_stability_regression_test.py
+          python3 tools/native_density_regression_test.py
+          python3 tools/native_admission_regression_test.py
       - name: Exercise existing display timing, Native bridge and Native pacer
         run: |
           python3 tools/host_display_timing_test.py

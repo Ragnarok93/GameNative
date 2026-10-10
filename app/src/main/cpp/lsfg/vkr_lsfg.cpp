@@ -451,9 +451,15 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         // Physical delivery cannot exceed panel refresh. Keep the fixed
         // multiplier authoritative for generation, while judging Flow pressure
         // against the reachable physical output instead of an impossible rate.
-        const double output_target = stats.refresh_rate > 1.0f
+        const double panel_target = stats.refresh_rate > 1.0f
             ? std::min(requested_output_target, static_cast<double>(stats.refresh_rate))
             : requested_output_target;
+        // A retained density cap limits reachable output until the next probe.
+        // Do not report the deliberately omitted generations as Flow pressure.
+        const double output_target = stats.target_rate > 0.0f && stats.source_rate > 0.0f
+            ? std::min(panel_target,
+                stats.source_rate * static_cast<double>(lsfg->adaptive_generation_cap + 1))
+            : panel_target;
         const bool output_valid =
             pressure_fresh && lsfg->pressure.output_valid;
         const bool output_satisfied =
@@ -480,7 +486,10 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         observation.totalLsfgMs = 0.0;
         observation.flowMs = 0.0;
         observation.mipmapsMs = 0.0;
-        observation.generationCount = lsfg->plan.generations;
+        const size_t selected_generations = stats.target_rate > 0.0f
+            ? std::min<size_t>(lsfg->plan.generations, lsfg->adaptive_generation_cap)
+            : lsfg->plan.generations;
+        observation.generationCount = selected_generations;
         observation.wsiPresentationPressure =
             lsfg->presentation_pressure.pressure_active
             || lsfg->synthetic_drop_pressure;
@@ -496,7 +505,7 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                 ? lsfg->pressure.source_fps : stats.source_rate;
         observation.adaptiveFramegenMode = stats.target_rate > 0.0f;
         observation.scheduledGenerationDensity =
-            static_cast<double>(lsfg->plan.generations);
+            static_cast<double>(selected_generations);
         observation.fixedMultiplierMode = stats.target_rate <= 0.0f;
         observation.outputFps = output_valid ? lsfg->pressure.output_fps : 0.0;
         observation.outputTargetFps = output_target;
@@ -595,14 +604,12 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                     && !lsfg->presentation_pressure.pressure_active
                     && (lsfg->adaptive_generation_cap == 0
                         || lsfg->presentation_pressure.generated_delivery_efficiency >= 0.70f));
-            const bool output_recovered =
-                lsfg->adaptive_generation_cap == 0
-                    ? true
-                    : (!output_valid || output_satisfied);
+            // Healthy delivery and GPU headroom permit a bounded density probe.
+            // Full requested cadence cannot be reached under our own cap, and
+            // a new Flow preset must not pin that cap above its new scale floor.
             const bool recovery =
-                stats.target_rate > 0.0f && at_minimum && global_pressure_valid
+                stats.target_rate > 0.0f && global_pressure_valid
                 && lsfg->pressure.gpu_usage_percent <= 88.0f
-                && output_recovered
                 && confirmation_recovered
                 && !lsfg->synthetic_drop_pressure;
             if (recovery && lsfg->adaptive_generation_cap < VKR_LSFG_MAX_GENERATIONS) {

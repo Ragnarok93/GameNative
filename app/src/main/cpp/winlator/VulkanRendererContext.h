@@ -136,7 +136,7 @@ static constexpr uint32_t MAX_HOST_DELIVERY_QUEUE_CAPACITY =
     MIN_HOST_DELIVERY_QUEUE_CAPACITY + 2;
 static constexpr uint32_t MAX_HOST_PRESENT_QUEUE_DEPTH = 2;
 static constexpr uint32_t MAX_NATIVE_HOST_PRESENT_QUEUE_DEPTH =
-    VKR_LSFG_MAX_GENERATIONS + 1;
+    MAX_HOST_DELIVERY_QUEUE_CAPACITY;
 static constexpr uint32_t VK_MAX_COMPOSITE_TARGETS = 6;
 // A generated/composited window normally rotates through only a small AHB set.
 // Keep enough history for reuse without letting a long session consume the
@@ -584,6 +584,8 @@ private:
     std::thread hostPresenterThread_;
     std::atomic<bool> hostPresenterRunning_{false};
     std::atomic<bool> hostPresenterBusy_{false};
+    // Protected by hostPresenterMutex_; only a validated Native source deadline.
+    uint64_t hostPresenterSourceDesiredNs_ = 0;
     std::atomic<bool> hostPresentCompletionPending_{false};
     bool hostAsyncPresenterEnabled_ = false;
     bool hostAsyncPresenterActive_ = false;

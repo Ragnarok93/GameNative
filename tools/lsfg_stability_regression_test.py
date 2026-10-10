@@ -225,7 +225,7 @@ if len(sys.argv) == 1 or sys.argv[1] == "target":
 #include <algorithm>
 #include <cassert>
 struct Stats {double target_rate=0, source_rate=30, refresh_rate=60;};
-struct Runtime { struct { unsigned multiplier=4; } config; struct Pacer {
+struct Runtime { unsigned adaptive_generation_cap=3; struct { unsigned multiplier=4; } config; struct Pacer {
     auto Config() const { return Runtime{}.config; }
 } pacer; };
 double targetFps(Stats stats) {

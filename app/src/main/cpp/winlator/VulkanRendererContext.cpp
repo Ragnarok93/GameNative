@@ -2415,9 +2415,36 @@ uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
                 oldestAgeNs =
                     nowNs - pendingHostPresents_.front().enqueuedAtNs;
         }
-        const uint64_t workAheadNs =
+        uint64_t workAheadNs =
             oldestAgeNs
             + static_cast<uint64_t>(occupied) * serviceEstimateNs;
+        // A single paced source from the preceding burst can finish as the new
+        // source arrives. Its elapsed queue age is not future presenter work.
+        // Keep the conservative estimate for synthetic tails and real backlog.
+        uint64_t sourceTailDesiredNs = 0;
+        if (occupied == 1) {
+            if (queued == 1 && oldestAgeNs <= sourceIntervalNs + hostRefreshPeriodNs_) {
+                const auto& tail = pendingHostPresents_.front();
+                const bool nativeSource = std::any_of(
+                    tail.frameProvenance.begin(), tail.frameProvenance.end(),
+                    [](const LsfgFrameProvenance& provenance) {
+                        return provenance.valid && provenance.nativeImplementation
+                            && provenance.uniqueDelivery && provenance.kind == 0;
+                    });
+                if (nativeSource)
+                    sourceTailDesiredNs = tail.desiredDecision.submittedDesiredPresentTimeNs;
+            } else if (queued == 0) {
+                sourceTailDesiredNs = hostPresenterSourceDesiredNs_;
+            }
+        }
+        const uint64_t nowNs = monotonicTimeNs();
+        if (sourceTailDesiredNs != 0 && hostRefreshPeriodNs_ != 0
+                && sourceTailDesiredNs <= nowNs + hostRefreshPeriodNs_
+                && (sourceTailDesiredNs >= nowNs
+                    || nowNs - sourceTailDesiredNs <= hostRefreshPeriodNs_)) {
+            workAheadNs = (sourceTailDesiredNs > nowNs ? sourceTailDesiredNs - nowNs : 0)
+                + p50PresentNs;
+        }
         uint32_t timeCapacity = 0;
         if (workAheadNs < sourceIntervalNs) {
             const uint64_t availableNs = sourceIntervalNs - workAheadNs;
@@ -2720,6 +2747,14 @@ void VulkanRendererContext::hostPresenterLoop() {
                     presenterNowNs - present.enqueuedAtNs;
             }
             hostPresenterBusy_.store(true, std::memory_order_release);
+            hostPresenterSourceDesiredNs_ = 0;
+            if (std::any_of(present.frameProvenance.begin(), present.frameProvenance.end(),
+                    [](const LsfgFrameProvenance& provenance) {
+                        return provenance.valid && provenance.nativeImplementation
+                            && provenance.uniqueDelivery && provenance.kind == 0;
+                    })) {
+                hostPresenterSourceDesiredNs_ = present.desiredDecision.submittedDesiredPresentTimeNs;
+            }
         }
         hostPresenterSpaceCv_.notify_all();
 
@@ -2808,6 +2843,7 @@ void VulkanRendererContext::hostPresenterLoop() {
             std::lock_guard<std::mutex> lock(hostPresenterMutex_);
             completedHostPresents_.push_back(std::move(completed));
             hostPresenterBusy_.store(false, std::memory_order_release);
+            hostPresenterSourceDesiredNs_ = 0;
             hostPresentCompletionPending_.store(true, std::memory_order_release);
         }
         hostPresenterDrainCv_.notify_all();
@@ -5189,11 +5225,14 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
         : 0.0;
     const double confirmedOutputFps =
         sourceConfirmedFps + generatedConfirmedFps;
-    const double targetFps = framegenTargetRate != 0
+    const double requestedTargetFps = framegenTargetRate != 0
         ? static_cast<double>(framegenTargetRate)
         : (sourceConfirmedFps > 0.0
             ? sourceConfirmedFps * static_cast<double>(framegenMultiplier)
             : 0.0);
+    const double targetFps = hostRefreshPeriodNs_ != 0
+        ? std::min(requestedTargetFps, 1000000000.0 / static_cast<double>(hostRefreshPeriodNs_))
+        : requestedTargetFps;
     const double deficitRatio =
         targetFps > 1.0
             ? std::clamp(
@@ -5214,8 +5253,7 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
                 && (generatedEfficiency < 0.55
                     || timeoutRate >= 0.40
                     || imbalance))
-            || nativeGeneratedRejectedEventNs_.size() >= 2
-            || (targetFps > 1.0 && deficitRatio >= 0.15));
+            || nativeGeneratedRejectedEventNs_.size() >= 2);
 
     if (rawPressure) {
         nativePresentationPressureStrikes_ =

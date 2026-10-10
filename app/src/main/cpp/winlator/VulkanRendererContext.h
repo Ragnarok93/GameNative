@@ -862,7 +862,8 @@ private:
     uint64_t nativeLastSourceFrame_ = 0;
     uint64_t nativeDeliveryId_ = 0;
     uint64_t nativeRuntimeSessionId_ = 0;
-    void waitNativeResources();
+    void waitNativeResources(bool drainPresenter = true);
+    HostDisplayConfirmationBackend selectHostDisplayConfirmationBackend() const;
     void recoverNativeAcquiredFrame();
     std::array<std::array<VkSemaphore, 3>, MAX_FRAMES_IN_FLIGHT>
         nativeExtraAcquireSems_{};

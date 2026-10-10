@@ -442,12 +442,18 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
             stats.last_elapsed > 0.0f
                 ? static_cast<double>(stats.last_elapsed) * 1000.0
                 : (stats.target_rate > 0.0f ? 1000.0 / stats.target_rate : 16.667);
-        const double output_target =
+        const double requested_output_target =
             stats.target_rate > 0.0f
                 ? stats.target_rate
                 : (stats.source_rate > 0.0f
                     ? stats.source_rate * static_cast<double>(lsfg->pacer.Config().multiplier)
                     : 0.0);
+        // Physical delivery cannot exceed panel refresh. Keep the fixed
+        // multiplier authoritative for generation, while judging Flow pressure
+        // against the reachable physical output instead of an impossible rate.
+        const double output_target = stats.refresh_rate > 1.0f
+            ? std::min(requested_output_target, static_cast<double>(stats.refresh_rate))
+            : requested_output_target;
         const bool output_valid =
             pressure_fresh && lsfg->pressure.output_valid;
         const bool output_satisfied =

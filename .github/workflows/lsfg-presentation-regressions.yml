@@ -26,7 +26,9 @@ jobs:
           distribution: temurin
           java-version: "17"
       - name: Exercise production presentation, cadence, feedback and cache code
-        run: python3 tools/lsfg_presentation_regression_test.py
+        run: |
+          python3 tools/lsfg_presentation_regression_test.py
+          python3 tools/lsfg_stability_regression_test.py
       - name: Exercise existing display timing, Native bridge and Native pacer
         run: |
           python3 tools/host_display_timing_test.py

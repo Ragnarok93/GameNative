@@ -151,7 +151,7 @@ LsfgPacerStats LsfgPacer::Stats() const {
     stats.source_rate = source_interval > 0.0f ? 1.0f / source_interval : 0.0f;
     stats.loop_rate = loop_interval > 0.0f ? 1.0f / loop_interval : 0.0f;
     stats.refresh_rate = config.refresh_rate;
-    stats.target_rate = static_cast<float>(config.target_rate);
+    stats.target_rate = static_cast<float>(adaptive_scheduler.targetFps());
     stats.slots = config.refresh_rate * source_interval;
     stats.limit = limit;
     stats.rates_settled = RatesSettled();

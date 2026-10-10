@@ -335,9 +335,9 @@ void VulkanRendererContext::blitCompositeToSwapchain(VkCommandBuffer cmd, const 
                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 }
 
-void VulkanRendererContext::waitNativeResources() {
+void VulkanRendererContext::waitNativeResources(bool drainPresenter) {
     const auto waitStart = std::chrono::steady_clock::now();
-    drainHostPresenter("native-lsfg-resource-change");
+    if (drainPresenter) drainHostPresenter("native-lsfg-resource-change");
     for (auto fence : inFlightFences) {
         if (fence != VK_NULL_HANDLE
                 && vk_.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS) {
@@ -350,8 +350,10 @@ void VulkanRendererContext::waitNativeResources() {
     nativeHostWaitNsTotal_.fetch_add(hostWaitNs, std::memory_order_relaxed);
     nativeHostWaitSamples_.fetch_add(1, std::memory_order_relaxed);
     RLOG(
-        "LSFG_NATIVE_SYNC: event=resource_retirement reason=native-lsfg-resource-change "
-        "host_wait_ms=%.3f steady_state=0",
+        "LSFG_NATIVE_SYNC: event=resource_retirement reason=%s "
+        "presenter_drained=%d host_wait_ms=%.3f steady_state=0",
+        drainPresenter ? "native-lsfg-resource-change" : "flow-gpu-users-only",
+        drainPresenter ? 1 : 0,
         (double)hostWaitNs / 1000000.0);
 }
 
@@ -742,7 +744,9 @@ uint64_t VulkanRendererContext::getSourceDisplayConfirmedFrameCount() const {
 }
 
 bool VulkanRendererContext::isDisplayConfirmationAvailable() const {
-    return hostGoogleDisplayTimingEnabled || hostPresentWaitEnabled;
+    std::shared_lock<std::shared_mutex> frameLock(frameMutex);
+    return selectHostDisplayConfirmationBackend()
+        != HostDisplayConfirmationBackend::WsiAccepted;
 }
 
 uint64_t VulkanRendererContext::getRealFrameCount() const {

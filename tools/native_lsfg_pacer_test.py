@@ -69,6 +69,8 @@ int main() {
             }
         }
         assert(pacer.Stats().rates_settled);
+        // Control feedback must use the same reachable target as scheduling.
+        assert(pacer.Stats().target_rate == 120);
         assert(pacer.Stats().source_rate > 59 && pacer.Stats().source_rate < 61);
     }
     // Acceptance targets on a 120-Hz panel: with a 30-Hz source the

@@ -36,6 +36,7 @@ constexpr std::size_t kMaxPendingLsfgProvenance = 512;
 constexpr std::size_t kMaxPendingHostConfirmations = 256;
 constexpr uint64_t kMaxHostConfirmationAgeNs = 1000000000ULL;
 constexpr uint64_t kMaxSanePresentMarginNs = 1000000000ULL;
+constexpr uint64_t kMaxHostFutureDesiredPresentNs = 250000000ULL;
 constexpr int kLsfgProvenanceReceiveBufferBytes = 1024 * 1024;
 constexpr char LSFG_DISPLAY_FEEDBACK_SOCKET[] =
     "gamenative-lsfg-display-feedback-v1";
@@ -76,6 +77,26 @@ const char* hostDisplayBackendName(HostDisplayConfirmationBackend backend) {
             return "wsi-accepted";
     }
     return "wsi-accepted";
+}
+
+uint64_t mailboxDispatchDelayNs(
+        const HostDesiredPresentDecision& decision, uint64_t nowNs) {
+    uint64_t desiredNs = decision.submittedDesiredPresentTimeNs;
+    if (desiredNs == 0) {
+        // Raw intent is usable only when timestamp submission is unsupported.
+        // A rejected/mixed/stale intent must never re-enter the pacing path.
+        if (std::strcmp(decision.fallbackReason,
+                        "google-display-timing-unavailable") != 0)
+            return 0;
+        desiredNs = decision.provenanceDesiredPresentTimeNs;
+    }
+    if (nowNs == 0 || decision.refreshPeriodNs == 0 || desiredNs <= nowNs)
+        return 0;
+    const uint64_t futureNs = desiredNs - nowNs;
+    if (futureNs > kMaxHostFutureDesiredPresentNs) return 0;
+    const uint64_t leadNs = std::clamp<uint64_t>(
+        decision.refreshPeriodNs / 3, 1000000ULL, 4000000ULL);
+    return futureNs > leadNs ? futureNs - leadNs : 0;
 }
 
 const char* provenanceKindName(uint8_t kind) {
@@ -2583,7 +2604,8 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
         nativeOutputConfirmedFps_,
         nativeSourceConfirmedFps_,
         nativeGeneratedConfirmedFps_,
-        (hostPresentWaitEnabled || hostGoogleDisplayTimingEnabled) ? 1 : 0,
+        selectHostDisplayConfirmationBackend()
+            != HostDisplayConfirmationBackend::WsiAccepted ? 1 : 0,
         static_cast<double>(
             nativePresentationPressure_.generated_delivery_efficiency),
         static_cast<double>(
@@ -2724,8 +2746,9 @@ void VulkanRendererContext::hostPresenterLoop() {
                 && presenterNowNs != 0 && desiredNs != 0 && refreshNs != 0) {
             const uint64_t leadNs = std::clamp<uint64_t>(
                 refreshNs / 3, 1000000ULL, 4000000ULL);
-            if (desiredNs > presenterNowNs + leadNs) {
-                const uint64_t delayNs = desiredNs - leadNs - presenterNowNs;
+            const uint64_t delayNs =
+                mailboxDispatchDelayNs(present.desiredDecision, presenterNowNs);
+            if (delayNs != 0) {
                 std::this_thread::sleep_for(std::chrono::nanoseconds(delayNs));
                 present.mailboxDispatchDelayNs = delayNs;
                 presenterNowNs = monotonicTimeNs();
@@ -3413,8 +3436,12 @@ void VulkanRendererContext::renderLoop() {
                   || cursorMoved.load(); }); }
         if (!isRunning) break;
 
-        if (hostPresentCompletionPending_.load(std::memory_order_acquire))
+        if (hostPresentCompletionPending_.load(std::memory_order_acquire)) {
+            // Completion-only wakes mutate the same evidence/queue state as
+            // renderFrame and must exclude manager-owned settings retirement.
+            std::shared_lock<std::shared_mutex> frameLock(frameMutex);
             processHostPresentCompletions();
+        }
 
         if (surfaceDetached.load(std::memory_order_acquire))
             continue;
@@ -3636,8 +3663,12 @@ ok=true;}catch(...){}
             nativeRebuildReason = "resolution-change";
         }
         const auto nativePrepareStart = std::chrono::steady_clock::now();
+        const bool flowOnly = chainRebuild && !compositeRebuild
+            && std::strcmp(nativeRebuildReason, "flow-scale-change") == 0;
         if (rebuild) {
-            waitNativeResources();
+            // Flow graph users retire on GPU fences. Pending host presents
+            // consume completed WSI images, not this graph; keep them moving.
+            waitNativeResources(!flowOnly);
             vkr_lsfg_forget_targets(lsfg);
         }
         if (!createCompositeTargets(swapchainExt.width, swapchainExt.height, targets)
@@ -3650,8 +3681,6 @@ ok=true;}catch(...){}
                 nativeRebuildReason, swapchainExt.width, swapchainExt.height, (int)swapchainFmt);
         } else {
             if (rebuild) {
-                const bool flowOnly = !compositeRebuild
-                    && std::strcmp(nativeRebuildReason, "flow-scale-change") == 0;
                 if (!flowOnly) ++nativeLsfgContextEpoch_;
                 const uint64_t prepareNs = static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -3697,7 +3726,8 @@ ok=true;}catch(...){}
                     framegenGpuUsagePercent_.load(std::memory_order_relaxed),
                     framegenThermalStatus_.load(std::memory_order_relaxed),
                     framegenSourceFps_.load(std::memory_order_relaxed),
-                    (hostGoogleDisplayTimingEnabled || hostPresentWaitEnabled)
+                    selectHostDisplayConfirmationBackend()
+                        != HostDisplayConfirmationBackend::WsiAccepted
                         && nativePresentationEvidenceStartNs_ != 0
                         && sourceArrivalNs - nativePresentationEvidenceStartNs_ >= 500000000ULL
                             ? static_cast<float>(nativeSourceConfirmedFps_ + nativeGeneratedConfirmedFps_)
@@ -4121,11 +4151,7 @@ ok=true;}catch(...){}
         }
 
         HostDisplayConfirmationBackend confirmationBackend =
-            HostDisplayConfirmationBackend::WsiAccepted;
-        if (hostPresentWaitEnabled && vk_.WaitForPresentKHR)
-            confirmationBackend = HostDisplayConfirmationBackend::PresentWait;
-        if (hostGoogleDisplayTimingEnabled && vk_.GetPastPresentationTimingGOOGLE)
-            confirmationBackend = HostDisplayConfirmationBackend::GoogleDisplayTiming;
+            selectHostDisplayConfirmationBackend();
 
         const uint32_t gpuOutstanding =
             countOutstandingFrameSubmissions(true);
@@ -5122,8 +5148,8 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
     trimEvidence(nativeGeneratedUnobservedEventNs_, cutoff);
     trimEvidence(nativeGeneratedRejectedEventNs_, cutoff);
 
-    const bool confirmationAvailable =
-        hostGoogleDisplayTimingEnabled || hostPresentWaitEnabled;
+    const bool confirmationAvailable = selectHostDisplayConfirmationBackend()
+        != HostDisplayConfirmationBackend::WsiAccepted;
     const std::size_t sourceResolved =
         nativeSourceConfirmedEventNs_.size()
         + nativeSourceUnobservedEventNs_.size();
@@ -5553,7 +5579,6 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
         decision.fallbackReason = "clock-read-failed";
         return decision;
     }
-    constexpr uint64_t kMaxFutureDesiredPresentNs = 250000000ULL;
     if (desired <= nowNs)
         decision.desiredStaleByNs = nowNs - desired;
     if (decision.desiredStaleByNs > MAX_HOST_TEMPORAL_STALE_NS) {
@@ -5621,7 +5646,7 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
         return decision;
     }
     decision.desiredFutureByNs = scheduled - nowNs;
-    if (decision.desiredFutureByNs > kMaxFutureDesiredPresentNs) {
+    if (decision.desiredFutureByNs > kMaxHostFutureDesiredPresentNs) {
         decision.fallbackReason = "too-far-future";
         return decision;
     }
@@ -5692,8 +5717,8 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         uint64_t uniquePhysicalIntervalNs = 0;
         if (confirmed && provenance.uniqueDelivery) {
             // Confirmation truth is independent of timestamp availability.
-            // VK_KHR_present_wait proves physical delivery but does not expose
-            // actualPresentTime; only cadence-error math requires that value.
+            // FIFO present-wait proves delivery without actualPresentTime.
+            // Mailbox replacement waits are excluded by backend selection.
             ++uniquePhysicalPresent_;
             hostUniqueDisplayConfirmedEpoch_.fetch_add(1, std::memory_order_relaxed);
             if (provenance.kind == 1) {
@@ -5997,6 +6022,17 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             static_cast<double>(confirmation.submitCallNs) / 1000000.0,
             static_cast<double>(confirmation.presentCallNs) / 1000000.0);
     }
+}
+
+HostDisplayConfirmationBackend VulkanRendererContext::selectHostDisplayConfirmationBackend() const {
+    if (hostGoogleDisplayTimingEnabled && vk_.GetPastPresentationTimingGOOGLE)
+        return HostDisplayConfirmationBackend::GoogleDisplayTiming;
+    // Replaced MAILBOX images also signal present-wait success. Only FIFO
+    // provides per-image delivery evidence through this extension.
+    if (activePresentMode == VK_PRESENT_MODE_FIFO_KHR
+            && hostPresentWaitEnabled && vk_.WaitForPresentKHR)
+        return HostDisplayConfirmationBackend::PresentWait;
+    return HostDisplayConfirmationBackend::WsiAccepted;
 }
 
 void VulkanRendererContext::recordHostPresent(

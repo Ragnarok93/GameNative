@@ -1,5 +1,6 @@
 package app.gamenative.diagnostics
 
+import android.app.Application
 import java.io.ByteArrayOutputStream
 import app.gamenative.powercontrol.PowerBaselineScripts
 import app.gamenative.powercontrol.PowerManager
@@ -12,8 +13,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class)
 class LsfgDiagnosticExporterTest {
     private lateinit var imageRoot: File
     private lateinit var homeRoot: File

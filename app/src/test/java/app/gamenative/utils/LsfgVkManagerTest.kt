@@ -1,5 +1,7 @@
 package app.gamenative.utils
 
+import android.app.Application
+import app.gamenative.PrefManager
 import app.gamenative.powercontrol.metrics.CpuUsageSource
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
 import com.winlator.container.Container
@@ -19,8 +21,10 @@ import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class)
 class LsfgVkManagerTest {
     private lateinit var rootDir: File
 
@@ -681,6 +685,7 @@ class LsfgVkManagerTest {
     @Test
     fun ensureRuntimeInstalled_refreshesContainerLibraryWhenPackagedBytesChangeWithoutMarkerChange() {
         val context = RuntimeEnvironment.getApplication()
+        PrefManager.init(context)
         val sourceDir = File(rootDir, "apk-native").apply { mkdirs() }
         val sourceLib = File(sourceDir, "liblsfg-vk-layer.so")
         val installedLib = File(rootDir, ".local/lib/liblsfg-vk-layer.so")

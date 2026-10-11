@@ -201,7 +201,9 @@ class VulkanRendererDisplayConfirmationContractTest {
         assertTrue(
             "PresentWait confirmation must count without actualPresentTime",
             confirmationBody.contains("if (confirmed && provenance.uniqueDelivery)") &&
-                confirmationBody.contains("if (confirmation.actualPresentTimeNs != 0)"),
+                confirmationBody.contains("if (actualTimestampValid)") &&
+                confirmationBody.indexOf("++uniquePhysicalPresent_") <
+                    confirmationBody.indexOf("if (actualTimestampValid)"),
         )
     }
 
@@ -216,7 +218,7 @@ class VulkanRendererDisplayConfirmationContractTest {
         assertFalse(header.contains("legacyGeneratedSlotNextNs_"))
         assertTrue(implementation.contains("assignLegacyGeneratedOutputSlot"))
         assertTrue(implementation.contains("missed-usable-output-slot"))
-        assertTrue(implementation.contains("legacy-output-slot-missed-no-phase-repair"))
+        assertTrue(implementation.contains("generated-output-slot-missed-no-phase-repair"))
         assertTrue(implementation.contains("event=legacy-output-slot-confirmation"))
         assertTrue(implementation.contains("generated_frame_drop_reason="))
         assertTrue(implementation.contains("pruneMissedLegacyGeneratedOutputSlots"))

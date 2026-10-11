@@ -98,7 +98,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(context.contains("nativeExtraAcquireSems_"))
         assertTrue(context.contains("nativeExtraAcquireSems_[currentFrame][g]"))
         assertTrue(context.contains("nativeGeneratedImgIndices"))
-        assertTrue(context.contains("vkr_lsfg_plan(lsfg, nativeCapacity, nativeSourceFrame)"))
+        assertTrue(context.contains("nativeSourceReceived_.fetch_add(1"))
+        assertTrue(context.contains("vkr_lsfg_plan(lsfg, nativeCapacity, plannedSourceCount)"))
         assertTrue(context.contains("vkr_lsfg_process("))
         assertTrue(context.contains("blitCompositeToSwapchain("))
         assertTrue(context.contains("signalSemaphoreCount=signalSemaphoreCount"))
@@ -165,7 +166,7 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("legacyAckRequired"))
         assertTrue(manager.contains("legacy_source_only_wait"))
         assertTrue(manager.contains("live-backend-transition"))
-        assertTrue(quickMenu.contains("val request = LsfgVkManager.reserveRuntimeRequest(container)"))
+        assertTrue(quickMenu.contains("reserveRuntimeRequestForOwner(container, snapshot.backendGeneration)"))
         assertTrue(quickMenu.contains("requestToken = request"))
         assertTrue(quickMenu.contains("updateConfigAtRuntimeCaptured"))
         assertTrue(quickMenu.contains("snapshot.armed"))
@@ -274,8 +275,8 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(manager.contains("NATIVE_CONFIRMATION_UNAVAILABLE"))
         assertTrue(manager.contains("sustained-generated-display-confirmation"))
         assertTrue(manager.contains("getGeneratedDisplayConfirmedFrameCount"))
-        assertTrue(manager.contains("measurement=display-confirmed"))
-        assertTrue(manager.contains("display_confirmation_available=1"))
+        assertTrue(manager.contains("getNativeConfirmedOutputFps()"))
+        assertTrue(manager.contains("display_confirmation_available=%d"))
 
         // Pressure/support control-plane calls cannot convoy behind the
         // frame-wide native shared_mutex or the Java renderer monitor.
@@ -379,23 +380,18 @@ class LsfgNativeRendererIntegrationContractTest {
         assertTrue(!admissionBody2.contains("availableNs / serviceEstimateNs"))
         assertTrue(context.contains("admission_service_estimate_ms="))
 
-        // Adaptive Flow remains the first actuator. The shared controller
-        // retains target-driven downsteps under presentation pressure until the
-        // preset floor; only then may Adaptive FG density back off.
+        // Flow probes require measured benefit and hold rejected operating
+        // points. Delivery pressure belongs to density independently of Flow.
         val sharedFlowController =
             File(
                 root,
                 "app/src/main/cpp/lsfg-vk-android/src/adaptive_flow_controller.cpp",
             ).readText()
-        val normalizedSharedFlowController =
-            sharedFlowController.replace(Regex("\\s+"), " ")
-        assertTrue(
-            normalizedSharedFlowController.contains(
-                "!downstepBaselineWsiPressure_ || observation.adaptiveFramegenMode",
-            ),
-        )
+        assertTrue(sharedFlowController.contains("!rejectedDownstep_"))
+        assertTrue(sharedFlowController.contains("!rejectedRecovery_"))
+        assertTrue(sharedFlowController.contains("DownstepReverted"))
         assertTrue(vkr.contains("const bool at_minimum ="))
-        assertTrue(vkr.contains("at_minimum && ("))
+        assertTrue(vkr.contains("!lsfg->adaptive_flow || at_minimum"))
         assertTrue(vkr.contains("presentation_pressure"))
         assertTrue(vkr.contains("lsfg->synthetic_drop_pressure"))
         assertTrue(!vkr.contains("structural_presentation_pressure"))

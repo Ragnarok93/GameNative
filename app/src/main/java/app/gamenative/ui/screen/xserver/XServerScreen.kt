@@ -608,6 +608,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
 
     fun applyFpsLimiterToEngines(limit: Int) {
         val lsfgActive = isLsfgGenerationActive
+        val runtimeMultiplier = if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1
         if (lastLsfgPacingActive != lsfgActive) {
             PerformanceMetricsCollector.resetFrameEpoch()
             lastLsfgPacingActive = lsfgActive

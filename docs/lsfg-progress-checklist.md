@@ -6,7 +6,7 @@ Updated: 2026-10-11. Each advancement is saved with this report through the GitH
 - [x] Restore the saved source checkpoint after workspace maintenance; base `8919398`.
 - [x] Preserve Legacy/Native cadence, settings ownership, Adaptive Flow, pressure validity, frame queue, and power-domain fixes already committed.
 - [x] Native regression workflow #11 passed; Build #772 rebuilt both native libraries and passed native regression checks.
-- [ ] Correct Build #772 Kotlin integration failure: `runtimeMultiplier` is missing in the source FPS update path.
+- [x] Correct Build #772 Kotlin integration failure: restore the handoff-published runtime multiplier in the source FPS update path; inactive generation uses 1x. Android compilation verification remains pending.
 - [ ] Reproduce and fix repeated failed Native density recovery probes under unchanged operating conditions.
 - [ ] Run affected regression tests and the complete workflow application checks without skipping failures.
 - [ ] Build the debug APK and verify package identity, increasing version code, persistent signing certificate, JNI exports, and native source provenance.
@@ -15,4 +15,4 @@ Updated: 2026-10-11. Each advancement is saved with this report through the GitH
 
 ## Current evidence and next action
 
-Build #772 failed `compileLegacyDebugKotlin` at five references to an undeclared local `runtimeMultiplier` in `XServerScreen.applyFpsLimiterToEngines`. It did not produce an APK. Restore the manager-published runtime multiplier in that path, then verify Android compilation. Independently reproduce the stationary density recovery loop before changing governor behavior. Existing behavior audit and regression evidence are recorded in `docs/lsfg-behavior-audit-20261011.md`.
+Build #772 failed `compileLegacyDebugKotlin` at five references to an undeclared local `runtimeMultiplier` in `XServerScreen.applyFpsLimiterToEngines`. It did not produce an APK. The local value now derives from the existing handoff-published `lsfgRuntimeMultiplier` and active flag, consistently feeding display hints and budget diagnostics. The next workflow must verify Android compilation and application tests. Independently reproduce the stationary density recovery loop before changing governor behavior. Existing behavior audit and regression evidence are recorded in `docs/lsfg-behavior-audit-20261011.md`.

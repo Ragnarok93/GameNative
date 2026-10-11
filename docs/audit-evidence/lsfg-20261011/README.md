@@ -43,8 +43,8 @@ bash docs/audit-evidence/lsfg-20261011/run_settings.sh
 ```
 
 This compiles the actual Adaptive FPS Cap and controller sources with the
-supplied engine/log stubs. `LegacyAck.kt` is the unchanged extracted baseline
-reader/readiness logic with a minimal Container wrapper and test main.
-Its fixture has no request-token parameter because the production reader does
-not validate one. Assertions about device generation overlap are inferences
-from the missing handoff contract, not results of this fixture.
+supplied engine/log stubs. `LegacyAck.kt` contains the corresponding extracted reader/identity
+matching contract with a minimal Container wrapper and assertion-based test.
+It rejects missing, wrong-transaction, and wrong-revision acknowledgments
+while accepting the exact consumed pair. It does not prove display ownership
+or device generation overlap; that still requires integration/device traces.

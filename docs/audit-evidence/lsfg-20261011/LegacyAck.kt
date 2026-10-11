@@ -46,7 +46,14 @@ const val STATS_FRESHNESS_MS=2000L
         val displayConfirmationAvailable: Boolean = false,
         val presentationDegraded: Boolean = false,
         val nativeHealthState: NativeHealthState = NativeHealthState.NOT_APPLICABLE,
+        val consumedTransactionId: Long? = null,
+        val consumedConfigurationRevision: Long? = null,
     ) {
+        fun acknowledgesSourceOnly(transactionId: Long, revision: Long): Boolean =
+            readyForSourceOnly &&
+                consumedTransactionId == transactionId &&
+                consumedConfigurationRevision == revision
+
         val readyForGeneration: Boolean
             get() = fresh && resident && generationReady && multiplier >= 2 && !degraded &&
                 (!framegenSupportKnown || framegenSupported)
@@ -109,6 +116,8 @@ const val STATS_FRESHNESS_MS=2000L
                 synchronizationPath = values["framegen_sync_path"]?.takeIf { it.isNotBlank() },
                 ahbMode = values["framegen_ahb_mode"]?.takeIf { it.isNotBlank() },
                 rejectionReason = values["framegen_rejection_reason"]?.takeIf { it.isNotBlank() },
+                consumedTransactionId = values["transaction_id"]?.toLongOrNull(),
+                consumedConfigurationRevision = values["configuration_revision"]?.toLongOrNull(),
             )
         }.getOrElse {
             unknownRuntimeState(fresh = false)
@@ -130,11 +139,19 @@ const val STATS_FRESHNESS_MS=2000L
 
 }
 fun main() {
- val root=File("/workspace/scratch/6e9e1ea96cc3/lsfg-audit-settings-power/legacy-stats");root.mkdirs()
- val stats=File(root,"stats.txt")
- val state="state=source_only\nresident=1\nsource_only=1\ngeneration_ready=0\nmultiplier=1\n"
- for(identities in listOf("", "transaction_id=8\nconfiguration_revision=12\n")) {
-  stats.writeText(state+identities)
-  println("expect new tx9/rev13; old stats IDs=${if(identities.isEmpty()) "absent" else "tx8/rev12"}; readyForSourceOnly=${LegacyReader.readLegacyRuntimeState(Container(root)).readyForSourceOnly}")
- }
+ val root=java.nio.file.Files.createTempDirectory("lsfg-legacy-ack-").toFile()
+ try {
+  val stats=File(root,"stats.txt")
+  val state="state=source_only\nresident=1\nsource_only=1\ngeneration_ready=0\nmultiplier=1\n"
+  for ((name,identities,expected) in listOf(
+      Triple("missing", "", false),
+      Triple("wrong-transaction", "transaction_id=8\nconfiguration_revision=13\n", false),
+      Triple("wrong-revision", "transaction_id=9\nconfiguration_revision=12\n", false),
+      Triple("matching", "transaction_id=9\nconfiguration_revision=13\n", true))) {
+   stats.writeText(state+identities)
+   val ack=LegacyReader.readLegacyRuntimeState(Container(root)).acknowledgesSourceOnly(9,13)
+   check(ack == expected) { "case=$name expected=$expected got=$ack" }
+   println("PASS legacy ack $name: $ack")
+  }
+ } finally { root.deleteRecursively() }
 }

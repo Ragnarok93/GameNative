@@ -80,3 +80,8 @@ Follow-up audit completed: nine correctness/control findings, one dormant helper
 
 - [x] F3/F8 first pass: user-edit ownership epoch, conditional limiter restore, and observation-generation CAS at command submission. Added assertive extracted-controller scenarios for zero/90/same-cap edits, legitimate restore and stale decision.
 - [ ] Verify Kotlin source/audit compilation, Android tests, race injection and edge-case production behavior before marking F3/F8 release-ready.
+
+- [x] F2: emit consumed Legacy transaction/revision in both Shared stats publishers and require exact source-only acknowledgment before arming Native. Pinned Shared runtime `50699e4f28b727b0cb3b98dbbddb0aad658f79a7`.
+- [x] F7 first pass: failed Legacy restoration now commits `failed=true` and actual source-only measurement stride instead of desired Legacy-generation pacing.
+- [x] Add assertion-based handoff identity fixture covering missing, wrong and matching acknowledgments.
+- [ ] Run Android/Native suites, inject Legacy publish failure and paused-guest delayed consumption; verify F2/F7 integration on-device.

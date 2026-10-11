@@ -316,7 +316,14 @@ object LsfgVkManager {
         val displayConfirmationAvailable: Boolean = false,
         val presentationDegraded: Boolean = false,
         val nativeHealthState: NativeHealthState = NativeHealthState.NOT_APPLICABLE,
+        val consumedTransactionId: Long? = null,
+        val consumedConfigurationRevision: Long? = null,
     ) {
+        fun acknowledgesSourceOnly(transactionId: Long, revision: Long): Boolean =
+            readyForSourceOnly &&
+                consumedTransactionId == transactionId &&
+                consumedConfigurationRevision == revision
+
         val readyForGeneration: Boolean
             get() = fresh && resident && generationReady && multiplier >= 2 && !degraded &&
                 (!framegenSupportKnown || framegenSupported)
@@ -994,6 +1001,8 @@ object LsfgVkManager {
                 synchronizationPath = values["framegen_sync_path"]?.takeIf { it.isNotBlank() },
                 ahbMode = values["framegen_ahb_mode"]?.takeIf { it.isNotBlank() },
                 rejectionReason = values["framegen_rejection_reason"]?.takeIf { it.isNotBlank() },
+                consumedTransactionId = values["transaction_id"]?.toLongOrNull(),
+                consumedConfigurationRevision = values["configuration_revision"]?.toLongOrNull(),
             )
         }.getOrElse {
             unknownRuntimeState(fresh = false)
@@ -1387,6 +1396,7 @@ object LsfgVkManager {
     private fun commitNativeApply(
         renderer: VulkanRenderer, container: Container, snapshot: NativeRuntimeConfigSnapshot,
         generation: Long, initialized: Boolean, failed: Boolean = false, failureReason: String? = null,
+        measurementSnapshot: NativeRuntimeConfigSnapshot = snapshot,
     ): Boolean {
         if (!snapshotIsCurrent(snapshot, generation) || nativeRendererRef?.get() !== renderer ||
             nativeRendererContainer !== container) return false
@@ -1396,7 +1406,7 @@ object LsfgVkManager {
         nativeApplyComplete = true
         nativeApplyFailed = failed
         nativeFailureReason = failureReason
-        commitRuntimeMeasurementPolicy(renderer, container, snapshot)
+        commitRuntimeMeasurementPolicy(renderer, container, measurementSnapshot)
         return true
     }
 
@@ -1619,6 +1629,7 @@ object LsfgVkManager {
                     // revision. Rapid Quick Menu updates can supersede the
                     // transition snapshot after Native has already retired.
                     var result = "source-only-applied"
+                    var legacyRestoreFailed = false
                     if (!requested && snapshot.backend == BACKEND_LEGACY) {
                         val restored = publishLegacyRuntimeConfig(
                             container,
@@ -1626,6 +1637,7 @@ object LsfgVkManager {
                             allowGeneration = snapshot.enabled,
                             reason = "native-retired-current-snapshot",
                         )
+                        legacyRestoreFailed = !restored
                         result = if (restored) {
                             "legacy-restored"
                         } else {
@@ -1641,7 +1653,16 @@ object LsfgVkManager {
                         )
                     }
 
-                    if (!commitNativeApply(renderer, container, snapshot, generation, false)) {
+                    if (!commitNativeApply(
+                            renderer, container, snapshot, generation, false,
+                            failed = legacyRestoreFailed,
+                            failureReason = if (legacyRestoreFailed) "legacy-restore-failed" else null,
+                            // Desired Legacy generation was not published. Report the
+                            // still-applied source-only delivery policy, not requested
+                            // 2x/3x/4x stride, until a later successful transaction.
+                            measurementSnapshot = if (legacyRestoreFailed)
+                                snapshot.copy(enabled = false, multiplier = 1) else snapshot,
+                        )) {
                         discardStaleSnapshot(snapshot, "source-only-publication")
                         return@execute
                     }
@@ -1659,7 +1680,13 @@ object LsfgVkManager {
                     backendRequest?.previousBackend == BACKEND_LEGACY
                 val legacyAckRequired =
                     shouldAwaitLegacySourceOnly(
-                        liveLegacyTransition, legacyStateBefore, acknowledgedForOwner)
+                        liveLegacyTransition, legacyStateBefore, acknowledgedForOwner) ||
+                    // A fresh previous revision is not an acknowledgment of
+                    // the new disable. If Legacy is resident, require evidence
+                    // that THIS exact command was consumed before Native arms.
+                    (legacyStateBefore.fresh && legacyStateBefore.resident &&
+                        !legacyStateBefore.acknowledgesSourceOnly(
+                            snapshot.backendGeneration, snapshot.revision))
                 if (legacyAckRequired) legacySourceOnlyOwner = null
 
                 // Native compute cannot arm until the resident implicit layer has
@@ -1704,7 +1731,8 @@ object LsfgVkManager {
                     )
                     var activeAckWaitNs = 0L
                     var suspensionLogged = false
-                    while (!readLegacyRuntimeState(container).readyForSourceOnly) {
+                    while (!readLegacyRuntimeState(container).acknowledgesSourceOnly(
+                            snapshot.backendGeneration, snapshot.revision)) {
                         if (!snapshotIsCurrent(snapshot, generation)) {
                             discardStaleSnapshot(snapshot, "legacy-ack")
                             return@execute

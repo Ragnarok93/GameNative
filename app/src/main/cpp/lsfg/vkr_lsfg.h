@@ -60,6 +60,9 @@ void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate
 
 void vkr_lsfg_set_refresh_rate(VkrLsfg* lsfg, float refresh_rate);
 
+// A presentation-capacity change invalidates governor evidence, not history.
+void vkr_lsfg_reset_density_evidence(VkrLsfg* lsfg);
+
 void vkr_lsfg_set_pressure(VkrLsfg* lsfg, float gpu_usage_percent, int thermal_status,
                            float source_fps, float output_fps, float frame_time_p95_ms,
                            float slow_frame_ratio);

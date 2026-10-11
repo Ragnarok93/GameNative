@@ -633,13 +633,15 @@ void VulkanRendererContext::setFrameGenerationMode(
             && nextFlow == framegenFlowScale
             && nextFlowMode == framegenFlowMode
             && nextFlowPreset == framegenFlowPreset
-            && configRevision == framegenConfigRevision) {
+            && configRevision == framegenConfigRevision
+            && !nativeQueuePolicyResetPending_) {
         return;
     }
 
     const bool effectivePolicyChanged = nextMultiplier != framegenMultiplier
         || nextTarget != framegenTargetRate || nextFlow != framegenFlowScale
-        || nextFlowMode != framegenFlowMode || nextFlowPreset != framegenFlowPreset;
+        || nextFlowMode != framegenFlowMode || nextFlowPreset != framegenFlowPreset
+        || nativeQueuePolicyResetPending_;
     if (effectivePolicyChanged) {
         clearFrameGenerationPressure();
         nativeFeedbackMinConfigRevision_ = configRevision;
@@ -647,6 +649,7 @@ void VulkanRendererContext::setFrameGenerationMode(
         nativeSourceDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
         nativeGeneratedDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
         hostUniqueDisplayConfirmedEpoch_.store(0, std::memory_order_release);
+        nativeQueuePolicyResetPending_ = false;
     }
     framegenMultiplier = nextMultiplier;
     framegenTargetRate = nextTarget;

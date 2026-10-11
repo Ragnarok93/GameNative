@@ -801,6 +801,7 @@ private:
     void clearFrameGenerationPressure();
     uint64_t nativeLsfgContextEpoch_ = 0;
     uint64_t nativeFeedbackMinConfigRevision_ = 0;
+    bool nativeQueuePolicyResetPending_ = false;
     uint64_t nativeLastContextReuseRevision_ = UINT64_MAX;
     std::atomic<uint64_t> framegenSourceFrames{0};
     std::atomic<uint64_t> framegenRealFrames{0};

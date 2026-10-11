@@ -196,6 +196,20 @@ void vkr_lsfg_destroy(VkrLsfg* lsfg) {
     delete lsfg;
 }
 
+void vkr_lsfg_reset_density_evidence(VkrLsfg* lsfg) {
+    if (!lsfg) return;
+    lsfg->density_pressure_seconds = 0.0;
+    lsfg->density_recovery_seconds = 0.0;
+    lsfg->density_probe_point = {};
+    lsfg->density_rejected_point = {};
+    lsfg->density_rearm_seconds = 0.0;
+    lsfg->density_probe_healthy_seconds = 0.0;
+    lsfg->density_transition_frames = 3;
+    lsfg->synthetic_drop_pressure = false;
+    lsfg->pressure = {};
+    lsfg->presentation_pressure = {};
+}
+
 void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate,
                         float flow_scale, uint32_t flow_mode, uint32_t flow_preset,
                         float refresh_rate, uint64_t config_revision) {

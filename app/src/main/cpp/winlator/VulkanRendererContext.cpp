@@ -6584,9 +6584,14 @@ void VulkanRendererContext::setLsfgFrameQueue(bool enabled, uint32_t target) {
     // Configuration changes are explicit recovery boundaries. Drain only
     // compositor GPU work; display confirmation remains telemetry-only.
     drainFrameQueueSubmissions("config-transition");
+    drainHostPresenter("frame-queue-config-transition");
     {
         std::lock_guard<std::mutex> lk(renderMutex);
         dropQueuedLsfgHostDeliveries("frame-queue-config-transition");
+        clearFrameGenerationPressure();
+        resetNativePresentationEvidence();
+        vkr_lsfg_reset_density_evidence(lsfg);
+        nativeQueuePolicyResetPending_ = true;
     }
 
     resetFrameQueueTelemetry();

@@ -9,7 +9,7 @@ Updated: 2026-10-11. Each advancement is saved with this report through the GitH
 - [x] Correct Build #772 Kotlin integration failure: restore the handoff-published runtime multiplier in the source FPS update path; inactive generation uses 1x. Android compilation verification remains pending.
 - [x] Reproduce and fix repeated failed Native density recovery probes under unchanged operating conditions. Retain the pre-probe baseline; require sustained material change before retrying a rejected point.
 - [x] Extend the stationary regression to a working 2x density baseline: 107 failed retries on the old code become one failed probe, preserving the working baseline.
-- [ ] Notify the Native governor when Frame Queue enable/depth actually changes; preserve settled density and history while clearing incompatible rejected-probe evidence. No-op policy publication must preserve the hold.
+- [x] Notify the Native governor when Frame Queue enable/depth actually changes; preserve settled density and history while clearing incompatible rejected-probe evidence. No-op policy publication preserves the hold. Drain the presenter before clearing host evidence and retire the previous feedback revision at the next captured policy publication.
 - [ ] Run affected regression tests and the complete workflow application checks without skipping failures.
 - [ ] Build the debug APK and verify package identity, increasing version code, persistent signing certificate, JNI exports, and native source provenance.
 - [ ] Provide the fresh verified APK for testing and feedback.
@@ -17,7 +17,7 @@ Updated: 2026-10-11. Each advancement is saved with this report through the GitH
 
 ## Current evidence and next action
 
-Frame Queue boundary RED reproduction: an actual depth change leaves the rejected Native probe active. The new extracted setter test fails because the governor/host evidence reset and next-publication revision floor are absent. The production governor boundary test fails because incompatible evidence is retained; it also guards preservation of settled cap, Flow quality and frame history. Identical queue settings must remain a no-op.
+Frame Queue boundary RED reproduction: an actual depth change left the rejected Native probe active. Both extracted setter and actual governor boundary tests now pass. Actual enable/depth changes clear incompatible evidence; identical settings preserve the hold. Settled generation cap, Flow quality and frame history remain intact. The complete queue audit also passes: 144,000 policy observations, 240,000 fence submissions and 76,816 threaded deliveries.
 
 Stationary density RED reproduction: source 30 FPS, GPU 60%, healthy source delivery, generated delivery or admission fails whenever density exceeds zero. Both cases produced 79 recovery attempts and 78 failures in 300 simulated seconds. Minor source/GPU jitter also reproduced the loop. With the fix, each runs one failed probe then holds for the remainder of 300 seconds. Sustained changed conditions still restore full density. The 28 focused production governor cases, 2,851,200 boundary observations, 20,532 real pacer/scheduler/Flow interaction cycles, and seven host-density regressions all pass locally. The Android workflow must still validate compilation, full application checks and packaging.
 

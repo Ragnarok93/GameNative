@@ -89,3 +89,6 @@ Follow-up audit completed: nine correctness/control findings, one dormant helper
 - [x] Repair CI provenance marker to match the pinned runtime. Earlier APK attempts `38128026506`, `38128209455`, `38128264298` failed at the marker preflight (not C++/Kotlin compilation).
 - [x] Update obsolete Adreno-only FD test expectations to assert pre-import transfer across all backends; shared runtime commit `7a2291607be38c256ce31208c2c56fe30553ab32`.
 - [ ] Confirm refreshed CI has passed native source contracts and Android compile.
+
+- [x] Repair legacy lifecycle source-contract assertion for identity-aware degraded publisher; Shared runtime `28fb90ea5be94d228326ae985dc6031c1a591b60`. Build `38128427009` and regressions `38128427029` stopped at this obsolete static contract; no compiler result yet.
+- [ ] Verify fresh CI, including compilation and source-contracts.

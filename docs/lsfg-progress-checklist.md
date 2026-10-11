@@ -70,3 +70,10 @@ Physical-device cadence, visuals, thermals, input latency and sustained operatio
 - [x] Save and summarize prioritized findings and proposed solutions. This pass changes no production code.
 
 Follow-up audit completed: nine correctness/control findings, one dormant helper defect and four unmeasured performance risks. Independently reproduced Native density/Flow/target recovery, Legacy FD reuse/zero polling, stale handoff acknowledgment, FPS-cap restoration and transient resource rebuild behavior. Existing governor, cadence and presentation regression suites all passed again, demonstrating the additional coverage gaps. Detailed priorities, evidence, solutions and validation scope: docs/lsfg-followup-audit-20261011.md. Portable reproductions: docs/audit-evidence/lsfg-20261011/. No production changes or new APK; Build #787 remains available, with physical-device acceptance still pending.
+
+## Implementation follow-up — 2026-10-11
+
+- [x] F1: transfer SYNC_FD ownership before all three completion imports, close duplicated poll FDs on failure. Shared runtime commit `3c0702456f9442aa8a31a6c070a56da4fd30d893`.
+- [x] Add an assertion to the existing generated-output, generated-batch and zero-history FD-reuse audit harness (exit nonzero if an unrelated reused FD is closed).
+- [ ] Verify new pinned runtime and strengthened FD test in CI; this checkpoint is not yet a release-qualified APK.
+- [ ] Complete F2–F10 and evaluate B1–B4 without implying measured physical cadence.

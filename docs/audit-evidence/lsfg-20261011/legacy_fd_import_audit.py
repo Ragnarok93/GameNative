@@ -69,6 +69,7 @@ suffix = r'''
  }
 };
 int main() {
+ bool allImportsPreservedOtherDescriptors = true;
  for (int caseId=0;caseId<3;++caseId) {
   importCalls=0; failAt=(caseId==1?2:1); replacement=-1;
   Context context; Sync sync; Pass pass;
@@ -78,8 +79,10 @@ int main() {
   bool stillOpen = replacement>=0 && ::fcntl(replacement,F_GETFD)!=-1;
   std::cout<<"case="<<(caseId==0?"generated-output":caseId==1?"generated-batch":"history-batch")
       <<" unrelated_reused_fd="<<replacement<<" still_open="<<stillOpen<<"\n";
+  allImportsPreservedOtherDescriptors &= stillOpen;
   if(stillOpen) ::close(replacement);
  }
+ return allImportsPreservedOtherDescriptors ? 0 : 1;
 }
 '''
 with tempfile.TemporaryDirectory() as temp:

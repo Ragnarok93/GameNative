@@ -400,11 +400,14 @@ int main() {
     std::filesystem::create_directories(root);
     auto write = [&](int valid) {
         std::ofstream out(root / "runtime-pressure.txt");
-        out << "timestamp_ms=1\ngpu_usage_percent=95\nsource_fps=0\n"
+        auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        out << "timestamp_ms=" << now << "\ngpu_usage_percent=95\nsource_fps=0\n"
             << "frame_time_p95_ms=0\nslow_frame_ratio=0\nsource_metrics_valid=" << valid << "\n";
     };
-    write(0); assert(!readRuntimePressure(root / "conf.toml").valid);
-    write(1); assert(readRuntimePressure(root / "conf.toml").valid);
+    write(0); auto unavailable=readRuntimePressure(root / "conf.toml");
+    assert(unavailable.valid && !unavailable.sourceFpsValid);
+    write(1); auto zero=readRuntimePressure(root / "conf.toml");
+    assert(zero.valid && zero.sourceFpsValid && zero.sourceFps==0);
     std::filesystem::remove_all(root);
 }
 """)

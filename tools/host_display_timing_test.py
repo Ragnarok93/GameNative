@@ -29,7 +29,7 @@ constexpr int VK_NULL_HANDLE=0, ANDROID_LOG_WARN=5, ANDROID_LOG_DEBUG=3;
 constexpr uint64_t kMaxSanePresentMarginNs=1000000000ULL;
 constexpr uint64_t kMaxHostConfirmationAgeNs=1000000000ULL;
 void __android_log_print(int, const char*, const char*, ...) {}
-uint64_t monotonicTimeNs() { return 100; }
+uint64_t monotonicTimeNs() { return 200; }
 enum class HostDisplayConfirmationBackend { GoogleDisplayTiming, PresentWait };
 struct VkPastPresentationTimingGOOGLE {
     uint32_t presentID;

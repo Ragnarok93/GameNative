@@ -30,6 +30,8 @@ fi
 # names in the table, producing a false "missing symbol" failure.
 symbols="$("$readelf_bin" --wide -Ws "$so")"
 required_symbols=(
+  Java_com_winlator_renderer_VulkanRenderer_nativeGetGenerationOpportunityCount
+  Java_com_winlator_renderer_VulkanRenderer_nativeGetNativeConfirmedOutputFps
   Java_com_winlator_renderer_lsfg_LosslessScaling_nativeBuildCache
   Java_com_winlator_renderer_lsfg_LosslessScaling_nativeCacheMatchesSource
   Java_com_winlator_renderer_lsfg_LosslessScaling_nativeSupportsFp16

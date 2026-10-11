@@ -382,6 +382,8 @@ public:
                                     float sourceFps, float outputFps,
                                     float frameTimeP95Ms, float slowFrameRatio);
     uint64_t getGeneratedFrameCount() const;
+    uint64_t getGenerationOpportunityCount() const;
+    float getNativeConfirmedOutputFps() const;
     uint64_t getGeneratedPresentedFrameCount() const;
     uint64_t getPresentedFrameCount() const;
     uint64_t getDisplayConfirmedFrameCount() const;
@@ -487,6 +489,13 @@ private:
     uint64_t generatedUniquePhysicalPresent_ = 0;
     uint64_t firstUniquePhysicalPresentNs_ = 0;
     uint64_t lastUniquePhysicalPresentNs_ = 0;
+    uint64_t timedUniquePhysicalPresent_ = 0;
+    uint64_t timedSourcePhysicalPresent_ = 0;
+    uint64_t timedGeneratedPhysicalPresent_ = 0;
+    uint64_t firstSourcePhysicalPresentNs_ = 0, lastSourcePhysicalPresentNs_ = 0;
+    uint64_t firstGeneratedPhysicalPresentNs_ = 0, lastGeneratedPhysicalPresentNs_ = 0;
+    std::unordered_set<std::string> resolvedPhysicalDeliveries_;
+    std::deque<std::string> resolvedPhysicalDeliveryOrder_;
     uint64_t lastAcceptedDesiredPresentTimeNs_ = 0;
     uint64_t hostRefreshPeriodNs_ = 0;
     uint64_t sourceUniqueWsiAccepted_ = 0;
@@ -793,6 +802,10 @@ private:
     std::atomic<uint64_t> nativeSourceWsiAccepted_{0};
     std::atomic<uint64_t> nativeSourceDisplayConfirmed_{0};
     std::atomic<uint64_t> nativeGeneratedRequested_{0};
+    std::atomic<uint64_t> nativeGenerationOpportunityCount_{0};
+    std::atomic<float> nativeConfirmedOutputFpsForGovernor_{-1.0f};
+    std::atomic<uint64_t> nativeConfirmedOutputSampleNs_{0};
+    std::atomic<uint64_t> nativeGeneratedLateDisplayTotal_{0};
     std::atomic<uint64_t> nativeGeneratedAdmitted_{0};
     std::atomic<uint64_t> nativeGeneratedDispatched_{0};
     std::atomic<uint64_t> nativeGeneratedCompleted_{0};
@@ -852,6 +865,10 @@ private:
     std::deque<uint64_t> nativeSourceUnobservedEventNs_;
     std::deque<uint64_t> nativeGeneratedUnobservedEventNs_;
     std::deque<uint64_t> nativeGeneratedRejectedEventNs_;
+    std::deque<uint64_t> nativeGeneratedLateEventNs_;
+    std::deque<uint64_t> nativeTimedConfirmedEventNs_;
+    std::deque<uint64_t> nativeTimedSourceConfirmedEventNs_;
+    std::deque<uint64_t> nativeTimedGeneratedConfirmedEventNs_;
     uint64_t nativePresentationEvidenceStartNs_ = 0;
     uint32_t nativePresentationPressureStrikes_ = 0;
     uint32_t nativePresentationRecoveryStrikes_ = 0;
@@ -982,7 +999,7 @@ private:
     uint32_t nativeTemporalGenerationCapacity() const;
     void recordNativePresentationEvidence(
         bool generated, bool confirmed, bool unobserved, bool wsiAccepted,
-        bool wsiRejected, uint64_t nowNs);
+        bool wsiRejected, uint64_t nowNs, bool timed = false);
     void updateNativePresentationPressure(uint64_t nowNs);
     void requestLsfgSwapchainRebuild(const char* reason);
     void observeHostPresentResult(VkResult result);

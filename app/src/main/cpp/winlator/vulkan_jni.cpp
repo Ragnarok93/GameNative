@@ -310,6 +310,20 @@ Java_com_winlator_renderer_VulkanRenderer_nativeGetGeneratedPresentedFrameCount(
 }
 
 extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetGenerationOpportunityCount(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? static_cast<jlong>(renderer->getGenerationOpportunityCount()) : 0;
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetNativeConfirmedOutputFps(
+        JNIEnv*, jobject, jlong handle) {
+    auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);
+    return renderer ? renderer->getNativeConfirmedOutputFps() : -1.0f;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeGetDisplayConfirmedFrameCount(
         JNIEnv*, jobject, jlong handle) {
     auto* renderer = reinterpret_cast<VulkanRendererContext*>(handle);

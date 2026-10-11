@@ -2523,18 +2523,12 @@ void VulkanRendererContext::emitNativeLsfgPipelineTelemetry(const char* reason) 
             sourceWsiAccepted - nativePresentRateSourceAccepted_;
         const uint64_t generatedAcceptedDelta =
             wsiAccepted - nativePresentRateGeneratedAccepted_;
-        const uint64_t sourceConfirmedDelta =
-            sourceDisplayConfirmed - nativePresentRateSourceConfirmed_;
-        const uint64_t generatedConfirmedDelta =
-            displayConfirmed - nativePresentRateGeneratedConfirmed_;
         nativeSourceWsiFps_ =
             static_cast<double>(sourceAcceptedDelta) / seconds;
         nativeGeneratedWsiFps_ =
             static_cast<double>(generatedAcceptedDelta) / seconds;
         nativeOutputWsiFps_ =
             static_cast<double>(sourceAcceptedDelta + generatedAcceptedDelta) / seconds;
-        nativeOutputConfirmedFps_ =
-            static_cast<double>(sourceConfirmedDelta + generatedConfirmedDelta) / seconds;
         nativePresentRateSampleNs_ = nowNs;
         nativePresentRateSourceAccepted_ = sourceWsiAccepted;
         nativePresentRateGeneratedAccepted_ = wsiAccepted;
@@ -3762,12 +3756,7 @@ ok=true;}catch(...){}
                     framegenGpuUsagePercent_.load(std::memory_order_relaxed),
                     framegenThermalStatus_.load(std::memory_order_relaxed),
                     framegenSourceFps_.load(std::memory_order_relaxed),
-                    selectHostDisplayConfirmationBackend()
-                        != HostDisplayConfirmationBackend::WsiAccepted
-                        && nativePresentationEvidenceStartNs_ != 0
-                        && sourceArrivalNs - nativePresentationEvidenceStartNs_ >= 500000000ULL
-                            ? static_cast<float>(nativeSourceConfirmedFps_ + nativeGeneratedConfirmedFps_)
-                            : -1.0f,
+                    nativeConfirmedOutputFpsForGovernor_.load(std::memory_order_acquire),
                     framegenFrameTimeP95Ms_.load(std::memory_order_relaxed),
                     framegenSlowFrameRatio_.load(std::memory_order_relaxed));
                 vkr_lsfg_set_presentation_pressure(
@@ -3775,6 +3764,8 @@ ok=true;}catch(...){}
                 nativeSourceReceived_.fetch_add(1, std::memory_order_relaxed);
                 nativeGenerations = vkr_lsfg_plan(lsfg, nativeCapacity, nativeSourceFrame);
                 nativeRequestedGenerations = nativeGenerations;
+                nativeGenerationOpportunityCount_.fetch_add(
+                    nativeRequestedGenerations, std::memory_order_release);
                 nativeGeneratedRequested_.fetch_add(
                     nativeRequestedGenerations, std::memory_order_relaxed);
 
@@ -4311,6 +4302,9 @@ void VulkanRendererContext::onSurfaceResized(int w, int h) {
 
 void VulkanRendererContext::detachSurface() {
     surfaceDetached.store(true, std::memory_order_release);
+    dirtyCV.notify_all();
+    std::unique_lock<std::shared_mutex> frameLock(frameMutex);
+    drainHostPresenter("surface-detached");
     nativeGeneratedPresentedFrames_.store(0, std::memory_order_relaxed);
     presentedFrames.store(0, std::memory_order_relaxed);
     nativeGeneratedDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
@@ -4321,8 +4315,6 @@ void VulkanRendererContext::detachSurface() {
         "LSFG_NATIVE_STATE: event=surface_state state=detached generation_ready=0 "
         "generated_presented_reset=1");
     dirtyCV.notify_all();
-
-    { std::unique_lock<std::shared_mutex> frameLock(frameMutex); }
 
     vk_.DeviceWaitIdle(device);
     submissionTimeline.completeAllFrames();
@@ -4979,6 +4971,24 @@ uint64_t rollingPercentileNs(const std::deque<uint64_t>& samples, unsigned perce
     return sorted[index];
 }
 
+void insertPresentationEvidence(std::deque<uint64_t>& events, uint64_t timeNs) {
+    events.insert(std::upper_bound(events.begin(), events.end(), timeNs), timeNs);
+    while (events.size() > 1024) events.pop_front();
+}
+
+double timedCadenceFps(uint64_t count, uint64_t firstNs, uint64_t lastNs) {
+    return count >= 2 && firstNs != 0 && lastNs > firstNs
+        ? static_cast<double>(count - 1) * 1000000000.0
+            / static_cast<double>(lastNs - firstNs) : -1.0;
+}
+
+void recordTimedPhysicalCadence(uint64_t timeNs, uint64_t& count,
+        uint64_t& firstNs, uint64_t& lastNs) {
+    ++count;
+    firstNs = firstNs == 0 ? timeNs : std::min(firstNs, timeNs);
+    lastNs = std::max(lastNs, timeNs);
+}
+
 void trimEvidence(std::deque<uint64_t>& events, uint64_t cutoffNs) {
     while (!events.empty() && events.front() < cutoffNs)
         events.pop_front();
@@ -5014,6 +5024,12 @@ void VulkanRendererContext::resetNativePresentationEvidence() {
     nativeSourceUnobservedEventNs_.clear();
     nativeGeneratedUnobservedEventNs_.clear();
     nativeGeneratedRejectedEventNs_.clear();
+    nativeGeneratedLateEventNs_.clear();
+    nativeTimedConfirmedEventNs_.clear();
+    nativeTimedSourceConfirmedEventNs_.clear();
+    nativeTimedGeneratedConfirmedEventNs_.clear();
+    nativeConfirmedOutputFpsForGovernor_.store(-1.0f, std::memory_order_release);
+    nativeConfirmedOutputSampleNs_.store(0, std::memory_order_release);
     nativeSourceConfirmedFps_ = 0.0;
     nativeGeneratedConfirmedFps_ = 0.0;
 }
@@ -5154,21 +5170,28 @@ VulkanRendererContext::buildNativePresentationSchedule(
 
 void VulkanRendererContext::recordNativePresentationEvidence(
         bool generated, bool confirmed, bool unobserved, bool wsiAccepted,
-        bool wsiRejected, uint64_t nowNs) {
+        bool wsiRejected, uint64_t nowNs, bool timed) {
     if (nowNs == 0) return;
     if (nativePresentationEvidenceStartNs_ == 0)
         nativePresentationEvidenceStartNs_ = nowNs;
     if (generated) {
-        if (wsiAccepted) nativeGeneratedWsiEventNs_.push_back(nowNs);
-        if (confirmed) nativeGeneratedConfirmedEventNs_.push_back(nowNs);
-        if (unobserved) nativeGeneratedUnobservedEventNs_.push_back(nowNs);
-        if (wsiRejected) nativeGeneratedRejectedEventNs_.push_back(nowNs);
+        if (wsiAccepted) insertPresentationEvidence(nativeGeneratedWsiEventNs_, nowNs);
+        if (confirmed) insertPresentationEvidence(nativeGeneratedConfirmedEventNs_, nowNs);
+        if (unobserved) insertPresentationEvidence(nativeGeneratedUnobservedEventNs_, nowNs);
+        if (wsiRejected) insertPresentationEvidence(nativeGeneratedRejectedEventNs_, nowNs);
     } else {
-        if (wsiAccepted) nativeSourceWsiEventNs_.push_back(nowNs);
-        if (confirmed) nativeSourceConfirmedEventNs_.push_back(nowNs);
-        if (unobserved) nativeSourceUnobservedEventNs_.push_back(nowNs);
+        if (wsiAccepted) insertPresentationEvidence(nativeSourceWsiEventNs_, nowNs);
+        if (confirmed) insertPresentationEvidence(nativeSourceConfirmedEventNs_, nowNs);
+        if (unobserved) insertPresentationEvidence(nativeSourceUnobservedEventNs_, nowNs);
     }
-    updateNativePresentationPressure(nowNs);
+    if (confirmed && timed) {
+        insertPresentationEvidence(nativeTimedConfirmedEventNs_, nowNs);
+        insertPresentationEvidence(generated ? nativeTimedGeneratedConfirmedEventNs_
+            : nativeTimedSourceConfirmedEventNs_, nowNs);
+        nativeConfirmedOutputSampleNs_.store(nativeTimedConfirmedEventNs_.back(),
+            std::memory_order_release);
+    }
+    updateNativePresentationPressure(monotonicTimeNs());
 }
 
 void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
@@ -5183,6 +5206,10 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
     trimEvidence(nativeSourceUnobservedEventNs_, cutoff);
     trimEvidence(nativeGeneratedUnobservedEventNs_, cutoff);
     trimEvidence(nativeGeneratedRejectedEventNs_, cutoff);
+    trimEvidence(nativeGeneratedLateEventNs_, cutoff);
+    trimEvidence(nativeTimedConfirmedEventNs_, cutoff);
+    trimEvidence(nativeTimedSourceConfirmedEventNs_, cutoff);
+    trimEvidence(nativeTimedGeneratedConfirmedEventNs_, cutoff);
 
     const bool confirmationAvailable = selectHostDisplayConfirmationBackend()
         != HostDisplayConfirmationBackend::WsiAccepted;
@@ -5205,26 +5232,22 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
             / static_cast<double>(generatedResolved)
         : 0.0;
 
-    const uint64_t evidenceSpanNs =
-        nativePresentationEvidenceStartNs_ != 0
-                && nowNs > nativePresentationEvidenceStartNs_
-            ? std::min<uint64_t>(
-                kWindowNs, nowNs - nativePresentationEvidenceStartNs_)
-            : 0;
-    const double evidenceSeconds =
-        evidenceSpanNs >= 500000000ULL
-            ? static_cast<double>(evidenceSpanNs) / 1000000000.0
-            : 0.0;
-    const double sourceConfirmedFps = evidenceSeconds > 0.0
-        ? static_cast<double>(nativeSourceConfirmedEventNs_.size())
-            / evidenceSeconds
-        : 0.0;
-    const double generatedConfirmedFps = evidenceSeconds > 0.0
-        ? static_cast<double>(nativeGeneratedConfirmedEventNs_.size())
-            / evidenceSeconds
-        : 0.0;
-    const double confirmedOutputFps =
-        sourceConfirmedFps + generatedConfirmedFps;
+    const auto rate = [](const std::deque<uint64_t>& samples) {
+        return samples.empty() ? -1.0
+            : timedCadenceFps(samples.size(), samples.front(), samples.back());
+    };
+    const double sourceConfirmedFps = rate(nativeTimedSourceConfirmedEventNs_);
+    const double generatedConfirmedFps = rate(nativeTimedGeneratedConfirmedEventNs_);
+    const bool timedDomainObserved =
+        nativeConfirmedOutputSampleNs_.load(std::memory_order_acquire) != 0;
+    const double confirmedOutputFps = nativeTimedConfirmedEventNs_.empty()
+        ? (timedDomainObserved ? 0.0 : -1.0) : rate(nativeTimedConfirmedEventNs_);
+    nativeConfirmedOutputFpsForGovernor_.store(
+        static_cast<float>(confirmedOutputFps), std::memory_order_release);
+    nativeOutputConfirmedFps_ = confirmedOutputFps;
+    const double lateRate = generatedResolved != 0
+        ? static_cast<double>(nativeGeneratedLateEventNs_.size())
+            / static_cast<double>(generatedResolved) : 0.0;
     const double requestedTargetFps = framegenTargetRate != 0
         ? static_cast<double>(framegenTargetRate)
         : (sourceConfirmedFps > 0.0
@@ -5234,7 +5257,7 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
         ? std::min(requestedTargetFps, 1000000000.0 / static_cast<double>(hostRefreshPeriodNs_))
         : requestedTargetFps;
     const double deficitRatio =
-        targetFps > 1.0
+        targetFps > 1.0 && confirmedOutputFps >= 0.0
             ? std::clamp(
                 (targetFps - confirmedOutputFps) / targetFps, 0.0, 1.0)
             : 0.0;
@@ -5252,6 +5275,7 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
         && ((generatedResolved >= 4
                 && (generatedEfficiency < 0.55
                     || timeoutRate >= 0.40
+                    || lateRate >= 0.40
                     || imbalance))
             || nativeGeneratedRejectedEventNs_.size() >= 2);
 
@@ -5568,6 +5592,11 @@ void VulkanRendererContext::resetHostPhysicalCadenceTelemetry(
     hostTemporalBacklogTotal_ = 0;
     firstUniquePhysicalPresentNs_ = 0;
     lastUniquePhysicalPresentNs_ = 0;
+    timedUniquePhysicalPresent_ = timedSourcePhysicalPresent_ = timedGeneratedPhysicalPresent_ = 0;
+    firstSourcePhysicalPresentNs_ = lastSourcePhysicalPresentNs_ = 0;
+    firstGeneratedPhysicalPresentNs_ = lastGeneratedPhysicalPresentNs_ = 0;
+    resolvedPhysicalDeliveries_.clear();
+    resolvedPhysicalDeliveryOrder_.clear();
     physicalCadenceErrorsNs_.clear();
     scheduledCadenceErrorsNs_.clear();
     __android_log_print(
@@ -5709,6 +5738,10 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         const char* reason) {
     if (confirmation.frameProvenance.empty()) return;
     const uint64_t nowNs = monotonicTimeNs();
+    if (confirmed && confirmation.actualPresentTimeNs > nowNs) {
+        confirmed = false;
+        unknown = true;
+    }
     const uint64_t confirmationAgeNs =
         nowNs != 0 && confirmation.enqueuedAtNs != 0
             && nowNs >= confirmation.enqueuedAtNs
@@ -5721,7 +5754,9 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
         // FIFO preference-only revisions retain the same effective Native
         // policy. Real policy changes raise the evidence floor and reset its
         // window, so delayed confirmations cannot steer the new controller.
-        if (provenance.nativeImplementation && !nativeFeedbackIdentityCurrent(provenance)) {
+        if (provenance.nativeImplementation && (!nativeFeedbackIdentityCurrent(provenance)
+                || (confirmation.swapchainGeneration != 0
+                    && confirmation.swapchainGeneration != hostSwapchainGeneration_))) {
             __android_log_print(ANDROID_LOG_DEBUG, "LSFG_HOST_DISPLAY",
                 "event=retired-native-confirmation revision=%llu current_revision=%llu",
                 (unsigned long long)provenance.configurationRevision,
@@ -5739,6 +5774,22 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             provenance.runtimeSessionId, provenance.contextEpoch,
             confirmation.swapchainGeneration, confirmation.hostPresentId,
             provenance.deliveryId, confirmed ? 1 : 0, unknown ? 1 : 0);
+        const bool actualTimestampValid = confirmation.actualPresentTimeNs != 0
+            && confirmation.actualPresentTimeNs <= nowNs;
+        if (provenance.uniqueDelivery) {
+            const std::string identity = std::to_string(provenance.transactionId) + ":"
+                + std::to_string(provenance.runtimeSessionId) + ":"
+                + std::to_string(provenance.contextEpoch) + ":"
+                + std::to_string(provenance.configurationRevision) + ":"
+                + std::to_string(confirmation.swapchainGeneration) + ":"
+                + std::to_string(provenance.deliveryId);
+            if (!resolvedPhysicalDeliveries_.insert(identity).second) continue;
+            resolvedPhysicalDeliveryOrder_.push_back(identity);
+            while (resolvedPhysicalDeliveryOrder_.size() > 4096) {
+                resolvedPhysicalDeliveries_.erase(resolvedPhysicalDeliveryOrder_.front());
+                resolvedPhysicalDeliveryOrder_.pop_front();
+            }
+        }
         const bool physicalDeliveryUnknown =
             unknown && provenance.uniqueDelivery
             && confirmation.backend != HostDisplayConfirmationBackend::WsiAccepted;
@@ -5767,7 +5818,19 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                     nativeGeneratedDisplayConfirmedEpoch_.fetch_add(
                         1, std::memory_order_relaxed);
                     recordNativePresentationEvidence(
-                        true, true, false, false, false, nowNs);
+                        true, true, false, false, false,
+                        actualTimestampValid ? confirmation.actualPresentTimeNs : nowNs,
+                        actualTimestampValid);
+                    if (actualTimestampValid && hostRefreshPeriodNs_ != 0
+                            && provenance.desiredPresentTimeNs != 0
+                            && confirmation.actualPresentTimeNs >= provenance.desiredPresentTimeNs
+                            && confirmation.actualPresentTimeNs - provenance.desiredPresentTimeNs
+                                >= hostRefreshPeriodNs_) {
+                        insertPresentationEvidence(nativeGeneratedLateEventNs_,
+                            confirmation.actualPresentTimeNs);
+                        nativeGeneratedLateDisplayTotal_.fetch_add(1, std::memory_order_relaxed);
+                        updateNativePresentationPressure(nowNs);
+                    }
                 }
             } else {
                 ++sourceUniquePhysicalPresent_;
@@ -5777,20 +5840,25 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                     nativeSourceDisplayConfirmedEpoch_.fetch_add(
                         1, std::memory_order_relaxed);
                     recordNativePresentationEvidence(
-                        false, true, false, false, false, nowNs);
+                        false, true, false, false, false,
+                        actualTimestampValid ? confirmation.actualPresentTimeNs : nowNs,
+                        actualTimestampValid);
                 }
             }
 
-            if (confirmation.actualPresentTimeNs != 0) {
-                if (firstUniquePhysicalPresentNs_ == 0)
-                    firstUniquePhysicalPresentNs_ =
-                        confirmation.actualPresentTimeNs;
-                if (lastUniquePhysicalPresentNs_ != 0
-                        && confirmation.actualPresentTimeNs
-                            > lastUniquePhysicalPresentNs_) {
-                    uniquePhysicalIntervalNs =
-                        confirmation.actualPresentTimeNs
-                        - lastUniquePhysicalPresentNs_;
+            if (actualTimestampValid) {
+                const uint64_t previousPresentNs = lastUniquePhysicalPresentNs_;
+                recordTimedPhysicalCadence(confirmation.actualPresentTimeNs,
+                    timedUniquePhysicalPresent_, firstUniquePhysicalPresentNs_, lastUniquePhysicalPresentNs_);
+                if (provenance.kind == 1)
+                    recordTimedPhysicalCadence(confirmation.actualPresentTimeNs,
+                        timedGeneratedPhysicalPresent_, firstGeneratedPhysicalPresentNs_, lastGeneratedPhysicalPresentNs_);
+                else
+                    recordTimedPhysicalCadence(confirmation.actualPresentTimeNs,
+                        timedSourcePhysicalPresent_, firstSourcePhysicalPresentNs_, lastSourcePhysicalPresentNs_);
+                if (previousPresentNs != 0
+                        && confirmation.actualPresentTimeNs > previousPresentNs) {
+                    uniquePhysicalIntervalNs = confirmation.actualPresentTimeNs - previousPresentNs;
                 }
                 if (confirmation.provenanceDesiredPresentTimeNs != 0) {
                     physicalCadenceErrorsNs_.push_back(
@@ -5812,8 +5880,7 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
                     while (scheduledCadenceErrorsNs_.size() > 240)
                         scheduledCadenceErrorsNs_.pop_front();
                 }
-                lastUniquePhysicalPresentNs_ =
-                    confirmation.actualPresentTimeNs;
+
             }
         }
 
@@ -5969,27 +6036,12 @@ void VulkanRendererContext::emitHostDisplayConfirmation(
             confirmation.temporalBacklog ? 1 : 0,
             reason ? reason : "none");
 
-        const double uniquePhysicalFps =
-            firstUniquePhysicalPresentNs_ != 0
-                    && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
-                ? static_cast<double>(uniquePhysicalPresent_) * 1000000000.0
-                    / static_cast<double>(
-                        lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
-                : 0.0;
-        const double sourcePhysicalFps =
-            firstUniquePhysicalPresentNs_ != 0
-                    && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
-                ? static_cast<double>(sourceUniquePhysicalPresent_) * 1000000000.0
-                    / static_cast<double>(
-                        lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
-                : 0.0;
-        const double generatedPhysicalFps =
-            firstUniquePhysicalPresentNs_ != 0
-                    && lastUniquePhysicalPresentNs_ > firstUniquePhysicalPresentNs_
-                ? static_cast<double>(generatedUniquePhysicalPresent_) * 1000000000.0
-                    / static_cast<double>(
-                        lastUniquePhysicalPresentNs_ - firstUniquePhysicalPresentNs_)
-                : 0.0;
+        const double uniquePhysicalFps = timedCadenceFps(timedUniquePhysicalPresent_,
+            firstUniquePhysicalPresentNs_, lastUniquePhysicalPresentNs_);
+        const double sourcePhysicalFps = timedCadenceFps(timedSourcePhysicalPresent_,
+            firstSourcePhysicalPresentNs_, lastSourcePhysicalPresentNs_);
+        const double generatedPhysicalFps = timedCadenceFps(timedGeneratedPhysicalPresent_,
+            firstGeneratedPhysicalPresentNs_, lastGeneratedPhysicalPresentNs_);
 
         __android_log_print(
             ANDROID_LOG_INFO,
@@ -6192,7 +6244,8 @@ void VulkanRendererContext::pollHostDisplayConfirmations() {
                         marginValid ? timing.presentMargin : 0;
                     if (timing.actualPresentTime != 0 && !marginValid)
                         ++hostInvalidPresentMarginTotal_;
-                    const bool confirmed = timing.actualPresentTime != 0;
+                    const bool confirmed = timing.actualPresentTime != 0
+                        && timing.actualPresentTime <= monotonicTimeNs();
                     if (confirmed) ++hostDisplayConfirmed_;
                     else ++hostDisplayUnknown_;
                     emitHostDisplayConfirmation(
@@ -6652,3 +6705,17 @@ std::vector<int> VulkanRendererContext::getSupportedPresentModes() const {
 
 #pragma GCC diagnostic pop
 
+
+uint64_t VulkanRendererContext::getGenerationOpportunityCount() const {
+    return nativeGenerationOpportunityCount_.load(std::memory_order_acquire);
+}
+
+float VulkanRendererContext::getNativeConfirmedOutputFps() const {
+    std::shared_lock<std::shared_mutex> frameLock(frameMutex);
+    if (!isFrameGenerationSupported()) return -1.0f;
+    const uint64_t sampleNs = nativeConfirmedOutputSampleNs_.load(std::memory_order_acquire);
+    if (sampleNs == 0) return -1.0f;
+    const uint64_t nowNs = monotonicTimeNs();
+    if (nowNs > sampleNs && nowNs - sampleNs >= 2000000000ULL) return 0.0f;
+    return nativeConfirmedOutputFpsForGovernor_.load(std::memory_order_acquire);
+}

@@ -205,6 +205,8 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeArmFrameGeneration(long handle);
     private native boolean nativeIsFrameGenerationSupported(long handle);
     private native long nativeGetGeneratedPresentedFrameCount(long handle);
+    private native long nativeGetGenerationOpportunityCount(long handle);
+    private native float nativeGetNativeConfirmedOutputFps(long handle);
     private native long nativeGetDisplayConfirmedFrameCount(long handle);
     private native long nativeGetGeneratedDisplayConfirmedFrameCount(long handle);
     private native long nativeGetSourceDisplayConfirmedFrameCount(long handle);
@@ -973,6 +975,24 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         try {
             return nativeHandle != 0
                 ? nativeGetGeneratedPresentedFrameCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public long getGenerationOpportunityCount() {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            return nativeHandle != 0 ? nativeGetGenerationOpportunityCount(nativeHandle) : 0L;
+        } finally {
+            nativeLifetimeLock.readLock().unlock();
+        }
+    }
+
+    public float getNativeConfirmedOutputFps() {
+        nativeLifetimeLock.readLock().lock();
+        try {
+            return nativeHandle != 0 ? nativeGetNativeConfirmedOutputFps(nativeHandle) : -1f;
         } finally {
             nativeLifetimeLock.readLock().unlock();
         }

@@ -85,3 +85,7 @@ Follow-up audit completed: nine correctness/control findings, one dormant helper
 - [x] F7 first pass: failed Legacy restoration now commits `failed=true` and actual source-only measurement stride instead of desired Legacy-generation pacing.
 - [x] Add assertion-based handoff identity fixture covering missing, wrong and matching acknowledgments.
 - [ ] Run Android/Native suites, inject Legacy publish failure and paused-guest delayed consumption; verify F2/F7 integration on-device.
+
+- [x] Repair CI provenance marker to match the pinned runtime. Earlier APK attempts `38128026506`, `38128209455`, `38128264298` failed at the marker preflight (not C++/Kotlin compilation).
+- [x] Update obsolete Adreno-only FD test expectations to assert pre-import transfer across all backends; shared runtime commit `7a2291607be38c256ce31208c2c56fe30553ab32`.
+- [ ] Confirm refreshed CI has passed native source contracts and Android compile.

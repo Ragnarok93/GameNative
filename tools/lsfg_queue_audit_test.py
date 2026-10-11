@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HOST = ROOT / 'app/src/main/cpp/winlator'
 source = (HOST / 'VulkanRendererContext.cpp').read_text()
 header = (HOST / 'VulkanRendererContext.h').read_text()
+lsfg_source = (HOST / 'VulkanRendererLsfg.cpp').read_text()
 
 
 def function(text, signature):
@@ -71,6 +72,11 @@ constexpr int VK_PRESENT_MODE_FIFO_KHR=2,VK_PRESENT_MODE_MAILBOX_KHR=1;
 constexpr int ANDROID_LOG_DEBUG=0,ANDROID_LOG_INFO=1,ANDROID_LOG_WARN=2;
 constexpr int VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO=1;
 void __android_log_print(int,const char*,const char*,...) {}
+void rendererLog(const char*,...) {}
+#define RLOG(...) rendererLog(__VA_ARGS__)
+constexpr unsigned VKR_LSFG_FLOW_FIXED=0,VKR_LSFG_FLOW_ADAPTIVE=1;
+constexpr unsigned VKR_LSFG_FLOW_PRESET_QUALITY=0,VKR_LSFG_FLOW_PRESET_AUTO=3;
+constexpr int VK_FORMAT_UNDEFINED=0;
 struct VkSemaphoreCreateInfo { int sType=0; };
 uint64_t monotonicTimeNs() { return 1000000000ULL; }
 struct LsfgFrameProvenance {
@@ -89,10 +95,15 @@ struct PendingHostPresent {
     std::vector<LsfgFrameProvenance> frameProvenance{{}};
 };
 struct CompletedHostPresent { uint64_t id=0; };
-struct VkrLsfg { bool rejected=true; unsigned evidenceResets=0; };
+struct VkrLsfg { bool rejected=true; unsigned evidenceResets=0,configures=0; uint64_t revision=0; };
 void vkr_lsfg_reset_density_evidence(VkrLsfg* runtime) {
     if(runtime) { runtime->rejected=false; ++runtime->evidenceResets; }
 }
+void vkr_lsfg_configure(VkrLsfg* runtime,unsigned,unsigned,float,unsigned,unsigned,float,uint64_t revision) {
+    ++runtime->configures;runtime->revision=revision;
+}
+bool vkr_lsfg_needs_rebuild(VkrLsfg*,unsigned,unsigned,int) { return false; }
+const char* vkr_lsfg_rebuild_reason(VkrLsfg*,unsigned,unsigned,int) { return "none"; }
 ''' + constants + '\n' + timeline + r'''
 struct VulkanRendererContext {
     VkrLsfg* lsfg=nullptr;
@@ -100,6 +111,19 @@ struct VulkanRendererContext {
     unsigned pressureClears=0,presentationEvidenceResets=0;
     void clearFrameGenerationPressure() { ++pressureClears; }
     void resetNativePresentationEvidence() { ++presentationEvidenceResets; }
+    bool framegenArmed=true,framegenRequested=true;
+    unsigned framegenMultiplier=4,framegenTargetRate=120,framegenFlowMode=0,framegenFlowPreset=0;
+    float framegenFlowScale=.75f,framegenRefreshRate=120.f;
+    uint64_t framegenConfigRevision=10,nativeFeedbackMinConfigRevision_=5;
+    uint64_t nativeLsfgContextEpoch_=1,hostSwapchainGeneration_=1,hostRefreshPeriodNs_=8333333ULL;
+    std::atomic<uint64_t> nativeSourceDisplayConfirmedEpoch_{5},nativeGeneratedDisplayConfirmedEpoch_{6};
+    std::atomic<uint64_t> hostUniqueDisplayConfirmedEpoch_{7};
+    int requestedPresentMode=VK_PRESENT_MODE_MAILBOX_KHR,swapchainFmt=VK_FORMAT_UNDEFINED;
+    struct { unsigned width=1280,height=720; } swapchainExt;
+    unsigned swapchainRebuilds=0;
+    void requestLsfgSwapchainRebuild(const char*) { ++swapchainRebuilds; }
+    uint32_t framegenExtraImages() const;
+    void setFrameGenerationMode(int,int,int,int,int,uint64_t);
     std::atomic<bool> lsfgFrameQueueEnabled_{true};
     std::atomic<uint32_t> lsfgFrameQueueTarget_{2};
     mutable std::atomic<bool> frameQueueSmoothFifoFallback_{false};
@@ -171,7 +195,7 @@ struct VulkanRendererContext {
     void drainHostPresenter(const char*);
     void setLsfgFrameQueue(bool,uint32_t);
 };
-''' + '\n'.join(function(source, signature) for signature in methods) + r'''
+''' + '\n'.join(function(source, signature) for signature in methods) + '\n' + '\n'.join(function(lsfg_source, signature) for signature in ['uint32_t VulkanRendererContext::framegenExtraImages()', 'void VulkanRendererContext::setFrameGenerationMode(']) + r'''
 
 void queuePolicy() {
     unsigned trials=0;
@@ -212,6 +236,35 @@ void nativeQueueEvidenceBoundary() {
     assert(c.pressureClears==2 && c.presentationEvidenceResets==2);
     assert(c.nativeQueuePolicyResetPending_);
     std::puts("PASS: real queue policy changes reset Native density evidence; identical requests preserve hold");
+}
+void nativeQueueRevisionBoundary() {
+    VulkanRendererContext c;VkrLsfg runtime;c.lsfg=&runtime;
+    c.setLsfgFrameQueue(true,1);
+    assert(c.nativeQueuePolicyResetPending_ && runtime.evidenceResets==1);
+    c.setFrameGenerationMode(4,120,75,0,0,9);
+    assert(c.nativeQueuePolicyResetPending_ && c.nativeFeedbackMinConfigRevision_==5);
+    assert(c.framegenConfigRevision==10 && runtime.configures==0);
+    assert(c.pressureClears==1 && c.presentationEvidenceResets==1);
+    c.setFrameGenerationMode(4,120,75,0,0,11);
+    assert(!c.nativeQueuePolicyResetPending_ && c.nativeFeedbackMinConfigRevision_==11);
+    assert(c.framegenConfigRevision==11 && runtime.configures==1 && runtime.revision==11);
+    assert(c.pressureClears==2 && c.presentationEvidenceResets==2);
+    assert(c.nativeSourceDisplayConfirmedEpoch_==0 && c.nativeGeneratedDisplayConfirmedEpoch_==0
+            && c.hostUniqueDisplayConfirmedEpoch_==0);
+    assert(c.swapchainRebuilds==0);
+    // A later metadata-only revision cannot retire evidence from unchanged
+    // runtime policy or overwrite the queue policy's confirmed revision floor.
+    c.hostUniqueDisplayConfirmedEpoch_=9;
+    c.setFrameGenerationMode(4,120,75,0,0,12);
+    assert(c.nativeFeedbackMinConfigRevision_==11 && !c.nativeQueuePolicyResetPending_);
+    assert(c.pressureClears==2 && c.presentationEvidenceResets==2 && c.hostUniqueDisplayConfirmedEpoch_==9);
+    assert(runtime.configures==2 && runtime.revision==12);
+    runtime.rejected=true;c.setLsfgFrameQueue(true,1);
+    c.setFrameGenerationMode(4,120,75,0,0,13);
+    assert(runtime.rejected && runtime.evidenceResets==1);
+    assert(!c.nativeQueuePolicyResetPending_ && c.nativeFeedbackMinConfigRevision_==11);
+    assert(c.pressureClears==2 && c.presentationEvidenceResets==2 && c.hostUniqueDisplayConfirmedEpoch_==9);
+    std::puts("PASS: captured queue revision retires old feedback after stale rejection; metadata/no-op requests preserve evidence");
 }
 void pressureRecovery() {
     VulkanRendererContext c;
@@ -306,7 +359,7 @@ void presenterOrder() {
     }
     std::printf("PASS: ordered once-only Off/0/1/2-depth Native/Legacy worker delivery, drain and stop fallback (%u deliveries)\n",total);
 }
-int main(){nativeQueueEvidenceBoundary();queuePolicy();pressureRecovery();gpuBudget();semaphoreLifetime();presenterOrder();}
+int main(){nativeQueueEvidenceBoundary();nativeQueueRevisionBoundary();queuePolicy();pressureRecovery();gpuBudget();semaphoreLifetime();presenterOrder();}
 '''
 with tempfile.TemporaryDirectory(prefix='lsfg-queue-audit-') as directory:
     cpp, binary = Path(directory) / 'audit.cpp', Path(directory) / 'audit'

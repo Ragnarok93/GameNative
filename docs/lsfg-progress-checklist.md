@@ -1,38 +1,42 @@
 # LSFG hardening progress checklist
 
-Branch: `feature/lsfg-host-presentation-feedback-20261007`.
-Updated: 2026-10-11. Each advancement is saved with this report through the GitHub connector.
+Updated: 2026-10-11. Source changes, tests and this checklist are checkpointed through the GitHub connector.
 
-- [x] Restore the saved source checkpoint after workspace maintenance; base `8919398`.
-- [x] Preserve Legacy/Native cadence, settings ownership, Adaptive Flow, pressure validity, frame queue, and power-domain fixes already committed.
-- [x] Native regression workflow #11 passed; Build #772 rebuilt both native libraries and passed native regression checks.
-- [x] Correct Build #772 Kotlin integration failure: restore the handoff-published runtime multiplier in the source FPS update path; inactive generation uses 1x. Android compilation verification remains pending.
-- [x] Reproduce and fix repeated failed Native density recovery probes under unchanged operating conditions. Retain the pre-probe baseline; require sustained material change before retrying a rejected point.
-- [x] Extend the stationary regression to a working 2x density baseline: 107 failed retries on the old code become one failed probe, preserving the working baseline.
-- [x] Notify the Native governor when Frame Queue enable/depth actually changes; preserve settled density and history while clearing incompatible rejected-probe evidence. No-op policy publication preserves the hold. Drain the presenter before clearing host evidence and retire the previous feedback revision at the next captured policy publication.
-- [x] Verify the real queue setter plus real Native mode publication: stale revisions cannot consume the pending boundary; the next current revision retires the old feedback floor; metadata-only updates and no-op queue settings preserve evidence and holds, without a swapchain rebuild. The previous mode code fails this regression.
-- [ ] Run affected regression tests and the complete workflow application checks without skipping failures.
-- [x] Build #782: both native libraries, full native suite, Android production compilation, and all 290 selected application tests executed. 284 passed; six failures must be resolved before packaging.
-- [ ] Fix the real FPS-cap application regression: background fallback reports success before main-thread execution, and a rejected installed applier falls through to an unowned fallback. Guard completion, timeout, owner and target changes with behavior tests.
-- [x] Repair five outdated source-contract checks while preserving their original ownership, telemetry, isolation and debounce guarantees: repository-root lookup, renamed internal debounce scheduling and owner reservation, scoped presentation callbacks, and the split screen/controller/runtime functions. Local JUnit runs 16 checks; only the known FPS-cap completion regression remains failing.
-- [ ] Build the debug APK and verify package identity, increasing version code, persistent signing certificate, JNI exports, and native source provenance.
-- [ ] Provide the fresh verified APK for testing and feedback.
-- [ ] Physical-device acceptance: cadence, visuals, thermals, latency, and sustained operation across both backends, modes, multipliers, Flow settings, queue depths, and presentation modes. No device result is asserted by the automated tests.
+- GameNative branch: `feature/lsfg-host-presentation-feedback-20261007`.
+- Packaged-source candidate: `eb5642a6b59f0815893efff65e62b8f4c4cb669e` (Build #787).
+- Shared runtime: `Ragnarok93/lsfg-vk-android`, branch `fix/host-presentation-feedback-20261007`, commit `5f14ebc3002401d4c762966cddf1793b3d3ec3f5`.
+- Audit/report checkpoints after the candidate change no packaged source; `[skip ci]` preserves its in-flight build.
 
-## Current evidence and next action
+## Implementation
 
-Frame Queue boundary RED reproduction: an actual depth change left the rejected Native probe active. Both extracted setter and actual governor boundary tests now pass. The complete actual Native mode-publication regression also fails on the previous mode code and passes on the fix, protecting the new queue policy from stale revision feedback. Actual enable/depth changes clear incompatible evidence; identical settings preserve the hold. Settled generation cap, Flow quality and frame history remain intact. The complete queue audit also passes: 144,000 policy observations, 240,000 fence submissions and 76,816 threaded deliveries. Native regression workflow #16 passed the complete native suite on `e2163fa`; Android compilation/testing and APK verification remain pending.
+- [x] Restore all remotely saved work after workspace maintenance.
+- [x] Preserve native 2x/3x/4x slot phases and source cadence without accumulating expired-slot debt.
+- [x] Scope delivery, activation, telemetry and governors to the installed runtime/session/configuration/feedback revision.
+- [x] Distinguish confirmed physical FPS, untimed delivery, unavailable measurements and measured zero; expire coherent pressure measurements.
+- [x] Keep Adaptive density independent of Fixed Flow; separate compute-origin and delivery-origin recovery.
+- [x] Hold failed density probes at the pre-probe operating point until a sustained material change. Source-only and working 2x baselines each permit one failed probe over 300 seconds, replacing 79 and 107 repeated attempts respectively.
+- [x] Preserve settled Adaptive Flow quality while rejecting empty/stale pressure and repeated unproductive probes.
+- [x] Capture settings transactions and reject retired/dequeued publishers; Off remains Off through unrelated edits.
+- [x] Drain presenters at actual Frame Queue enable/depth boundaries, reset incompatible governor evidence, and retire old feedback revisions. No-op settings preserve holds and settled quality/history.
+- [x] Normalize power tuning to the attainable output contract in source-cap units; unknown output cannot authorize trimming.
+- [x] Restore the missing handoff runtime multiplier in the Kotlin cap path.
+- [x] Acknowledge FPS-cap execution before committing controller state. Reject timeout, interruption, owner/applier/pacing changes, settings edits and target ABA; installed handler rejection cannot fall through. Ordinary source limiting remains supported without LSFG.
+- [x] Repair five obsolete source-contract tests while preserving ownership, telemetry, coroutine isolation and debounce guarantees.
 
-Stationary density RED reproduction: source 30 FPS, GPU 60%, healthy source delivery, generated delivery or admission fails whenever density exceeds zero. Both cases produced 79 recovery attempts and 78 failures in 300 simulated seconds. Minor source/GPU jitter also reproduced the loop. With the fix, each runs one failed probe then holds for the remainder of 300 seconds. Sustained changed conditions still restore full density. The 28 focused production governor cases, 2,851,200 boundary observations, 20,532 real pacer/scheduler/Flow interaction cycles, and seven host-density regressions all pass locally. The Android workflow must still validate compilation, full application checks and packaging.
+## Validation and delivery
 
-Build #772 failed `compileLegacyDebugKotlin` at five references to an undeclared local `runtimeMultiplier` in `XServerScreen.applyFpsLimiterToEngines`. It did not produce an APK. The local value now derives from the existing handoff-published `lsfgRuntimeMultiplier` and active flag, consistently feeding display hints and budget diagnostics. The next workflow must verify Android compilation and application tests. Independently reproduce the stationary density recovery loop before changing governor behavior. Existing behavior audit and regression evidence are recorded in `docs/lsfg-behavior-audit-20261011.md`.
+- [x] Native regression workflow #17 passed the complete suite at `0998eeb` (the native sources and runtime pin remain identical in Build #787).
+- [x] Native governor audit: 30 focused production cases, 2,851,200 boundary observations and 20,532 real pacer/scheduler/Flow cycles.
+- [x] Queue audit: 144,000 policy observations, 240,000 fence submissions and 76,816 threaded deliveries.
+- [x] FPS-cap extracted production audit: all 11 cases pass; all 11 fail against the pre-fix application function. Saved as `tools/power_cap_application_audit_test.py`.
+- [x] All 16 affected source contracts pass from both repository and Gradle module working directories.
+- [x] Build #782 compiled Android production sources and executed 290 selected tests: 284 passed. Its five obsolete contracts and one real cap-acknowledgement regression are now addressed.
+- [x] Build #787 rebuilt both native libraries; persistent signer verification, version metadata generation and presentation regressions passed.
+- [ ] Build #787 Android compilation and all selected LSFG/power interaction tests, including 12 new cap behavior cases.
+- [ ] Assemble debug APK and verify package identity, increasing version code, persistent signer, JNI exports and native source provenance.
+- [ ] Publish the fresh verified APK for testing and feedback.
+- [ ] Physical-device acceptance: actual displayed cadence, visuals, thermals, input latency and sustained operation across both backends, Fixed 2x/3x/4x and Adaptive generation, Fixed/Adaptive Flow, FIFO/Mailbox and queue Off/0/1/2.
 
-Checkpoint: added six FPS-cap behavior regressions for authoritative rejection, timeout cancellation, acknowledged application, renderer replacement, newer target edits and target edits that return to the original value. The extracted existing implementation reproduces four failures; Android/Robolectric validation follows the fix.
+## Current state
 
-FPS-cap implementation checkpoint: all cap requests now wait for main-thread acknowledgement, reject stale owner/pacing/applier generations, invalidate on every target edit (including ABA), and cancel timeout/interruption/post failures. Installed handlers own rejection. Screen handlers remain available for ordinary source limiting without LSFG and reject retired views, exiting sessions and obsolete settings revisions. Manual limiter/LSFG edits invalidate pending power cap commands. All 16 affected source contracts pass from both repository and Gradle module working directories. The six new behavior tests still require Android/Robolectric CI validation.
-
-FPS-cap interaction checkpoint: expanded the behavior audit to 12 cases, covering installed handler main-thread execution and source-cap translation, rejected/expired handler requests, handler replacement, explicit settings invalidation, superseding queued requests and interruption. No fallback is permitted after a handler takes ownership. These run in the next Android workflow.
-
-Local behavior validation: the extracted production target/applier setters and cap-application function pass 11 cases, including main acknowledgement, owner/target/applier/pacing invalidation, timeout, interruption and failed Handler posting. Saved as tools/power_cap_application_audit_test.py with an explicit compiler-cache option. Android Build #787 at eb5642a remains running; this audit/report checkpoint changes no packaged source and does not restart it.
-
-Build #787 advancement: both pinned LSFG native runtime and Vulkan display renderer rebuilds passed, along with persistent signer verification and version metadata generation. Android compilation and the expanded application suite are next. Production commit is eb5642a; subsequent checklist/audit-only commits use [skip ci] to preserve the in-flight validation of identical packaged sources.
+Build #787 is running its Android compilation/application-test step. No APK is claimed yet. The tests execute production behavior with deterministic clocks or platform boundary fakes; they do not establish physical device delivery or performance. Detailed feature behavior and acceptance scope are recorded in `docs/lsfg-behavior-audit-20261011.md`.

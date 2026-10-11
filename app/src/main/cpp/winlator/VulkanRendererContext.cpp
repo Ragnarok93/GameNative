@@ -2385,15 +2385,6 @@ uint32_t VulkanRendererContext::nativeHostSyntheticAdmissionCapacity() {
     const uint64_t p95PresentNs =
         rollingPercentileNs(hostPresentLatencySamplesNs_, 95);
     uint64_t sourceIntervalNs = nativeTimelineSourceIntervalNs_;
-    if (sourceIntervalNs == 0) {
-        const float sourceFps =
-            framegenSourceFps_.load(std::memory_order_relaxed);
-        if (sourceFps > 1.0f) {
-            sourceIntervalNs = static_cast<uint64_t>(
-                std::llround(
-                    1000000000.0 / static_cast<double>(sourceFps)));
-        }
-    }
 
     // On Android FIFO, vkQueuePresentKHR wall time can include waiting for the
     // presentation engine. Treating a blocked p95 tail as serial presenter
@@ -3760,14 +3751,12 @@ ok=true;}catch(...){}
                 const uint64_t sourceArrivalNs = monotonicTimeNs();
                 noteNativeSourceArrival(sourceArrivalNs);
                 updateNativePresentationPressure(sourceArrivalNs);
+                const auto pressure = readFrameGenerationPressure();
                 vkr_lsfg_set_pressure(
-                    lsfg,
-                    framegenGpuUsagePercent_.load(std::memory_order_relaxed),
-                    framegenThermalStatus_.load(std::memory_order_relaxed),
-                    framegenSourceFps_.load(std::memory_order_relaxed),
+                    lsfg, pressure.gpuUsagePercent, pressure.thermalStatus,
+                    pressure.sourceFps,
                     nativeConfirmedOutputFpsForGovernor_.load(std::memory_order_acquire),
-                    framegenFrameTimeP95Ms_.load(std::memory_order_relaxed),
-                    framegenSlowFrameRatio_.load(std::memory_order_relaxed));
+                    pressure.frameTimeP95Ms, pressure.slowFrameRatio);
                 vkr_lsfg_set_presentation_pressure(
                     lsfg, &nativePresentationPressure_);
                 // A composition consumes one source observation even when
@@ -5009,6 +4998,7 @@ void trimEvidence(std::deque<uint64_t>& events, uint64_t cutoffNs) {
 
 } // namespace
 void VulkanRendererContext::resetNativePresentationTimeline(const char* reason) {
+    clearFrameGenerationPressure();
     nativeSourceTimeline_.reset();
     nativeSourceTimelineSample_ = {};
     nativeTimelineLastSourceArrivalNs_ = 0;
@@ -5059,13 +5049,9 @@ void VulkanRendererContext::noteNativeSourceArrival(uint64_t nowNs) {
             intervalNs = raw;
     }
     if (intervalNs == 0) {
-        const float sourceFps =
-            framegenSourceFps_.load(std::memory_order_relaxed);
-        if (sourceFps > 1.0f) {
-            intervalNs = static_cast<uint64_t>(
-                std::llround(
-                    1000000000.0 / static_cast<double>(sourceFps)));
-        } else if (hostRefreshPeriodNs_ != 0) {
+        // Guest window uploads are not Native source observations. Seed from
+        // the display contract until two unique compositions provide cadence.
+        if (hostRefreshPeriodNs_ != 0) {
             const uint32_t fallbackCycles =
                 framegenTargetRate == 0
                     ? std::max<uint32_t>(2, framegenMultiplier)
@@ -5087,11 +5073,6 @@ void VulkanRendererContext::noteNativeSourceArrival(uint64_t nowNs) {
 
 uint32_t VulkanRendererContext::nativeTemporalGenerationCapacity() const {
     uint64_t interval = nativeTimelineSourceIntervalNs_;
-    const float sourceFps =
-        framegenSourceFps_.load(std::memory_order_relaxed);
-    if (interval == 0 && sourceFps > 1.0f)
-        interval = static_cast<uint64_t>(
-            std::llround(1000000000.0 / static_cast<double>(sourceFps)));
     if (hostRefreshPeriodNs_ == 0 || interval == 0)
         return VKR_LSFG_MAX_GENERATIONS;
     const uint64_t cycles = std::max<uint64_t>(
@@ -5114,15 +5095,6 @@ VulkanRendererContext::buildNativePresentationSchedule(
     if (!sample.valid) {
         const uint64_t nowNs = monotonicTimeNs();
         uint64_t fallbackIntervalNs = nativeTimelineSourceIntervalNs_;
-        if (fallbackIntervalNs == 0) {
-            const float sourceFps =
-                framegenSourceFps_.load(std::memory_order_relaxed);
-            if (sourceFps > 1.0f) {
-                fallbackIntervalNs = static_cast<uint64_t>(
-                    std::llround(
-                        1000000000.0 / static_cast<double>(sourceFps)));
-            }
-        }
         if (fallbackIntervalNs != 0 && nowNs != 0) {
             sample = nativeSourceTimeline_.observe(
                 nowNs, std::chrono::nanoseconds(fallbackIntervalNs));

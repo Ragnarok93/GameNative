@@ -130,8 +130,8 @@ AdaptiveFlowObservation observe(Runtime* lsfg,float requested_target=120.f) {
     return observation;
 }
 void tick(Runtime* lsfg,bool output_satisfied=false) {
-    struct { float target_rate=120.f; uint64_t last_drawn=1; } stats;
-    const bool pressure_fresh=true,global_pressure_valid=true,thermal_pressure_valid=true,output_deficit=!output_satisfied;
+    struct { float target_rate=120.f,source_rate=30.f; uint64_t last_drawn=1; } stats;
+    const bool global_pressure_valid=true,thermal_pressure_valid=true,output_deficit=!output_satisfied;
     AdaptiveFlowObservation observation{}; observation.valid=true;
     observation.schedulerTransition=lsfg->density_transition_frames>0;
     [[maybe_unused]] const bool output_valid=true;

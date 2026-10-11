@@ -7,6 +7,15 @@
 #include <chrono>
 #include <string>
 #include <cassert>
+#include <cmath>
+
+namespace {
+uint64_t frameGenerationPressureTimeNs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+}
+
 
 void VulkanRendererContext::createCompositePass() {
     VkAttachmentDescription att{};
@@ -282,9 +291,8 @@ void VulkanRendererContext::createLsfg() {
                        framegenFlowScale > 0.0f ? framegenFlowScale : 0.7f,
                        framegenFlowMode, framegenFlowPreset,
                        framegenRefreshRate, framegenConfigRevision);
-    vkr_lsfg_set_pressure(lsfg, framegenGpuUsagePercent_, framegenThermalStatus_,
-                          framegenSourceFps_, framegenOutputFps_,
-                          framegenFrameTimeP95Ms_, framegenSlowFrameRatio_);
+    clearFrameGenerationPressure();
+    vkr_lsfg_set_pressure(lsfg, -1.0f, -1, -1.0f, -1.0f, -1.0f, -1.0f);
 }
 
 uint32_t VulkanRendererContext::framegenExtraImages() const {
@@ -540,6 +548,7 @@ void VulkanRendererContext::setFrameGenerationEnabled(bool enabled) {
     if (framegenRequested == enabled) return;
     std::lock_guard<std::mutex> lk(renderMutex);
     framegenRequested = enabled;
+    clearFrameGenerationPressure();
     if (!enabled) {
         if (device) waitNativeResources();
         destroyLsfg();
@@ -585,7 +594,9 @@ void VulkanRendererContext::setSourceFrameCount(uint64_t count) {
 
 void VulkanRendererContext::setFrameGenerationRefreshRate(float hz) {
     std::unique_lock<std::shared_mutex> fl(frameMutex);
-    framegenRefreshRate = hz > 1.0f ? hz : 60.0f;
+    const float nextRefreshRate = std::isfinite(hz) && hz > 1.0f ? hz : 60.0f;
+    if (framegenRefreshRate != nextRefreshRate) clearFrameGenerationPressure();
+    framegenRefreshRate = nextRefreshRate;
     if (lsfg)
         vkr_lsfg_set_refresh_rate(lsfg, framegenRefreshRate);
 }
@@ -630,6 +641,7 @@ void VulkanRendererContext::setFrameGenerationMode(
         || nextTarget != framegenTargetRate || nextFlow != framegenFlowScale
         || nextFlowMode != framegenFlowMode || nextFlowPreset != framegenFlowPreset;
     if (effectivePolicyChanged) {
+        clearFrameGenerationPressure();
         nativeFeedbackMinConfigRevision_ = configRevision;
         resetNativePresentationEvidence();
         nativeSourceDisplayConfirmedEpoch_.store(0, std::memory_order_relaxed);
@@ -708,15 +720,24 @@ void VulkanRendererContext::setFrameGenerationMode(
 void VulkanRendererContext::setFrameGenerationPressure(
         float gpuUsagePercent, int thermalStatus, float sourceFps, float outputFps,
         float frameTimeP95Ms, float slowFrameRatio) {
-    // High-frequency control-plane telemetry is intentionally lock-free.
-    // renderFrame snapshots these atomics immediately before vkr_lsfg_plan(),
-    // so JNI never waits for the frame-wide renderer lock.
-    framegenGpuUsagePercent_.store(gpuUsagePercent, std::memory_order_relaxed);
-    framegenThermalStatus_.store(thermalStatus, std::memory_order_relaxed);
-    framegenSourceFps_.store(sourceFps, std::memory_order_relaxed);
-    framegenOutputFps_.store(outputFps, std::memory_order_relaxed);
-    framegenFrameTimeP95Ms_.store(frameTimeP95Ms, std::memory_order_relaxed);
-    framegenSlowFrameRatio_.store(slowFrameRatio, std::memory_order_relaxed);
+    // A short dedicated lock publishes one measurement tuple without waiting
+    // for renderFrame or its frame-wide lock. Rendering never renews its age.
+    std::lock_guard<std::mutex> lock(framegenPressureMutex_);
+    const auto nonnegative = [](float value) {
+        return std::isfinite(value) && value >= 0.0f ? value : -1.0f;
+    };
+    framegenGpuUsagePercent_.store(std::isfinite(gpuUsagePercent)
+        && gpuUsagePercent >= 0.0f && gpuUsagePercent <= 100.0f
+            ? gpuUsagePercent : -1.0f, std::memory_order_relaxed);
+    framegenThermalStatus_.store(thermalStatus >= 0 && thermalStatus <= 6
+        ? thermalStatus : -1, std::memory_order_relaxed);
+    framegenSourceFps_.store(nonnegative(sourceFps), std::memory_order_relaxed);
+    framegenOutputFps_.store(nonnegative(outputFps), std::memory_order_relaxed);
+    framegenFrameTimeP95Ms_.store(nonnegative(frameTimeP95Ms), std::memory_order_relaxed);
+    framegenSlowFrameRatio_.store(std::isfinite(slowFrameRatio)
+        && slowFrameRatio >= 0.0f && slowFrameRatio <= 1.0f
+            ? slowFrameRatio : -1.0f, std::memory_order_relaxed);
+    framegenPressureReceivedNs_ = frameGenerationPressureTimeNs();
 }
 
 uint64_t VulkanRendererContext::getGeneratedFrameCount() const {
@@ -757,3 +778,29 @@ uint64_t VulkanRendererContext::getSourceFrameCount() const {
     return framegenSourceFrames.load(std::memory_order_relaxed);
 }
 
+
+VulkanRendererContext::NativePressureSnapshot
+VulkanRendererContext::readFrameGenerationPressure() const {
+    std::lock_guard<std::mutex> lock(framegenPressureMutex_);
+    const uint64_t nowNs = frameGenerationPressureTimeNs();
+    if (framegenPressureReceivedNs_ == 0 || nowNs < framegenPressureReceivedNs_
+            || nowNs - framegenPressureReceivedNs_ >= 2000000000ULL) return {};
+    return NativePressureSnapshot{
+        framegenGpuUsagePercent_.load(std::memory_order_relaxed),
+        framegenThermalStatus_.load(std::memory_order_relaxed),
+        framegenSourceFps_.load(std::memory_order_relaxed),
+        framegenOutputFps_.load(std::memory_order_relaxed),
+        framegenFrameTimeP95Ms_.load(std::memory_order_relaxed),
+        framegenSlowFrameRatio_.load(std::memory_order_relaxed)};
+}
+
+void VulkanRendererContext::clearFrameGenerationPressure() {
+    std::lock_guard<std::mutex> lock(framegenPressureMutex_);
+    framegenPressureReceivedNs_ = 0;
+    framegenGpuUsagePercent_.store(-1.0f, std::memory_order_relaxed);
+    framegenThermalStatus_.store(-1, std::memory_order_relaxed);
+    framegenSourceFps_.store(-1.0f, std::memory_order_relaxed);
+    framegenOutputFps_.store(-1.0f, std::memory_order_relaxed);
+    framegenFrameTimeP95Ms_.store(-1.0f, std::memory_order_relaxed);
+    framegenSlowFrameRatio_.store(-1.0f, std::memory_order_relaxed);
+}

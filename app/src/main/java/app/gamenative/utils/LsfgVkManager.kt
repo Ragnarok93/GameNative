@@ -682,9 +682,13 @@ object LsfgVkManager {
     @Volatile private var cachedMeasuredRoot: String? = null
     private val measuredFpsCacheLock = Any()
 
+    private fun measurementBackend(container: Container): String =
+        runtimeMeasurementPolicy?.takeIf { it.rootPath == container.rootDir.absolutePath }
+            ?.snapshot?.backend ?: backend(container)
+
     /** Served from a cache refreshed off the main thread; callers poll ~1/s. */
     fun readMeasuredFps(container: Container): Float? = synchronized(measuredFpsCacheLock) {
-        if (isNativeBackend(container)) return@synchronized readNativeOutputFps(container)
+        if (measurementBackend(container) == BACKEND_NATIVE) return@synchronized readNativeOutputFps(container)
         val now = System.currentTimeMillis()
         val rootKey = runCatching { container.rootDir.canonicalPath }
             .getOrElse { container.rootDir.absolutePath }
@@ -723,7 +727,7 @@ object LsfgVkManager {
         val root = rootDir ?: return null
         val container = nativeRendererContainer
         if (container != null && container.rootDir.absolutePath == root.absolutePath &&
-            isNativeBackend(container)) return readNativeOutputFps(container)
+            measurementBackend(container) == BACKEND_NATIVE) return readNativeOutputFps(container)
         val values = readFreshLegacyStats(root, nowMs) ?: return null
         if (values["confirmed_output_valid"] != "1") return null
         return values["fps"]?.toFloatOrNull()?.takeIf { it.isFinite() && it >= 0f }
@@ -759,6 +763,7 @@ object LsfgVkManager {
             nativeActivationOwnerGeneration == snapshot.backendGeneration &&
             snapshot.backendGeneration == backendRequestSerial.get()
         val observing = ownerCurrent && policyApplied && enabled && initialized
+        if (opportunityCount > nativeStateSampleOpportunities) nativeZeroDemandSourceWindows = 0
         val nowNs = System.nanoTime()
         if (!observing || nativeStateSampleNs == 0L ||
             wsiGeneratedCount < nativeStateSampleWsiGenerated ||
@@ -1140,7 +1145,7 @@ object LsfgVkManager {
     // physical confirmation is unavailable on the device.
     private fun readNativeOutputFps(container: Container): Float? {
         val renderer = nativeRendererRef?.get() ?: return null
-        if (nativeRendererContainer !== container || !isNativeBackend(container) ||
+        if (nativeRendererContainer !== container || measurementBackend(container) != BACKEND_NATIVE ||
             !renderer.isFrameGenerationSupported()) return null
         return renderer.getNativeConfirmedOutputFps().takeIf { it.isFinite() && it >= 0f }
     }
@@ -1730,9 +1735,9 @@ object LsfgVkManager {
                         if (activeAckWaitNs >= 30_000_000_000L) {
                             renderer.setFrameGenerationEnabled(false)
                             if (!commitNativeApply(renderer, container, snapshot, generation, false, true, "legacy-disable-timeout")) {
-                        discardStaleSnapshot(snapshot, "failure-publication")
-                        return@execute
-                    }
+                                discardStaleSnapshot(snapshot, "failure-publication")
+                                return@execute
+                            }
                             transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_FAILED, nativeFailureReason!!)
                             onApplied?.invoke(nativeFailureReason!!)
                             return@execute

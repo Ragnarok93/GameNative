@@ -521,9 +521,9 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                         lsfg->presentation_pressure.generated_delivery_efficiency),
                     0.0, 1.0)
                 : (lsfg->synthetic_drop_pressure ? 1.0 : 0.0);
-        observation.sourceFps =
-            pressure_fresh && lsfg->pressure.source_valid
-                ? lsfg->pressure.source_fps : stats.source_rate;
+        // Guest upload counters can include several window updates consumed
+        // by one composition. The pacer tracks unique composed source frames.
+        observation.sourceFps = stats.source_rate;
         observation.adaptiveFramegenMode = stats.target_rate > 0.0f;
         observation.scheduledGenerationDensity =
             static_cast<double>(selected_generations);
@@ -637,16 +637,16 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
             // Healthy delivery and GPU headroom permit a bounded density probe.
             // Full requested cadence cannot be reached under our own cap, and
             // a new Flow preset must not pin that cap above its new scale floor.
-            // A device without a GPU sensor can still recover from confirmed
-            // downstream loss. Require fresh source/physical delivery proof,
-            // and retain the GPU requirement for compute-origin reductions.
+            // A device without external pressure telemetry can still recover
+            // from confirmed downstream loss. Native source progress and the
+            // host's rolling confirmed-delivery evidence provide the proof;
+            // compute-origin reductions retain the GPU headroom requirement.
             const bool confirmed_delivery_headroom =
                 !lsfg->density_requires_gpu_recovery
                 && !global_pressure_valid
-                && pressure_fresh && lsfg->pressure.source_valid
-                && lsfg->pressure.source_fps > 0.0f
+                && stats.source_rate > 0.0f
                 && (!output_valid
-                    || lsfg->pressure.output_fps >= lsfg->pressure.source_fps * 0.97f)
+                    || lsfg->pressure.output_fps >= stats.source_rate * 0.97f)
                 && lsfg->presentation_pressure.confirmation_available
                 && lsfg->presentation_pressure.source_delivery_healthy;
             const bool recovery =

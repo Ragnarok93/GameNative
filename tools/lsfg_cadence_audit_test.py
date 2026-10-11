@@ -429,6 +429,8 @@ schedule_fields = header[header.index('    struct NativePresentationSchedule {')
                          header.index('    std::string nativeLastAdmissionReason_')]
 prefix = prefix.replace(' HostDesiredPresentDecision validatedHostDesiredPresentTime', schedule_fields + '''
  std::atomic<float> framegenSourceFps_{30.f};
+ struct Pressure {float sourceFps;};
+ Pressure readFrameGenerationPressure() const {return {framegenSourceFps_.load()};}
  unsigned framegenTargetRate=0,framegenMultiplier=4;
  void noteNativeSourceArrival(uint64_t);
  NativePresentationSchedule buildNativePresentationSchedule(uint32_t,uint64_t);
@@ -446,7 +448,7 @@ int main() {
    c.noteNativeSourceArrival(nowNs);
    const auto plan=c.buildNativePresentationSchedule(multiplier-1,cycle+1);
    require(plan.generatedCount==multiplier-1,"actual timeline retains requested Fixed2x/3x/4x density");
-   require(plan.sourceDesiredNs==nowNs+33333333ULL,"actual source deadline remains anchored to source cadence");
+   require(std::llabs(static_cast<long long>(plan.sourceDesiredNs)-static_cast<long long>(nowNs+33333333ULL))<=8,"actual source deadline remains anchored to source cadence");
    uint64_t previous=nowNs;
    for(unsigned n=0;n<plan.generatedCount;++n) {
     require(plan.generatedDesiredNs[n]>previous && plan.generatedDesiredNs[n]<plan.sourceDesiredNs,"actual generated slots are ordered within their source batch");

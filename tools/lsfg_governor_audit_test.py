@@ -86,6 +86,13 @@ int main(int argc,char** argv) {
     } else if(test=="source-domain") {
         r.adaptive_flow=true; vkr_lsfg_plan(&r,3,1);
         require(!r.flow_controller.last.outputDeficit,"30 source / 120 physical output is healthy despite source p95 33ms");
+    } else if(test=="unique-source-domain") {
+        r.adaptive_flow=true; r.pressure.source_fps=60;
+        vkr_lsfg_plan(&r,3,1);
+        require(r.flow_controller.last.sourceFps==30,"raw guest upload pressure cannot override unique composition cadence");
+        r.pacer.stats.source_rate=0; r.pressure.source_fps=60;
+        vkr_lsfg_plan(&r,3,1);
+        require(r.flow_controller.last.sourceFps==0,"paused composition cadence cannot inherit raw upload headroom");
     } else if(test=="unknown-output") {
         r.adaptive_flow=true; fresh(r,98,-1); r.active_flow_scale=.5f; r.flow_controller.scale=.5f;
         tick(r,40); require(r.adaptive_generation_cap==3,"unknown physical output cannot invent GPU/output deficit");
@@ -114,6 +121,17 @@ int main(int argc,char** argv) {
             require(presentWait.adaptive_generation_cap==3,"fresh PresentWait delivery truth allows bounded density recovery while actual output FPS stays unknown");
             require(!presentWait.pressure.output_valid,"PresentWait does not invent scanout timing");
         }
+    } else if(test=="all-external-pressure-unavailable") {
+        r.adaptive_generation_cap=0;
+        r.presentation_pressure.confirmation_available=true;
+        r.presentation_pressure.source_delivery_healthy=true;
+        r.presentation_pressure.generated_delivery_efficiency=1;
+        for(int i=0;i<240;++i) {
+            vkr_lsfg_set_pressure(&r,-1,-1,-1,-1,-1,-1);
+            vkr_lsfg_plan(&r,3,1);
+        }
+        require(r.adaptive_generation_cap==3,"actual unique source progress and fresh confirmed delivery allow bounded probes when all external metrics are absent");
+        require(!r.pressure.sample_valid,"recovery does not manufacture external measurements");
     } else if(test=="flow-edit-evidence") {
         r.density_pressure_seconds=.59; r.density_recovery_seconds=1.99; r.synthetic_drop_pressure=true;
         vkr_lsfg_configure(&r,4,120,.75f,0,0,120,7);
@@ -198,7 +216,7 @@ if 'density_transition_frames' not in native:
     code = code.replace(structure_marker, structure_marker + '\nuint32_t density_transition_frames{};')
 if 'generatedCadenceSample' not in (ROOT/'app/src/main/cpp/lsfg-vk-android/include/adaptive_flow_controller.hpp').read_text():
     code = code.replace('r.flow_controller.last.generatedCadenceSample', 'false')
-cases = sys.argv[1:] or ['fixed-flow-relief','fixed-compute-relief','above-floor-relief','source-domain','unknown-output','no-source-progress','long-source-gap','fixed-flow-recovery','unknown-gpu-delivery-recovery','present-wait-recovery','flow-edit-evidence','flow-transition-evidence','unknown-gpu-unproven-recovery','compute-origin-recovery','thermal-recovery','cap-preserved','workload-edit','refresh-edit','measured-zero','reset-evidence','cadence-provenance','fixed-clear-drop','soak']
+cases = sys.argv[1:] or ['fixed-flow-relief','fixed-compute-relief','above-floor-relief','source-domain','unique-source-domain','unknown-output','no-source-progress','long-source-gap','fixed-flow-recovery','unknown-gpu-delivery-recovery','present-wait-recovery','all-external-pressure-unavailable','flow-edit-evidence','flow-transition-evidence','unknown-gpu-unproven-recovery','compute-origin-recovery','thermal-recovery','cap-preserved','workload-edit','refresh-edit','measured-zero','reset-evidence','cadence-provenance','fixed-clear-drop','soak']
 with tempfile.TemporaryDirectory(prefix='native-governor-audit-') as directory:
     cpp,binary=Path(directory)/'test.cpp',Path(directory)/'test'
     cpp.write_text(code)

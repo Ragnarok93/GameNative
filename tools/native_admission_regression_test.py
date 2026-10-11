@@ -75,6 +75,8 @@ struct VulkanRendererContext {
     std::atomic<bool> hostPresenterBusy_{false};
     uint64_t hostPresenterSourceDesiredNs_=0;
     std::atomic<float> framegenSourceFps_{30.f};
+    struct Pressure { float sourceFps; };
+    Pressure readFrameGenerationPressure() const { return {framegenSourceFps_.load()}; }
     // Real logged median0.3ms/p95~14.8ms includes presentation-engine tails.
     std::vector<uint64_t> hostPresentLatencySamplesNs_{300000ULL,14800000ULL};
     uint64_t nativeTimelineSourceIntervalNs_=33333333ULL,hostRefreshPeriodNs_=8333333ULL;

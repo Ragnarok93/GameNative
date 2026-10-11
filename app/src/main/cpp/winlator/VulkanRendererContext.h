@@ -785,10 +785,20 @@ private:
     float framegenRefreshRate = 60.0f;
     std::atomic<float> framegenGpuUsagePercent_{-1.0f};
     std::atomic<int> framegenThermalStatus_{-1};
-    std::atomic<float> framegenSourceFps_{0.0f};
-    std::atomic<float> framegenOutputFps_{0.0f};
-    std::atomic<float> framegenFrameTimeP95Ms_{0.0f};
-    std::atomic<float> framegenSlowFrameRatio_{0.0f};
+    std::atomic<float> framegenSourceFps_{-1.0f};
+    std::atomic<float> framegenOutputFps_{-1.0f};
+    std::atomic<float> framegenFrameTimeP95Ms_{-1.0f};
+    std::atomic<float> framegenSlowFrameRatio_{-1.0f};
+    struct NativePressureSnapshot {
+        float gpuUsagePercent = -1.0f;
+        int thermalStatus = -1;
+        float sourceFps = -1.0f, outputFps = -1.0f;
+        float frameTimeP95Ms = -1.0f, slowFrameRatio = -1.0f;
+    };
+    mutable std::mutex framegenPressureMutex_;
+    uint64_t framegenPressureReceivedNs_ = 0;
+    NativePressureSnapshot readFrameGenerationPressure() const;
+    void clearFrameGenerationPressure();
     uint64_t nativeLsfgContextEpoch_ = 0;
     uint64_t nativeFeedbackMinConfigRevision_ = 0;
     uint64_t nativeLastContextReuseRevision_ = UINT64_MAX;

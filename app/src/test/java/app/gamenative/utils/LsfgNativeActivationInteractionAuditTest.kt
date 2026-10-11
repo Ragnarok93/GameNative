@@ -155,6 +155,12 @@ class LsfgNativeActivationInteractionAuditTest {
         window(60); assertTrue(window(60).generationReady)
         assertFalse(window(15, demand = 45).generationReady)
     }
+    @Test fun newDemandImmediatelyInvalidatesSourceOnlyReadiness() {
+        restartWithoutGeneratedHistory()
+        window(60); assertTrue(window(60).generationReady)
+        opportunities++
+        assertFalse(LsfgVkManager.readRuntimeState(container).generationReady)
+    }
     @Test fun actualUndeliveredGenerationDemandBecomesStalled() {
         var state = window(15, demand = 45)
         repeat(5) { state = window(15, demand = 45) }

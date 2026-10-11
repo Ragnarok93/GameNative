@@ -69,4 +69,4 @@ Physical-device cadence, visuals, thermals, input latency and sustained operatio
 - [ ] Reproduce high-confidence defects and separate them from device-dependent performance hypotheses.
 - [ ] Save and summarize prioritized findings and proposed solutions. This pass changes no production code.
 
-Follow-up audit checkpoint: reproduced a Native density recovery hold that persists for 300 seconds after downstream delivery recovers at unchanged source/GPU/Flow conditions. The new findings report is docs/lsfg-followup-audit-20261011.md; Legacy zero-time polling and Native Flow recovery candidates are being verified. No production changes.
+Follow-up audit checkpoint: Native density hold, Flow recovery and source-limited target tracking reproduced. Shared Legacy completion import failure double-closes descriptor ownership at three active sites; zero-time polling is a verified latent defect with dormant callers. Report: docs/lsfg-followup-audit-20261011.md. Manager/power ownership and host performance review continue. No production changes.

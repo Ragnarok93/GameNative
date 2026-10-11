@@ -92,3 +92,19 @@ Follow-up audit completed: nine correctness/control findings, one dormant helper
 
 - [x] Repair legacy lifecycle source-contract assertion for identity-aware degraded publisher; Shared runtime `28fb90ea5be94d228326ae985dc6031c1a591b60`. Build `38128427009` and regressions `38128427029` stopped at this obsolete static contract; no compiler result yet.
 - [ ] Verify fresh CI, including compilation and source-contracts.
+
+## 2026-10-11 corrective implementation status
+
+- [x] F1: prevent generic/Adreno SYNC_FD double close and cover duplicated poll-FD failure cleanup; pinned runtime contains corrected source.
+- [x] F2: consumed Legacy stats publish exact transaction/revision, and Native activation waits for matching source-only acknowledgment rather than freshness alone.
+- [x] F3: newer user limiter edits take precedence over adaptive stop/pause restoration; control state tracks edit ownership explicitly.
+- [x] F7: unsuccessful Legacy restoration publishes failure with source-only measurement contract, not desired generation stride.
+- [x] F8: adaptive cap decision submission uses observed policy-generation CAS and expected user-cap state.
+- [x] Source contract repair: update obsolete Adreno FD and lifecycle-stat assertions to the revised semantics.
+- [x] [LSFG presentation regressions #38128552542](https://github.com/Ragnarok93/GameNative/actions/runs/38128552542): passed with GameNative `0531e453`, Shared `28fb90ea`.
+- [x] [Upgradeable Debug APK workflow #38128552551](https://github.com/Ragnarok93/GameNative/actions/runs/38128552551): LSFG native build, host Vulkan rebuild and presentation regression stages passed.
+- [ ] Android/Legacy test matrix and APK provenance/signature check: workflow still in progress at this report checkpoint; do **not** label as verified.
+- [ ] F4/F5/F6/F9 recovery and requested/attainable-cadence changes; F10 dormant zero-poll; B1–B4 measurements/optimization.
+- [ ] Physical device cadence, source starvation, thermals, input latency and sustained user testing.
+
+These are committed implementation changes with passing source/native presentation regressions, not a blanket production readiness certification. The last *fully verified packaged APK* remains Build #787 until the new workflow succeeds.

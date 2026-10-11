@@ -34,12 +34,30 @@ Updated: 2026-10-11. Source changes, tests and this checklist are checkpointed t
 - [x] Build #787 rebuilt both native libraries; persistent signer verification, version metadata generation and presentation regressions passed.
 - [x] Build #787 Android compilation and all selected LSFG/power interaction tests passed, including 12 new cap behavior cases.
 - [x] Assemble the upgradeable debug APK (Build #787).
-- [ ] Verify package identity, increasing version code, persistent signer, JNI exports and native source provenance.
-- [ ] Publish the fresh verified APK for testing and feedback.
+- [x] Verify package identity, increasing version code, persistent signer, JNI exports and native source provenance.
+- [x] Publish the fresh verified APK for testing and feedback.
 - [ ] Physical-device acceptance: actual displayed cadence, visuals, thermals, input latency and sustained operation across both backends, Fixed 2x/3x/4x and Adaptive generation, Fixed/Adaptive Flow, FIFO/Mailbox and queue Off/0/1/2.
 
 ## Current state
 
-Build #787 passed Android compilation and the complete selected application suite, including all 12 FPS-cap behavior cases. APK assembly passed. Packaged identity/provenance verification is now running; delivery is pending verification and upload. The tests execute production behavior with deterministic clocks or platform boundary fakes; they do not establish physical device delivery or performance. Detailed feature behavior and acceptance scope are recorded in `docs/lsfg-behavior-audit-20261011.md`.
+Build #787 completed successfully: both native rebuilds, presentation regressions, Android production compilation, all selected LSFG/power application tests, APK assembly, update identity/native provenance verification and artifact upload passed. All 12 new FPS-cap Android behavior tests passed. No application test failure was skipped. Later commits contain only supplementary audit tools and reports; packaged source remains `eb5642a`.
 
-Application validation: https://github.com/Ragnarok93/GameNative/actions/runs/38116504753 (Build #787, packaged-source commit eb5642a).
+[Download the verified APK bundle](https://github.com/Ragnarok93/GameNative/actions/runs/38116504753/artifacts/11694186430). Extract `GameNative-upgradeable-debug.apk`; the bundle also includes its SHA-256 checksum, build metadata and signing report.
+
+| Field | Verified value |
+| --- | --- |
+| Build | #787 — success |
+| Application ID | `app.gamenative` |
+| Version code | `4564361` |
+| Version name | `upgradeable-debug-eb5642a6b59f` |
+| Packaged GameNative commit | `eb5642a6b59f0815893efff65e62b8f4c4cb669e` |
+| Pinned/packaged Shared runtime | `5f14ebc3002401d4c762966cddf1793b3d3ec3f5` |
+| Signing certificate SHA-256 | `0ff2ee400fcbaa8bf57a48f0297e49f139be8255fead61f96f409c3e11814d7a` |
+| Artifact ZIP SHA-256 | `d8e8da68dc4190bafc0200fbb654a1e933826956eba53e0aca0cc67425de7e3c` |
+| Artifact size | 601,532,785 bytes |
+| Artifact availability | Through 2026-10-25 |
+
+Workflow: https://github.com/Ragnarok93/GameNative/actions/runs/38116504753.
+Native complete-suite validation: https://github.com/Ragnarok93/GameNative/actions/runs/38115572128.
+
+Physical-device cadence, visuals, thermals, input latency and sustained operation remain unverified. The automated tests execute production behavior with deterministic clocks or platform boundary fakes; they do not establish physical display delivery or performance. Detailed feature behavior and device acceptance scope are recorded in `docs/lsfg-behavior-audit-20261011.md`.

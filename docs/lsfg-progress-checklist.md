@@ -12,6 +12,9 @@ Updated: 2026-10-11. Each advancement is saved with this report through the GitH
 - [x] Notify the Native governor when Frame Queue enable/depth actually changes; preserve settled density and history while clearing incompatible rejected-probe evidence. No-op policy publication preserves the hold. Drain the presenter before clearing host evidence and retire the previous feedback revision at the next captured policy publication.
 - [x] Verify the real queue setter plus real Native mode publication: stale revisions cannot consume the pending boundary; the next current revision retires the old feedback floor; metadata-only updates and no-op queue settings preserve evidence and holds, without a swapchain rebuild. The previous mode code fails this regression.
 - [ ] Run affected regression tests and the complete workflow application checks without skipping failures.
+- [x] Build #782: both native libraries, full native suite, Android production compilation, and all 290 selected application tests executed. 284 passed; six failures must be resolved before packaging.
+- [ ] Fix the real FPS-cap application regression: background fallback reports success before main-thread execution, and a rejected installed applier falls through to an unowned fallback. Guard completion, timeout, owner and target changes with behavior tests.
+- [ ] Repair five outdated source-contract checks while preserving their original ownership, telemetry, isolation and debounce guarantees.
 - [ ] Build the debug APK and verify package identity, increasing version code, persistent signing certificate, JNI exports, and native source provenance.
 - [ ] Provide the fresh verified APK for testing and feedback.
 - [ ] Physical-device acceptance: cadence, visuals, thermals, latency, and sustained operation across both backends, modes, multipliers, Flow settings, queue depths, and presentation modes. No device result is asserted by the automated tests.

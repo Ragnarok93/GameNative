@@ -8,6 +8,8 @@ Updated: 2026-10-11. Each advancement is saved with this report through the GitH
 - [x] Native regression workflow #11 passed; Build #772 rebuilt both native libraries and passed native regression checks.
 - [x] Correct Build #772 Kotlin integration failure: restore the handoff-published runtime multiplier in the source FPS update path; inactive generation uses 1x. Android compilation verification remains pending.
 - [x] Reproduce and fix repeated failed Native density recovery probes under unchanged operating conditions. Retain the pre-probe baseline; require sustained material change before retrying a rejected point.
+- [x] Extend the stationary regression to a working 2x density baseline: 107 failed retries on the old code become one failed probe, preserving the working baseline.
+- [ ] Notify the Native governor when Frame Queue enable/depth actually changes; preserve settled density and history while clearing incompatible rejected-probe evidence. No-op policy publication must preserve the hold.
 - [ ] Run affected regression tests and the complete workflow application checks without skipping failures.
 - [ ] Build the debug APK and verify package identity, increasing version code, persistent signing certificate, JNI exports, and native source provenance.
 - [ ] Provide the fresh verified APK for testing and feedback.

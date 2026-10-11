@@ -181,8 +181,9 @@ int main(int argc,char** argv) {
         r.pacer.config.target_rate=0; r.pacer.stats.target_rate=0; r.synthetic_drop_pressure=true;
         vkr_lsfg_plan(&r,3,1); require(!r.synthetic_drop_pressure,"Fixed FG + Fixed Flow cannot retain old synthetic pressure");
     } else if(test=="stationary-failed-delivery-probe" || test=="stationary-failed-admission-probe"
-            || test=="jitter-failed-density-probe") {
-        r.adaptive_generation_cap=0;
+            || test=="jitter-failed-density-probe" || test=="stationary-limited-density-probe") {
+        const unsigned baseline=test=="stationary-limited-density-probe" ? 1 : 0;
+        r.adaptive_generation_cap=baseline;
         r.presentation_pressure.confirmation_available=true;
         r.presentation_pressure.source_delivery_healthy=true;
         unsigned attempts=0,failedProbes=0;
@@ -191,21 +192,21 @@ int main(int argc,char** argv) {
         // A failed probe is evidence against retrying the same actuator there.
         for(int i=0;i<9000;++i) {
             const auto before=r.adaptive_generation_cap;
-            const bool generates=before>0;
+            const bool generates=before>baseline;
             r.presentation_pressure.pressure_active=generates && test!="stationary-failed-admission-probe";
             r.presentation_pressure.generated_delivery_efficiency=generates ? .2f : 1.f;
             r.synthetic_drop_pressure=generates && test=="stationary-failed-admission-probe";
             const bool jitter=test=="jitter-failed-density-probe";
             r.pacer.stats.source_rate=jitter ? ((i%2) ? 30.1f : 29.9f) : 30.f;
             r.pacer.stats.last_elapsed=1.f/r.pacer.stats.source_rate;
-            fresh(r,jitter ? ((i%2) ? 60.5f : 59.5f) : 60.f,30);
+            fresh(r,jitter ? ((i%2) ? 60.5f : 59.5f) : 60.f,30*(baseline+1));
             const auto selected=vkr_lsfg_plan(&r,3,1);
             r.last_generations=test=="stationary-failed-admission-probe" ? 0 : selected;
-            attempts+=before==0 && r.adaptive_generation_cap>0;
-            failedProbes+=before>0 && r.adaptive_generation_cap==0;
+            attempts+=before==baseline && r.adaptive_generation_cap>baseline;
+            failedProbes+=before>baseline && r.adaptive_generation_cap==baseline;
         }
         std::printf("stationary300s attempts=%u failed_probes=%u cap=%u\n",attempts,failedProbes,r.adaptive_generation_cap);
-        require(attempts==1 && failedProbes==1 && r.adaptive_generation_cap==0,
+        require(attempts==1 && failedProbes==1 && r.adaptive_generation_cap==baseline,
                 "failed density recovery probe must hold at unchanged source/GPU/delivery point");
     } else if(test=="changed-point-density-recovery") {
         r.adaptive_generation_cap=0;
@@ -269,7 +270,7 @@ if 'density_transition_frames' not in native:
     code = code.replace(structure_marker, structure_marker + '\nuint32_t density_transition_frames{};')
 if 'generatedCadenceSample' not in (ROOT/'app/src/main/cpp/lsfg-vk-android/include/adaptive_flow_controller.hpp').read_text():
     code = code.replace('r.flow_controller.last.generatedCadenceSample', 'false')
-cases = sys.argv[1:] or ['fixed-flow-relief','fixed-compute-relief','above-floor-relief','source-domain','unique-source-domain','unknown-output','no-source-progress','long-source-gap','fixed-flow-recovery','unknown-gpu-delivery-recovery','present-wait-recovery','all-external-pressure-unavailable','flow-edit-evidence','flow-transition-evidence','unknown-gpu-unproven-recovery','compute-origin-recovery','thermal-recovery','cap-preserved','workload-edit','refresh-edit','measured-zero','reset-evidence','cadence-provenance','fixed-clear-drop','stationary-failed-delivery-probe','stationary-failed-admission-probe','jitter-failed-density-probe','changed-point-density-recovery','soak']
+cases = sys.argv[1:] or ['fixed-flow-relief','fixed-compute-relief','above-floor-relief','source-domain','unique-source-domain','unknown-output','no-source-progress','long-source-gap','fixed-flow-recovery','unknown-gpu-delivery-recovery','present-wait-recovery','all-external-pressure-unavailable','flow-edit-evidence','flow-transition-evidence','unknown-gpu-unproven-recovery','compute-origin-recovery','thermal-recovery','cap-preserved','workload-edit','refresh-edit','measured-zero','reset-evidence','cadence-provenance','fixed-clear-drop','stationary-failed-delivery-probe','stationary-failed-admission-probe','jitter-failed-density-probe','stationary-limited-density-probe','changed-point-density-recovery','soak']
 with tempfile.TemporaryDirectory(prefix='native-governor-audit-') as directory:
     cpp,binary=Path(directory)/'test.cpp',Path(directory)/'test'
     cpp.write_text(code)

@@ -23,7 +23,7 @@ class XServerLsfgCoroutineIsolationContractTest {
         ).readText()
 
         val screenStart = source.indexOf("fun XServerScreen(")
-        val screenEnd = source.indexOf("private fun getWineStartCommand(", screenStart)
+        val screenEnd = source.indexOf("private fun rememberXServerScreenPersistentState(", screenStart)
         assertTrue(screenStart >= 0)
         assertTrue(screenEnd > screenStart)
 
@@ -34,9 +34,17 @@ class XServerLsfgCoroutineIsolationContractTest {
         assertFalse(screenBody.contains("InputMethodManager"))
         assertFalse(screenBody.contains("val imm ="))
         assertFalse(source.substring(screenStart, source.indexOf(") {", screenStart)).contains("immersiveHooks:"))
-        assertTrue(screenBody.contains("LocalImmersiveSessionHooks.current"))
-        assertTrue(screenBody.contains("launchXServerIo"))
-        assertTrue(screenBody.contains("LsfgRuntimeHandoffController("))
-        assertTrue(screenBody.contains("lsfgRuntimeHandoffController.schedule("))
+        assertTrue(screenBody.contains("XServerScreenController("))
+        assertTrue(screenBody.contains("XServerScreenRuntime(controller)"))
+        val runtimeBody = source.substringAfter("private fun XServerScreenRuntime(")
+            .substringBefore("private fun ManualResumeOverlay(")
+        val controller = File(repoRoot(),
+            "app/src/main/java/app/gamenative/ui/screen/xserver/XServerScreenController.kt").readText()
+        assertFalse(runtimeBody.contains("rememberCoroutineScope()"))
+        assertFalse(runtimeBody.contains("CoroutineScope("))
+        assertTrue(runtimeBody.contains("LocalImmersiveSessionHooks.current"))
+        assertTrue(controller.contains("launchXServerIo"))
+        assertTrue(controller.contains("LsfgRuntimeHandoffController("))
+        assertTrue(runtimeBody.contains("lsfgRuntimeHandoffController.schedule("))
     }
 }

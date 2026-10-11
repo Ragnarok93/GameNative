@@ -81,12 +81,13 @@ class LsfgPacingCallSiteContractTest {
     fun quickMenuRevisionIsAllocatedOnlyWhenDebouncedPublicationCommits() {
         val helper = read("app/gamenative/utils/LsfgQuickMenuHelper.kt")
         val snapshot = helper.substringAfter("private fun snapshotRuntimeConfig")
-            .substringBefore("private fun scheduleRuntimeConfig")
+            .substringBefore("internal fun scheduleRuntimeConfig")
         val publish = helper.substringAfter("private fun publishRuntimeConfig")
 
         assertFalse(snapshot.contains("reserveRuntimeRequest"))
         assertFalse(snapshot.contains("revision: Long"))
-        assertTrue(publish.contains("val request = LsfgVkManager.reserveRuntimeRequest(container)"))
+        assertTrue(publish.contains("val request = LsfgVkManager.reserveRuntimeRequestForOwner(container, snapshot.backendGeneration)"))
+        assertTrue(publish.contains("?: return"))
         assertTrue(publish.contains("requestToken = request"))
     }
 
@@ -115,9 +116,10 @@ class LsfgPacingCallSiteContractTest {
         val callback = source.substringAfter("onPresentModeChanged = { mode ->")
             .substringBefore("},", missingDelimiterValue = source.substringAfter("onPresentModeChanged = { mode ->"))
 
-        assertTrue(source.contains("applyPresentMode(it, mode)"))
-        assertTrue(source.contains("applyLsfgPresentationFrameRateHint("))
-        assertTrue(source.contains("getFrameRateLimit()"))
+        assertTrue(callback.contains("LsfgQuickMenuHelper.applyPresentMode("))
+        assertTrue(callback.contains("activeContainer,"))
+        assertTrue(callback.contains("applyLsfgPresentationFrameRateHint("))
+        assertTrue(callback.contains("sourceFpsCap = vulkanView?.frameRateLimit ?: 0"))
         assertFalse(callback.contains("PresentExtension"))
         assertFalse(callback.contains("ShmFramePacer"))
     }

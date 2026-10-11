@@ -41,13 +41,12 @@ class LsfgHostQueueTelemetryContractTest {
     }
 
     private fun sourcePath(relative: String): Path {
-        val candidates = listOf(
-            Paths.get("src/main/java").resolve(relative),
-            Paths.get("app/src/main/java").resolve(relative),
-            Paths.get(relative),
-            Paths.get("app").resolve(relative),
-        )
-        return candidates.firstOrNull { Files.isRegularFile(it) }
-            ?: error("Unable to locate $relative from test working directory")
+        var directory = Paths.get("").toAbsolutePath()
+        repeat(8) {
+            val candidate = directory.resolve(relative)
+            if (Files.isRegularFile(candidate)) return candidate
+            directory = directory.parent ?: return@repeat
+        }
+        error("Unable to locate $relative from test working directory")
     }
 }

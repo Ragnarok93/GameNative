@@ -14,7 +14,7 @@ Updated: 2026-10-11. Each advancement is saved with this report through the GitH
 - [ ] Run affected regression tests and the complete workflow application checks without skipping failures.
 - [x] Build #782: both native libraries, full native suite, Android production compilation, and all 290 selected application tests executed. 284 passed; six failures must be resolved before packaging.
 - [ ] Fix the real FPS-cap application regression: background fallback reports success before main-thread execution, and a rejected installed applier falls through to an unowned fallback. Guard completion, timeout, owner and target changes with behavior tests.
-- [ ] Repair five outdated source-contract checks while preserving their original ownership, telemetry, isolation and debounce guarantees.
+- [x] Repair five outdated source-contract checks while preserving their original ownership, telemetry, isolation and debounce guarantees: repository-root lookup, renamed internal debounce scheduling and owner reservation, scoped presentation callbacks, and the split screen/controller/runtime functions. Local JUnit runs 16 checks; only the known FPS-cap completion regression remains failing.
 - [ ] Build the debug APK and verify package identity, increasing version code, persistent signing certificate, JNI exports, and native source provenance.
 - [ ] Provide the fresh verified APK for testing and feedback.
 - [ ] Physical-device acceptance: cadence, visuals, thermals, latency, and sustained operation across both backends, modes, multipliers, Flow settings, queue depths, and presentation modes. No device result is asserted by the automated tests.

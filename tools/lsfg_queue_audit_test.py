@@ -199,8 +199,8 @@ void pressureRecovery() {
 }
 void gpuBudget() {
     unsigned submissions=0;
-    for(int mode:{VK_PRESENT_MODE_FIFO_KHR,VK_PRESENT_MODE_MAILBOX_KHR})for(unsigned depth=0;depth<3;++depth) {
-        VulkanRendererContext c;c.activePresentMode=mode;c.setLsfgFrameQueue(true,depth);
+    for(int mode:{VK_PRESENT_MODE_FIFO_KHR,VK_PRESENT_MODE_MAILBOX_KHR})for(bool enabled:{false,true})for(unsigned depth=0;depth<3;++depth) {
+        VulkanRendererContext c;c.activePresentMode=mode;c.setLsfgFrameQueue(enabled,depth);
         for(unsigned step=0;step<20000;++step) {
             const unsigned slot=step%c.activeFrameSlotCount();
             // Real renderer waits for a reused frame slot before recording it;
@@ -245,8 +245,9 @@ void semaphoreLifetime() {
 void presenterOrder() {
     unsigned total=0;
     for(bool native:{false,true})for(int mode:{VK_PRESENT_MODE_FIFO_KHR,VK_PRESENT_MODE_MAILBOX_KHR})
-        for(unsigned depth=0;depth<3;++depth) {
-        VulkanRendererContext c;c.activePresentMode=mode;c.setLsfgFrameQueue(true,depth);
+        for(bool enabled:{false,true})for(unsigned depth=0;depth<3;++depth) {
+        if(!enabled&&depth!=0)continue;
+        VulkanRendererContext c;c.activePresentMode=mode;c.setLsfgFrameQueue(enabled,depth);
         c.hostPresenterRunning_=true;
         c.hostPresenterThread_=std::thread(&VulkanRendererContext::hostPresenterLoop,&c);
         uint64_t id=0;
@@ -273,7 +274,7 @@ void presenterOrder() {
         c.enqueueHostPresent(std::move(p)); // stopped worker executes synchronously
         assert(c.finalized.back()==id+1&&c.delivered.back()==id+1);total+=id+1;
     }
-    std::printf("PASS: ordered once-only 0/1/2-depth Native/Legacy worker delivery, drain and stop fallback (%u deliveries)\n",total);
+    std::printf("PASS: ordered once-only Off/0/1/2-depth Native/Legacy worker delivery, drain and stop fallback (%u deliveries)\n",total);
 }
 int main(){queuePolicy();pressureRecovery();gpuBudget();semaphoreLifetime();presenterOrder();}
 '''

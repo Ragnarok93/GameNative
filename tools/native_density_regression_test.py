@@ -25,8 +25,8 @@ pressure_type = header[header.index("typedef struct VkrLsfgPresentationPressure 
 host_pressure = function(context, "void VulkanRendererContext::updateNativePresentationPressure(")
 plan = function(native, "uint32_t vkr_lsfg_plan(")
 start = plan.index("        const auto& flow = lsfg->flow_controller.telemetry();")
-end = plan.index("        lsfg->synthetic_drop_pressure = false;", start)
-density = plan[start:end + len("        lsfg->synthetic_drop_pressure = false;")]
+end = plan.index("    lsfg->synthetic_drop_pressure = false;", start)
+density = plan[start:end].rsplit("    }", 1)[0] + "    lsfg->synthetic_drop_pressure = false;"
 start = plan.index("        const double elapsed_seconds =")
 end = plan.index("        const float previous_scale =", start)
 observation = plan[start:end]
@@ -51,12 +51,17 @@ template<class T> void trimEvidence(T& events,uint64_t cutoff) {
     while(!events.empty() && events.front()<cutoff) events.pop_front();
 }
 uint64_t rollingPercentileNs(const std::deque<uint64_t>&,int) { return 0; }
-''' + pressure_type + r'''
+''' + pressure_type + '\n' + function(context, 'double timedCadenceFps(') + r'''
 struct VulkanRendererContext {
     std::deque<uint64_t> nativeSourceWsiEventNs_,nativeGeneratedWsiEventNs_;
     std::deque<uint64_t> nativeSourceConfirmedEventNs_,nativeGeneratedConfirmedEventNs_;
     std::deque<uint64_t> nativeSourceUnobservedEventNs_,nativeGeneratedUnobservedEventNs_;
     std::deque<uint64_t> nativeGeneratedRejectedEventNs_,hostPresentLatencySamplesNs_;
+    std::deque<uint64_t> nativeGeneratedLateEventNs_,nativeTimedConfirmedEventNs_;
+    std::deque<uint64_t> nativeTimedSourceConfirmedEventNs_,nativeTimedGeneratedConfirmedEventNs_;
+    std::atomic<float> nativeConfirmedOutputFpsForGovernor_{-1};
+    std::atomic<uint64_t> nativeConfirmedOutputSampleNs_{3000000000ULL};
+    double nativeOutputConfirmedFps_=-1;
     uint64_t nativePresentationEvidenceStartNs_=1000000000ULL,framegenConfigRevision=1;
     uint64_t hostRefreshPeriodNs_=8333333ULL;
     unsigned framegenTargetRate=120,framegenMultiplier=4,framegenFlowMode=1,framegenFlowPreset=3;
@@ -79,6 +84,14 @@ struct VulkanRendererContext {
         nativeGeneratedUnobservedEventNs_.assign(generatedLost,2000000000ULL);
         nativeGeneratedRejectedEventNs_.assign(rejected,2000000000ULL);
         nativeGeneratedWsiEventNs_.assign(generated+generatedLost,2000000000ULL);
+        nativeTimedSourceConfirmedEventNs_.clear(); nativeTimedGeneratedConfirmedEventNs_.clear(); nativeTimedConfirmedEventNs_.clear();
+        for(unsigned i=0;i<source;++i)
+            nativeTimedSourceConfirmedEventNs_.push_back(3000000000ULL-16666667ULL-(source-1-i)*33333333ULL);
+        for(unsigned i=0;i<generated;++i)
+            nativeTimedGeneratedConfirmedEventNs_.push_back(3000000000ULL-(generated-1-i)*33333333ULL);
+        std::merge(nativeTimedSourceConfirmedEventNs_.begin(),nativeTimedSourceConfirmedEventNs_.end(),
+            nativeTimedGeneratedConfirmedEventNs_.begin(),nativeTimedGeneratedConfirmedEventNs_.end(),
+            std::back_inserter(nativeTimedConfirmedEventNs_));
         for(int i=0;i<8;++i) updateNativePresentationPressure(3000000000ULL);
     }
 };
@@ -98,7 +111,8 @@ struct Runtime {
     VkrLsfgPresentationPressure presentation_pressure{true,false,false,true,1.f,1.f,0.f,.5f};
     float active_flow_scale=.5f;
     bool synthetic_drop_pressure=false;
-    unsigned adaptive_generation_cap=1,flow_transition_frames=0;
+    unsigned adaptive_generation_cap=1,flow_transition_frames=0,density_transition_frames=0;
+    bool adaptive_flow=true,density_requires_gpu_recovery=false; size_t last_generations=3;
     double density_pressure_seconds=0,density_recovery_seconds=0;
     struct Pacer {
         struct Configuration { unsigned multiplier=4; };
@@ -108,7 +122,7 @@ struct Runtime {
 AdaptiveFlowObservation observe(Runtime* lsfg,float requested_target=120.f) {
     struct {
         float target_rate=120.f,source_rate=30.f,refresh_rate=120.f,last_elapsed=.033333f;
-        bool rates_settled=true;
+        bool rates_settled=true; uint64_t last_drawn=1;
     } stats;
     stats.target_rate=requested_target;
     const bool pressure_fresh=true,global_pressure_valid=true,thermal_pressure_valid=true;
@@ -116,8 +130,10 @@ AdaptiveFlowObservation observe(Runtime* lsfg,float requested_target=120.f) {
     return observation;
 }
 void tick(Runtime* lsfg,bool output_satisfied=false) {
-    struct { float target_rate=120.f; } stats;
-    const bool global_pressure_valid=true,output_deficit=!output_satisfied;
+    struct { float target_rate=120.f; uint64_t last_drawn=1; } stats;
+    const bool pressure_fresh=true,global_pressure_valid=true,thermal_pressure_valid=true,output_deficit=!output_satisfied;
+    AdaptiveFlowObservation observation{}; observation.valid=true;
+    observation.schedulerTransition=lsfg->density_transition_frames>0;
     [[maybe_unused]] const bool output_valid=true;
     const double elapsed_seconds=.10;
 ''' + density + r'''
@@ -156,14 +172,14 @@ int main(int argc,char** argv) {
         require(o.generationCount==3 && o.scheduledGenerationDensity==3,"Fixed generation remains authoritative");
         require(o.outputTargetFps==120.f,"Fixed target remains authoritative");
     } else if(test=="recovery") {
-        Runtime runtime;for(int i=0;i<45;++i) tick(&runtime);
+        Runtime runtime;for(int i=0;i<55;++i) tick(&runtime);
         require(runtime.adaptive_generation_cap==3,"healthy cap must recover before satisfying full target");
     } else if(test=="probe") {
         Runtime runtime;runtime.adaptive_generation_cap=0;
-        for(int i=0;i<35;++i) tick(&runtime);
+        for(int i=0;i<40;++i) tick(&runtime);
         require(runtime.adaptive_generation_cap>=1,"source-only stream probes generation");
         VulkanRendererContext host;host.evidence(60,60);runtime.presentation_pressure=host.nativePresentationPressure_;
-        for(int i=0;i<45;++i) tick(&runtime);
+        for(int i=0;i<55;++i) tick(&runtime);
         require(runtime.adaptive_generation_cap==3,"successful probe grows instead of collapsing");
     } else if(test=="preset") {
         for(unsigned cap: {0u,1u}) {

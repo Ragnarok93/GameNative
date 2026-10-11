@@ -2200,10 +2200,17 @@ void VulkanRendererContext::finalizeHostPresent(
 
     bool nativeGeneratedPresent = false;
     bool nativeSourcePresent = false;
+    bool currentNativeGeneratedPresent = false;
+    bool currentNativeSourcePresent = false;
     for (const auto& provenance : present.frameProvenance) {
         if (!provenance.nativeImplementation || !provenance.uniqueDelivery) continue;
         if (provenance.kind == 1) nativeGeneratedPresent = true;
         else nativeSourcePresent = true;
+        if (present.swapchainGeneration == hostSwapchainGeneration_
+                && nativeFeedbackIdentityCurrent(provenance)) {
+            if (provenance.kind == 1) currentNativeGeneratedPresent = true;
+            else currentNativeSourcePresent = true;
+        }
     }
     if (nativeGeneratedPresent)
         nativeGeneratedWsiSubmitted_.fetch_add(1, std::memory_order_relaxed);
@@ -2216,10 +2223,10 @@ void VulkanRendererContext::finalizeHostPresent(
         if (nativeSourcePresent)
             nativeSourceWsiAccepted_.fetch_add(1, std::memory_order_relaxed);
         const uint64_t evidenceNowNs = monotonicTimeNs();
-        if (nativeGeneratedPresent)
+        if (currentNativeGeneratedPresent)
             recordNativePresentationEvidence(
                 true, false, false, true, false, evidenceNowNs);
-        if (nativeSourcePresent)
+        if (currentNativeSourcePresent)
             recordNativePresentationEvidence(
                 false, false, false, true, false, evidenceNowNs);
         const uint64_t presented =
@@ -2316,10 +2323,12 @@ void VulkanRendererContext::finalizeHostPresent(
     } else if (nativeGeneratedPresent) {
         nativeGeneratedWsiRejected_.fetch_add(1, std::memory_order_relaxed);
         nativeGeneratedDroppedAfter_.fetch_add(1, std::memory_order_relaxed);
-        recordNativePresentationEvidence(
-            true, false, false, false, true, monotonicTimeNs());
-        if (lsfg)
-            vkr_lsfg_note_presentation_drop(lsfg, 1);
+        if (currentNativeGeneratedPresent) {
+            recordNativePresentationEvidence(
+                true, false, false, false, true, monotonicTimeNs());
+            if (lsfg)
+                vkr_lsfg_note_presentation_drop(lsfg, 1);
+        }
     }
     if (nativeGeneratedPresent || nativeSourcePresent) {
         const uint64_t accepted =
@@ -3761,8 +3770,12 @@ ok=true;}catch(...){}
                     framegenSlowFrameRatio_.load(std::memory_order_relaxed));
                 vkr_lsfg_set_presentation_pressure(
                     lsfg, &nativePresentationPressure_);
-                nativeSourceReceived_.fetch_add(1, std::memory_order_relaxed);
-                nativeGenerations = vkr_lsfg_plan(lsfg, nativeCapacity, nativeSourceFrame);
+                // A composition consumes one source observation even when
+                // several window uploads were coalesced into it. Keep the raw
+                // upload counter for freshness/provenance, not source FPS.
+                const uint64_t plannedSourceCount =
+                    nativeSourceReceived_.fetch_add(1, std::memory_order_relaxed) + 1;
+                nativeGenerations = vkr_lsfg_plan(lsfg, nativeCapacity, plannedSourceCount);
                 nativeRequestedGenerations = nativeGenerations;
                 nativeGenerationOpportunityCount_.fetch_add(
                     nativeRequestedGenerations, std::memory_order_release);
@@ -5032,6 +5045,7 @@ void VulkanRendererContext::resetNativePresentationEvidence() {
     nativeConfirmedOutputSampleNs_.store(0, std::memory_order_release);
     nativeSourceConfirmedFps_ = 0.0;
     nativeGeneratedConfirmedFps_ = 0.0;
+    nativeOutputConfirmedFps_ = -1.0;
 }
 
 void VulkanRendererContext::noteNativeSourceArrival(uint64_t nowNs) {
@@ -5306,8 +5320,7 @@ void VulkanRendererContext::updateNativePresentationPressure(uint64_t nowNs) {
         hostSuboptimalConsecutive_ >= 8
         || (hostRefreshPeriodNs_ != 0 && presentP95Ns >= hostRefreshPeriodNs_ * 2ULL);
     nativePresentationPressure_.source_delivery_healthy =
-        sourceResolved >= 4 && sourceEfficiency >= 0.85
-        && sourceConfirmedFps > 0.0;
+        sourceResolved >= 4 && sourceEfficiency >= 0.85;
     nativePresentationPressure_.generated_delivery_efficiency =
         static_cast<float>(generatedEfficiency);
     nativePresentationPressure_.source_delivery_efficiency =
@@ -6160,6 +6173,11 @@ void VulkanRendererContext::recordHostPresent(
     confirmation.frameSlot = present.frameSlot;
     confirmation.gpuOutstandingAtSubmit = present.gpuOutstanding;
     for (const auto& provenance : present.frameProvenance) {
+        // Lifetime WSI telemetry is retained by finalizeHostPresent. Epoch
+        // readiness and physical denominators belong to the current owner.
+        if (provenance.nativeImplementation
+                && (present.swapchainGeneration != hostSwapchainGeneration_
+                    || !nativeFeedbackIdentityCurrent(provenance))) continue;
         if (provenance.nativeImplementation && provenance.uniqueDelivery) {
             presentedFrames.fetch_add(1, std::memory_order_relaxed);
             if (provenance.kind == 1)

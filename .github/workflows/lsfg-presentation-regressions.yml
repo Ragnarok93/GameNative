@@ -33,6 +33,10 @@ jobs:
           python3 tools/lsfg_stability_regression_test.py
           python3 tools/native_density_regression_test.py
           python3 tools/native_admission_regression_test.py
+          python3 tools/lsfg_cadence_audit_test.py
+          python3 tools/lsfg_governor_audit_test.py
+          python3 tools/lsfg_pressure_reader_audit_test.py
+          python3 tools/lsfg_queue_audit_test.py
       - name: Exercise existing display timing, Native bridge and Native pacer
         run: |
           python3 tools/host_display_timing_test.py

@@ -138,6 +138,8 @@ struct VkrLsfg {
     double density_pressure_seconds{};
     double density_recovery_seconds{};
     uint32_t flow_transition_frames{};
+    uint32_t density_transition_frames{};
+    bool density_requires_gpu_recovery{};
 
     uint64_t frame_count{};
     uint64_t last_count{};
@@ -190,6 +192,9 @@ void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate
     if (!lsfg) return;
 
     lsfg::LsfgPacerConfig config = lsfg->pacer.Config();
+    const bool workload_changed = config.multiplier != multiplier
+        || config.target_rate != target_rate
+        || std::fabs(config.refresh_rate - refresh_rate) > 0.01f;
     config.multiplier = multiplier;
     config.target_rate = target_rate;
     config.refresh_rate = refresh_rate;
@@ -216,7 +221,7 @@ void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate
         if (flow_contract_changed) {
             const auto seed =
                 AdaptiveFlowController::conservativeSeedScale(preset, requested);
-            if (seed) lsfg->flow_controller.seedCurrentScale(*seed);
+            if (seed) (void)lsfg->flow_controller.seedCurrentScale(*seed);
             lsfg->active_flow_scale = lsfg->flow_controller.currentScale();
             lsfg->flow_transition_frames = 3;
         } else {
@@ -224,9 +229,30 @@ void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate
         }
     } else {
         lsfg->active_flow_scale = requested;
+        lsfg->flow_transition_frames = 0;
+    }
+    if (workload_changed || flow_contract_changed) {
+        // Preserve settled quality while rejecting evidence accumulated for a
+        // different multiplier, target or panel cadence.
+        if (adaptive && !flow_contract_changed) {
+            const float retained_scale = lsfg->active_flow_scale;
+            lsfg->flow_controller.reset();
+            (void)lsfg->flow_controller.seedCurrentScale(retained_scale);
+            lsfg->active_flow_scale = lsfg->flow_controller.currentScale();
+        }
+        lsfg->density_pressure_seconds = 0.0;
+        lsfg->density_recovery_seconds = 0.0;
+        lsfg->synthetic_drop_pressure = false;
+        lsfg->pressure = {};
+        lsfg->density_transition_frames = 3;
+    }
+    if (target_rate == 0) {
+        // Fixed generation keeps the user's multiplier authoritative.
         lsfg->adaptive_generation_cap = VKR_LSFG_MAX_GENERATIONS;
         lsfg->density_pressure_seconds = 0.0;
         lsfg->density_recovery_seconds = 0.0;
+        lsfg->density_transition_frames = 0;
+        lsfg->density_requires_gpu_recovery = false;
     }
 
     const auto& telemetry = lsfg->flow_controller.telemetry();
@@ -257,10 +283,10 @@ void vkr_lsfg_set_pressure(VkrLsfg* lsfg, float gpu_usage_percent, int thermal_s
     pressure.gpu_valid = std::isfinite(gpu_usage_percent)
         && gpu_usage_percent >= 0.0f && gpu_usage_percent <= 100.0f;
     pressure.thermal_valid = thermal_status >= 0 && thermal_status <= 6;
-    pressure.source_valid = std::isfinite(source_fps) && source_fps > 0.0f;
+    pressure.source_valid = std::isfinite(source_fps) && source_fps >= 0.0f;
     pressure.output_valid = std::isfinite(output_fps) && output_fps >= 0.0f;
     pressure.frame_time_valid =
-        std::isfinite(frame_time_p95_ms) && frame_time_p95_ms > 0.0f;
+        std::isfinite(frame_time_p95_ms) && frame_time_p95_ms >= 0.0f;
     pressure.slow_ratio_valid =
         std::isfinite(slow_frame_ratio) && slow_frame_ratio >= 0.0f
         && slow_frame_ratio <= 1.0f;
@@ -311,8 +337,10 @@ void vkr_lsfg_set_refresh_rate(VkrLsfg* lsfg, float refresh_rate) {
 
     lsfg::LsfgPacerConfig config = lsfg->pacer.Config();
     if (config.refresh_rate == refresh_rate) return;
-    config.refresh_rate = refresh_rate;
-    lsfg->pacer.SetConfig(config);
+    vkr_lsfg_configure(lsfg, config.multiplier, config.target_rate,
+        lsfg->requested_flow_scale,
+        lsfg->adaptive_flow ? VKR_LSFG_FLOW_ADAPTIVE : VKR_LSFG_FLOW_FIXED,
+        lsfg->flow_preset_code, refresh_rate, lsfg->config_revision);
 }
 
 bool vkr_lsfg_needs_rebuild(const VkrLsfg* lsfg, uint32_t width, uint32_t height,
@@ -427,7 +455,7 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                                   source_frames);
     const lsfg::LsfgPacerStats stats = lsfg->pacer.Stats();
 
-    if (lsfg->adaptive_flow) {
+    if (lsfg->adaptive_flow || stats.target_rate > 0.0f) {
         const auto now = std::chrono::steady_clock::now();
         const bool pressure_fresh =
             lsfg->pressure.sample_valid
@@ -465,17 +493,10 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         const bool output_satisfied =
             output_valid && output_target > 0.0
             && lsfg->pressure.output_fps >= output_target * 0.98;
-        const double output_period_ms =
-            output_target > 0.0 ? 1000.0 / output_target : 0.0;
-        const bool slow_frame_pressure =
-            pressure_fresh
-            && ((lsfg->pressure.slow_ratio_valid
-                    && lsfg->pressure.slow_frame_ratio >= 0.08f)
-                || (lsfg->pressure.frame_time_valid && output_period_ms > 0.0
-                    && lsfg->pressure.frame_time_p95_ms > output_period_ms * 1.25));
+        // Source-frame p95 is measured in source periods. It must not be
+        // compared to the shorter generated-output period.
         const bool output_deficit =
-            (output_valid && output_target > 0.0 && !output_satisfied)
-            || slow_frame_pressure;
+            output_valid && output_target > 0.0 && !output_satisfied;
 
         AdaptiveFlowObservation observation{};
         observation.elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -522,15 +543,20 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         observation.outputDeficit = output_deficit;
         observation.syntheticDropPressure = lsfg->synthetic_drop_pressure;
         observation.generatedWorkSample = false;
+        observation.generatedCadenceSample = lsfg->last_generations > 0;
         observation.retainedGeneratedTimingSample = false;
-        observation.schedulerTransition = false;
-        observation.flowTransition = lsfg->flow_transition_frames > 0;
-        observation.valid = stats.rates_settled && frame_budget_ms > 0.0;
+        observation.schedulerTransition = lsfg->density_transition_frames > 0;
+        observation.flowTransition = lsfg->adaptive_flow && lsfg->flow_transition_frames > 0;
+        observation.valid = stats.rates_settled && frame_budget_ms > 0.0
+            && stats.last_elapsed > 0.0f && stats.last_elapsed < 0.250f
+            && stats.last_drawn > 0;
 
         const float previous_scale = lsfg->active_flow_scale;
-        lsfg->active_flow_scale = std::clamp(
-            lsfg->flow_controller.observe(observation),
-            LSFG_FLOW_SCALE_MIN, LSFG_FLOW_SCALE_MAX);
+        if (lsfg->adaptive_flow) {
+            lsfg->active_flow_scale = std::clamp(
+                lsfg->flow_controller.observe(observation),
+                LSFG_FLOW_SCALE_MIN, LSFG_FLOW_SCALE_MAX);
+        }
         if (std::fabs(previous_scale - lsfg->active_flow_scale) > 0.0005f) {
             lsfg->flow_transition_frames = 3;
             const auto& telemetry = lsfg->flow_controller.telemetry();
@@ -548,7 +574,7 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                 global_pressure_valid ? static_cast<double>(lsfg->pressure.gpu_usage_percent) : -1.0,
                 output_valid ? static_cast<double>(lsfg->pressure.output_fps) : 0.0,
                 output_target);
-        } else if (lsfg->flow_transition_frames > 0) {
+        } else if (lsfg->flow_transition_frames > 0 && stats.last_drawn > 0) {
             --lsfg->flow_transition_frames;
         }
 
@@ -558,14 +584,12 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         const bool presentation_pressure =
             lsfg->presentation_pressure.confirmation_available
             && lsfg->presentation_pressure.pressure_active;
-        // Adaptive Flow remains the first quality actuator. Only after it has
-        // reached the configured floor may sustained presentation/admission
-        // failure or severe global GPU pressure reduce Adaptive FG density.
+        // Admission and delivery failures belong to the density actuator,
+        // independently of Flow quality. Compute relief waits for Flow's floor.
         const bool severe_pressure =
-            at_minimum && (
-                presentation_pressure
-                || lsfg->synthetic_drop_pressure
-                || (global_pressure_valid
+            observation.valid && !observation.schedulerTransition && !observation.flowTransition
+            && (presentation_pressure || lsfg->synthetic_drop_pressure
+                || ((!lsfg->adaptive_flow || at_minimum) && global_pressure_valid
                     && lsfg->pressure.gpu_usage_percent >= 96.0f
                     && output_deficit))
             && !lsfg->presentation_pressure.wsi_recovery_active;
@@ -574,7 +598,13 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
             lsfg->density_recovery_seconds = 0.0;
             if (lsfg->density_pressure_seconds >= 0.60
                     && lsfg->adaptive_generation_cap > 0) {
+                lsfg->density_requires_gpu_recovery =
+                    lsfg->density_requires_gpu_recovery
+                    || (global_pressure_valid
+                        && lsfg->pressure.gpu_usage_percent >= 96.0f
+                        && output_deficit);
                 --lsfg->adaptive_generation_cap;
+                lsfg->density_transition_frames = 3;
                 lsfg->density_pressure_seconds = 0.0;
                 LSFG_FLOW_LOG(
                     "event=generation_density_backoff reason=%s "
@@ -607,9 +637,24 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
             // Healthy delivery and GPU headroom permit a bounded density probe.
             // Full requested cadence cannot be reached under our own cap, and
             // a new Flow preset must not pin that cap above its new scale floor.
+            // A device without a GPU sensor can still recover from confirmed
+            // downstream loss. Require fresh source/physical delivery proof,
+            // and retain the GPU requirement for compute-origin reductions.
+            const bool confirmed_delivery_headroom =
+                !lsfg->density_requires_gpu_recovery
+                && !global_pressure_valid
+                && pressure_fresh && lsfg->pressure.source_valid
+                && lsfg->pressure.source_fps > 0.0f
+                && (!output_valid
+                    || lsfg->pressure.output_fps >= lsfg->pressure.source_fps * 0.97f)
+                && lsfg->presentation_pressure.confirmation_available
+                && lsfg->presentation_pressure.source_delivery_healthy;
             const bool recovery =
-                stats.target_rate > 0.0f && global_pressure_valid
-                && lsfg->pressure.gpu_usage_percent <= 88.0f
+                observation.valid && !observation.schedulerTransition && !observation.flowTransition
+                && stats.target_rate > 0.0f
+                && ((global_pressure_valid && lsfg->pressure.gpu_usage_percent <= 88.0f)
+                    || confirmed_delivery_headroom)
+                && (!thermal_pressure_valid || lsfg->pressure.thermal_status <= 2)
                 && confirmation_recovered
                 && !lsfg->synthetic_drop_pressure;
             if (recovery && lsfg->adaptive_generation_cap < VKR_LSFG_MAX_GENERATIONS) {
@@ -618,6 +663,9 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                     lsfg->adaptive_generation_cap == 0 ? 3.0 : 2.0;
                 if (lsfg->density_recovery_seconds >= recovery_hold) {
                     ++lsfg->adaptive_generation_cap;
+                    if (lsfg->adaptive_generation_cap == VKR_LSFG_MAX_GENERATIONS)
+                        lsfg->density_requires_gpu_recovery = false;
+                    lsfg->density_transition_frames = 3;
                     lsfg->density_recovery_seconds = 0.0;
                     LSFG_FLOW_LOG(
                         "event=generation_density_recovery reason=%s "
@@ -642,8 +690,11 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
             lsfg->plan.generations =
                 std::min<size_t>(lsfg->plan.generations, lsfg->adaptive_generation_cap);
         }
-        lsfg->synthetic_drop_pressure = false;
+        if (observation.schedulerTransition && observation.valid)
+            --lsfg->density_transition_frames;
     }
+    // A consumed drop cannot leak into a later mode or settings transaction.
+    lsfg->synthetic_drop_pressure = false;
 
     lsfg->warm = lsfg->plan.warm && lsfg->frame_count + 1 >= LSFG_REQUIRED_FRAMES;
     lsfg->warm_streak = lsfg->warm ? lsfg->warm_streak + 1 : 0;
@@ -739,11 +790,15 @@ void vkr_lsfg_reset(VkrLsfg* lsfg) {
     lsfg->density_pressure_seconds = 0.0;
     lsfg->density_recovery_seconds = 0.0;
     lsfg->adaptive_generation_cap = VKR_LSFG_MAX_GENERATIONS;
+    lsfg->density_transition_frames = 0;
+    lsfg->density_requires_gpu_recovery = false;
+    lsfg->flow_transition_frames = 0;
+    lsfg->pressure = {};
     if (lsfg->adaptive_flow) {
         lsfg->flow_controller.reset();
         const auto seed = AdaptiveFlowController::conservativeSeedScale(
             ParseFlowPreset(lsfg->flow_preset_code), lsfg->requested_flow_scale);
-        if (seed) lsfg->flow_controller.seedCurrentScale(*seed);
+        if (seed) (void)lsfg->flow_controller.seedCurrentScale(*seed);
         lsfg->active_flow_scale = lsfg->flow_controller.currentScale();
     }
     if (lsfg->chain) {

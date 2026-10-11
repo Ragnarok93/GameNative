@@ -18,7 +18,16 @@ public class DXVKHelper {
     public static void setEnvVars(Context context, KeyValueSet config, EnvVars envVars) {
         ImageFs imageFs = ImageFs.find(context);
         envVars.put("DXVK_STATE_CACHE_PATH", "/data/data/app.gamenative/files/imagefs"+ImageFs.CACHE_PATH);
-        envVars.put("DXVK_LOG_LEVEL", "none");
+        // Preserve the quiet production default, but allow users to capture
+        // DXVK startup failures (including Vulkan feature-level rejection).
+        // Older code unconditionally reset DXVK_LOG_LEVEL=none even when a
+        // container explicitly requested diagnostic logging.
+        String requestedDxvkLogLevel = envVars.get("DXVK_LOG_LEVEL");
+        if ("1".equals(envVars.get("GN_DXVK_DIAGNOSTICS"))) {
+            envVars.put("DXVK_LOG_LEVEL", requestedDxvkLogLevel.isEmpty() ? "info" : requestedDxvkLogLevel);
+        } else if (requestedDxvkLogLevel.isEmpty()) {
+            envVars.put("DXVK_LOG_LEVEL", "none");
+        }
 
         File rootDir = ImageFs.find(context).getRootDir();
         File dxvkConfigFile = new File(imageFs.config_path+"/dxvk.conf");

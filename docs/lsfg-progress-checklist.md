@@ -32,11 +32,13 @@ Updated: 2026-10-11. Source changes, tests and this checklist are checkpointed t
 - [x] All 16 affected source contracts pass from both repository and Gradle module working directories.
 - [x] Build #782 compiled Android production sources and executed 290 selected tests: 284 passed. Its five obsolete contracts and one real cap-acknowledgement regression are now addressed.
 - [x] Build #787 rebuilt both native libraries; persistent signer verification, version metadata generation and presentation regressions passed.
-- [ ] Build #787 Android compilation and all selected LSFG/power interaction tests, including 12 new cap behavior cases.
+- [x] Build #787 Android compilation and all selected LSFG/power interaction tests passed, including 12 new cap behavior cases.
 - [ ] Assemble debug APK and verify package identity, increasing version code, persistent signer, JNI exports and native source provenance.
 - [ ] Publish the fresh verified APK for testing and feedback.
 - [ ] Physical-device acceptance: actual displayed cadence, visuals, thermals, input latency and sustained operation across both backends, Fixed 2x/3x/4x and Adaptive generation, Fixed/Adaptive Flow, FIFO/Mailbox and queue Off/0/1/2.
 
 ## Current state
 
-Build #787 is running its Android compilation/application-test step. No APK is claimed yet. The tests execute production behavior with deterministic clocks or platform boundary fakes; they do not establish physical device delivery or performance. Detailed feature behavior and acceptance scope are recorded in `docs/lsfg-behavior-audit-20261011.md`.
+Build #787 passed Android compilation and the complete selected application suite, including all 12 FPS-cap behavior cases. APK assembly is now running. No APK is claimed yet. The tests execute production behavior with deterministic clocks or platform boundary fakes; they do not establish physical device delivery or performance. Detailed feature behavior and acceptance scope are recorded in `docs/lsfg-behavior-audit-20261011.md`.
+
+Application validation: https://github.com/Ragnarok93/GameNative/actions/runs/38116504753 (Build #787, packaged-source commit eb5642a).

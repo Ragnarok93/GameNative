@@ -61,3 +61,10 @@ Workflow: https://github.com/Ragnarok93/GameNative/actions/runs/38116504753.
 Native complete-suite validation: https://github.com/Ragnarok93/GameNative/actions/runs/38115572128.
 
 Physical-device cadence, visuals, thermals, input latency and sustained operation remain unverified. The automated tests execute production behavior with deterministic clocks or platform boundary fakes; they do not establish physical display delivery or performance. Detailed feature behavior and device acceptance scope are recorded in `docs/lsfg-behavior-audit-20261011.md`.
+
+## Follow-up audit requested 2026-10-11
+
+- [x] Confirm current remote/local GameNative `0440c57` and pinned lsfg-vk runtime `5f14ebc`; preserve Build #787 as the validated APK.
+- [ ] Independently audit Native governors, Legacy runtime/resources, manager/power settings interactions and host presentation.
+- [ ] Reproduce high-confidence defects and separate them from device-dependent performance hypotheses.
+- [ ] Save and summarize prioritized findings and proposed solutions. This pass changes no production code.

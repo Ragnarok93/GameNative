@@ -152,4 +152,88 @@ class PowerFpsCapApplicationAuditTest {
         assertEquals(30, PowerManager.targetFps)
         verify(view, never()).setFrameRateLimit(any())
     }
+    @Test
+    fun installedHandlerWaitsForMainAcknowledgementAndOwnsSourceCapTranslation() {
+        var attempts = 0
+        PowerManager.fpsCapApplier = { fps ->
+            assertEquals(Looper.getMainLooper(), Looper.myLooper())
+            attempts++
+            PowerManager.targetFps = fps / 2
+            true
+        }
+        val request = requestOnWorker(60)
+        assertNull(request.result.get())
+        assertEquals(0, attempts)
+        assertEquals(30, PowerManager.targetFps)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(true, finish(request))
+        assertEquals(1, attempts)
+        assertEquals(30, PowerManager.targetFps)
+        verify(view, never()).setFrameRateLimit(any())
+    }
+
+    @Test
+    fun installedHandlerTimeoutCannotRunOrFallBackAfterItsCallerMovesOn() {
+        var attempts = 0
+        PowerManager.fpsCapApplier = { attempts++; true }
+        val request = requestOnWorker(60)
+        assertEquals(false, finish(request))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, attempts)
+        assertEquals(30, PowerManager.targetFps)
+        verify(view, never()).setFrameRateLimit(any())
+    }
+
+    @Test
+    fun replacingInstalledHandlerRejectsAnOlderQueuedRequest() {
+        var oldAttempts = 0
+        var newAttempts = 0
+        PowerManager.fpsCapApplier = { oldAttempts++; true }
+        val request = requestOnWorker(60)
+        PowerManager.fpsCapApplier = { newAttempts++; true }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(false, finish(request))
+        assertEquals(0, oldAttempts)
+        assertEquals(0, newAttempts)
+        verify(view, never()).setFrameRateLimit(any())
+    }
+
+    @Test
+    fun settingsInvalidationRejectsPendingCapWithoutChangingTheTarget() {
+        val request = requestOnWorker(60)
+        PowerManager.invalidatePendingFpsCap()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(false, finish(request))
+        assertEquals(30, PowerManager.targetFps)
+        verify(view, never()).setFrameRateLimit(any())
+    }
+
+    @Test
+    fun newerQueuedRequestSupersedesAnOlderRequest() {
+        val old = requestOnWorker(60)
+        val newer = requestOnWorker(90)
+        // requestOnWorker observes a nonempty queue already, so await the
+        // second worker's entry by its WAITING/TIMED_WAITING state.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+        while (newer.worker.state != Thread.State.TIMED_WAITING &&
+            newer.worker.isAlive && System.nanoTime() < deadline) Thread.yield()
+        assertEquals(Thread.State.TIMED_WAITING, newer.worker.state)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(false, finish(old))
+        assertEquals(true, finish(newer))
+        verify(view, never()).setFrameRateLimit(60)
+        verify(view).setFrameRateLimit(90)
+        assertEquals(90, PowerManager.targetFps)
+    }
+
+    @Test
+    fun interruptedWaitRejectsAndCancelsTheDeferredCommand() {
+        val request = requestOnWorker(60)
+        request.worker.interrupt()
+        assertEquals(false, finish(request))
+        assertTrue(request.worker.isInterrupted)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(30, PowerManager.targetFps)
+        verify(view, never()).setFrameRateLimit(any())
+    }
 }

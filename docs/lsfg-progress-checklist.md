@@ -65,8 +65,8 @@ Physical-device cadence, visuals, thermals, input latency and sustained operatio
 ## Follow-up audit requested 2026-10-11
 
 - [x] Confirm current remote/local GameNative `0440c57` and pinned lsfg-vk runtime `5f14ebc`; preserve Build #787 as the validated APK.
-- [ ] Independently audit Native governors, Legacy runtime/resources, manager/power settings interactions and host presentation.
-- [ ] Reproduce high-confidence defects and separate them from device-dependent performance hypotheses.
-- [ ] Save and summarize prioritized findings and proposed solutions. This pass changes no production code.
+- [x] Independently audit Native governors, Legacy runtime/resources, manager/power settings interactions and host presentation.
+- [x] Reproduce high-confidence defects and separate them from device-dependent performance hypotheses.
+- [x] Save and summarize prioritized findings and proposed solutions. This pass changes no production code.
 
-Follow-up audit checkpoint: Native density hold, Flow recovery and source-limited target tracking reproduced. Shared Legacy completion import failure double-closes descriptor ownership at three active sites; zero-time polling is a verified latent defect with dormant callers. Report: docs/lsfg-followup-audit-20261011.md. Manager/power ownership and host performance review continue. No production changes.
+Follow-up audit completed: nine correctness/control findings, one dormant helper defect and four unmeasured performance risks. Independently reproduced Native density/Flow/target recovery, Legacy FD reuse/zero polling, stale handoff acknowledgment, FPS-cap restoration and transient resource rebuild behavior. Existing governor, cadence and presentation regression suites all passed again, demonstrating the additional coverage gaps. Detailed priorities, evidence, solutions and validation scope: docs/lsfg-followup-audit-20261011.md. Portable reproductions: docs/audit-evidence/lsfg-20261011/. No production changes or new APK; Build #787 remains available, with physical-device acceptance still pending.

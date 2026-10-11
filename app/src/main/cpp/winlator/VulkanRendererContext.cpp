@@ -5583,13 +5583,13 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
         const std::vector<LsfgFrameProvenance>& provenance) {
     HostDesiredPresentDecision decision{};
     uint64_t desired = 0;
-    bool stableLegacyGeneratedSlot = false;
+    bool stableGeneratedSlot = false;
     for (const auto& frame : provenance) {
         if (!frame.uniqueDelivery || frame.desiredPresentTimeNs == 0)
             continue;
-        if (!frame.nativeImplementation && frame.kind == 1
-                && frame.outputSlotIntendedPresentTimeNs != 0) {
-            stableLegacyGeneratedSlot = true;
+        if (frame.kind == 1 && (frame.nativeImplementation
+                || frame.outputSlotIntendedPresentTimeNs != 0)) {
+            stableGeneratedSlot = true;
         }
         if (desired != 0 && desired != frame.desiredPresentTimeNs) {
             decision.provenanceDesiredPresentTimeNs = desired;
@@ -5646,13 +5646,13 @@ HostDesiredPresentDecision VulkanRendererContext::validatedHostDesiredPresentTim
 
     uint64_t scheduled = desired;
     if (desired < earliestAllowedNs) {
-        if (stableLegacyGeneratedSlot) {
-            // The generated lane clock owns phase. Never repair a missed
-            // Legacy slot by advancing it one display refresh; doing so creates
-            // the observed short/long 8.3/24.9-ms cadence pair.
+        if (stableGeneratedSlot) {
+            // The source batch owns every generated slot. Retiring a missed
+            // slot preserves surviving slots and the next source deadline;
+            // moving it forward creates phase debt and collapses 3x/4x output.
             decision.temporalBacklog = true;
             ++hostTemporalBacklogTotal_;
-            decision.fallbackReason = "legacy-output-slot-missed-no-phase-repair";
+            decision.fallbackReason = "generated-output-slot-missed-no-phase-repair";
             return decision;
         }
         if (hostRefreshPeriodNs_ == 0) {

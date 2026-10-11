@@ -2,6 +2,9 @@ package app.gamenative.utils
 
 import android.content.Context
 import app.gamenative.powercontrol.metrics.MetricsSnapshot
+import app.gamenative.powercontrol.metrics.FrameTimeRing
+import app.gamenative.powercontrol.PowerManager
+import app.gamenative.powercontrol.lsfgSourceSampleStride
 import java.util.concurrent.Executors
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicLong
@@ -147,6 +150,7 @@ object LsfgVkManager {
     enum class NativeHealthState {
         NOT_APPLICABLE,
         STARTING,
+        SOURCE_CADENCE_SUFFICIENT,
         WSI_ACTIVE_AWAITING_CONFIRMATION,
         HEALTHY,
         CONFIRMATION_LAGGING,
@@ -329,7 +333,7 @@ object LsfgVkManager {
 
     /** Get the persisted Fixed Flow Scale (0.25-1.0, default 0.80). */
     fun flowScale(container: Container): Float =
-        container.getExtra(EXTRA_FLOW_SCALE, "0.80").toFloatOrNull()?.coerceIn(0.25f, 1.0f) ?: 0.80f
+        container.getExtra(EXTRA_FLOW_SCALE, "0.80").toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(0.25f, 1.0f) ?: 0.80f
 
     /** Fixed preserves the saved slider; Adaptive selects a preset-bounded runtime scale. */
     fun flowScaleMode(container: Container): String =
@@ -415,6 +419,15 @@ object LsfgVkManager {
             backendGeneration = backendRequestSerial.get(),
             backend = backend(container),
         )
+
+    internal fun currentBackendGeneration(): Long = backendRequestSerial.get()
+
+    @Synchronized
+    internal fun reserveRuntimeRequestForOwner(
+        container: Container,
+        expectedGeneration: Long,
+    ): RuntimeRequestToken? =
+        if (backendRequestSerial.get() != expectedGeneration) null else reserveRuntimeRequest(container)
 
     /** Sole owner for a live backend switch. */
     @JvmStatic
@@ -576,89 +589,87 @@ object LsfgVkManager {
      * trigger an LSFG context rebuild. PerformanceMetricsCollector already samples
      * these values every 500 ms, so this adds no second GPU/sysfs polling path.
      */
+    @Synchronized
     internal fun publishRuntimePressure(
         rootDir: File?,
         snapshot: MetricsSnapshot,
+        expectedFrameEpoch: Long = -1L,
     ): Boolean {
         val root = rootDir ?: return false
-        val gpu = snapshot.gpuUsagePercent
-            ?.takeIf { it.isFinite() && it in 0f..100f }
-            ?: return false
+        if (expectedFrameEpoch >= 0L && expectedFrameEpoch != FrameTimeRing.generation()) return false
+        val gpu = snapshot.gpuUsagePercent?.takeIf { it.isFinite() && it in 0f..100f } ?: -1f
+        val thermal = snapshot.thermalStatus?.takeIf { it in 0..6 } ?: -1
+        val policy = runtimeMeasurementPolicy?.takeIf { it.rootPath == root.absolutePath }
+        val legacyGenerated = policy?.snapshot?.let {
+            it.backend == BACKEND_LEGACY && it.enabled && it.multiplier >= 2
+        } == true
         val totalFrames = snapshot.totalFrameCount.coerceAtLeast(0)
-        val slowRatio = if (totalFrames > 0) {
-            snapshot.slowFrameCount.coerceIn(0, totalFrames).toDouble() /
-                totalFrames.toDouble()
-        } else {
-            0.0
-        }
+        val sourceFps = if (legacyGenerated) readFreshLegacySourceFps(root) ?: -1f
+            else snapshot.fps.takeIf { totalFrames > 0 && it.isFinite() && it >= 0f } ?: -1f
+        // A nominal Legacy stride cannot reconstruct source tails after admission drops.
+        val p95 = if (legacyGenerated) -1f else snapshot.frameTimeP95Ms
+            .takeIf { totalFrames > 0 && it.isFinite() && it >= 0f } ?: -1f
+        val slowRatio = if (!legacyGenerated && totalFrames > 0) {
+            snapshot.slowFrameCount.coerceIn(0, totalFrames).toDouble() / totalFrames
+        } else -1.0
         val text = buildString {
             appendLine("timestamp_ms=${snapshot.timestampMs}")
             appendLine("gpu_usage_percent=${String.format(Locale.US, "%.1f", gpu)}")
-            snapshot.thermalStatus?.takeIf { it in 0..6 }?.let {
-                appendLine("thermal_status=$it")
-            }
-            appendLine("source_metrics_valid=${if (totalFrames > 0) 1 else 0}")
-            appendLine("source_fps=${String.format(Locale.US, "%.2f", snapshot.fps)}")
-            appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", snapshot.frameTimeP95Ms)}")
+            appendLine("thermal_status=$thermal")
+            appendLine("source_metrics_valid=${if (sourceFps >= 0f) 1 else 0}")
+            appendLine("source_fps=${String.format(Locale.US, "%.2f", sourceFps)}")
+            appendLine("frame_time_p95_ms=${String.format(Locale.US, "%.2f", p95)}")
             appendLine("slow_frame_ratio=${String.format(Locale.US, "%.4f", slowRatio)}")
         }
-        val written = writeConfigAtomic(
-            File(root, RUNTIME_PRESSURE_RELATIVE_PATH),
-            text,
-        )
-        val nativeContainer = nativeRendererContainer
+        val written = writeConfigAtomic(File(root, RUNTIME_PRESSURE_RELATIVE_PATH), text)
+        val container = nativeRendererContainer
         val renderer = nativeRendererRef?.get()
-        val runtimeSnapshot = latestNativeSnapshot
-        val nativeRuntimeActive = renderer != null && nativeContainer != null &&
-            nativeContainer.rootDir.absolutePath == root.absolutePath &&
-            runtimeSnapshot?.backend == BACKEND_NATIVE
-        val nativeOutputFps = if (nativeRuntimeActive && nativeContainer != null) {
-            readNativeOutputFps(nativeContainer) ?: -1f
-        } else {
-            0f
-        }
-        if (nativeRuntimeActive && renderer != null) {
-            renderer.setFrameGenerationPressure(
-                gpu,
-                snapshot.thermalStatus ?: -1,
-                if (totalFrames > 0) snapshot.fps else -1f,
-                nativeOutputFps,
-                snapshot.frameTimeP95Ms,
-                slowRatio.toFloat(),
-            )
+        val config = latestNativeSnapshot
+        val nativeActive = renderer != null && container != null &&
+            container.rootDir.absolutePath == root.absolutePath &&
+            config?.backend == BACKEND_NATIVE && config.enabled &&
+            config.revision == nativeAppliedRevision && nativeApplyComplete && !nativeApplyFailed
+        if (nativeActive && renderer != null && container != null) {
+            renderer.setFrameGenerationPressure(gpu, thermal, sourceFps,
+                readNativeOutputFps(container) ?: -1f, p95, slowRatio.toFloat())
         }
         val nowMs = System.currentTimeMillis()
         val previousLogMs = lastRuntimePressureLogMs.get()
-        if (previousLogMs == 0L || nowMs - previousLogMs >= 2_000L) {
-            if (lastRuntimePressureLogMs.compareAndSet(previousLogMs, nowMs)) {
-                val config = runtimeSnapshot
-                Timber.i(
-                    "LSFG_ADAPTIVE_FLOW: event=pressure timestamp_ms=%d backend=%s " +
-                        "generation_mode=%s adaptive_framegen=%d flow_mode=%s flow_preset=%s " +
-                        "requested_scale=%.2f gpu_usage_percent=%.1f thermal_status=%d " +
-                        "source_fps=%.2f output_fps=%.2f frame_time_p95_ms=%.2f " +
-                        "slow_frame_ratio=%.4f pressure_file_write_ok=%d " +
-                        "native_pressure_forwarded=%d",
-                    snapshot.timestampMs,
-                    config?.backend ?: nativeContainer?.let(::backend) ?: BACKEND_LEGACY,
-                    config?.generationMode ?: "unknown",
-                    if (config?.generationMode == MODE_ADAPTIVE) 1 else 0,
-                    config?.flowMode ?: "unknown",
-                    config?.flowPreset ?: "unknown",
-                    config?.requestedFlowScale ?: 0f,
-                    gpu,
-                    snapshot.thermalStatus ?: -1,
-                    snapshot.fps,
-                    if (nativeRuntimeActive) nativeOutputFps else 0f,
-                    snapshot.frameTimeP95Ms,
-                    slowRatio,
-                    if (written) 1 else 0,
-                    if (nativeRuntimeActive) 1 else 0,
-                )
-            }
+        if ((previousLogMs == 0L || nowMs - previousLogMs >= 2_000L) &&
+            lastRuntimePressureLogMs.compareAndSet(previousLogMs, nowMs)) {
+            Timber.i(
+                "LSFG_ADAPTIVE_FLOW: event=pressure timestamp_ms=%d backend=%s applied_revision=%d " +
+                    "generation_mode=%s flow_mode=%s flow_preset=%s requested_scale=%.2f " +
+                    "gpu_usage_percent=%.1f thermal_status=%d source_metrics_valid=%d " +
+                    "source_fps=%.2f output_fps=%.2f frame_time_p95_ms=%.2f slow_frame_ratio=%.4f " +
+                    "pressure_file_write_ok=%d native_pressure_forwarded=%d",
+                snapshot.timestampMs, config?.backend ?: policy?.snapshot?.backend ?: BACKEND_LEGACY,
+                nativeAppliedRevision, config?.generationMode ?: "unknown", config?.flowMode ?: "unknown",
+                config?.flowPreset ?: "unknown", config?.requestedFlowScale ?: 0f,
+                gpu, thermal, if (sourceFps >= 0f) 1 else 0, sourceFps,
+                if (nativeActive && container != null) readNativeOutputFps(container) ?: -1f else -1f,
+                p95, slowRatio, if (written) 1 else 0, if (nativeActive) 1 else 0,
+            )
         }
         return written
     }
+
+    internal fun readFreshLegacySourceFps(root: File, nowMs: Long = System.currentTimeMillis()): Float? {
+        val values = readFreshLegacyStats(root, nowMs) ?: return null
+        if ((values["source_frames_total"]?.toLongOrNull() ?: 0L) <= 0L) return null
+        return values["source_fps"]?.toFloatOrNull()?.takeIf { it.isFinite() && it >= 0f }
+    }
+
+    private fun readFreshLegacyStats(root: File, nowMs: Long): Map<String, String>? = runCatching {
+        val stats = File(root, STATS_RELATIVE_PATH)
+        if (!stats.isFile || nowMs - stats.lastModified() !in 0L..STATS_FRESHNESS_MS) return null
+        val policy = runtimeMeasurementPolicy
+        if (policy?.rootPath == root.absolutePath && stats.lastModified() <= policy.statsFreshnessFloorMs) return null
+        stats.readLines().mapNotNull {
+            val separator = it.indexOf('=')
+            if (separator <= 0) null else it.substring(0, separator) to it.substring(separator + 1)
+        }.toMap()
+    }.getOrNull()
 
     /**
      * Read the fps the layer actually presented, measured on-device.
@@ -684,28 +695,16 @@ object LsfgVkManager {
             if (rootChanged)
                 cachedMeasuredFps = null
             val requestedRoot = container.rootDir
+            val requestedPolicy = runtimeMeasurementPolicy
             statsReadExecutor.execute {
-                val measured = try {
-                    val statsFile = File(requestedRoot, STATS_RELATIVE_PATH)
-                    if (statsFile.isFile &&
-                        System.currentTimeMillis() - statsFile.lastModified() <= STATS_FRESHNESS_MS
-                    ) {
-                        val values = statsFile.readLines().mapNotNull { line ->
-                            val split = line.indexOf('=')
-                            if (split > 0) line.substring(0, split) to line.substring(split + 1) else null
-                        }.toMap()
-                        if (values["confirmed_output_valid"] == "0") null
-                        else values["fps"]?.toFloatOrNull()?.takeIf { it.isFinite() && it >= 0f }
-                    } else {
-                        null
-                    }
-                } catch (t: Throwable) {
-                    null
+                val measured = readFreshLegacyStats(requestedRoot, System.currentTimeMillis())?.let { values ->
+                    if (values["confirmed_output_valid"] != "1") null
+                    else values["fps"]?.toFloatOrNull()?.takeIf { it.isFinite() && it >= 0f }
                 }
                 // A queued read for a previous container must not overwrite
                 // the HUD value after the active container has changed.
                 synchronized(measuredFpsCacheLock) {
-                    if (cachedMeasuredRoot == rootKey) {
+                    if (cachedMeasuredRoot == rootKey && runtimeMeasurementPolicy === requestedPolicy) {
                         cachedMeasuredFps = measured
                     }
                 }
@@ -721,13 +720,16 @@ object LsfgVkManager {
      * active frame-generation session must never fall back to the lower source cadence.
      */
     fun readFreshOutputFps(rootDir: File?, nowMs: Long = System.currentTimeMillis()): Float? {
-        val runtimeContainer = nativeRendererContainer ?: return null
-        if (rootDir != runtimeContainer.rootDir) return null
-        return synchronized(measuredFpsCacheLock) {
-            readNativeOutputFps(runtimeContainer)?.takeIf { it.isFinite() && it >= 0f }
-        }
+        val root = rootDir ?: return null
+        val container = nativeRendererContainer
+        if (container != null && container.rootDir.absolutePath == root.absolutePath &&
+            isNativeBackend(container)) return readNativeOutputFps(container)
+        val values = readFreshLegacyStats(root, nowMs) ?: return null
+        if (values["confirmed_output_valid"] != "1") return null
+        return values["fps"]?.toFloatOrNull()?.takeIf { it.isFinite() && it >= 0f }
     }
 
+    @Synchronized
     fun readRuntimeState(container: Container): RuntimeState {
         if (!isNativeBackend(container)) return readLegacyRuntimeState(container)
         val renderer = nativeRendererRef?.get() ?: return unknownRuntimeState(false)
@@ -737,6 +739,8 @@ object LsfgVkManager {
         val wsiGeneratedCount = renderer.getGeneratedPresentedFrameCount()
         val confirmedGeneratedCount = renderer.getGeneratedDisplayConfirmedFrameCount()
         val sourceFrameCount = renderer.getSourceFrameCount()
+        val acceptedFrameCount = renderer.getPresentedFrameCount()
+        val opportunityCount = renderer.getGenerationOpportunityCount()
         val confirmationAvailable = renderer.isDisplayConfirmationAvailable()
         val snapshot = latestNativeSnapshot?.takeIf { nativeRendererContainer === container }
         val enabled = snapshot?.let {
@@ -745,49 +749,61 @@ object LsfgVkManager {
         val failed = nativeApplyFailed ||
             (nativeApplyComplete && renderer.hasNativeSurface() && !initialized && enabled)
 
+        val policyApplied = snapshot != null && snapshot.revision == nativeAppliedRevision &&
+            nativeApplyComplete && !nativeApplyFailed && isSnapshotRevisionCurrent(snapshot)
+        if (initialized && policyApplied && snapshot != null &&
+            nativeActivationOwnerGeneration != snapshot.backendGeneration) {
+            commitRuntimeMeasurementPolicy(renderer, container, snapshot)
+        }
+        val ownerCurrent = snapshot != null && nativeStateRenderer?.get() === renderer &&
+            nativeActivationOwnerGeneration == snapshot.backendGeneration &&
+            snapshot.backendGeneration == backendRequestSerial.get()
+        val observing = ownerCurrent && policyApplied && enabled && initialized
         val nowNs = System.nanoTime()
-        if (nativeStateRenderer?.get() !== renderer ||
+        if (!observing || nativeStateSampleNs == 0L ||
             wsiGeneratedCount < nativeStateSampleWsiGenerated ||
             confirmedGeneratedCount < nativeStateSampleConfirmedGenerated ||
-            sourceFrameCount < nativeStateSampleSourceFrames
-        ) {
-            nativeStateRenderer = WeakReference(renderer)
-            nativeStateSampleNs = nowNs
-            nativeStateSampleWsiGenerated = wsiGeneratedCount
-            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
-            nativeStateSampleSourceFrames = sourceFrameCount
-            nativeConfirmedDeliveryWindows = 0
-            nativeDeliveryLossWindows = 0
-            nativeGenerationStallWindows = 0
-            nativeLastWsiProgressNs = if (wsiGeneratedCount > 0L) nowNs else 0L
-        } else if (nativeStateSampleNs == 0L) {
-            nativeStateSampleNs = nowNs
-            nativeStateSampleWsiGenerated = wsiGeneratedCount
-            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
-            nativeStateSampleSourceFrames = sourceFrameCount
-        } else if (nowNs - nativeStateSampleNs >= 500_000_000L) {
-            val wsiDelta = (wsiGeneratedCount - nativeStateSampleWsiGenerated).coerceAtLeast(0L)
-            val confirmedDelta =
-                (confirmedGeneratedCount - nativeStateSampleConfirmedGenerated).coerceAtLeast(0L)
-            val sourceDelta = (sourceFrameCount - nativeStateSampleSourceFrames).coerceAtLeast(0L)
-
-            if (wsiDelta > 0L) {
-                nativeLastWsiProgressNs = nowNs
-                nativeGenerationStallWindows = 0
-            } else if (enabled && initialized && sourceDelta > 0L) {
-                nativeGenerationStallWindows =
-                    (nativeGenerationStallWindows + 1).coerceAtMost(12)
-            }
-            if (confirmationAvailable && wsiDelta > 0L && confirmedDelta > 0L) {
-                nativeConfirmedDeliveryWindows =
-                    (nativeConfirmedDeliveryWindows + 1).coerceAtMost(4)
-                nativeDeliveryLossWindows =
-                    (nativeDeliveryLossWindows - 1).coerceAtLeast(0)
-            } else if (confirmationAvailable && wsiDelta >= 2L && confirmedDelta == 0L) {
-                nativeDeliveryLossWindows =
-                    (nativeDeliveryLossWindows + 1).coerceAtMost(8)
+            sourceFrameCount < nativeStateSampleSourceFrames ||
+            acceptedFrameCount < nativeStateSampleAcceptedFrames ||
+            opportunityCount < nativeStateSampleOpportunities) {
+            if (wsiGeneratedCount < nativeStateSampleWsiGenerated) {
+                nativeActivationBaselineWsiCount = wsiGeneratedCount
                 nativeConfirmedDeliveryWindows = 0
-            } else if (!confirmationAvailable) {
+                nativeDeliveryLossWindows = 0
+                nativeGenerationStallWindows = 0
+                nativeZeroDemandSourceWindows = 0
+            }
+            nativeStateSampleNs = nowNs
+            nativeStateSampleWsiGenerated = wsiGeneratedCount
+            nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
+            nativeStateSampleSourceFrames = sourceFrameCount
+            nativeStateSampleAcceptedFrames = acceptedFrameCount
+            nativeStateSampleOpportunities = opportunityCount
+        } else if (nowNs - nativeStateSampleNs >= 500_000_000L) {
+            val elapsedNs = nowNs - nativeStateSampleNs
+            val wsiDelta = (wsiGeneratedCount - nativeStateSampleWsiGenerated).coerceAtLeast(0L)
+            val confirmedDelta = (confirmedGeneratedCount - nativeStateSampleConfirmedGenerated).coerceAtLeast(0L)
+            val inputDelta = (sourceFrameCount - nativeStateSampleSourceFrames).coerceAtLeast(0L)
+            val acceptedSourceDelta = (acceptedFrameCount - nativeStateSampleAcceptedFrames - wsiDelta).coerceAtLeast(0L)
+            val uniqueSourceDelta = minOf(inputDelta, acceptedSourceDelta)
+            val opportunities = (opportunityCount - nativeStateSampleOpportunities).coerceAtLeast(0L)
+            val target = snapshot?.targetFps?.toDouble() ?: 0.0
+            val panel = snapshot?.displayRefresh?.toDouble() ?: 0.0
+            val boundedTarget = if (panel > 0.0) minOf(target, panel) else target
+            val sourceAtTarget = boundedTarget > 0.0 &&
+                uniqueSourceDelta * 1_000_000_000.0 / elapsedNs >= boundedTarget * 0.97
+            nativeZeroDemandSourceWindows = advanceNativeZeroDemandWindows(nativeZeroDemandSourceWindows,
+                target > 0.0, uniqueSourceDelta, opportunities, sourceAtTarget)
+            nativeGenerationStallWindows = advanceNativeStallWindows(nativeGenerationStallWindows,
+                enabled, initialized, inputDelta, wsiDelta, opportunities)
+            if (wsiDelta > 0L) nativeLastWsiProgressNs = nowNs
+            if (confirmationAvailable && wsiDelta > 0L && confirmedDelta > 0L) {
+                nativeConfirmedDeliveryWindows = (nativeConfirmedDeliveryWindows + 1).coerceAtMost(4)
+                nativeDeliveryLossWindows = (nativeDeliveryLossWindows - 1).coerceAtLeast(0)
+            } else if (confirmationAvailable && wsiDelta >= 2L && confirmedDelta == 0L) {
+                nativeDeliveryLossWindows = (nativeDeliveryLossWindows + 1).coerceAtMost(8)
+                nativeConfirmedDeliveryWindows = 0
+            } else if (!confirmationAvailable || (inputDelta > 0L && wsiDelta == 0L)) {
                 nativeConfirmedDeliveryWindows = 0
                 nativeDeliveryLossWindows = 0
             }
@@ -795,28 +811,29 @@ object LsfgVkManager {
             nativeStateSampleWsiGenerated = wsiGeneratedCount
             nativeStateSampleConfirmedGenerated = confirmedGeneratedCount
             nativeStateSampleSourceFrames = sourceFrameCount
+            nativeStateSampleAcceptedFrames = acceptedFrameCount
+            nativeStateSampleOpportunities = opportunityCount
         }
-
-        val wsiGenerating = initialized && wsiGeneratedCount > 0L
-        val activationReady = enabled && initialized && wsiGenerating
-        val confirmedGenerating =
-            activationReady && confirmationAvailable && nativeConfirmedDeliveryWindows >= 2
-        val confirmationLagging =
-            activationReady && confirmationAvailable && nativeDeliveryLossWindows >= 2
-        val generationStalled =
-            enabled && initialized && nativeGenerationStallWindows >= 6
+        val wsiGenerating = observing && wsiGeneratedCount > nativeActivationBaselineWsiCount
+        val adaptive = (snapshot?.targetFps ?: 0) > 0
+        val sourceSufficient = observing && adaptive && nativeZeroDemandSourceWindows >= 2
+        val activationReady = observing && nativeGenerationActivationReady(enabled, initialized,
+            wsiGeneratedCount, nativeActivationBaselineWsiCount, adaptive, nativeZeroDemandSourceWindows)
+        val confirmedGenerating = activationReady && confirmationAvailable && nativeConfirmedDeliveryWindows >= 2
+        val confirmationLagging = activationReady && confirmationAvailable && nativeDeliveryLossWindows >= 2
+        val generationStalled = observing && nativeGenerationStallWindows >= 6
         val healthState = when {
             failed -> NativeHealthState.FAILED
             generationStalled -> NativeHealthState.GENERATION_STALLED
+            sourceSufficient -> NativeHealthState.SOURCE_CADENCE_SUFFICIENT
             confirmedGenerating -> NativeHealthState.HEALTHY
             activationReady && !confirmationAvailable -> NativeHealthState.CONFIRMATION_UNAVAILABLE
             confirmationLagging -> NativeHealthState.CONFIRMATION_LAGGING
             activationReady -> NativeHealthState.WSI_ACTIVE_AWAITING_CONFIRMATION
             else -> NativeHealthState.STARTING
         }
-
         val runtimeStatus = when {
-            !enabled -> RuntimeStatus.SOURCE_ONLY
+            !enabled || sourceSufficient -> RuntimeStatus.SOURCE_ONLY
             failed || generationStalled -> RuntimeStatus.DEGRADED
             activationReady -> RuntimeStatus.GENERATING
             else -> RuntimeStatus.UNKNOWN
@@ -900,10 +917,10 @@ object LsfgVkManager {
         return RuntimeState(
             status = runtimeStatus,
             resident = initialized || !enabled,
-            sourceOnly = !enabled,
+            sourceOnly = !enabled || sourceSufficient,
             generationReady = activationReady,
             generationInitialized = initialized,
-            generatedPresented = wsiGeneratedCount > 0L,
+            generatedPresented = wsiGenerating,
             degraded = enabled && (failed || generationStalled),
             multiplier = runtimeMultiplier,
             fresh = true,
@@ -914,7 +931,7 @@ object LsfgVkManager {
             wsiGenerating = wsiGenerating,
             displayConfirmedGenerating = confirmedGenerating,
             displayConfirmationAvailable = confirmationAvailable,
-            presentationDegraded = generationStalled,
+            presentationDegraded = generationStalled || confirmationLagging,
             nativeHealthState = healthState,
         )
     }
@@ -1062,6 +1079,15 @@ object LsfgVkManager {
     private var nativeStateSampleWsiGenerated = 0L
     private var nativeStateSampleConfirmedGenerated = 0L
     private var nativeStateSampleSourceFrames = 0L
+    private var nativeStateSampleAcceptedFrames = 0L
+    private var nativeStateSampleOpportunities = 0L
+    private var nativeActivationBaselineWsiCount = 0L
+    private var nativeActivationOwnerGeneration = -1L
+    private var nativeZeroDemandSourceWindows = 0
+    private data class RuntimeMeasurementPolicy(
+        val rootPath: String, val snapshot: NativeRuntimeConfigSnapshot, val statsFreshnessFloorMs: Long,
+    )
+    @Volatile private var runtimeMeasurementPolicy: RuntimeMeasurementPolicy? = null
     private var nativeConfirmedDeliveryWindows = 0
     private var nativeDeliveryLossWindows = 0
     private var nativeGenerationStallWindows = 0
@@ -1114,41 +1140,9 @@ object LsfgVkManager {
     // physical confirmation is unavailable on the device.
     private fun readNativeOutputFps(container: Container): Float? {
         val renderer = nativeRendererRef?.get() ?: return null
-        if (nativeRendererContainer !== container ||
-            (isNativeBackend(container) && !renderer.isFrameGenerationSupported())
-        ) return null
-
-        val confirmationAvailable = renderer.isDisplayConfirmationAvailable()
-        val count = if (confirmationAvailable) renderer.getDisplayConfirmedFrameCount() else 0L
-        val now = System.nanoTime()
-        val previous = NativeOutputFpsSampleState(
-            sampleNs = nativeFpsSampleNs,
-            sampleCount = nativeFpsSampleCount,
-            value = nativeFpsValue,
-        )
-        val next = advanceNativeOutputFpsSample(
-            confirmationAvailable = confirmationAvailable,
-            count = count,
-            nowNs = now,
-            state = previous,
-            reset = nativeFpsRenderer?.get() !== renderer,
-        )
-        nativeFpsRenderer = WeakReference(renderer)
-        nativeFpsSampleNs = next.sampleNs
-        nativeFpsSampleCount = next.sampleCount
-        nativeFpsValue = next.value
-
-        // Missing physical evidence is unknown; WSI success cannot satisfy an
-        // output target. A measured zero remains a valid delivery-deficit sample.
-        if (!confirmationAvailable) return null
-        if (next.value != null && next.sampleNs != previous.sampleNs) {
-            Timber.d(
-                "LSFG_NATIVE_PRESENT: event=output_rate output_fps=%.2f measurement=display-confirmed " +
-                    "display_confirmation_available=1",
-                next.value,
-            )
-        }
-        return next.value
+        if (nativeRendererContainer !== container || !isNativeBackend(container) ||
+            !renderer.isFrameGenerationSupported()) return null
+        return renderer.getNativeConfirmedOutputFps().takeIf { it.isFinite() && it >= 0f }
     }
 
     @Volatile private var nativeApplyFailed = false
@@ -1236,7 +1230,7 @@ object LsfgVkManager {
             targetFps = if (adaptiveFramegen) sanitizeAdaptiveTargetFps(fpsLimit) else 0,
             flowMode = if (adaptiveFlowScale) FLOW_MODE_ADAPTIVE else FLOW_MODE_FIXED,
             flowPreset = sanitizeAdaptiveFlowPreset(adaptiveFlowPreset),
-            requestedFlowScale = flowScale.coerceIn(0.25f, 1.0f),
+            requestedFlowScale = LsfgQuickMenuHelper.sanitizeFlowScale(flowScale),
             performanceMode = performanceMode,
             presentMode = presentMode.takeIf { it == "fifo" || it == "mailbox" } ?: "mailbox",
             frameQueueEnabled = frameQueueEnabled,
@@ -1318,6 +1312,87 @@ object LsfgVkManager {
             nativeAppliedRevision,
             snapshot.backendGeneration,
         )
+    }
+
+    internal fun nativeGenerationActivationReady(
+        enabled: Boolean, initialized: Boolean, wsi: Long, baseline: Long,
+        adaptive: Boolean = false, zeroDemandWindows: Int = 0,
+    ): Boolean = enabled && initialized &&
+        (wsi > baseline || (adaptive && zeroDemandWindows >= 2))
+
+    internal fun advanceNativeStallWindows(
+        previous: Int, enabled: Boolean, initialized: Boolean,
+        sourceDelta: Long, wsiDelta: Long, opportunityDelta: Long,
+    ): Int = when {
+        !enabled || !initialized || wsiDelta > 0L -> 0
+        sourceDelta <= 0L -> previous
+        opportunityDelta <= 0L -> 0
+        else -> (previous + 1).coerceAtMost(12)
+    }
+
+    internal fun advanceNativeZeroDemandWindows(
+        previous: Int, adaptive: Boolean, sourceDelta: Long, opportunityDelta: Long,
+        sourceTargetSatisfied: Boolean,
+    ): Int = when {
+        !adaptive || !sourceTargetSatisfied || opportunityDelta > 0L -> 0
+        sourceDelta <= 0L -> previous
+        else -> (previous + 1).coerceAtMost(2)
+    }
+
+    @Synchronized
+    private fun commitRuntimeMeasurementPolicy(
+        renderer: VulkanRenderer, container: Container, snapshot: NativeRuntimeConfigSnapshot,
+    ) {
+        if (!isSnapshotRevisionCurrent(snapshot) || latestNativeSnapshot?.revision != snapshot.revision ||
+            nativeRendererRef?.get() !== renderer || nativeRendererContainer !== container) return
+        val priorPolicy = runtimeMeasurementPolicy
+        val prior = priorPolicy?.snapshot
+        val sameContract = priorPolicy?.rootPath == container.rootDir.absolutePath &&
+            prior?.copy(revision = snapshot.revision) == snapshot
+        runtimeMeasurementPolicy = RuntimeMeasurementPolicy(container.rootDir.absolutePath, snapshot,
+            if (sameContract) priorPolicy!!.statsFreshnessFloorMs else System.currentTimeMillis())
+        if (!sameContract) synchronized(measuredFpsCacheLock) {
+            cachedMeasuredFps = null
+            lastStatsReadMs = 0L
+        }
+        val active = snapshot.enabled && snapshot.multiplier >= 2 &&
+            (snapshot.backend == BACKEND_LEGACY || renderer.isFrameGenerationSupported())
+        val nativeActive = active && snapshot.backend == BACKEND_NATIVE
+        if (!nativeActive || nativeStateRenderer?.get() !== renderer ||
+            nativeActivationOwnerGeneration != snapshot.backendGeneration) {
+            nativeActivationOwnerGeneration = if (nativeActive) snapshot.backendGeneration else -1L
+            nativeStateRenderer = if (nativeActive) WeakReference(renderer) else null
+            nativeActivationBaselineWsiCount = renderer.getGeneratedPresentedFrameCount()
+            nativeStateSampleNs = 0L
+            nativeConfirmedDeliveryWindows = 0
+            nativeDeliveryLossWindows = 0
+            nativeGenerationStallWindows = 0
+            nativeZeroDemandSourceWindows = 0
+        } else if (prior?.targetFps != snapshot.targetFps || prior?.multiplier != snapshot.multiplier ||
+            prior?.displayRefresh != snapshot.displayRefresh) {
+            nativeStateSampleNs = 0L
+            nativeZeroDemandSourceWindows = 0
+        }
+        PowerManager.setFrameGenerationPacing(active,
+            lsfgSourceSampleStride(active, nativeActive, snapshot.multiplier),
+            snapshot.multiplier, snapshot.targetFps, snapshot.displayRefresh.toInt())
+    }
+
+    @Synchronized
+    private fun commitNativeApply(
+        renderer: VulkanRenderer, container: Container, snapshot: NativeRuntimeConfigSnapshot,
+        generation: Long, initialized: Boolean, failed: Boolean = false, failureReason: String? = null,
+    ): Boolean {
+        if (!snapshotIsCurrent(snapshot, generation) || nativeRendererRef?.get() !== renderer ||
+            nativeRendererContainer !== container) return false
+        appliedNativePolicy = if (initialized && snapshot.backend == BACKEND_NATIVE && snapshot.enabled)
+            AppliedNativePolicy(snapshot, WeakReference(renderer), container) else null
+        nativeAppliedRevision = snapshot.revision
+        nativeApplyComplete = true
+        nativeApplyFailed = failed
+        nativeFailureReason = failureReason
+        commitRuntimeMeasurementPolicy(renderer, container, snapshot)
+        return true
     }
 
     private fun snapshotIsCurrent(
@@ -1447,6 +1522,7 @@ object LsfgVkManager {
      * Push one immutable Native-LSFG settings snapshot into the host compositor.
      * Shader-cache construction is kept off the render/launch critical path.
      */
+    @Synchronized
     private fun applyNativeRuntime(
         renderer: VulkanRenderer,
         container: Container,
@@ -1490,9 +1566,10 @@ object LsfgVkManager {
                         discardStaleSnapshot(snapshot, "after-metadata-update")
                         return@execute
                     }
-                    appliedNativePolicy = AppliedNativePolicy(snapshot, WeakReference(renderer), container)
-                    nativeAppliedRevision = snapshot.revision
-                    nativeApplyComplete = true
+                    if (!commitNativeApply(renderer, container, snapshot, generation, true)) {
+                        discardStaleSnapshot(snapshot, "metadata-publication")
+                        return@execute
+                    }
                     logNativeSnapshot(snapshot, "effective-policy-unchanged")
                     onApplied?.invoke("runtime-reused")
                     return@execute
@@ -1509,10 +1586,6 @@ object LsfgVkManager {
                 renderer.beginLsfgBackendTransition(snapshot.backendGeneration, snapshot.revision)
                 if (snapshot.backend == BACKEND_NATIVE && snapshot.enabled) {
                     nativeActivationStartNs = System.nanoTime()
-                    nativeLastWsiProgressNs = 0L
-                    nativeGenerationStallWindows = 0
-                    nativeConfirmedDeliveryWindows = 0
-                    nativeDeliveryLossWindows = 0
                     transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_REQUESTED, "configuration-requested")
                 }
 
@@ -1563,8 +1636,10 @@ object LsfgVkManager {
                         )
                     }
 
-                    nativeApplyComplete = true
-                    nativeAppliedRevision = snapshot.revision
+                    if (!commitNativeApply(renderer, container, snapshot, generation, false)) {
+                        discardStaleSnapshot(snapshot, "source-only-publication")
+                        return@execute
+                    }
                     logNativeSnapshot(snapshot, "applied")
                     onApplied?.invoke(result)
                     return@execute
@@ -1587,9 +1662,10 @@ object LsfgVkManager {
                 if (!publishLegacySourceOnlyForNative(container, snapshot)) {
                     legacySourceOnlyOwner = null
                     renderer.setFrameGenerationEnabled(false)
-                    nativeApplyFailed = true
-                    nativeApplyComplete = true
-                    nativeFailureReason = "legacy-disable-failed"
+                    if (!commitNativeApply(renderer, container, snapshot, generation, false, true, "legacy-disable-failed")) {
+                        discardStaleSnapshot(snapshot, "failure-publication")
+                        return@execute
+                    }
                     transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_FAILED, nativeFailureReason!!)
                     onApplied?.invoke(nativeFailureReason!!)
                     return@execute
@@ -1602,9 +1678,10 @@ object LsfgVkManager {
                 }
                 if (cache == null) {
                     renderer.setFrameGenerationEnabled(false)
-                    nativeApplyFailed = true
-                    nativeApplyComplete = true
-                    nativeFailureReason = "native-cache-unavailable"
+                    if (!commitNativeApply(renderer, container, snapshot, generation, false, true, "native-cache-unavailable")) {
+                        discardStaleSnapshot(snapshot, "failure-publication")
+                        return@execute
+                    }
                     transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_FAILED, nativeFailureReason!!)
                     onApplied?.invoke(nativeFailureReason!!)
                     return@execute
@@ -1652,9 +1729,10 @@ object LsfgVkManager {
                         activeAckWaitNs += (System.nanoTime() - pollStartedNs).coerceAtLeast(0L)
                         if (activeAckWaitNs >= 30_000_000_000L) {
                             renderer.setFrameGenerationEnabled(false)
-                            nativeApplyFailed = true
-                            nativeApplyComplete = true
-                            nativeFailureReason = "legacy-disable-timeout"
+                            if (!commitNativeApply(renderer, container, snapshot, generation, false, true, "legacy-disable-timeout")) {
+                        discardStaleSnapshot(snapshot, "failure-publication")
+                        return@execute
+                    }
                             transitionNativePhase(snapshot, NativeBackendPhase.NATIVE_FAILED, nativeFailureReason!!)
                             onApplied?.invoke(nativeFailureReason!!)
                             return@execute
@@ -1719,15 +1797,12 @@ object LsfgVkManager {
                     discardStaleSnapshot(snapshot, "after-native-arm")
                     return@execute
                 }
-                if (initialized) {
-                    appliedNativePolicy = AppliedNativePolicy(snapshot, WeakReference(renderer), container)
+                val failed = renderer.hasNativeSurface() && !initialized
+                if (!commitNativeApply(renderer, container, snapshot, generation, initialized, failed,
+                        if (failed) "native-capability-or-cache-rejected" else null)) {
+                    discardStaleSnapshot(snapshot, "native-publication")
+                    return@execute
                 }
-                nativeApplyFailed = renderer.hasNativeSurface() && !initialized
-                nativeApplyComplete = true
-                nativeAppliedRevision = snapshot.revision
-                nativeFailureReason = if (nativeApplyFailed) {
-                    "native-capability-or-cache-rejected"
-                } else null
                 logNativeSnapshot(snapshot, "applied")
                 when {
                     initialized -> transitionNativePhase(
@@ -1754,10 +1829,8 @@ object LsfgVkManager {
                     },
                 )
             } catch (error: Exception) {
-                if (snapshotIsCurrent(snapshot, generation)) {
-                    nativeApplyFailed = true
-                    nativeApplyComplete = true
-                    nativeFailureReason = "native-initialization-failed"
+                if (commitNativeApply(renderer, container, snapshot, generation, false, true,
+                        "native-initialization-failed")) {
                     transitionNativePhase(
                         snapshot,
                         NativeBackendPhase.NATIVE_FAILED,
@@ -2505,7 +2578,7 @@ object LsfgVkManager {
     }
 
     private fun formatFlowScale(value: Float): String =
-        String.format(Locale.US, "%.2f", value.coerceIn(0.25f, 1.0f))
+        String.format(Locale.US, "%.2f", (if (value.isFinite()) value else 0.80f).coerceIn(0.25f, 1.0f))
 
     private fun parseBool(value: String?): Boolean =
         value.equals("true", ignoreCase = true) || value == "1"

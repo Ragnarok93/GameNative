@@ -36,6 +36,9 @@ object AdaptiveFpsCapController {
 
     fun isRunning(): Boolean = running
 
+    @Volatile private var pacingResetRequested = false
+    fun resetPacingEvidence() { pacingResetRequested = true }
+
     /**
      * Cap values for logs owned by other components, or null while the controller is idle.
      */
@@ -102,6 +105,10 @@ object AdaptiveFpsCapController {
     }
 
     private fun runCycle() {
+        if (pacingResetRequested) {
+            pacingResetRequested = false
+            cap.interrupt()
+        }
         val profile = runCatching { PowerManager.currentProfile }.getOrNull()
         if (profile == null || !profile.adaptiveFpsCapEnabled) {
             running = false
@@ -115,6 +122,7 @@ object AdaptiveFpsCapController {
         val snapshot = PowerManager.latestMetrics
         if (targetFps <= 0 ||
             snapshot == null ||
+            snapshot.totalFrameCount <= 0 ||
             System.currentTimeMillis() - snapshot.timestampMs > METRICS_STALE_MS ||
             (snapshot.fps <= 0f && PowerManager.frameSampleStride <= 1)
         ) {
@@ -122,10 +130,15 @@ object AdaptiveFpsCapController {
             return
         }
 
-        val tuningFps = PowerManager.fpsForTuning(snapshot.fps) ?: run {
+        val observation = PowerManager.tuningObservation(snapshot.fps) ?: run {
             cap.interrupt()
             return
         }
+        if (observation.sourceTargetFps != targetFps) {
+            cap.interrupt()
+            return
+        }
+        val tuningFps = observation.sourceEquivalentFps
         val trimmedSteps = PowerManager.tunerTrimmedSteps()
 
         // A harvest only trims domains that are not the bottleneck, so its steps are not what

@@ -122,6 +122,10 @@ jobs:
           --tests app.gamenative.powercontrol.metrics.FrameTimeRingTest
           --tests com.winlator.widget.FrameRatingTest
           --tests com.winlator.widget.XServerFrameRatingRetargetContractTest
+          --tests 'app.gamenative.utils.*Lsfg*'
+          --tests 'app.gamenative.ui.component.Lsfg*'
+          --tests 'app.gamenative.powercontrol.*'
+          --tests com.winlator.widget.XServerViewLsfgPacingContractTest
 
       - name: Build upgradeable LegacyDebug APK
         shell: bash

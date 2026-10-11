@@ -614,14 +614,12 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
         }
 
         val sourceFrameCap = effectiveSourceFpsCap(limit)
-        val runtimeMultiplier = if (lsfgActive) lsfgRuntimeMultiplier.coerceIn(2, 4) else 1
         xServerView?.setFrameRateLimit(sourceFrameCap)
         xServerView?.getxServer()
             ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
             ?.setFrameRateLimit(sourceFrameCap)
         ShmFramePacer.setFrameRateLimit(sourceFrameCap)
         PowerManager.targetFps = sourceFrameCap
-        PowerManager.frameSampleStride = runtimeMultiplier
 
         applyLsfgPresentationFrameRateHint(
             renderer = xServerView?.renderer as? VulkanRenderer,

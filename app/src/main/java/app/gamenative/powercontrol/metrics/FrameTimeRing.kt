@@ -33,7 +33,7 @@ object FrameTimeRing {
 
     fun start() {
         writeIndex.set(0L)
-        epochGeneration.set(0L)
+        epochGeneration.incrementAndGet()
         epochStartIndex = 0L
         java.util.Arrays.fill(timestampsNs, 0L)
         recording = true

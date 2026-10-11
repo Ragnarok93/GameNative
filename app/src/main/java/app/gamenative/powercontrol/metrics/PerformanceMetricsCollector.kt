@@ -146,6 +146,14 @@ object PerformanceMetricsCollector {
         }
     }
 
+    /** Policy and timestamp boundary become visible under the same sampling lock. */
+    fun updateFramePacing(publishPolicy: () -> Unit) {
+        synchronized(lifecycleLock) {
+            resetFrameEpochLocked()
+            publishPolicy()
+        }
+    }
+
     fun pause() {
         synchronized(lifecycleLock) {
             if (!isRunning || paused) return
@@ -169,6 +177,7 @@ object PerformanceMetricsCollector {
     private fun sampleOnce(generation: Long, scratch: SampleScratch) {
         if (!isSessionCurrent(generation)) return
         val frameGeneration = FrameTimeRing.generation()
+        val pacing = PowerManager.frameGenerationPacing
         val now = System.nanoTime()
         val frameCount = FrameTimeRing.copySince(now - FRAME_WINDOW_MS * 1_000_000L, scratch.frames)
         val frameStats = computeFrameWindowStats(
@@ -176,7 +185,7 @@ object PerformanceMetricsCollector {
             frameCount,
             slowFrameThresholdNs(),
             scratch.deltas,
-            PowerManager.frameSampleStride,
+            pacing.sourceSampleStride,
         )
 
         // A pacing transition can race this 500 ms collector. Never publish a
@@ -202,13 +211,17 @@ object PerformanceMetricsCollector {
             thermalStatus = readThermalStatus(),
         )
 
-        if (!publish(snapshot, generation, frameGeneration)) return
+        if (!publish(snapshot, generation, frameGeneration, pacing)) return
+        val pressureRoot = synchronized(lifecycleLock) {
+            if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation() ||
+                pacing !== PowerManager.frameGenerationPacing) return
+            PowerManager.activeContainerRootDir()
+        }
+        // Manager owns policy publication and can acquire this collector lock. Do not
+        // call back into the manager while holding lifecycleLock.
+        LsfgVkManager.publishRuntimePressure(pressureRoot, snapshot, expectedFrameEpoch = frameGeneration)
         synchronized(lifecycleLock) {
             if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation()) return
-            LsfgVkManager.publishRuntimePressure(
-                PowerManager.activeContainerRootDir(),
-                snapshot,
-            )
             appendLog(snapshot)
 
             sampleCount++
@@ -233,8 +246,10 @@ object PerformanceMetricsCollector {
         snapshot: MetricsSnapshot,
         generation: Long,
         frameGeneration: Long,
+        pacing: app.gamenative.powercontrol.FrameGenerationPacing,
     ): Boolean = synchronized(lifecycleLock) {
-        if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation()) {
+        if (!isSessionCurrent(generation) || frameGeneration != FrameTimeRing.generation() ||
+            pacing !== PowerManager.frameGenerationPacing) {
             return@synchronized false
         }
         PowerManager.latestMetrics = snapshot

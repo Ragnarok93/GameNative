@@ -284,7 +284,7 @@ object PowerManager {
         stopPowerControl()
         isGameStarted = false
         fpsCapApplier = null
-        frameSampleStride = 1
+        setFrameGenerationPacing(false, 1, 1, 0, 0)
         containerDir = null
         pinnedGameProcessName = null
         pinnedGamePid = null
@@ -427,6 +427,8 @@ object PowerManager {
             metricsProvider = { latestMetrics },
             targetFpsProvider = { targetFps },
             tuningFpsProvider = { fpsForTuning(it) },
+            tuningObservationProvider = { tuningObservation(it) },
+            sourcePacingValidProvider = { frameSampleStride <= 1 },
             fanSampleProvider = { FanController.latestSample },
             strategyProvider = { currentProfile.tuningStrategy },
             fpsCapProvider = { AdaptiveFpsCapController.snapshot() },
@@ -484,24 +486,39 @@ object PowerManager {
     @Volatile
     var fpsCapApplier: ((Int) -> Boolean)? = null
 
-    /** Frame-ring timestamps per base frame (= LSFG multiplier while frame
-     *  generation runs, 1 otherwise) so frame stats stay in base units. */
     @Volatile
-    var frameSampleStride: Int = 1
+    var frameGenerationPacing = FrameGenerationPacing()
+        private set
 
-    /**
-     * While LSFG is active, power tuning follows fresh post-generation output
-     * cadence instead of treating source cadence as displayed cadence.
-     */
-    internal fun fpsForTuning(sourceFps: Float): Float? = selectPowerTuningFps(
-        sourceFps = sourceFps,
-        frameGenerationActive = frameSampleStride > 1,
-        postLsfgOutputFps = if (frameSampleStride > 1) {
-            LsfgVkManager.readFreshOutputFps(containerDir)
-        } else {
-            null
-        },
-    )
+    val frameSampleStride: Int get() = frameGenerationPacing.sourceSampleStride
+
+    @Synchronized
+    fun setFrameGenerationPacing(
+        active: Boolean,
+        sourceSampleStride: Int,
+        multiplier: Int,
+        adaptiveTargetFps: Int,
+        displayRefreshFps: Int,
+    ) {
+        val next = FrameGenerationPacing(active, if (active) sourceSampleStride.coerceIn(1, 4) else 1,
+            if (active) multiplier.coerceIn(2, 4) else 1,
+            adaptiveTargetFps.coerceAtLeast(0), displayRefreshFps.coerceAtLeast(0))
+        if (next == frameGenerationPacing) return
+        PerformanceMetricsCollector.updateFramePacing { frameGenerationPacing = next }
+        clusterTuner?.requestOpenClocks()
+        autoTuner?.resetPacingEvidence()
+        AdaptiveFpsCapController.resetPacingEvidence()
+    }
+
+    internal fun tuningObservation(sourceFps: Float): PowerTuningObservation? {
+        val pacing = frameGenerationPacing
+        val cap = targetFps
+        val output = if (pacing.active) LsfgVkManager.readFreshOutputFps(containerDir) else null
+        if (pacing !== frameGenerationPacing || cap != targetFps) return null
+        return powerTuningObservation(sourceFps, cap, pacing, output)
+    }
+
+    internal fun fpsForTuning(sourceFps: Float): Float? = tuningObservation(sourceFps)?.sourceEquivalentFps
 
     internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
         fpsCapApplier?.let { if (it(limitFps)) return true }

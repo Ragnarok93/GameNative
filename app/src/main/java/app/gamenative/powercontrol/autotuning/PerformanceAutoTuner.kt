@@ -202,16 +202,35 @@ class PerformanceAutoTuner(
     /**
      * Perform one tuning cycle
      */
+    @Volatile private var pacingResetRequested = false
+
+    fun resetPacingEvidence() { pacingResetRequested = true }
+
+    private fun clearPacingEvidence() {
+        cpuPidController?.reset()
+        gpuPidController?.reset()
+        busPidController?.reset()
+        currentBottleneck = BottleneckType.NONE
+    }
+
     private fun performTuningCycle() {
+        if (pacingResetRequested) {
+            pacingResetRequested = false
+            clearPacingEvidence()
+        }
         // Skip first ${WARMUP_CYCLES} cycles regardless of FPS to allow game to start
         if (!skipWarmupCycles && ++warmUpCycles < WARMUP_CYCLES) return
 
-        val targetFps = PowerManager.targetFps.toDouble()
-        val currentFps = PowerManager.fpsForTuning(PowerManager.currentFps)?.toDouble() ?: return
+        val observation = PowerManager.tuningObservation(PowerManager.currentFps) ?: run {
+            clearPacingEvidence()
+            return
+        }
+        val targetFps = observation.sourceTargetFps.toDouble()
+        val currentFps = observation.sourceEquivalentFps.toDouble()
 
         // Missing output was rejected above; a confirmed zero during LSFG is
         // a real delivery deficit. Preserve the idle guard for source-only sessions.
-        if (targetFps == 0.0 || (currentFps == 0.0 && PowerManager.frameSampleStride <= 1)) {
+        if (targetFps == 0.0 || (currentFps == 0.0 && PowerManager.currentFps <= 0f)) {
             return
         }
 

@@ -29,6 +29,8 @@ class ClusterTuner(
     private val metricsProvider: () -> MetricsSnapshot?,
     private val targetFpsProvider: () -> Int,
     private val tuningFpsProvider: (Float) -> Float? = { it },
+    private val tuningObservationProvider: ((Float) -> app.gamenative.powercontrol.PowerTuningObservation?)? = null,
+    private val sourcePacingValidProvider: () -> Boolean = { true },
     private val fanSampleProvider: () -> FanSample? = { null },
     private val strategyProvider: () -> AutoTuningStrategy = { AutoTuningStrategy.BALANCED },
     private val fpsCapProvider: () -> FpsCapSnapshot? = { null },
@@ -190,18 +192,29 @@ class ClusterTuner(
 
         val snapshot = metricsProvider()
         val now = System.currentTimeMillis()
-        val targetFps = targetFpsProvider()
+        var targetFps = targetFpsProvider()
 
         if (snapshot == null) {
+            engine.interruptEvidence()
             logCycle(null, 0, HOLD_ACTION, "no-metrics", engine.steadyCycles, engine.frozenDomains, 0f)
             return
         }
         if (now - snapshot.timestampMs > TunerThresholds.METRICS_STALE_MS) {
+            engine.interruptEvidence()
             logCycle(snapshot, 0, HOLD_ACTION, "stale-metrics", engine.steadyCycles, engine.frozenDomains, 0f)
             return
         }
-        val tuningFps = tuningFpsProvider(snapshot.fps)
+        val observationProvider = tuningObservationProvider
+        val observation = observationProvider?.invoke(snapshot.fps)
+        if (observationProvider != null && observation == null) {
+            engine.interruptEvidence()
+            logCycle(snapshot, targetFps, HOLD_ACTION, "missing-lsfg-output", engine.steadyCycles, engine.frozenDomains, 0f)
+            return
+        }
+        if (observation != null) targetFps = observation.sourceTargetFps
+        val tuningFps = observation?.sourceEquivalentFps ?: tuningFpsProvider(snapshot.fps)
         if (tuningFps == null) {
+            engine.interruptEvidence()
             logCycle(snapshot, targetFps, HOLD_ACTION, "missing-lsfg-output", engine.steadyCycles, engine.frozenDomains, 0f)
             return
         }
@@ -218,6 +231,7 @@ class ClusterTuner(
             cpuTempC = snapshot.cpuTempC,
             gpuTempC = snapshot.gpuTempC,
             capabilities = capabilities(),
+            sourcePacingValid = sourcePacingValidProvider(),
         )
 
         val slowRatio = engine.slowFrameRatio(input)

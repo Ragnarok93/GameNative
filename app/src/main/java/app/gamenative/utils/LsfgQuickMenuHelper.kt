@@ -31,6 +31,7 @@ object LsfgQuickMenuHelper {
     )
 
     internal data class RuntimeConfigSnapshot(
+        val backendGeneration: Long,
         val armed: Boolean,
         val multiplier: Int,
         val flowScale: Float,
@@ -50,7 +51,9 @@ object LsfgQuickMenuHelper {
     }
 
     fun readSettings(container: Container): Settings = Settings(
-        multiplier = if (generationMode(container) == FrameGenerationMode.FIXED) {
+        multiplier = if (LsfgVkManager.multiplier(container) < 2) {
+            0
+        } else if (generationMode(container) == FrameGenerationMode.FIXED) {
             LsfgVkManager.fixedMultiplier(container)
         } else {
             LsfgVkManager.multiplier(container)
@@ -186,7 +189,8 @@ object LsfgQuickMenuHelper {
     }
 
     fun sanitizeMultiplier(multiplier: Int): Int = if (multiplier < 2) 0 else multiplier.coerceIn(2, 4)
-    fun sanitizeFlowScale(flowScale: Float): Float = flowScale.coerceIn(0.25f, 1.0f)
+    fun sanitizeFlowScale(flowScale: Float): Float =
+        if (flowScale.isFinite()) flowScale.coerceIn(0.25f, 1.0f) else 0.80f
 
     fun applySettings(container: Container, settings: Settings) {
         val multiplier = sanitizeMultiplier(settings.multiplier)
@@ -203,6 +207,7 @@ object LsfgQuickMenuHelper {
         settings: Settings = readSettings(container),
     ): RuntimeConfigSnapshot =
         RuntimeConfigSnapshot(
+        backendGeneration = LsfgVkManager.currentBackendGeneration(),
         armed = LsfgVkManager.isArmed(container),
         multiplier = sanitizeMultiplier(settings.multiplier),
         flowScale = sanitizeFlowScale(settings.flowScale),
@@ -241,7 +246,8 @@ object LsfgQuickMenuHelper {
         container: Container,
         snapshot: RuntimeConfigSnapshot,
     ) {
-        val request = LsfgVkManager.reserveRuntimeRequest(container)
+        val request = LsfgVkManager.reserveRuntimeRequestForOwner(container, snapshot.backendGeneration)
+            ?: return
         val enabled = snapshot.armed && snapshot.multiplier >= 2
         val adaptive =
             enabled && snapshot.generationMode == FrameGenerationMode.ADAPTIVE

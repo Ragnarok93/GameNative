@@ -8,19 +8,28 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class PowerTuningFpsSignalTest {
+    // The source cap is 60, and its 4x contract is bounded by a 60 Hz panel.
+    private fun selectSourceEquivalentFps(
+        sourceFps: Float,
+        frameGenerationActive: Boolean,
+        postLsfgOutputFps: Float?,
+    ): Float? = powerTuningObservation(sourceFps, 60,
+        FrameGenerationPacing(frameGenerationActive, if (frameGenerationActive) 4 else 1, 4, 0, 60),
+        postLsfgOutputFps)?.sourceEquivalentFps
+
     @Test
     fun `active frame generation uses fresh post-LSFG output cadence`() {
-        assertEquals(60f, selectPowerTuningFps(15f, true, 60f))
+        assertEquals(60f, selectSourceEquivalentFps(15f, true, 60f))
     }
 
     @Test
     fun `active frame generation holds without a fresh output sample`() {
-        assertNull(selectPowerTuningFps(15f, true, null))
+        assertNull(selectSourceEquivalentFps(15f, true, null))
     }
 
     @Test
     fun `inactive frame generation keeps the normal metric`() {
-        assertEquals(47f, selectPowerTuningFps(47f, false, null))
+        assertEquals(47f, selectSourceEquivalentFps(47f, false, null))
     }
 
     @Test
@@ -28,7 +37,7 @@ class PowerTuningFpsSignalTest {
         val cap = AdaptiveFpsCap().apply { observeCap(60) }
 
         repeat(AdaptiveFpsCap.CYCLES_BEFORE_STEP) {
-            val tuningFps = selectPowerTuningFps(
+            val tuningFps = selectSourceEquivalentFps(
                 sourceFps = 15f,
                 frameGenerationActive = true,
                 postLsfgOutputFps = 60f,
@@ -61,7 +70,7 @@ class PowerTuningFpsSignalTest {
     }
     @Test
     fun `confirmed zero remains a deficit instead of source-FPS fallback`() {
-        assertEquals(0f, selectPowerTuningFps(70f, true, 0f))
+        assertEquals(0f, selectSourceEquivalentFps(70f, true, 0f))
         val cap = AdaptiveFpsCap().apply { observeCap(60) }
         var change: app.gamenative.powercontrol.autotuning.FpsCapChange? = null
         repeat(AdaptiveFpsCap.CYCLES_BEFORE_STEP) {
@@ -82,11 +91,11 @@ class PowerTuningFpsSignalTest {
         val cap = File(base, "AdaptiveFpsCapController.kt").readText()
         val tuner = File(base, "autotuning/PerformanceAutoTuner.kt").readText()
         assertTrue(owner.contains("tuningFpsProvider = { fpsForTuning(it) }"))
-        assertTrue(cap.contains("PowerManager.fpsForTuning(snapshot.fps)"))
+        assertTrue(cap.contains("PowerManager.tuningObservation(snapshot.fps)"))
         assertTrue(cap.contains("cap.onCycle(tuningFps, clocksOpen, clockHeadroom)"))
         assertTrue(!cap.contains("cap.onCycle(snapshot.fps,"))
-        assertTrue(tuner.contains("PowerManager.fpsForTuning(PowerManager.currentFps)"))
-        assertTrue(tuner.contains("currentFps == 0.0 && PowerManager.frameSampleStride <= 1"))
+        assertTrue(tuner.contains("PowerManager.tuningObservation(PowerManager.currentFps)"))
+        assertTrue(tuner.contains("currentFps == 0.0 && PowerManager.currentFps <= 0f"))
     }
 
 }

@@ -37,6 +37,7 @@ data class TunerInput(
     val cpuTempC: Int?,
     val gpuTempC: Int?,
     val capabilities: Map<TunerDomain, DomainCapability>,
+    val sourcePacingValid: Boolean = true,
 )
 
 data class TunerDecision(
@@ -201,7 +202,7 @@ class TunerDecisionEngine(
             return decision(TunerAction.HOLD, null, 0, "no-target")
         }
 
-        if (input.fps <= 0f || input.totalFrameCount <= 0) {
+        if (!input.fps.isFinite() || input.fps < 0f || input.totalFrameCount <= 0) {
             steadyCycles = 0
             raiseCycles = 0
             trimQualifiedCycles = 0
@@ -222,7 +223,7 @@ class TunerDecisionEngine(
 
         if (missingTarget || slowFrameSpike) {
             val bottleneck = classifyBottleneck(input)
-            if (bottleneck != null && isBottleneckMaxed(input, bottleneck)) {
+            if (input.sourcePacingValid && input.fps > 0f && bottleneck != null && isBottleneckMaxed(input, bottleneck)) {
                 return harvest(input, slowRatio, bottleneck, tuning)
             }
 
@@ -244,6 +245,10 @@ class TunerDecisionEngine(
             return decision(TunerAction.RAISE, domain, steps, "raise:${domain.key}")
         }
         raiseCycles = 0
+        if (!input.sourcePacingValid) {
+            interruptEvidence()
+            return decision(TunerAction.HOLD, null, 0, "missing-source-pacing")
+        }
         harvestBottleneck = null
         harvestQualifiedCycles = 0
 
@@ -289,7 +294,18 @@ class TunerDecisionEngine(
      * Drops the frozen set and any in-flight trim watch, the same trim state a raise clears.
      * For owners that open every domain outside the decision path.
      */
+    /** Missing measurements break qualification without approving an existing trim. */
+    fun interruptEvidence() {
+        steadyCycles = 0
+        raiseCycles = 0
+        trimQualifiedCycles = 0
+        harvestQualifiedCycles = 0
+        clearRenderAverages()
+        lastBottleneck = null
+    }
+
     fun releaseHolds() {
+        interruptEvidence()
         frozen.clear()
         clearWatch()
         clearHarvest()

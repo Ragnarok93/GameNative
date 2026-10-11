@@ -242,15 +242,18 @@ int main(int argc,char** argv) {
                 stream.presentation_pressure.confirmation_available=true;
                 stream.presentation_pressure.pressure_active=true;
                 for(int i=0;i<int(source*6);++i) {
-                    fresh(stream); const auto plan=vkr_lsfg_plan(&stream,3,1); ++observations;
+                    fresh(stream,85); const auto plan=vkr_lsfg_plan(&stream,3,1); ++observations;
                     require(plan<=stream.adaptive_generation_cap && plan<=multiplier-1,"backoff retains bounded multiplier/cap authority");
                 }
                 require(stream.adaptive_generation_cap==0,"sustained delivery failure safely reaches source-only cap");
                 stream.presentation_pressure.pressure_active=false;
                 stream.presentation_pressure.source_delivery_healthy=true;
                 stream.presentation_pressure.generated_delivery_efficiency=1;
+                // Recovery has a measurable operating-point change: GPU
+                // demand falls85->61, rather than asserting unobservable
+                // generated health while the stream is source-only.
                 for(int i=0;i<int(source*12);++i) {
-                    fresh(stream); const auto plan=vkr_lsfg_plan(&stream,3,1); ++observations;
+                    fresh(stream,61); const auto plan=vkr_lsfg_plan(&stream,3,1); ++observations;
                     require(plan<=stream.adaptive_generation_cap && plan<=multiplier-1,"recovery retains bounded multiplier/cap authority");
                 }
                 require(stream.adaptive_generation_cap==3,"healthy delivery and headroom consistently restore generation");
@@ -333,7 +336,9 @@ int main() {
             drive(adaptive,180,30,gpu,30,true);
             require(adaptive.adaptive_generation_cap==0,"actual scheduler/controller interaction safely reaches source-only under persistent WSI loss");
             require(adaptive.active_flow_scale>=quality-.001f,"downstream loss alone does not lower Flow quality");
-            drive(adaptive,420,30,gpu,120,false);
+            // Source-only cannot observe a healed generated path. Establish a
+            // sustained material source30->20 workload improvement first.
+            drive(adaptive,420,20,gpu<0 ? -1.f : 45.f,80,false);
             require(adaptive.plan.generations==3 && adaptive.adaptive_generation_cap==3,"real fractional scheduler recovers full generation with and without GPU sensor");
             vkr_lsfg_configure(&adaptive,multiplier,90,.8f,flow ? 1 : 0,0,120,2);
             drive(adaptive,180,30,gpu,90,false);

@@ -140,6 +140,16 @@ struct VkrLsfg {
     uint32_t flow_transition_frames{};
     uint32_t density_transition_frames{};
     bool density_requires_gpu_recovery{};
+    struct DensityRecoveryPoint {
+        uint32_t cap{};
+        float source_fps{};
+        float gpu_usage_percent{};
+        float flow_scale{};
+        bool gpu_valid{};
+        bool valid{};
+    } density_probe_point{}, density_rejected_point{};
+    double density_rearm_seconds{};
+    double density_probe_healthy_seconds{};
 
     uint64_t frame_count{};
     uint64_t last_count{};
@@ -245,6 +255,10 @@ void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate
         lsfg->synthetic_drop_pressure = false;
         lsfg->pressure = {};
         lsfg->density_transition_frames = 3;
+        lsfg->density_probe_point = {};
+        lsfg->density_rejected_point = {};
+        lsfg->density_rearm_seconds = 0.0;
+        lsfg->density_probe_healthy_seconds = 0.0;
     }
     if (target_rate == 0) {
         // Fixed generation keeps the user's multiplier authoritative.
@@ -253,6 +267,10 @@ void vkr_lsfg_configure(VkrLsfg* lsfg, uint32_t multiplier, uint32_t target_rate
         lsfg->density_recovery_seconds = 0.0;
         lsfg->density_transition_frames = 0;
         lsfg->density_requires_gpu_recovery = false;
+        lsfg->density_probe_point = {};
+        lsfg->density_rejected_point = {};
+        lsfg->density_rearm_seconds = 0.0;
+        lsfg->density_probe_healthy_seconds = 0.0;
     }
 
     const auto& telemetry = lsfg->flow_controller.telemetry();
@@ -596,6 +614,8 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
         if (stats.target_rate > 0.0f && severe_pressure) {
             lsfg->density_pressure_seconds += elapsed_seconds;
             lsfg->density_recovery_seconds = 0.0;
+            lsfg->density_rearm_seconds = 0.0;
+            lsfg->density_probe_healthy_seconds = 0.0;
             if (lsfg->density_pressure_seconds >= 0.60
                     && lsfg->adaptive_generation_cap > 0) {
                 lsfg->density_requires_gpu_recovery =
@@ -604,6 +624,22 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                         && lsfg->pressure.gpu_usage_percent >= 96.0f
                         && output_deficit);
                 --lsfg->adaptive_generation_cap;
+                if (lsfg->density_probe_point.valid
+                        && lsfg->adaptive_generation_cap <= lsfg->density_probe_point.cap) {
+                    // Compare with the operating point BEFORE adding work.
+                    // Removing the failed generation cannot itself prove that
+                    // the downstream path now has capacity for another probe.
+                    lsfg->density_rejected_point = lsfg->density_probe_point;
+                    lsfg->density_probe_point = {};
+                    lsfg->density_rearm_seconds = 0.0;
+                    lsfg->density_probe_healthy_seconds = 0.0;
+                    LSFG_FLOW_LOG("event=generation_density_probe_rejected generation_cap=%u source_fps=%.1f gpu_pressure=%.1f active_scale=%.2f",
+                        lsfg->adaptive_generation_cap,
+                        static_cast<double>(lsfg->density_rejected_point.source_fps),
+                        lsfg->density_rejected_point.gpu_valid
+                            ? static_cast<double>(lsfg->density_rejected_point.gpu_usage_percent) : -1.0,
+                        static_cast<double>(lsfg->density_rejected_point.flow_scale));
+                }
                 lsfg->density_transition_frames = 3;
                 lsfg->density_pressure_seconds = 0.0;
                 LSFG_FLOW_LOG(
@@ -657,11 +693,47 @@ uint32_t vkr_lsfg_plan(VkrLsfg* lsfg, uint32_t capacity, uint64_t source_frames)
                 && (!thermal_pressure_valid || lsfg->pressure.thermal_status <= 2)
                 && confirmation_recovered
                 && !lsfg->synthetic_drop_pressure;
-            if (recovery && lsfg->adaptive_generation_cap < VKR_LSFG_MAX_GENERATIONS) {
+            const auto& rejected = lsfg->density_rejected_point;
+            const bool rejected_point = rejected.valid
+                && lsfg->adaptive_generation_cap == rejected.cap;
+            const bool material_change = rejected_point
+                && (std::fabs(stats.source_rate - rejected.source_fps)
+                        >= std::max(3.0f, rejected.source_fps * 0.15f)
+                    || (global_pressure_valid && rejected.gpu_valid
+                        && lsfg->pressure.gpu_usage_percent <= rejected.gpu_usage_percent - 10.0f)
+                    || lsfg->active_flow_scale <= rejected.flow_scale - 0.02f);
+            if (recovery && material_change) {
+                lsfg->density_rearm_seconds += elapsed_seconds;
+                if (lsfg->density_rearm_seconds >= 0.50) {
+                    lsfg->density_rejected_point = {};
+                    lsfg->density_rearm_seconds = 0.0;
+                    LSFG_FLOW_LOG("event=generation_density_probe_rearmed generation_cap=%u source_fps=%.1f",
+                        lsfg->adaptive_generation_cap, static_cast<double>(stats.source_rate));
+                }
+            } else {
+                lsfg->density_rearm_seconds = 0.0;
+            }
+            if (recovery && lsfg->density_probe_point.valid) {
+                lsfg->density_probe_healthy_seconds += elapsed_seconds;
+                if (lsfg->density_probe_healthy_seconds >= 3.0) {
+                    lsfg->density_probe_point = {};
+                    lsfg->density_probe_healthy_seconds = 0.0;
+                }
+            } else {
+                lsfg->density_probe_healthy_seconds = 0.0;
+            }
+            const bool recovery_held = lsfg->density_rejected_point.valid
+                && lsfg->adaptive_generation_cap == lsfg->density_rejected_point.cap;
+            if (recovery && !recovery_held
+                    && lsfg->adaptive_generation_cap < VKR_LSFG_MAX_GENERATIONS) {
                 lsfg->density_recovery_seconds += elapsed_seconds;
                 const double recovery_hold =
                     lsfg->adaptive_generation_cap == 0 ? 3.0 : 2.0;
                 if (lsfg->density_recovery_seconds >= recovery_hold) {
+                    lsfg->density_probe_point = {lsfg->adaptive_generation_cap,
+                        stats.source_rate, lsfg->pressure.gpu_usage_percent,
+                        lsfg->active_flow_scale, global_pressure_valid, true};
+                    lsfg->density_probe_healthy_seconds = 0.0;
                     ++lsfg->adaptive_generation_cap;
                     if (lsfg->adaptive_generation_cap == VKR_LSFG_MAX_GENERATIONS)
                         lsfg->density_requires_gpu_recovery = false;
@@ -792,6 +864,10 @@ void vkr_lsfg_reset(VkrLsfg* lsfg) {
     lsfg->adaptive_generation_cap = VKR_LSFG_MAX_GENERATIONS;
     lsfg->density_transition_frames = 0;
     lsfg->density_requires_gpu_recovery = false;
+    lsfg->density_probe_point = {};
+    lsfg->density_rejected_point = {};
+    lsfg->density_rearm_seconds = 0.0;
+    lsfg->density_probe_healthy_seconds = 0.0;
     lsfg->flow_transition_frames = 0;
     lsfg->pressure = {};
     if (lsfg->adaptive_flow) {

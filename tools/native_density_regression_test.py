@@ -114,6 +114,12 @@ struct Runtime {
     unsigned adaptive_generation_cap=1,flow_transition_frames=0,density_transition_frames=0;
     bool adaptive_flow=true,density_requires_gpu_recovery=false; size_t last_generations=3;
     double density_pressure_seconds=0,density_recovery_seconds=0;
+    struct DensityRecoveryPoint {
+        uint32_t cap=0;
+        float source_fps=0,gpu_usage_percent=0,flow_scale=0;
+        bool gpu_valid=false,valid=false;
+    } density_probe_point,density_rejected_point;
+    double density_rearm_seconds=0,density_probe_healthy_seconds=0;
     struct Pacer {
         struct Configuration { unsigned multiplier=4; };
         Configuration Config() const { return {}; }

@@ -30,6 +30,10 @@ import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 data class CpuInfo(
     val currentGovernor: String,
@@ -93,9 +97,14 @@ object PowerManager {
     private val _uiState = MutableStateFlow<PowerControlUiState>(PowerControlUiState.Loading)
     val uiState: StateFlow<PowerControlUiState> = _uiState.asStateFlow()
 
+    private val fpsCapGeneration = AtomicLong(0L)
+
+    @Volatile
     var targetFps: Int = 0
         set(value) {
-            // Enforce non-negative values and round/clamp if necessary
+            // Every edit retires pending commands, including an edit back to
+            // the original value. Publish only after invalidating those commands.
+            invalidatePendingFpsCap()
             field = value.coerceAtLeast(0)
         }
 
@@ -481,10 +490,18 @@ object PowerManager {
      * setting stays the ceiling.
      * @return true when the cap reached a running X server view
      */
-    /** Reroutes cap changes while frame generation owns pacing; declining
-     *  falls through to the engine path. Installed by XServerScreen. */
+    /** The screen owns source-cap translation and presentation hints. Its
+     * rejection is authoritative; an unscoped fallback must not bypass it. */
     @Volatile
     var fpsCapApplier: ((Int) -> Boolean)? = null
+        set(value) {
+            invalidatePendingFpsCap()
+            field = value
+        }
+
+    fun invalidatePendingFpsCap() {
+        fpsCapGeneration.incrementAndGet()
+    }
 
     @Volatile
     var frameGenerationPacing = FrameGenerationPacing()
@@ -504,6 +521,7 @@ object PowerManager {
             if (active) multiplier.coerceIn(2, 4) else 1,
             adaptiveTargetFps.coerceAtLeast(0), displayRefreshFps.coerceAtLeast(0))
         if (next == frameGenerationPacing) return
+        invalidatePendingFpsCap()
         PerformanceMetricsCollector.updateFramePacing { frameGenerationPacing = next }
         clusterTuner?.requestOpenClocks()
         autoTuner?.resetPacingEvidence()
@@ -521,24 +539,52 @@ object PowerManager {
     internal fun fpsForTuning(sourceFps: Float): Float? = tuningObservation(sourceFps)?.sourceEquivalentFps
 
     internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
-        fpsCapApplier?.let { if (it(limitFps)) return true }
         val xServerView = PluviaApp.xServerView ?: return false
-        val presentExtension = xServerView.getxServer()
-            ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
-
+        val applier = fpsCapApplier
+        val pacing = frameGenerationPacing
+        val generation = fpsCapGeneration.incrementAndGet()
+        val cap = limitFps.coerceAtLeast(0)
+        val applied = AtomicBoolean(false)
+        val completed = CountDownLatch(1)
         val apply = Runnable {
-            xServerView.setFrameRateLimit(limitFps)
-            presentExtension?.setFrameRateLimit(limitFps)
-            com.winlator.xserver.ShmFramePacer.setFrameRateLimit(limitFps)
+            try {
+                if (generation != fpsCapGeneration.get() ||
+                    PluviaApp.xServerView !== xServerView ||
+                    fpsCapApplier !== applier || frameGenerationPacing !== pacing) return@Runnable
+                if (applier != null) {
+                    applied.set(applier(cap))
+                } else {
+                    val presentExtension = xServerView.getxServer()
+                        ?.getExtension<PresentExtension>(PresentExtension.MAJOR_OPCODE.toInt())
+                    xServerView.setFrameRateLimit(cap)
+                    presentExtension?.setFrameRateLimit(cap)
+                    com.winlator.xserver.ShmFramePacer.setFrameRateLimit(cap)
+                    targetFps = cap
+                    applied.set(true)
+                }
+            } finally {
+                completed.countDown()
+            }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
             apply.run()
         } else {
-            Handler(Looper.getMainLooper()).post(apply)
+            if (!Handler(Looper.getMainLooper()).post(apply)) {
+                fpsCapGeneration.compareAndSet(generation, generation + 1L)
+                return false
+            }
+            val completedInTime = try {
+                completed.await(750L, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                false
+            }
+            if (!completedInTime) {
+                fpsCapGeneration.compareAndSet(generation, generation + 1L)
+                return false
+            }
         }
-
-        targetFps = limitFps
-        return true
+        return applied.get()
     }
 
     /**

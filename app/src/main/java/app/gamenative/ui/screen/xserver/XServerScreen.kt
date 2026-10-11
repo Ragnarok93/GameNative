@@ -701,6 +701,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyFpsLimiterEnabled(enabled: Boolean) {
+        PowerManager.invalidatePendingFpsCap()
         runtimeConfigRevision++
         fpsLimiterEnabled = enabled
         applyFpsLimiterToEngines(effectiveFpsLimit())
@@ -708,6 +709,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyFpsLimiterTarget(target: Int) {
+        PowerManager.invalidatePendingFpsCap()
         runtimeConfigRevision++
         val sanitized = target.coerceAtLeast(5).coerceAtMost(detectedMaxRefreshRateHz)
         fpsLimiterTarget = sanitized
@@ -718,6 +720,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyLsfgMultiplier(mult: Int) {
+        PowerManager.invalidatePendingFpsCap()
         runtimeConfigRevision++
         val previousRequested = isLsfgRequested
         val nextMultiplier = LsfgQuickMenuHelper.sanitizeMultiplier(mult)
@@ -736,18 +739,21 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyLsfgFlowScale(scale: Float) {
+        PowerManager.invalidatePendingFpsCap()
         runtimeConfigRevision++
         lsfgFlowScale = LsfgQuickMenuHelper.sanitizeFlowScale(scale)
         applyLsfgSettings()
     }
 
     fun applyLsfgPerformanceMode(enabled: Boolean) {
+        PowerManager.invalidatePendingFpsCap()
         runtimeConfigRevision++
         lsfgPerformanceMode = enabled
         applyLsfgSettings()
     }
 
     fun applyLsfgBackend(requestedBackend: String) {
+        PowerManager.invalidatePendingFpsCap()
         val requestedActive = isLsfgAvailable && lsfgMultiplier >= 2
         val transition = LsfgVkManager.submitBackendTransition(
             container = container,
@@ -767,10 +773,16 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyAdaptiveFpsCapOnMain(capFps: Int): Boolean {
-        if (!isLsfgAvailable) return false
+        val owner = xServerView ?: return false
+        val revision = runtimeConfigRevision
+        val pacing = PowerManager.frameGenerationPacing
         val generation = adaptiveCapGeneration.incrementAndGet()
+        fun isCurrent(): Boolean = generation == adaptiveCapGeneration.get() &&
+            xServerView === owner && PluviaApp.xServerView === owner &&
+            runtimeConfigRevision == revision && PowerManager.frameGenerationPacing === pacing &&
+            !isExiting.get()
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            if (generation != adaptiveCapGeneration.get() || !isLsfgAvailable) return false
+            if (!isCurrent()) return false
             runtimeConfigRevision++
             applyFpsLimiterToEngines(capFps)
             return true
@@ -778,9 +790,9 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
 
         val applied = AtomicBoolean(false)
         val completed = CountDownLatch(1)
-        mainHandler.post {
+        val posted = mainHandler.post {
             try {
-                if (generation == adaptiveCapGeneration.get() && isLsfgAvailable) {
+                if (isCurrent()) {
                     runtimeConfigRevision++
                     applyFpsLimiterToEngines(capFps)
                     applied.set(true)
@@ -788,6 +800,10 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
             } finally {
                 completed.countDown()
             }
+        }
+        if (!posted) {
+            adaptiveCapGeneration.compareAndSet(generation, generation + 1L)
+            return false
         }
         val completedInTime = try {
             completed.await(750L, TimeUnit.MILLISECONDS)

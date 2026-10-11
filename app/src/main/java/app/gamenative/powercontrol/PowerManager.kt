@@ -98,6 +98,17 @@ object PowerManager {
     val uiState: StateFlow<PowerControlUiState> = _uiState.asStateFlow()
 
     private val fpsCapGeneration = AtomicLong(0L)
+    // Explicit user limiter edits are a different owner from adaptive commands.
+    // A matching numeric cap alone cannot prove that a restore is still ours.
+    private val userFpsCapEditGeneration = AtomicLong(0L)
+
+    internal fun currentFpsCapGeneration(): Long = fpsCapGeneration.get()
+    internal fun currentUserFpsCapEditGeneration(): Long = userFpsCapEditGeneration.get()
+
+    fun markUserFpsCapEdited() {
+        userFpsCapEditGeneration.incrementAndGet()
+        invalidatePendingFpsCap()
+    }
 
     @Volatile
     var targetFps: Int = 0
@@ -538,17 +549,36 @@ object PowerManager {
 
     internal fun fpsForTuning(sourceFps: Float): Float? = tuningObservation(sourceFps)?.sourceEquivalentFps
 
-    internal fun applyFpsCapToEngines(limitFps: Int): Boolean {
+    internal fun applyFpsCapToEngines(
+        limitFps: Int,
+        expectedGeneration: Long? = null,
+        expectedUserEditGeneration: Long? = null,
+        expectedCurrentCapFps: Int? = null,
+    ): Boolean {
         val xServerView = PluviaApp.xServerView ?: return false
+        if (expectedUserEditGeneration != null &&
+            expectedUserEditGeneration != currentUserFpsCapEditGeneration()) return false
+        if (expectedCurrentCapFps != null && targetFps != expectedCurrentCapFps) return false
         val applier = fpsCapApplier
         val pacing = frameGenerationPacing
-        val generation = fpsCapGeneration.incrementAndGet()
+        // CAS binds the observed policy to command submission: a user edit or
+        // transition between observing and applying invalidates the decision.
+        val generation = if (expectedGeneration != null) {
+            if (!fpsCapGeneration.compareAndSet(expectedGeneration, expectedGeneration + 1L))
+                return false
+            expectedGeneration + 1L
+        } else {
+            fpsCapGeneration.incrementAndGet()
+        }
         val cap = limitFps.coerceAtLeast(0)
         val applied = AtomicBoolean(false)
         val completed = CountDownLatch(1)
         val apply = Runnable {
             try {
                 if (generation != fpsCapGeneration.get() ||
+                    (expectedUserEditGeneration != null &&
+                        expectedUserEditGeneration != currentUserFpsCapEditGeneration()) ||
+                    (expectedCurrentCapFps != null && targetFps != expectedCurrentCapFps) ||
                     PluviaApp.xServerView !== xServerView ||
                     fpsCapApplier !== applier || frameGenerationPacing !== pacing) return@Runnable
                 if (applier != null) {

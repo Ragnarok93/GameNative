@@ -31,6 +31,11 @@ object AdaptiveFpsCapController {
     private var loopThread: Thread? = null
     private var loggedRefusedApply = false
 
+    // The limiter can only be restored when our latest acknowledged adaptive
+    // command still owns that value and no newer user-edit epoch superseded it.
+    private var lastOwnedEffectiveFps: Int? = null
+    private var lastOwnedUserEditGeneration = -1L
+
     @Volatile
     private var running = false
 
@@ -60,6 +65,8 @@ object AdaptiveFpsCapController {
         loopThread = null
 
         cap = AdaptiveFpsCap()
+        lastOwnedEffectiveFps = null
+        lastOwnedUserEditGeneration = -1L
         loggedRefusedApply = false
         logDirectory?.let { sessionLog.open(it, sessionStartMillis) }
 
@@ -116,6 +123,8 @@ object AdaptiveFpsCapController {
             return
         }
 
+        val observedGeneration = PowerManager.currentFpsCapGeneration()
+        val observedUserEditGeneration = PowerManager.currentUserFpsCapEditGeneration()
         val targetFps = PowerManager.targetFps
         cap.observeCap(targetFps)
 
@@ -134,7 +143,10 @@ object AdaptiveFpsCapController {
             cap.interrupt()
             return
         }
-        if (observation.sourceTargetFps != targetFps) {
+        if (observation.sourceTargetFps != targetFps ||
+            PowerManager.currentFpsCapGeneration() != observedGeneration ||
+            PowerManager.currentUserFpsCapEditGeneration() != observedUserEditGeneration
+        ) {
             cap.interrupt()
             return
         }
@@ -151,7 +163,12 @@ object AdaptiveFpsCapController {
 
         val change = cap.onCycle(tuningFps, clocksOpen, clockHeadroom) ?: return
 
-        if (change.requiresApply && !PowerManager.applyFpsCapToEngines(change.toFps)) {
+        if (change.requiresApply && !PowerManager.applyFpsCapToEngines(
+                change.toFps,
+                expectedGeneration = observedGeneration,
+                expectedUserEditGeneration = observedUserEditGeneration,
+                expectedCurrentCapFps = targetFps,
+            )) {
             if (!loggedRefusedApply) {
                 loggedRefusedApply = true
                 Timber.tag(TAG).w(
@@ -163,11 +180,25 @@ object AdaptiveFpsCapController {
             return
         }
 
+        if (PowerManager.currentUserFpsCapEditGeneration() != observedUserEditGeneration ||
+            PowerManager.targetFps != (if (change.requiresApply) change.toFps else targetFps) ||
+            (!change.requiresApply &&
+                PowerManager.currentFpsCapGeneration() != observedGeneration)
+        ) {
+            // An edit/transition won before acknowledgment; never commit an
+            // obsolete governor decision or open clocks for the old owner.
+            cap.interrupt()
+            return
+        }
         if (change.openAllClocks) {
             PowerManager.openTunerClocksForProbe()
         }
 
         cap.commit(change)
+        if (change.requiresApply) {
+            lastOwnedEffectiveFps = change.toFps
+            lastOwnedUserEditGeneration = observedUserEditGeneration
+        }
         logChange(change, tuningFps, targetFps, trimmedSteps)
     }
 
@@ -179,8 +210,17 @@ object AdaptiveFpsCapController {
         val userCapFps = cap.userCapFps
         val effectiveCapFps = cap.effectiveCapFps
 
-        if (userCapFps > 0 && effectiveCapFps < userCapFps) {
-            val applied = PowerManager.applyFpsCapToEngines(userCapFps)
+        val ownerStillCurrent =
+            lastOwnedEffectiveFps == effectiveCapFps &&
+                lastOwnedUserEditGeneration == PowerManager.currentUserFpsCapEditGeneration() &&
+                PowerManager.targetFps == effectiveCapFps
+        if (userCapFps > 0 && effectiveCapFps < userCapFps && ownerStillCurrent) {
+            val applied = PowerManager.applyFpsCapToEngines(
+                userCapFps,
+                expectedGeneration = PowerManager.currentFpsCapGeneration(),
+                expectedUserEditGeneration = lastOwnedUserEditGeneration,
+                expectedCurrentCapFps = effectiveCapFps,
+            )
             Timber.tag(TAG).i(
                 "%s %s: cap %d->%d (applied=%b)",
                 EVENT_RESTORE,
@@ -203,6 +243,8 @@ object AdaptiveFpsCapController {
         }
 
         cap = AdaptiveFpsCap()
+        lastOwnedEffectiveFps = null
+        lastOwnedUserEditGeneration = -1L
     }
 
     private fun logChange(change: FpsCapChange, fps: Float, targetFps: Int, trimmedSteps: Int?) {

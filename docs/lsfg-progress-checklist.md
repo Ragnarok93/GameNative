@@ -77,3 +77,6 @@ Follow-up audit completed: nine correctness/control findings, one dormant helper
 - [x] Add an assertion to the existing generated-output, generated-batch and zero-history FD-reuse audit harness (exit nonzero if an unrelated reused FD is closed).
 - [ ] Verify new pinned runtime and strengthened FD test in CI; this checkpoint is not yet a release-qualified APK.
 - [ ] Complete F2–F10 and evaluate B1–B4 without implying measured physical cadence.
+
+- [x] F3/F8 first pass: user-edit ownership epoch, conditional limiter restore, and observation-generation CAS at command submission. Added assertive extracted-controller scenarios for zero/90/same-cap edits, legitimate restore and stale decision.
+- [ ] Verify Kotlin source/audit compilation, Android tests, race injection and edge-case production behavior before marking F3/F8 release-ready.

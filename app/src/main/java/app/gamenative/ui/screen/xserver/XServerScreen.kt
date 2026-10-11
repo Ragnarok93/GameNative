@@ -701,7 +701,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyFpsLimiterEnabled(enabled: Boolean) {
-        PowerManager.invalidatePendingFpsCap()
+        PowerManager.markUserFpsCapEdited()
         runtimeConfigRevision++
         fpsLimiterEnabled = enabled
         applyFpsLimiterToEngines(effectiveFpsLimit())
@@ -709,7 +709,7 @@ private fun XServerScreenRuntime(controller: XServerScreenController) {
     }
 
     fun applyFpsLimiterTarget(target: Int) {
-        PowerManager.invalidatePendingFpsCap()
+        PowerManager.markUserFpsCapEdited()
         runtimeConfigRevision++
         val sanitized = target.coerceAtLeast(5).coerceAtMost(detectedMaxRefreshRateHz)
         fpsLimiterTarget = sanitized

@@ -19,14 +19,21 @@ internal class LsfgRuntimeUpdateDebouncer(
 ) {
     private val lock = Any()
     private var pending: ScheduledFuture<*>? = null
+    private var generation = 0L
 
     fun submit(task: () -> Unit) {
         synchronized(lock) {
             pending?.cancel(false)
+            val ticket = ++generation
             pending = scheduler.schedule(
                 {
-                    synchronized(lock) { pending = null }
-                    task()
+                    val current = synchronized(lock) {
+                        if (ticket != generation) false else {
+                            pending = null
+                            true
+                        }
+                    }
+                    if (current) task()
                 },
                 delayMs,
                 TimeUnit.MILLISECONDS,
@@ -36,6 +43,7 @@ internal class LsfgRuntimeUpdateDebouncer(
 
     fun cancel() {
         synchronized(lock) {
+            generation++
             pending?.cancel(false)
             pending = null
         }

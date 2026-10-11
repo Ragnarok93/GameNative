@@ -68,3 +68,5 @@ Physical-device cadence, visuals, thermals, input latency and sustained operatio
 - [ ] Independently audit Native governors, Legacy runtime/resources, manager/power settings interactions and host presentation.
 - [ ] Reproduce high-confidence defects and separate them from device-dependent performance hypotheses.
 - [ ] Save and summarize prioritized findings and proposed solutions. This pass changes no production code.
+
+Follow-up audit checkpoint: reproduced a Native density recovery hold that persists for 300 seconds after downstream delivery recovers at unchanged source/GPU/Flow conditions. The new findings report is docs/lsfg-followup-audit-20261011.md; Legacy zero-time polling and Native Flow recovery candidates are being verified. No production changes.

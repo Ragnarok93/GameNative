@@ -15,4 +15,6 @@ Updated: 2026-10-11. Each advancement is saved with this report through the GitH
 
 ## Current evidence and next action
 
+Stationary density RED reproduction: source 30 FPS, GPU 60%, healthy source delivery, generated delivery or admission fails whenever density exceeds zero. Both cases produced 79 recovery attempts and 78 failures in 300 simulated seconds. Minor source/GPU jitter also reproduced the loop. The regression requires one failed probe followed by a hold; sustained source/GPU change must still permit recovery. These tests intentionally fail until the rejected operating point is retained in the production governor.
+
 Build #772 failed `compileLegacyDebugKotlin` at five references to an undeclared local `runtimeMultiplier` in `XServerScreen.applyFpsLimiterToEngines`. It did not produce an APK. The local value now derives from the existing handoff-published `lsfgRuntimeMultiplier` and active flag, consistently feeding display hints and budget diagnostics. The next workflow must verify Android compilation and application tests. Independently reproduce the stationary density recovery loop before changing governor behavior. Existing behavior audit and regression evidence are recorded in `docs/lsfg-behavior-audit-20261011.md`.

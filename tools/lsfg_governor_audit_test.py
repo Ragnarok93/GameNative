@@ -23,6 +23,7 @@ pressure = header[header.index('typedef struct VkrLsfgPresentationPressure {'):h
 plan = function(native, 'uint32_t vkr_lsfg_plan(')
 plan = plan[:plan.index('    lsfg->warm =')] + '\nreturn static_cast<uint32_t>(lsfg->plan.generations);\n}'
 structure = function(native, 'struct VkrLsfg {').replace('AdaptiveFlowController flow_controller', 'FakeFlowController flow_controller') + ';'
+density_evidence_reset = function(native, 'void vkr_lsfg_reset_density_evidence(') if 'void vkr_lsfg_reset_density_evidence(' in native else 'void vkr_lsfg_reset_density_evidence(VkrLsfg*) {}'
 code = r'''
 #include <algorithm>
 #include <cassert>
@@ -65,7 +66,7 @@ struct FakeFlowController {
     const AdaptiveFlowTelemetry& telemetry() const { return info; }
     void reset() { last={}; }
 };
-''' + pressure + '\n' + function(native, 'AdaptiveFlowPreset ParseFlowPreset(') + '\n' + structure + '\n' + '\n'.join(function(native,s) for s in ['void vkr_lsfg_configure(', 'void vkr_lsfg_set_pressure(', 'void vkr_lsfg_set_refresh_rate(', 'void vkr_lsfg_reset(']) + '\n' + plan + r'''
+''' + pressure + '\n' + function(native, 'AdaptiveFlowPreset ParseFlowPreset(') + '\n' + structure + '\n' + density_evidence_reset + '\n' + '\n'.join(function(native,s) for s in ['void vkr_lsfg_configure(', 'void vkr_lsfg_set_pressure(', 'void vkr_lsfg_set_refresh_rate(', 'void vkr_lsfg_reset(']) + '\n' + plan + r'''
 void require(bool ok,const char* text) { if(!ok) { std::fprintf(stderr,"FAIL: %s\n",text); std::exit(1); } }
 void fresh(VkrLsfg& r,float gpu=61,float output=120,int thermal=0) { vkr_lsfg_set_pressure(&r,gpu,thermal,r.pacer.stats.source_rate,output,1000.f/r.pacer.stats.source_rate,.2f); }
 void tick(VkrLsfg& r,int count) { for(int i=0;i<count;++i) { fresh(r,r.pressure.gpu_valid ? r.pressure.gpu_usage_percent : -1,r.pressure.output_valid ? r.pressure.output_fps : -1,r.pressure.thermal_valid ? r.pressure.thermal_status : -1); vkr_lsfg_plan(&r,3,1); } }
@@ -180,6 +181,25 @@ int main(int argc,char** argv) {
     } else if(test=="fixed-clear-drop") {
         r.pacer.config.target_rate=0; r.pacer.stats.target_rate=0; r.synthetic_drop_pressure=true;
         vkr_lsfg_plan(&r,3,1); require(!r.synthetic_drop_pressure,"Fixed FG + Fixed Flow cannot retain old synthetic pressure");
+    } else if(test=="queue-density-evidence-boundary") {
+        r.adaptive_flow=true;r.active_flow_scale=.625f;r.flow_controller.scale=.625f;
+        r.adaptive_generation_cap=1;r.last_generations=1;r.frame_count=100;
+        r.density_rejected_point.valid=true;r.density_probe_point.valid=true;
+        r.density_pressure_seconds=.59;r.density_recovery_seconds=1.99;
+        r.density_rearm_seconds=.4;r.density_probe_healthy_seconds=.9;
+        r.synthetic_drop_pressure=true;r.presentation_pressure.pressure_active=true;
+        vkr_lsfg_reset_density_evidence(&r);
+        require(!r.density_rejected_point.valid && !r.density_probe_point.valid,
+                "queue policy change invalidates prior rejected/probed operating point");
+        require(r.density_pressure_seconds==0 && r.density_recovery_seconds==0
+                && r.density_rearm_seconds==0 && r.density_probe_healthy_seconds==0,
+                "queue policy change rejects partial governor evidence");
+        require(!r.synthetic_drop_pressure && !r.presentation_pressure.pressure_active && !r.pressure.sample_valid,
+                "queue policy change clears prior delivery/drop/global pressure observations");
+        require(r.density_transition_frames==3,"queue policy change settles before consuming new pressure");
+        require(r.adaptive_generation_cap==1 && r.active_flow_scale==.625f
+                && r.frame_count==100 && r.last_generations==1,
+                "queue policy evidence reset preserves settled density/quality/temporal history");
     } else if(test=="stationary-failed-delivery-probe" || test=="stationary-failed-admission-probe"
             || test=="jitter-failed-density-probe" || test=="stationary-limited-density-probe") {
         const unsigned baseline=test=="stationary-limited-density-probe" ? 1 : 0;
@@ -270,7 +290,7 @@ if 'density_transition_frames' not in native:
     code = code.replace(structure_marker, structure_marker + '\nuint32_t density_transition_frames{};')
 if 'generatedCadenceSample' not in (ROOT/'app/src/main/cpp/lsfg-vk-android/include/adaptive_flow_controller.hpp').read_text():
     code = code.replace('r.flow_controller.last.generatedCadenceSample', 'false')
-cases = sys.argv[1:] or ['fixed-flow-relief','fixed-compute-relief','above-floor-relief','source-domain','unique-source-domain','unknown-output','no-source-progress','long-source-gap','fixed-flow-recovery','unknown-gpu-delivery-recovery','present-wait-recovery','all-external-pressure-unavailable','flow-edit-evidence','flow-transition-evidence','unknown-gpu-unproven-recovery','compute-origin-recovery','thermal-recovery','cap-preserved','workload-edit','refresh-edit','measured-zero','reset-evidence','cadence-provenance','fixed-clear-drop','stationary-failed-delivery-probe','stationary-failed-admission-probe','jitter-failed-density-probe','stationary-limited-density-probe','changed-point-density-recovery','soak']
+cases = sys.argv[1:] or ['fixed-flow-relief','fixed-compute-relief','above-floor-relief','source-domain','unique-source-domain','unknown-output','no-source-progress','long-source-gap','fixed-flow-recovery','unknown-gpu-delivery-recovery','present-wait-recovery','all-external-pressure-unavailable','flow-edit-evidence','flow-transition-evidence','unknown-gpu-unproven-recovery','compute-origin-recovery','thermal-recovery','cap-preserved','workload-edit','refresh-edit','measured-zero','reset-evidence','cadence-provenance','fixed-clear-drop','queue-density-evidence-boundary','stationary-failed-delivery-probe','stationary-failed-admission-probe','jitter-failed-density-probe','stationary-limited-density-probe','changed-point-density-recovery','soak']
 with tempfile.TemporaryDirectory(prefix='native-governor-audit-') as directory:
     cpp,binary=Path(directory)/'test.cpp',Path(directory)/'test'
     cpp.write_text(code)

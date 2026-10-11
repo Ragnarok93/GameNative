@@ -89,8 +89,17 @@ struct PendingHostPresent {
     std::vector<LsfgFrameProvenance> frameProvenance{{}};
 };
 struct CompletedHostPresent { uint64_t id=0; };
+struct VkrLsfg { bool rejected=true; unsigned evidenceResets=0; };
+void vkr_lsfg_reset_density_evidence(VkrLsfg* runtime) {
+    if(runtime) { runtime->rejected=false; ++runtime->evidenceResets; }
+}
 ''' + constants + '\n' + timeline + r'''
 struct VulkanRendererContext {
+    VkrLsfg* lsfg=nullptr;
+    bool nativeQueuePolicyResetPending_=false;
+    unsigned pressureClears=0,presentationEvidenceResets=0;
+    void clearFrameGenerationPressure() { ++pressureClears; }
+    void resetNativePresentationEvidence() { ++presentationEvidenceResets; }
     std::atomic<bool> lsfgFrameQueueEnabled_{true};
     std::atomic<uint32_t> lsfgFrameQueueTarget_{2};
     mutable std::atomic<bool> frameQueueSmoothFifoFallback_{false};
@@ -182,6 +191,27 @@ void queuePolicy() {
         }
     }
     std::printf("PASS: policy matrix (%u burst-retention observations)\n",trials);
+}
+void nativeQueueEvidenceBoundary() {
+    VulkanRendererContext c;VkrLsfg runtime;c.lsfg=&runtime;
+    c.setLsfgFrameQueue(true,2);
+    assert(runtime.rejected && runtime.evidenceResets==0);
+    assert(c.pressureClears==0 && c.presentationEvidenceResets==0);
+    assert(!c.nativeQueuePolicyResetPending_);
+    c.setLsfgFrameQueue(true,1);
+    assert(!runtime.rejected && runtime.evidenceResets==1);
+    assert(c.pressureClears==1 && c.presentationEvidenceResets==1);
+    assert(c.nativeQueuePolicyResetPending_);
+    runtime.rejected=true;c.nativeQueuePolicyResetPending_=false;
+    c.setLsfgFrameQueue(true,1);
+    assert(runtime.rejected && runtime.evidenceResets==1);
+    assert(c.pressureClears==1 && c.presentationEvidenceResets==1);
+    assert(!c.nativeQueuePolicyResetPending_);
+    c.setLsfgFrameQueue(false,1);
+    assert(!runtime.rejected && runtime.evidenceResets==2);
+    assert(c.pressureClears==2 && c.presentationEvidenceResets==2);
+    assert(c.nativeQueuePolicyResetPending_);
+    std::puts("PASS: real queue policy changes reset Native density evidence; identical requests preserve hold");
 }
 void pressureRecovery() {
     VulkanRendererContext c;
@@ -276,7 +306,7 @@ void presenterOrder() {
     }
     std::printf("PASS: ordered once-only Off/0/1/2-depth Native/Legacy worker delivery, drain and stop fallback (%u deliveries)\n",total);
 }
-int main(){queuePolicy();pressureRecovery();gpuBudget();semaphoreLifetime();presenterOrder();}
+int main(){nativeQueueEvidenceBoundary();queuePolicy();pressureRecovery();gpuBudget();semaphoreLifetime();presenterOrder();}
 '''
 with tempfile.TemporaryDirectory(prefix='lsfg-queue-audit-') as directory:
     cpp, binary = Path(directory) / 'audit.cpp', Path(directory) / 'audit'

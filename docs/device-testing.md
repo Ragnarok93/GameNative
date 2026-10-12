@@ -35,7 +35,8 @@ uses `source: "CUSTOM_GAME"` and the numeric custom ID, not a Steam store ID.
 
 `backup` is read-only and works before the instrumentation APK is installed.
 Close GameNative and all guest processes first. It captures the shared container
-home tree, datastore, databases (including any WAL), and shared preferences in a
+home tree, datastore, databases (including any WAL), shared preferences, input
+profiles, Amazon/Epic app files, and LSFG app files in a
 private host archive. It verifies archive completeness, SHA-256, and hashes of
 container configs, database/settings files and `.sav` files. Failed transfers
 remain `.partial`; they are not reported as completed backups. Reserve the device

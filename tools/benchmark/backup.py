@@ -8,7 +8,8 @@ from pathlib import Path, PurePosixPath
 from .device import LabError, PACKAGE
 from .telemetry import Telemetry
 
-ROOTS = ("files/imagefs_shared/home", "files/datastore", "databases", "shared_prefs")
+ROOTS = ("files/imagefs_shared/home", "files/datastore", "databases", "shared_prefs",
+         "files/profiles", "files/amazon", "files/epic", "files/lsfg")
 
 
 def hash_stream(stream):
@@ -43,7 +44,7 @@ def verify_archive(path):
                 elif entry.isfile():
                     files += 1
                     total += entry.size
-                    if name.endswith("/.container") or name.startswith(("databases/", "files/datastore/", "shared_prefs/")) or name.lower().endswith(".sav"):
+                    if name.endswith("/.container") or name.startswith(("databases/", "files/datastore/", "shared_prefs/", "files/profiles/", "files/amazon/", "files/epic/")) or name.lower().endswith(".sav"):
                         with archive.extractfile(entry) as stream:
                             critical[name] = hash_stream(stream)
                 elif not entry.isdir():

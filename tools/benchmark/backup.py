@@ -76,8 +76,12 @@ def backup(device, destination):
             with os.fdopen(fd, "wb") as output:
                 try:
                     result = device.execute(
-                        [device.adb, "-s", device.serial, "exec-out", "run-as", PACKAGE,
-                         "tar", "-cf", "-", *ROOTS],
+                        # Shell v2 keeps remote stderr out of the binary archive
+                        # and propagates tar's exit status. Wine server sockets
+                        # are disposable IPC, not recoverable application data.
+                        [device.adb, "-s", device.serial, "shell", "-T", "run-as", PACKAGE,
+                         "tar", "--exclude=*/.wine/.wineserver",
+                         "--exclude=*/.wine/.wineserver/*", "-cf", "-", *ROOTS],
                         stdout=output, stderr=subprocess.PIPE, timeout=1800, check=False,
                     )
                 except (OSError, subprocess.TimeoutExpired) as exc:

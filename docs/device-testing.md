@@ -37,7 +37,9 @@ uses `source: "CUSTOM_GAME"` and the numeric custom ID, not a Steam store ID.
 Close GameNative and all guest processes first. It captures the shared container
 home tree, datastore, databases (including any WAL), shared preferences, input
 profiles, Amazon/Epic app files, and LSFG app files in a
-private host archive. It verifies archive completeness, SHA-256, and hashes of
+private host archive. Disposable `.wine/.wineserver` IPC directories are excluded.
+The shell-v2 transfer separates tar errors from archive bytes and checks the
+remote exit status. It verifies archive completeness, SHA-256, and hashes of
 container configs, database/settings files and `.sav` files. Failed transfers
 remain `.partial`; they are not reported as completed backups. Reserve the device
 for the copy. Symlinks are retained, not followed: external game folders or saves

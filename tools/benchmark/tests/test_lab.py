@@ -39,7 +39,7 @@ class MockAdb:
             output = "11000"
         elif args[:4] == ["shell", "pm", "list", "instrumentation"]:
             output = "instrumentation:" + BRIDGE + " (target=app.gamenative)"
-        elif args[:4] == ["exec-out", "run-as", "app.gamenative", "tee"]:
+        elif args[:5] == ["shell", "-T", "run-as", "app.gamenative", "tee"]:
             self.request = json.loads(kwargs["input"])
         elif args[:3] == ["shell", "am", "instrument"]:
             output = "INSTRUMENTATION_STATUS: stream=LAB_RESULT=" + json.dumps(

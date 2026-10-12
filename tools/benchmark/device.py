@@ -85,7 +85,7 @@ class Device:
             raise LabError("Invalid run ID")
         self.assert_idle_debug()
         path = f"cache/lab-{run_id}.json"
-        self.call("exec-out", "run-as", PACKAGE, "tee", path,
+        self.call("shell", "-T", "run-as", PACKAGE, "tee", path,
                   data=json.dumps(request, allow_nan=False).encode())
         try:
             output = self.call(

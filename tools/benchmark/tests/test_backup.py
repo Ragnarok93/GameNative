@@ -59,6 +59,9 @@ class BackupTests(unittest.TestCase):
             mock = MockAdb()
             def execute(argv, **kwargs):
                 if "tar" in argv:
+                    self.assertEqual(argv[3:7], ["shell", "-T", "run-as", "app.gamenative"])
+                    self.assertIn("--exclude=*/.wine/.wineserver", argv)
+                    self.assertIn("--exclude=*/.wine/.wineserver/*", argv)
                     kwargs["stdout"].write(path.read_bytes())
                     return subprocess.CompletedProcess(argv, 0, b"", b"")
                 return mock(argv, **kwargs)

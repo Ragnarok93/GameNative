@@ -67,6 +67,7 @@ object BenchmarkSessionManager {
                 val result = when (operation) {
                     "list" -> JSONObject().put("components", listContents(context))
                     "install" -> install(context, request)
+                    "install-driver" -> installDriver(context, request)
                     "prepare" -> prepare(context, request)
                     "config-roundtrip" -> roundtrip(context, request, lab, journal)
                     "run" -> roundtrip(context, request, lab, journal, checkNotNull(workload))
@@ -175,6 +176,35 @@ object BenchmarkSessionManager {
         }
     }
 
+    private fun installDriver(context: Context, request: JSONObject): JSONObject {
+        val path = request.getString("package")
+        require(path.matches(Regex("cache/lab-driver-[a-f0-9]{32}\\.zip")))
+        val archive = File(context.dataDir, path)
+        check(digest(archive) == request.getString("sha256")) { "Driver package hash mismatch" }
+        val name = request.getString("name")
+        require(name.matches(Regex("[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,127}")))
+        check(!File(context.filesDir, "contents/adrenotools/$name").exists()) { "Driver identity already exists; replacement forbidden" }
+        java.util.zip.ZipFile(archive).use { zip ->
+            val entries = zip.entries().asSequence().toList()
+            require(entries.size <= 1024 && entries.sumOf { it.size.coerceAtLeast(0) } <= 268435456)
+            require(entries.map { it.name }.toSet().size == entries.size)
+            entries.forEach { require(!it.name.startsWith('/') && !it.name.contains('\\') && it.name.split('/').none { part -> part == ".." }) }
+            val metadata = checkNotNull(zip.getEntry("meta.json"))
+            require(metadata.size in 1..65536)
+            val meta = JSONObject(zip.getInputStream(metadata).bufferedReader().use { it.readText() })
+            check(meta.getString("name") == name && meta.getString("driverVersion") == request.getString("version"))
+            check(meta.optString("packageType", "icd") == "icd")
+            val library = request.getString("library")
+            require(library.matches(Regex("[A-Za-z0-9_.+-]+\\.so")))
+            check(meta.getString("libraryName") == library && zip.getEntry(library) != null)
+        }
+        val manager = com.winlator.contents.AdrenotoolsManager(context)
+        check(manager.installDriver(Uri.fromFile(archive)) == name) { "Driver installer rejected package" }
+        check(manager.getDriverVersion(name) == request.getString("version") && manager.getLibraryName(name) == request.getString("library"))
+        return JSONObject().put("driver_name", name).put("driver_version", request.getString("version"))
+            .put("library", request.getString("library")).put("package_sha256", request.getString("sha256"))
+    }
+
     private fun prepare(context: Context, request: JSONObject): JSONObject {
         val sourceId = request.getString("source_container_id")
         val id = request.getString("container_id")
@@ -275,9 +305,16 @@ object BenchmarkSessionManager {
                 .put("MESA_SHADER_CACHE_DIR", cache.path)
         }
         val backup = File(lab, "original.json")
+        val pending = JSONObject().put("container_id", id).put("run_id", request.getString("run_id"))
+        if (workload != null) {
+            val alias = File(com.winlator.xenvironment.ImageFs.find(context).rootDir, "home/xuser")
+            require(java.nio.file.Files.isSymbolicLink(alias.toPath()) || !alias.exists()) { "Active home must be a container symlink" }
+            val previous = if (alias.exists()) alias.canonicalFile.name.removePrefix("xuser-") else null
+            if (previous != null) check(ContainerManager(context).hasContainer(previous))
+            pending.put("previous_active_container_id", previous ?: JSONObject.NULL)
+        }
         atomicWrite(backup, original)
-        atomicWrite(journal, JSONObject().put("container_id", id).put("run_id", request.getString("run_id"))
-            .put("sha256", digest(backup)).toString().toByteArray())
+        atomicWrite(journal, pending.put("sha256", digest(backup)).toString().toByteArray())
         try {
             check(PluviaApp.xEnvironment == null) { "Guest started during validation" }
             container.loadData(merged)
@@ -329,6 +366,19 @@ object BenchmarkSessionManager {
         atomicWrite(config, backup.readBytes())
         check(digest(config) == pending.getString("sha256")) { "Restore verification failed" }
         container.loadData(JSONObject(config.readText()))
+        if (pending.has("previous_active_container_id")) {
+            val manager = ContainerManager(context)
+            val alias = File(com.winlator.xenvironment.ImageFs.find(context).rootDir, "home/xuser")
+            require(java.nio.file.Files.isSymbolicLink(alias.toPath()) || !alias.exists())
+            if (pending.isNull("previous_active_container_id")) {
+                check(!alias.exists() || alias.delete()) { "Could not retire benchmark home alias" }
+            } else {
+                val previous = pending.getString("previous_active_container_id")
+                check(manager.hasContainer(previous)) { "Previous active container disappeared" }
+                manager.activateContainer(manager.getContainerById(previous))
+                check(alias.canonicalFile.name == "xuser-$previous") { "Active container restoration failed" }
+            }
+        }
         check(journal.delete()) { "Could not retire recovery journal" }
         check(backup.delete()) { "Could not retire snapshot" }
         return JSONObject().put("recovered", true).put("container_id", id)

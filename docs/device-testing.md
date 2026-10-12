@@ -110,12 +110,11 @@ It is configuration recovery, not a backup of game saves or a running process.
 8. Build a fresh LSFG destination artifact and validate an install-over return,
    including database/schema compatibility before switching to older code.
 
-## Next phases
+## Game sessions and campaigns
 
-The normal `LAUNCH_GAME` parser still has default-value merge ambiguity; this lab
-does not reuse it to claim isolated gameplay configuration. Later work must add
-runtime-owned profile application, process retirement, readiness/workload signals,
-game launch, cache isolation and actual presentation telemetry before exposing
-`run`. Reuse `LsfgDiagnosticExporter.prepareReportFile` for diagnostics once run
-ownership is integrated; do not substitute exported log FPS for display cadence.
-No SurfaceFlinger/Perfetto collection or stable promotion is implemented here.
+Schema-v2 profiles, `run`, `explore`, autonomous guest controls, binary/runtime
+checks, shader-directory isolation, thermal gates, SurfaceFlinger sampling and
+optional Perfetto capture are described in [benchmark-campaigns.md](benchmark-campaigns.md).
+Phase 1 commands retain their deployment-only meaning. Normal JSON launch intents
+now preserve supplied field presence; privileged lab sessions use the dedicated
+instrumentation transaction rather than that exported action.

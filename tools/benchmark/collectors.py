@@ -15,6 +15,7 @@ class Collectors:
         self.cpu_previous = None
         self.previous_frames = set()
         self.coverage_gaps = False
+        self.uid = None
 
     def read(self, name, *args):
         try:
@@ -75,7 +76,11 @@ class Collectors:
             match = re.search(r"TOTAL PSS:\s*(\d+)", memory)
             if match:
                 sample["android_app_pss_kb"] = int(match[1])
-        sample["processes_raw"] = self.read("processes", "shell", "ps", "-A", "-o", "UID,PID,NAME,RSS,TIME")
+        if self.uid is None:
+            self.uid = self.read("uid", "shell", "run-as", PACKAGE, "id", "-u")
+        processes = self.read("processes", "shell", "ps", "-A", "-o", "UID,PID,NAME,RSS,TIME")
+        if processes and self.uid:
+            sample["app_and_guest_processes_raw"] = "\n".join(row for row in processes.splitlines() if row.split() and row.split()[0] == self.uid)
         sample["cpu_frequencies_raw"] = self.read("cpu_frequencies", "shell", "sh", "-c",
             """'for p in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do echo "$p"; cat "$p"; done'""")
         self.telemetry.event("device_sample", **sample)

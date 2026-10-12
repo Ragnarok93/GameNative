@@ -1,0 +1,937 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GameNative owned benchmark campaign v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "device",
+    "game",
+    "variants",
+    "workload",
+    "telemetry"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "name": {
+      "type": "string"
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "soc"
+      ],
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "soc": {
+          "type": "string"
+        }
+      }
+    },
+    "game": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_container_id",
+        "container_id"
+      ],
+      "properties": {
+        "source_container_id": {
+          "type": "string",
+          "pattern": "^(STEAM|CUSTOM_GAME)_[0-9]+$"
+        },
+        "container_id": {
+          "type": "string",
+          "pattern": "^BENCHMARK_[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    "variants": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pins",
+          "config",
+          "runtime_expectations"
+        ],
+        "properties": {
+          "config": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "screenSize",
+              "envVars",
+              "cpuList",
+              "cpuListWoW64",
+              "graphicsDriver",
+              "graphicsDriverVersion",
+              "graphicsDriverConfig",
+              "rendererPresentMode",
+              "dxwrapper",
+              "dxwrapperConfig",
+              "emulator",
+              "fexcoreVersion",
+              "fexcorePreset",
+              "wineVersion",
+              "showFPS",
+              "wow64Mode",
+              "containerVariant",
+              "displayRendererMode",
+              "execArgs",
+              "suspendPolicy",
+              "micEnabled",
+              "launchRealSteam",
+              "launchBionicSteam",
+              "extraData"
+            ],
+            "properties": {
+              "screenSize": {
+                "type": "string"
+              },
+              "envVars": {
+                "type": "string"
+              },
+              "cpuList": {
+                "type": "string"
+              },
+              "cpuListWoW64": {
+                "type": "string"
+              },
+              "graphicsDriver": {
+                "type": "string"
+              },
+              "graphicsDriverVersion": {
+                "type": "string"
+              },
+              "graphicsDriverConfig": {
+                "type": "string"
+              },
+              "rendererPresentMode": {
+                "type": "string"
+              },
+              "dxwrapper": {
+                "type": "string"
+              },
+              "dxwrapperConfig": {
+                "type": "string"
+              },
+              "emulator": {
+                "type": "string"
+              },
+              "fexcoreVersion": {
+                "type": "string"
+              },
+              "fexcorePreset": {
+                "type": "string"
+              },
+              "wineVersion": {
+                "type": "string"
+              },
+              "showFPS": {
+                "type": "boolean"
+              },
+              "wow64Mode": {
+                "type": "boolean"
+              },
+              "containerVariant": {
+                "type": "string"
+              },
+              "displayRendererMode": {
+                "type": "string"
+              },
+              "execArgs": {
+                "type": "string"
+              },
+              "suspendPolicy": {
+                "type": "string"
+              },
+              "micEnabled": {
+                "type": "boolean"
+              },
+              "launchRealSteam": {
+                "type": "boolean"
+              },
+              "launchBionicSteam": {
+                "type": "boolean"
+              },
+              "extraData": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "fpsLimiterEnabled",
+                  "fpsLimiterTarget",
+                  "lsfgAdaptiveFlowPreset",
+                  "lsfgAdaptiveTargetFps",
+                  "lsfgBackend",
+                  "lsfgEnabled",
+                  "lsfgFixedMultiplier",
+                  "lsfgFlowScale",
+                  "lsfgFlowScaleMode",
+                  "lsfgFrameQueueEnabled",
+                  "lsfgFrameQueueTarget",
+                  "lsfgFramegenMode",
+                  "lsfgMultiplier",
+                  "lsfgPerformanceMode",
+                  "lsfgPresentMode"
+                ],
+                "properties": {
+                  "lsfgFlowScaleMode": {
+                    "type": "string"
+                  },
+                  "lsfgFixedMultiplier": {
+                    "type": "string"
+                  },
+                  "lsfgFlowScale": {
+                    "type": "string"
+                  },
+                  "lsfgPresentMode": {
+                    "type": "string"
+                  },
+                  "lsfgAdaptiveTargetFps": {
+                    "type": "string"
+                  },
+                  "fpsLimiterTarget": {
+                    "type": "string"
+                  },
+                  "lsfgFrameQueueTarget": {
+                    "type": "string"
+                  },
+                  "lsfgFramegenMode": {
+                    "type": "string"
+                  },
+                  "lsfgEnabled": {
+                    "type": "string"
+                  },
+                  "lsfgAdaptiveFlowPreset": {
+                    "type": "string"
+                  },
+                  "lsfgBackend": {
+                    "type": "string"
+                  },
+                  "fpsLimiterEnabled": {
+                    "type": "string"
+                  },
+                  "lsfgPerformanceMode": {
+                    "type": "string"
+                  },
+                  "lsfgFrameQueueEnabled": {
+                    "type": "string"
+                  },
+                  "lsfgMultiplier": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "pins": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "dxvk",
+              "fex",
+              "turnip",
+              "proton",
+              "lsfg"
+            ],
+            "properties": {
+              "dxvk": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "version",
+                  "source_sha256",
+                  "source_kind",
+                  "artifacts",
+                  "runtime_artifacts"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "string"
+                  },
+                  "source_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "source_kind": {
+                    "enum": [
+                      "source_archive",
+                      "package_archive",
+                      "installed_manifest"
+                    ]
+                  },
+                  "artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  },
+                  "runtime_artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "fex": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "version",
+                  "source_sha256",
+                  "source_kind",
+                  "artifacts",
+                  "runtime_artifacts"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "string"
+                  },
+                  "source_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "source_kind": {
+                    "enum": [
+                      "source_archive",
+                      "package_archive",
+                      "installed_manifest"
+                    ]
+                  },
+                  "artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  },
+                  "runtime_artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "turnip": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "version",
+                  "source_sha256",
+                  "source_kind",
+                  "artifacts",
+                  "runtime_artifacts"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "string"
+                  },
+                  "source_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "source_kind": {
+                    "enum": [
+                      "source_archive",
+                      "package_archive",
+                      "installed_manifest"
+                    ]
+                  },
+                  "artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  },
+                  "runtime_artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "proton": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "version",
+                  "source_sha256",
+                  "source_kind",
+                  "artifacts",
+                  "runtime_artifacts"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "string"
+                  },
+                  "source_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "source_kind": {
+                    "enum": [
+                      "source_archive",
+                      "package_archive",
+                      "installed_manifest"
+                    ]
+                  },
+                  "artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  },
+                  "runtime_artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "lsfg": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "version",
+                  "source_sha256",
+                  "source_kind",
+                  "artifacts",
+                  "runtime_artifacts"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "string"
+                  },
+                  "source_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "source_kind": {
+                    "enum": [
+                      "source_archive",
+                      "package_archive",
+                      "installed_manifest"
+                    ]
+                  },
+                  "artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  },
+                  "runtime_artifacts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 24,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "pattern": "^(files|native)/"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "runtime_expectations": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "description",
+        "window_pattern",
+        "startup_timeout_ms",
+        "warmup_ms",
+        "measure_ms",
+        "source_fps",
+        "trials",
+        "cache_modes",
+        "saves",
+        "setup_actions",
+        "actions"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "startup",
+            "scripted",
+            "exploration"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "window_pattern": {
+          "type": "string"
+        },
+        "startup_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 300000
+        },
+        "warmup_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120000
+        },
+        "measure_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 600000
+        },
+        "source_fps": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 240
+        },
+        "trials": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "cache_modes": {
+          "const": [
+            "cold",
+            "warm"
+          ]
+        },
+        "saves": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^\\.wine/drive_c/users/"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "setup_actions": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "at_ms",
+                  "code"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "key"
+                  },
+                  "at_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "code": {
+                    "type": "integer",
+                    "minimum": 7,
+                    "maximum": 288
+                  },
+                  "duration_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10000
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "at_ms",
+                  "x",
+                  "y"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "tap"
+                  },
+                  "at_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "x": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "at_ms",
+                  "dx",
+                  "dy",
+                  "duration_ms"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "look"
+                  },
+                  "at_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "dx": {
+                    "type": "integer",
+                    "minimum": -8192,
+                    "maximum": 8192
+                  },
+                  "dy": {
+                    "type": "integer",
+                    "minimum": -8192,
+                    "maximum": 8192
+                  },
+                  "duration_ms": {
+                    "type": "integer",
+                    "minimum": 16,
+                    "maximum": 10000
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "at_ms",
+                  "code"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "key"
+                  },
+                  "at_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "code": {
+                    "type": "integer",
+                    "minimum": 7,
+                    "maximum": 288
+                  },
+                  "duration_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10000
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "at_ms",
+                  "x",
+                  "y"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "tap"
+                  },
+                  "at_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "x": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "at_ms",
+                  "dx",
+                  "dy",
+                  "duration_ms"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "look"
+                  },
+                  "at_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "dx": {
+                    "type": "integer",
+                    "minimum": -8192,
+                    "maximum": 8192
+                  },
+                  "dy": {
+                    "type": "integer",
+                    "minimum": -8192,
+                    "maximum": 8192
+                  },
+                  "duration_ms": {
+                    "type": "integer",
+                    "minimum": 16,
+                    "maximum": 10000
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer_pattern",
+        "sample_interval_ms",
+        "perfetto",
+        "thermal_max_status"
+      ],
+      "properties": {
+        "layer_pattern": {
+          "type": "string"
+        },
+        "sample_interval_ms": {
+          "type": "integer",
+          "minimum": 250,
+          "maximum": 1000
+        },
+        "perfetto": {
+          "type": "boolean"
+        },
+        "thermal_max_status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      }
+    }
+  }
+}

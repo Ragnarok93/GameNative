@@ -42,6 +42,17 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
     private var stopControls: (() -> Unit)? = null
     private var server: com.winlator.xserver.XServer? = null
     private var phaseStarted = 0L
+    private val sourceConfig = com.winlator.container.ContainerManager(instrumentation.targetContext).getContainerById(appId).configFile
+    private val sourceConfigHash = hash(sourceConfig)
+
+    private fun hash(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(65536)
+            while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
 
     override fun checkActive() { check(!cancelled) { "Benchmark cancelled" } }
     override fun setup(started: Boolean) { settingUp = started; if (!started) setupFinished = true }
@@ -99,11 +110,13 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
         for (index in 0 until saves.length()) {
             val save = saves.getJSONObject(index)
             val from = safeFile(source.rootDir, save.getString("path"))
-            val hash = MessageDigest.getInstance("SHA-256").digest(from.readBytes()).joinToString("") { "%02x".format(it) }
-            check(hash == save.getString("sha256")) { "Workload save hash mismatch" }
+            require(from.length() in 1..67108864) { "Save exceeds staging limit" }
+            check(hash(from) == save.getString("sha256")) { "Workload save hash mismatch" }
             val to = safeFile(container.rootDir, save.getString("path"))
             to.parentFile?.mkdirs()
             from.copyTo(to, overwrite = true)
+            check(to.setLastModified(from.lastModified())) { "Could not preserve save timestamp for Continue selection" }
+            check(hash(to) == save.getString("sha256")) { "Staged save hash mismatch" }
         }
     }
     private fun inject(action: JSONObject) {
@@ -214,6 +227,13 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
                 .put("multiplier", lsfg.multiplier).put("ready_for_generation", lsfg.readyForGeneration)
                 .put("display_confirmation_available", lsfg.displayConfirmationAvailable)
                 .put("display_confirmed_generating", lsfg.displayConfirmedGenerating).put("degraded", lsfg.degraded)
+            val processSnapshot = JSONArray()
+            ProcessHelper.listSubProcesses().forEach { process ->
+                val record = JSONObject().put("pid", process.pid).put("name", process.name).put("rss_bytes", process.rssBytes)
+                val cpu = runCatching { File("/proc/${process.pid}/status").readLines().firstOrNull { it.startsWith("Cpus_allowed_list:") }?.substringAfter(':')?.trim() }.getOrNull()
+                record.put("cpus_allowed_list", cpu ?: JSONObject.NULL)
+                processSnapshot.put(record)
+            }
             measureStart = System.nanoTime()
             status("MEASURING")
             val duration = workload.getLong("measure_ms")
@@ -238,6 +258,7 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
                 .put("runtime_binary_attestation", runtimeBinaries)
                 .put("harness_build", app.gamenative.BuildConfig.VERSION_NAME)
                 .put("lsfg_runtime", lsfgReadback)
+                .put("guest_process_snapshot", processSnapshot).put("source_config_sha256", sourceConfigHash)
                 .put("exploratory", workload.getString("kind") == "exploration")
                 .put("guest_exit_status", termination ?: JSONObject.NULL)
                 .put("artifacts", "files/benchmark-lab/${request.getString("run_id")}")
@@ -259,6 +280,7 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
                 "Guest processes remain; recovery journal retained"
             }
             instrumentation.waitForIdleSync()
+            check(hash(sourceConfig) == sourceConfigHash) { "Production source config changed during benchmark" }
             BenchmarkRuntimeHooks.retire(this)
             status("RESTORING_CONFIG")
         }

@@ -15,13 +15,14 @@ from benchmark.runner import run
 def profile():
     config = {key: (False if kind is bool else {} if kind is dict else "") for key, kind in RUN_CONFIG_TYPES.items()}
     config.update(screenSize="1152x648", containerVariant="bionic", emulator="FEXCore", displayRendererMode="vulkan",
+                  cpuList="4,5,6,7", cpuListWoW64="4,5,6,7",
                   dxwrapperConfig="version=dxvk-test", fexcoreVersion="fex-test", graphicsDriverConfig="version=turnip-test", wineVersion="proton-test")
     extras = dict.fromkeys(EXTRAS, "false")
     extras.update(fpsLimiterEnabled="true", fpsLimiterTarget="30", lsfgMultiplier="0", lsfgFixedMultiplier="2",
         lsfgFramegenMode="fixed", lsfgAdaptiveTargetFps="60", lsfgFlowScale="0.8", lsfgFlowScaleMode="fixed",
         lsfgAdaptiveFlowPreset="balanced", lsfgPresentMode="mailbox", lsfgFrameQueueTarget="0", lsfgBackend="legacy")
     config["extraData"] = extras
-    pins = {name: {"version": name + "-test", "source_sha256": "a" * 64,
+    pins = {name: {"version": name + "-test", "source_sha256": "a" * 64, "source_kind": "source_archive",
         "artifacts": [{"path": "files/components/" + name, "sha256": "b" * 64}],
         "runtime_artifacts": [{"path": "native/lib" + name + ".so", "sha256": "b" * 64}]}
         for name in ("dxvk", "fex", "turnip", "proton", "lsfg")}

@@ -1,0 +1,457 @@
+{
+  "schema_version": 2,
+  "name": "crisis-core-sd865",
+  "device": {
+    "model": "SM-G986U1",
+    "soc": "SM8250"
+  },
+  "game": {
+    "source_container_id": "CUSTOM_GAME_1964435351",
+    "container_id": "BENCHMARK_CRISIS_CORE"
+  },
+  "variants": {
+    "dxvk-baseline": {
+      "config": {
+        "screenSize": "1152x648",
+        "envVars": "DXVK_LOG_LEVEL=info MESA_SHADER_CACHE_DISABLE=false",
+        "cpuList": "4,5,6,7",
+        "cpuListWoW64": "4,5,6,7",
+        "graphicsDriver": "wrapper-gamenative",
+        "graphicsDriverVersion": "",
+        "graphicsDriverConfig": "version=T30-REPLACE_WITH_EXACT_DRIVER_NAME",
+        "rendererPresentMode": "fifo",
+        "dxwrapper": "dxvk",
+        "dxwrapperConfig": "version=2.7.1-1-gplasync-0",
+        "emulator": "FEXCore",
+        "fexcoreVersion": "2610-REPLACE_WITH_EXACT_INSTALLED_ENTRY",
+        "fexcorePreset": "INTERMEDIATE",
+        "wineVersion": "proton-10.0-arm64ec-2",
+        "showFPS": false,
+        "wow64Mode": false,
+        "containerVariant": "bionic",
+        "displayRendererMode": "vulkan",
+        "execArgs": "-dx11",
+        "suspendPolicy": "never",
+        "micEnabled": false,
+        "launchRealSteam": false,
+        "launchBionicSteam": false,
+        "extraData": {
+          "lsfgFlowScaleMode": "fixed",
+          "lsfgFixedMultiplier": "2",
+          "lsfgFlowScale": "0.8",
+          "lsfgPresentMode": "mailbox",
+          "lsfgAdaptiveTargetFps": "60",
+          "fpsLimiterTarget": "30",
+          "lsfgFrameQueueTarget": "0",
+          "lsfgFramegenMode": "fixed",
+          "lsfgEnabled": "false",
+          "lsfgAdaptiveFlowPreset": "balanced",
+          "lsfgBackend": "legacy",
+          "fpsLimiterEnabled": "true",
+          "lsfgPerformanceMode": "false",
+          "lsfgFrameQueueEnabled": "false",
+          "lsfgMultiplier": "0"
+        }
+      },
+      "pins": {
+        "dxvk": {
+          "version": "2.7.1-1-gplasync-0",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/dxvk",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libdxvk.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "fex": {
+          "version": "2610-REPLACE_WITH_EXACT_INSTALLED_ENTRY",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/fex",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libfex.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "turnip": {
+          "version": "T30-REPLACE_WITH_EXACT_DRIVER_NAME",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/turnip",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libturnip.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "proton": {
+          "version": "proton-10.0-arm64ec-2",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/proton",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libproton.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "lsfg": {
+          "version": "REPLACE_WITH_LSFG_COMMIT",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/lsfg",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/liblsfg.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      },
+      "runtime_expectations": {
+        "DXVK_LOG_LEVEL": "info"
+      }
+    },
+    "dxvk-sd865": {
+      "config": {
+        "screenSize": "1152x648",
+        "envVars": "DXVK_LOG_LEVEL=info MESA_SHADER_CACHE_DISABLE=false",
+        "cpuList": "4,5,6,7",
+        "cpuListWoW64": "4,5,6,7",
+        "graphicsDriver": "wrapper-gamenative",
+        "graphicsDriverVersion": "",
+        "graphicsDriverConfig": "version=T30-REPLACE_WITH_EXACT_DRIVER_NAME",
+        "rendererPresentMode": "fifo",
+        "dxwrapper": "dxvk",
+        "dxwrapperConfig": "version=REPLACE_WITH_CANDIDATE_ENTRY",
+        "emulator": "FEXCore",
+        "fexcoreVersion": "2610-REPLACE_WITH_EXACT_INSTALLED_ENTRY",
+        "fexcorePreset": "INTERMEDIATE",
+        "wineVersion": "proton-10.0-arm64ec-2",
+        "showFPS": false,
+        "wow64Mode": false,
+        "containerVariant": "bionic",
+        "displayRendererMode": "vulkan",
+        "execArgs": "-dx11",
+        "suspendPolicy": "never",
+        "micEnabled": false,
+        "launchRealSteam": false,
+        "launchBionicSteam": false,
+        "extraData": {
+          "lsfgFlowScaleMode": "fixed",
+          "lsfgFixedMultiplier": "2",
+          "lsfgFlowScale": "0.8",
+          "lsfgPresentMode": "mailbox",
+          "lsfgAdaptiveTargetFps": "60",
+          "fpsLimiterTarget": "30",
+          "lsfgFrameQueueTarget": "0",
+          "lsfgFramegenMode": "fixed",
+          "lsfgEnabled": "false",
+          "lsfgAdaptiveFlowPreset": "balanced",
+          "lsfgBackend": "legacy",
+          "fpsLimiterEnabled": "true",
+          "lsfgPerformanceMode": "false",
+          "lsfgFrameQueueEnabled": "false",
+          "lsfgMultiplier": "0"
+        }
+      },
+      "pins": {
+        "dxvk": {
+          "version": "REPLACE_WITH_CANDIDATE_ENTRY",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/dxvk",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libdxvk.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "fex": {
+          "version": "2610-REPLACE_WITH_EXACT_INSTALLED_ENTRY",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/fex",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libfex.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "turnip": {
+          "version": "T30-REPLACE_WITH_EXACT_DRIVER_NAME",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/turnip",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libturnip.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "proton": {
+          "version": "proton-10.0-arm64ec-2",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/proton",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libproton.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "lsfg": {
+          "version": "REPLACE_WITH_LSFG_COMMIT",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/lsfg",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/liblsfg.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      },
+      "runtime_expectations": {
+        "DXVK_LOG_LEVEL": "info"
+      }
+    },
+    "dxvk-arm64ec": {
+      "config": {
+        "screenSize": "1152x648",
+        "envVars": "DXVK_LOG_LEVEL=info MESA_SHADER_CACHE_DISABLE=false",
+        "cpuList": "4,5,6,7",
+        "cpuListWoW64": "4,5,6,7",
+        "graphicsDriver": "wrapper-gamenative",
+        "graphicsDriverVersion": "",
+        "graphicsDriverConfig": "version=T30-REPLACE_WITH_EXACT_DRIVER_NAME",
+        "rendererPresentMode": "fifo",
+        "dxwrapper": "dxvk",
+        "dxwrapperConfig": "version=v3.1.1-gplasync-arm64ec-40e01640-0",
+        "emulator": "FEXCore",
+        "fexcoreVersion": "2610-REPLACE_WITH_EXACT_INSTALLED_ENTRY",
+        "fexcorePreset": "INTERMEDIATE",
+        "wineVersion": "proton-10.0-arm64ec-2",
+        "showFPS": false,
+        "wow64Mode": false,
+        "containerVariant": "bionic",
+        "displayRendererMode": "vulkan",
+        "execArgs": "-dx11",
+        "suspendPolicy": "never",
+        "micEnabled": false,
+        "launchRealSteam": false,
+        "launchBionicSteam": false,
+        "extraData": {
+          "lsfgFlowScaleMode": "fixed",
+          "lsfgFixedMultiplier": "2",
+          "lsfgFlowScale": "0.8",
+          "lsfgPresentMode": "mailbox",
+          "lsfgAdaptiveTargetFps": "60",
+          "fpsLimiterTarget": "30",
+          "lsfgFrameQueueTarget": "0",
+          "lsfgFramegenMode": "fixed",
+          "lsfgEnabled": "false",
+          "lsfgAdaptiveFlowPreset": "balanced",
+          "lsfgBackend": "legacy",
+          "fpsLimiterEnabled": "true",
+          "lsfgPerformanceMode": "false",
+          "lsfgFrameQueueEnabled": "false",
+          "lsfgMultiplier": "0"
+        }
+      },
+      "pins": {
+        "dxvk": {
+          "version": "v3.1.1-gplasync-arm64ec-40e01640-0",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/dxvk",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libdxvk.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "fex": {
+          "version": "2610-REPLACE_WITH_EXACT_INSTALLED_ENTRY",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/fex",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libfex.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "turnip": {
+          "version": "T30-REPLACE_WITH_EXACT_DRIVER_NAME",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/turnip",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libturnip.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "proton": {
+          "version": "proton-10.0-arm64ec-2",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/proton",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/libproton.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        "lsfg": {
+          "version": "REPLACE_WITH_LSFG_COMMIT",
+          "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_kind": "package_archive",
+          "artifacts": [
+            {
+              "path": "files/components/lsfg",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          "runtime_artifacts": [
+            {
+              "path": "native/liblsfg.so",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      },
+      "runtime_expectations": {
+        "DXVK_LOG_LEVEL": "info"
+      }
+    }
+  },
+  "workload": {
+    "kind": "scripted",
+    "description": "Replace with a pinned Crisis Core checkpoint and recorded route.",
+    "window_pattern": "(?i)(ff7|final fantasy|unreal)",
+    "startup_timeout_ms": 180000,
+    "warmup_ms": 30000,
+    "measure_ms": 60000,
+    "source_fps": 30,
+    "trials": 3,
+    "cache_modes": [
+      "cold",
+      "warm"
+    ],
+    "saves": [
+      {
+        "path": ".wine/drive_c/users/xuser/Documents/REPLACE_WITH_VERIFIED_SAVE.sav",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "setup_actions": [
+      {
+        "type": "key",
+        "code": 66,
+        "at_ms": 5000
+      }
+    ],
+    "actions": [
+      {
+        "type": "key",
+        "code": 51,
+        "duration_ms": 1000,
+        "at_ms": 1000
+      }
+    ]
+  },
+  "telemetry": {
+    "layer_pattern": "SurfaceView.*BenchmarkGameActivity",
+    "sample_interval_ms": 1000,
+    "perfetto": false,
+    "thermal_max_status": 1
+  }
+}

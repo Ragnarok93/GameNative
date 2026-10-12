@@ -20,3 +20,9 @@ are limited to dedicated `BENCHMARK_` sandboxes while the device is idle.
 Report requested configuration separately from persisted readback and effective
 runtime configuration. Phase 1 produces no FPS/frametime claims. Stable promotion
 requires measured repeatable baseline comparisons, not a successful build.
+
+For game sessions use schema-v2 profiles and `docs/benchmark-campaigns.md`.
+Discover routes with exploration/screenshots/guest controls, then freeze and replay
+them for comparative trials. Keep production saves unchanged; benchmark prefixes
+receive pinned copies. Do not infer source-game FPS from synthetic/display frames,
+accept partial ring coverage as complete, or fabricate source/binary hashes.

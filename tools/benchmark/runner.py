@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import uuid
+import sys
 from pathlib import Path
 from .device import LabError, PACKAGE
 from .telemetry import Telemetry
@@ -18,6 +19,7 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
     variant = copy.deepcopy(profile["variants"][variant_name])
     run_id = uuid.uuid4().hex
     telemetry = Telemetry(results, run_id)
+    print(json.dumps({"event": "session_created", "run_id": run_id, "results": str(telemetry.directory)}), file=sys.stderr, flush=True)
     workload = profile["workload"]
     request = {"protocol_version": 1, "run_id": run_id, "operation": "run", **profile["game"],
         "config": variant["config"], "runtime_expectations": variant["runtime_expectations"],
@@ -97,7 +99,9 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
                 (telemetry.directory / "device-interactive-input.jsonl").write_text("")
         collector.finish()
         metrics = summarize(execution, collector.presented, submitted)
-        metrics["eligible_for_regression"] = workload["kind"] != "exploration"
+        metrics["eligible_for_regression"] = workload["kind"] != "exploration" and all(
+            pin["source_kind"] != "installed_manifest" for pin in variant["pins"].values())
+        metrics["provenance_kinds"] = {name: pin["source_kind"] for name, pin in variant["pins"].items()}
         if collector.coverage_gaps:
             metrics["display_cadence"] = {"available": False, "reason": "SurfaceFlinger ring coverage gaps detected; analyze Perfetto instead"}
         telemetry.artifact("metrics.json", metrics)

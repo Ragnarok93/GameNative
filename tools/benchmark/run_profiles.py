@@ -39,7 +39,8 @@ def validate_run_profile(profile):
         require(set(variant) == {"pins", "config", "runtime_expectations"}, "Invalid variant fields")
         require(set(variant["pins"]) == {"dxvk", "fex", "turnip", "proton", "lsfg"}, "All five component pins required")
         for component, pin in variant["pins"].items():
-            require(set(pin) == {"version", "source_sha256", "artifacts", "runtime_artifacts"}, f"Invalid {component} pin")
+            require(set(pin) == {"version", "source_sha256", "source_kind", "artifacts", "runtime_artifacts"}, f"Invalid {component} pin")
+            require(pin["source_kind"] in {"source_archive", "package_archive", "installed_manifest"}, "Explicit provenance kind required")
             require(isinstance(pin["version"], str) and pin["version"] and sha(pin["source_sha256"]), f"Verified {component} provenance required")
             require(isinstance(pin["artifacts"], list) and 1 <= len(pin["artifacts"]) <= 24, "Binary artifacts required")
             require(isinstance(pin["runtime_artifacts"], list) and 1 <= len(pin["runtime_artifacts"]) <= 24, "Runtime binary readback pins required")
@@ -52,6 +53,8 @@ def validate_run_profile(profile):
         for key, kind in RUN_CONFIG_TYPES.items():
             require(type(config[key]) is kind, f"Wrong type for {key}")
         require(re.fullmatch(r"[1-9][0-9]{1,3}x[1-9][0-9]{1,3}", config["screenSize"]), "Invalid resolution")
+        for key in ("cpuList", "cpuListWoW64"):
+            require(re.fullmatch(r"[0-9]+(?:,[0-9]+)*", config[key]) and len(set(config[key].split(','))) == len(config[key].split(',')) and all(int(cpu) < 64 for cpu in config[key].split(',')), "Explicit unique CPU affinity list required")
         require(config["containerVariant"] == "bionic" and config["emulator"] == "FEXCore", "Runtime observation currently supports bionic/FEXCore")
         require(config["displayRendererMode"] == "vulkan", "Vulkan renderer required for source-cap readback")
         selections = {"dxvk": dict(part.split("=", 1) for part in config["dxwrapperConfig"].split(',') if '=' in part).get("version"),

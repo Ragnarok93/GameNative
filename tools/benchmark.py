@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 1: validate, install pinned content, and verify reversible configuration."""
+"""GameNative lab: pinned deployment, isolated guest control, telemetry and comparisons."""
 import argparse
 import json
 import sys

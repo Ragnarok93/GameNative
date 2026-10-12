@@ -23,7 +23,7 @@ class ComparisonTests(unittest.TestCase):
                 "result.json": {"status": "complete", "run_id": run_id, "restored": True, "execution": {"harness_build": "test-build"}},
                 "trial.json": {"variant": "baseline", "cache_mode": mode, "trial_index": 0},
                 "device.json": {"serial": "mock", "fingerprint": "same"},
-                "metrics.json": {"startup_first_content_ms": 100,
+                "metrics.json": {"startup_first_content_ms": 100, "eligible_for_regression": True,
                     "display_cadence": {"available": True, "average_fps": fps, "one_percent_low_fps": fps,
                                         "p95_ms": 1000/fps, "p99_ms": 1000/fps},
                     "renderer_submission": {"available": False}}}

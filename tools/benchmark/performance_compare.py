@@ -65,7 +65,7 @@ def compare_performance(baseline, candidate, component="dxvk", baseline_variant=
     left, right = trials(baseline, baseline_variant), trials(candidate, candidate_variant)
     if any(t["profile"]["workload"]["kind"] == "exploration" for t in left + right):
         raise LabError("Exploration sessions cannot establish regressions; freeze and validate a replay route")
-    if any(t["metrics"].get("eligible_for_regression") is False for t in left + right):
+    if any(t["metrics"].get("eligible_for_regression") is not True for t in left + right):
         raise LabError("Run provenance/workload is not eligible for regression analysis")
     fixed = controls(left[0], component)
     if any(controls(t, component) != fixed for t in left + right):

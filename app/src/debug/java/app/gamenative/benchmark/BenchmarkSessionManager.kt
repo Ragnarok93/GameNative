@@ -298,17 +298,27 @@ object BenchmarkSessionManager {
             val env = com.winlator.core.envvars.EnvVars(merged.getString("envVars"))
             env.put("DXVK_STATE_CACHE_PATH", cache.path)
             env.put("MESA_SHADER_CACHE_DIR", cache.path)
+            val logDir = File(container.rootDir, ".wine/drive_c/gamenative-lab/${request.getString("run_id")}")
+            require(logDir.canonicalPath.startsWith(container.rootDir.canonicalPath + "/"))
+            check(logDir.mkdirs())
+            env.put("DXVK_LOG_PATH", "C:\\gamenative-lab\\${request.getString("run_id")}")
+            env.put("GAMENATIVE_BENCHMARK_RUN_ID", request.getString("run_id"))
             merged.put("envVars", env.toString())
             // Record the generated paths as part of the requested patch too.
             patch.put("envVars", env.toString())
             request.getJSONObject("runtime_expectations").put("DXVK_STATE_CACHE_PATH", cache.path)
                 .put("MESA_SHADER_CACHE_DIR", cache.path)
+                .put("DXVK_LOG_PATH", "C:\\gamenative-lab\\${request.getString("run_id")}")
+                .put("GAMENATIVE_BENCHMARK_RUN_ID", request.getString("run_id"))
         }
         val backup = File(lab, "original.json")
         val pending = JSONObject().put("container_id", id).put("run_id", request.getString("run_id"))
         if (workload != null) {
             val alias = File(com.winlator.xenvironment.ImageFs.find(context).rootDir, "home/xuser")
             require(java.nio.file.Files.isSymbolicLink(alias.toPath()) || !alias.exists()) { "Active home must be a container symlink" }
+            require(!java.nio.file.Files.isSymbolicLink(alias.toPath()) || (alias.exists() && alias.canonicalFile.parentFile == alias.parentFile.canonicalFile)) {
+                "Active home alias must point to an existing container in the shared home"
+            }
             val previous = if (alias.exists()) alias.canonicalFile.name.removePrefix("xuser-") else null
             if (previous != null) check(ContainerManager(context).hasContainer(previous))
             pending.put("previous_active_container_id", previous ?: JSONObject.NULL)

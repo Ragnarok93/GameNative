@@ -42,8 +42,10 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
     private var stopControls: (() -> Unit)? = null
     private var server: com.winlator.xserver.XServer? = null
     private var phaseStarted = 0L
+    private var traceSectionOpen = false
     private val sourceConfig = com.winlator.container.ContainerManager(instrumentation.targetContext).getContainerById(appId).configFile
     private val sourceConfigHash = hash(sourceConfig)
+    private val sourceRoot = com.winlator.container.ContainerManager(instrumentation.targetContext).getContainerById(appId).rootDir
 
     private fun hash(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -78,6 +80,9 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
     }
 
     private fun status(next: String) {
+        if (traceSectionOpen) android.os.Trace.endSection()
+        android.os.Trace.beginSection("GameNativeLab:${request.getString("run_id")}:$next")
+        traceSectionOpen = true
         phase = next
         phaseStarted = SystemClock.uptimeMillis()
         val value = JSONObject().put("run_id", request.getString("run_id")).put("phase", next)
@@ -209,6 +214,8 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
             check(sourceCap == workload.getInt("source_fps")) { "Effective renderer source cap differs from requested cap: $sourceCap" }
             val runtimeBinaries = BenchmarkSessionManager.attest(instrumentation.targetContext,
                 JSONObject().put("artifacts", request.getJSONArray("runtime_artifacts")))
+            val saves = workload.getJSONArray("saves")
+            for (index in 0 until saves.length()) safeFile(container.rootDir, saves.getJSONObject(index).getString("path"))
             status("WARMING_UP")
             val warmup = workload.getLong("warmup_ms")
             val warmStart = SystemClock.uptimeMillis()
@@ -249,6 +256,12 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
             check(termination == null && BenchmarkGameState.failure == null) { "Game exited during measurement" }
             status("COLLECTING_RESULTS")
             File(directory, "renderer-frames.json").writeText(synchronized(frames) { JSONArray(frames).toString() })
+            val dxvk = File(container.rootDir, ".wine/drive_c/gamenative-lab/${request.getString("run_id")}")
+            val capturedLogs = File(directory, "dxvk").apply { mkdirs() }
+            dxvk.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".log") }.take(16).forEach { file ->
+                require(file.length() <= 16777216) { "DXVK log exceeds capture limit" }
+                file.copyTo(File(capturedLogs, file.name), overwrite = false)
+            }
             LsfgDiagnosticExporter.prepareReportFile(instrumentation.targetContext, File(directory, "lsfg-diagnostics.txt"))
             return JSONObject().put("readiness", "matched_application_window_content")
                 .put("time_to_first_content_ms", (readyAt - start) / 1e6)
@@ -281,8 +294,15 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
             }
             instrumentation.waitForIdleSync()
             check(hash(sourceConfig) == sourceConfigHash) { "Production source config changed during benchmark" }
+            val sourceSaves = workload.getJSONArray("saves")
+            for (index in 0 until sourceSaves.length()) {
+                val save = sourceSaves.getJSONObject(index)
+                check(hash(safeFile(sourceRoot, save.getString("path"))) == save.getString("sha256")) { "Production source save changed during benchmark" }
+            }
             BenchmarkRuntimeHooks.retire(this)
             status("RESTORING_CONFIG")
+            android.os.Trace.endSection()
+            traceSectionOpen = false
         }
     }
 }

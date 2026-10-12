@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 import sys
+import shlex
 from pathlib import Path
 from .device import LabError, PACKAGE
 from .telemetry import Telemetry
@@ -97,6 +98,14 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
                 (telemetry.directory / "device-interactive-input.jsonl").write_text(text + "\n")
             except LabError:
                 (telemetry.directory / "device-interactive-input.jsonl").write_text("")
+        dxvk_files = device.call("shell", "run-as", PACKAGE, "find", root + "/dxvk", "-type", "f").splitlines()
+        for remote in dxvk_files:
+            name = Path(remote).name
+            if not remote.startswith(root + "/dxvk/") or '/' in name or not name.endswith(".log"):
+                raise LabError("Invalid DXVK log artifact path")
+            output = telemetry.directory / "dxvk" / name
+            output.parent.mkdir(exist_ok=True)
+            output.write_text(device.call("shell", "run-as", PACKAGE, "cat", shlex.quote(remote), timeout=30))
         collector.finish()
         metrics = summarize(execution, collector.presented, submitted)
         metrics["eligible_for_regression"] = workload["kind"] != "exploration" and all(

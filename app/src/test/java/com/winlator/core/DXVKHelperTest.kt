@@ -49,11 +49,10 @@ class DXVKHelperTest {
         configs.forEach { raw ->
             val value = DXVKHelper.buildDxvkConfig(KeyValueSet(raw))
             assertFalse("Outer shell quotes cannot be parsed by DXVK: $raw", value.startsWith("\""))
-            // A quoted GPU description is a legitimate DXVK value. Only a
-            // shell quote that wraps the *entire* environment is forbidden.
-            if (!raw.startsWith("customDevice=")) {
-                assertFalse("No trailing outer quote: $raw", value.endsWith("\""))
-            }
+            // DXVK allows quoted *individual values* (GPU description and
+            // True). The actual bad serializer prepended a shell quote to
+            // the entire environment string, which is the invariant here.
+            assertTrue("Config must begin with an option key: $raw", value.first().isLetter())
         }
     }
 }

@@ -62,12 +62,18 @@ class Device:
     def assert_idle_debug(self):
         # Instrumentation can kill an existing target process: never invoke it
         # while the app or guest runtime is active, including read-only commands.
-        processes = self.call("shell", "ps", "-A", "-o", "NAME")
-        for name in processes.splitlines()[1:]:
-            if re.search(r"app\.gamenative|wine|wineserver|FEX|fex|box64|box86", name):
+        # run-as both proves a debuggable target and obtains the real Linux UID.
+        uid = self.call("shell", "run-as", PACKAGE, "id", "-u")
+        if not re.fullmatch(r"[0-9]+", uid):
+            raise LabError("Could not determine GameNative's UID")
+        processes = self.call("shell", "ps", "-A", "-o", "UID,NAME")
+        for row in processes.splitlines()[1:]:
+            fields = row.split(maxsplit=1)
+            if len(fields) != 2:
+                raise LabError("Could not parse the device process inventory")
+            owner, name = fields
+            if owner == uid or re.search(r"app\.gamenative|wine|wineserver|FEX|fex|box64|box86", name):
                 raise LabError("Close GameNative and all guest processes before using the bridge")
-        # run-as is an authoritative debuggable-package gate, no dumpsys substring guess.
-        self.call("shell", "run-as", PACKAGE, "true")
         instrumentation = self.call("shell", "pm", "list", "instrumentation")
         if not any(BRIDGE in line and "(target=app.gamenative)" in line for line in instrumentation.splitlines()):
             raise LabError("Matching debug androidTest APK is not installed")

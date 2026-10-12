@@ -17,11 +17,12 @@ from benchmark.compare import compare
 
 
 class MockAdb:
-    def __init__(self, active=False, result_status="complete"):
+    def __init__(self, active=False, result_status="complete", process_name="app.gamenative"):
         self.calls = []
         self.request = None
         self.active = active
         self.result_status = result_status
+        self.process_name = process_name
 
     def __call__(self, argv, **kwargs):
         self.calls.append(argv)
@@ -33,7 +34,9 @@ class MockAdb:
         elif args[:2] == ["shell", "getprop"]:
             output = {"ro.product.model": "SM-G986U1", "ro.soc.model": "SM8250"}.get(args[2], "test")
         elif args[:2] == ["shell", "ps"]:
-            output = "NAME\n" + ("app.gamenative\n" if self.active else "init\n")
+            output = "UID NAME\n" + ("11000 " + self.process_name + "\n" if self.active else "0 init\n")
+        elif args == ["shell", "run-as", "app.gamenative", "id", "-u"]:
+            output = "11000"
         elif args[:4] == ["shell", "pm", "list", "instrumentation"]:
             output = "instrumentation:" + BRIDGE + " (target=app.gamenative)"
         elif args[:4] == ["exec-out", "run-as", "app.gamenative", "tee"]:
@@ -52,6 +55,12 @@ class LabTests(unittest.TestCase):
 
     def test_active_app_refuses_instrumentation(self):
         mock = MockAdb(active=True)
+        with self.assertRaises(LabError):
+            Device("test-device", execute=mock).bridge({"run_id": "a" * 32})
+        self.assertFalse(any("instrument" in call for call in mock.calls))
+
+    def test_orphan_guest_uid_refuses_instrumentation(self):
+        mock = MockAdb(active=True, process_name="ff7remake.exe")
         with self.assertRaises(LabError):
             Device("test-device", execute=mock).bridge({"run_id": "a" * 32})
         self.assertFalse(any("instrument" in call for call in mock.calls))

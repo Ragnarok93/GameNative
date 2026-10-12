@@ -53,9 +53,18 @@ def controls(trial, component):
     if component == "lsfg":
         config["extraData"] = {k: v for k, v in config["extraData"].items() if not k.startswith("lsfg")}
     pins = {k: v for k, v in variant["pins"].items() if k != component}
+    volatile = {"GAMENATIVE_BENCHMARK_RUN_ID", "DXVK_STATE_CACHE_PATH", "MESA_SHADER_CACHE_DIR", "DXVK_LOG_PATH", "EVSHIM_SHM_ID", "GAMEPAD_SHM_ID"}
+    prefixes = {"dxvk": ("DXVK_",), "fex": ("FEX_",), "turnip": ("TU_", "WRAPPER_CUSTOM_DRIVER"),
+                "proton": ("WINE",), "lsfg": ("LSFG_", "WRAPPER_LSFG_", "VK_INSTANCE_LAYERS", "VK_LOADER_LAYERS_ENABLE")}[component]
+    def fixed_environment(values):
+        return {key: value for key, value in values.items() if key not in volatile and not key.startswith(prefixes)}
+    actual = trial["result"]["execution"].get("runtime_environment")
+    if not isinstance(actual, dict):
+        raise LabError("Missing actual runtime environment readback")
     return {"device": trial["device"], "game": profile["game"], "workload": profile["workload"],
             "telemetry": profile["telemetry"], "config": config, "fixed_pins": pins,
-            "runtime_expectations": variant["runtime_expectations"],
+            "runtime_expectations": fixed_environment(variant["runtime_expectations"]),
+            "actual_fixed_environment": fixed_environment(actual),
             "harness_build": trial["result"]["execution"]["harness_build"] if component != "lsfg" else "LSFG build varied"}
 
 
@@ -95,6 +104,15 @@ def compare_performance(baseline, candidate, component="dxvk", baseline_variant=
         startup_b = statistics.median(t["metrics"]["startup_first_content_ms"] for t in b)
         groups[mode] = {"trials_per_variant": len(a), "at_least_three_trials": len(a) >= 3,
             "startup_first_content_ms": {"baseline": startup_a, "candidate": startup_b}, **differences}
+        signals = []
+        display = differences["display_cadence"]
+        if display["available"]:
+            if display["metrics"]["average_fps"]["delta_percent"] < -5:
+                signals.append("Display cadence median fell more than 5%")
+            if display["metrics"]["p99_ms"]["delta_percent"] > 10:
+                signals.append("P99 display gap median increased more than 10%")
+        groups[mode]["regression_signals"] = signals
+        groups[mode]["assessment"] = "insufficient_trials" if len(a) < 3 else "suspected_regression" if signals else "no_threshold_regression_observed" if display["available"] else "inconclusive"
     return {"schema_version": 2, "varied_component": component, "cache_modes": groups,
         "workload_kind": fixed["workload"]["kind"], "stable_promotion": False,
         "source_game_fps_conclusion": None,

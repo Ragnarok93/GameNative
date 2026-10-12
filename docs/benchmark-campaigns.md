@@ -185,7 +185,10 @@ Comparison separates cold/warm medians and ranges and requires matching device,
 workload, telemetry, harness build and fixed component/config pins. It accepts
 one varied component, refuses failed/partial collections and exploration, and
 never automatically promotes a build as stable. Fewer than three trials are
-marked insufficient. Inspect thermal/frequency and coverage evidence before
+marked insufficient. Display-cadence drops over 5% and P99-gap increases over 10%
+are flagged as suspected regressions, with actual fixed guest environment values
+checked across trials. These thresholds are screening signals, not statistical
+proof of a cause. Inspect thermal/frequency and coverage evidence before
 drawing a performance conclusion.
 
 ## Recovery acceptance

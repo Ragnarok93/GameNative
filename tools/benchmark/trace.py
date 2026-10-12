@@ -1,6 +1,7 @@
 """A bounded, uniquely named Perfetto session; never stop somebody else's trace."""
 import subprocess
 import time
+from pathlib import Path
 from .device import LabError
 from .components import sha256
 
@@ -35,7 +36,8 @@ data_sources {{ config {{ name: "linux.ftrace" ftrace_config {{ ftrace_events: "
             return
         try:
             command = self.device.call("shell", "cat", f"/proc/{self.pid}/cmdline")
-            if self.remote not in command or "perfetto" not in command:
+            arguments = command.split("\0")
+            if self.remote not in arguments or Path(arguments[0]).name != "perfetto":
                 raise LabError("Perfetto PID ownership changed; refusing to signal another process")
             self.device.call("shell", "kill", "-TERM", str(self.pid))
             deadline = time.monotonic() + 10

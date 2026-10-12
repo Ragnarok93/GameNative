@@ -20,7 +20,7 @@ class ComparisonTests(unittest.TestCase):
             trial = root / run_id
             trial.mkdir()
             files = {"profile.json": value, "request.json": {"run_id": run_id},
-                "result.json": {"status": "complete", "run_id": run_id, "restored": True, "execution": {"harness_build": "test-build"}},
+                "result.json": {"status": "complete", "run_id": run_id, "restored": True, "execution": {"harness_build": "test-build", "runtime_environment": {"FEX_DISKCACHE":"1"}}},
                 "trial.json": {"variant": "baseline", "cache_mode": mode, "trial_index": 0},
                 "device.json": {"serial": "mock", "fingerprint": "same"},
                 "metrics.json": {"startup_first_content_ms": 100, "eligible_for_regression": True,

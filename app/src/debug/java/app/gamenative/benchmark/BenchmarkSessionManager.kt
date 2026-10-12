@@ -373,6 +373,7 @@ object BenchmarkSessionManager {
         val container = ContainerUtils.getContainer(context, id)
         val config = container.configFile
         check(PluviaApp.xEnvironment == null) { "Cannot restore an active guest" }
+        BenchmarkProcessGuard.assertIdle()
         atomicWrite(config, backup.readBytes())
         check(digest(config) == pending.getString("sha256")) { "Restore verification failed" }
         container.loadData(JSONObject(config.readText()))

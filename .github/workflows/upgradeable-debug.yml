@@ -116,6 +116,7 @@ jobs:
           --tests app.gamenative.diagnostics.LsfgDiagnosticExporterTest
           --tests com.winlator.container.ContainerConfigPersistenceTest
           --tests app.gamenative.diagnostics.BenchmarkRuntimeHooksTest
+          --tests app.gamenative.diagnostics.BenchmarkProcessGuardTest
           --tests app.gamenative.utils.IntentLaunchPatchTest
           --tests app.gamenative.utils.LsfgVkManagerTest
           --tests app.gamenative.utils.LsfgNativePolicyReuseTest

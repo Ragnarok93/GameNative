@@ -287,9 +287,9 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
             PluviaApp.shutdownEnvironment()
             app.gamenative.utils.PerfSampler.stop()
             val retireDeadline = SystemClock.uptimeMillis() + 15000
-            while (ProcessHelper.listSubProcesses().any { it.name.contains("wine", true) || it.name.contains("fex", true) } &&
+            while (BenchmarkProcessGuard.remaining().isNotEmpty() &&
                 SystemClock.uptimeMillis() < retireDeadline) Thread.sleep(100)
-            check(ProcessHelper.listSubProcesses().none { it.name.contains("wine", true) || it.name.contains("fex", true) }) {
+            check(BenchmarkProcessGuard.remaining().isEmpty()) {
                 "Guest processes remain; recovery journal retained"
             }
             instrumentation.waitForIdleSync()

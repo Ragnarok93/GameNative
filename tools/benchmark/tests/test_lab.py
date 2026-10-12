@@ -99,9 +99,9 @@ class LabTests(unittest.TestCase):
                 with Device("test-device").lease():
                     self.fail("Second runner acquired the device")
 
-    def package(self, root, member="d3d11.dll", link=False):
+    def package(self, root, member="d3d11.dll", link=False, component="DXVK", version="2.7.1"):
         path = Path(root) / "test.wcp"
-        profile = {"type": "DXVK", "versionName": "2.7.1", "versionCode": 1,
+        profile = {"type": component, "versionName": version, "versionCode": 1,
                    "description": "test", "files": [{"source": "d3d11.dll", "target": "${system32}/d3d11.dll"}]}
         with tarfile.open(path, "w:xz") as archive:
             data = json.dumps(profile).encode()
@@ -128,6 +128,12 @@ class LabTests(unittest.TestCase):
                 path = self.package(tmp, member, link)
                 with self.assertRaises(LabError):
                     validate_package(path, "dxvk", "2.7.1", sha256(path))
+
+    def test_proton_requires_prefix_metadata_before_transfer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.package(tmp, component="Proton", version="proton-test")
+            with self.assertRaisesRegex(LabError, "metadata"):
+                validate_package(path, "proton", "proton-test", sha256(path))
 
     def test_profile_explicit_false_and_empty_preserved(self):
         root = Path(__file__).resolve().parents[3]

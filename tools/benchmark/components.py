@@ -58,6 +58,20 @@ def validate_package(path, component, version, expected_hash):
             files = profile.get("files")
             if not isinstance(files, list) or not files:
                 raise LabError("Content manifest must list payload files")
+            if component == "proton":
+                wine = profile.get("proton", profile.get("wine"))
+                if not isinstance(wine, dict):
+                    raise LabError("Proton prefix/bin/lib metadata is required")
+                for key in ("binPath", "libPath", "prefixPack"):
+                    value = wine.get(key)
+                    if not isinstance(value, str) or not value or PurePosixPath(value).is_absolute() or ".." in PurePosixPath(value).parts or "\\" in value:
+                        raise LabError("Unsafe Proton metadata path")
+                    normalized = str(PurePosixPath(value))
+                    if key == "prefixPack":
+                        if normalized not in members or not members[normalized].isfile():
+                            raise LabError("Missing Proton prefix archive")
+                    elif not any(name.startswith(normalized.rstrip("/") + "/") for name in members):
+                        raise LabError("Missing Proton bin/lib directory payload")
             for entry in files:
                 source, target = entry.get("source"), entry.get("target")
                 if not isinstance(source, str) or not isinstance(target, str):

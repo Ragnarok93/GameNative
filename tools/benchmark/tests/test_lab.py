@@ -158,6 +158,9 @@ class LabTests(unittest.TestCase):
             path.write_text(json.dumps(profile))
             self.assertIs(load_profile(path)["config"]["showFPS"], False)
             self.assertEqual(load_profile(path)["config"]["envVars"], "")
+            profile["game"].update(source="CUSTOM_GAME", app_id=227938910)
+            path.write_text(json.dumps(profile))
+            self.assertEqual(load_profile(path)["game"]["source"], "CUSTOM_GAME")
             for bad in ({"showFPS": 0}, {"screenSize": "0x0"}, {"unknown": "value"}):
                 invalid = copy.deepcopy(profile)
                 invalid["config"] = bad

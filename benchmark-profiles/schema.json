@@ -14,7 +14,7 @@
     "game": {
       "type": "object", "additionalProperties": false, "required": ["source", "app_id", "container_id"],
       "properties": {
-        "source": {"const": "STEAM"}, "app_id": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["STEAM", "CUSTOM_GAME"]}, "app_id": {"type": "integer", "minimum": 1},
         "container_id": {"type": "string", "pattern": "^BENCHMARK_[A-Za-z0-9_-]+$"}
       }
     },

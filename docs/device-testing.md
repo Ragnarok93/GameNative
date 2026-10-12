@@ -27,6 +27,11 @@ python3 tools/benchmark.py --serial SERIAL recover
 python3 tools/benchmark.py compare --baseline benchmark-results/BASE_ID --candidate benchmark-results/CANDIDATE_ID
 ```
 
+Steam and custom-installed games are supported. For the connected S20+,
+FFVII Remake's existing container is `CUSTOM_GAME_227938910`; use that source
+instead of the Steam example when preparing its sandbox. A custom-game profile
+uses `source: "CUSTOM_GAME"` and the numeric custom ID, not a Steam store ID.
+
 Copy `ff7r-sd865.example.json` and replace every version/source hash with verified
 values. The formal schema is `benchmark-profiles/schema.json`; the CLI enforces
 its Phase 1 constraints without a third-party schema dependency.

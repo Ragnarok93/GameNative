@@ -29,7 +29,7 @@ def main():
     config.add_argument("--profile", required=True)
     sub.add_parser("recover")
     prepare = sub.add_parser("prepare-container")
-    prepare.add_argument("--source", required=True, help="Existing STEAM_ game container ID")
+    prepare.add_argument("--source", required=True, help="Existing STEAM_ or CUSTOM_GAME_ container ID")
     prepare.add_argument("--container", required=True, help="New BENCHMARK_ sandbox ID")
     comparison = sub.add_parser("compare")
     comparison.add_argument("--baseline", required=True)
@@ -64,8 +64,8 @@ def main():
                                              "config": profile["config"]}, args.results, profile)
             elif args.command == "prepare-container":
                 import re
-                if not re.fullmatch(r"STEAM_[0-9]+", args.source) or not re.fullmatch(r"BENCHMARK_[A-Za-z0-9_-]+", args.container):
-                    raise LabError("Preparation requires a STEAM_ source and a new BENCHMARK_ ID")
+                if not re.fullmatch(r"(?:STEAM|CUSTOM_GAME)_[0-9]+", args.source) or not re.fullmatch(r"BENCHMARK_[A-Za-z0-9_-]+", args.container):
+                    raise LabError("Preparation requires a STEAM_/CUSTOM_GAME_ source and a new BENCHMARK_ ID")
                 with device.lease():
                     result = execute(device, {"operation": "prepare", "source_container_id": args.source,
                                              "container_id": args.container}, args.results)

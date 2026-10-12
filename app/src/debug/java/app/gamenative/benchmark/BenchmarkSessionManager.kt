@@ -160,7 +160,7 @@ object BenchmarkSessionManager {
     private fun prepare(context: Context, request: JSONObject): JSONObject {
         val sourceId = request.getString("source_container_id")
         val id = request.getString("container_id")
-        require(sourceId.matches(Regex("STEAM_[0-9]+")))
+        require(sourceId.matches(Regex("(?:STEAM|CUSTOM_GAME)_[0-9]+")))
         require(id.matches(Regex("BENCHMARK_[A-Za-z0-9_-]+")))
         val manager = ContainerManager(context)
         check(manager.hasContainer(sourceId)) { "Source game container does not exist" }

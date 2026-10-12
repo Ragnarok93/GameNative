@@ -6,6 +6,7 @@ import com.winlator.core.envvars.EnvVars;
 import com.winlator.xenvironment.ImageFs;
 
 import java.io.File;
+import java.util.StringJoiner;
 
 public class DXVKHelper {
     public static final String DEFAULT_CONFIG = "version="+DefaultVersion.DXVK+",framerate=0,maxDeviceMemory=0";
@@ -15,13 +16,51 @@ public class DXVKHelper {
         return new KeyValueSet(data);
     }
 
+    /**
+     * Build the actual DXVK_CONFIG environment-variable value, not a shell
+     * command-line argument. DXVK's config.cpp splits environment config on
+     * semicolons, and does not accept an outer quote around the whole value.
+     *
+     * Do not interpret maxDeviceMemory as a Vulkan allocation cap. It only
+     * changes memory reported through DXGI to the game.
+     */
+    public static String buildDxvkConfig(KeyValueSet config) {
+        StringJoiner options = new StringJoiner("; ");
+        String maxDeviceMemory = config.get("maxDeviceMemory");
+        if (!maxDeviceMemory.isEmpty() && !maxDeviceMemory.equals("0")) {
+            options.add("dxgi.maxDeviceMemory = " + maxDeviceMemory);
+            options.add("dxgi.maxSharedMemory = " + maxDeviceMemory);
+        }
+
+        String maxFeatureLevel = config.get("maxFeatureLevel");
+        if (!maxFeatureLevel.isEmpty() && !maxFeatureLevel.equals("0")) {
+            options.add("d3d11.maxFeatureLevel = " + maxFeatureLevel);
+        }
+
+        String customDevice = config.get("customDevice");
+        if (customDevice.contains(":")) {
+            String[] parts = customDevice.split(":", 3);
+            if (parts.length == 3) {
+                options.add("dxgi.customDeviceId = " + parts[0]);
+                options.add("dxgi.customVendorId = " + parts[1]);
+                options.add("d3d9.customDeviceId = " + parts[0]);
+                options.add("d3d9.customVendorId = " + parts[1]);
+                options.add("dxgi.customDeviceDesc = \"" + parts[2] + "\"");
+                options.add("d3d9.customDeviceDesc = \"" + parts[2] + "\"");
+            }
+        }
+        if (config.getBoolean("constantBufferRangeCheck")) {
+            options.add("d3d11.constantBufferRangeCheck = \"True\"");
+        }
+
+        return options.toString();
+    }
+
     public static void setEnvVars(Context context, KeyValueSet config, EnvVars envVars) {
         ImageFs imageFs = ImageFs.find(context);
-        envVars.put("DXVK_STATE_CACHE_PATH", "/data/data/app.gamenative/files/imagefs"+ImageFs.CACHE_PATH);
-        // Preserve the quiet production default, but allow users to capture
-        // DXVK startup failures (including Vulkan feature-level rejection).
-        // Older code unconditionally reset DXVK_LOG_LEVEL=none even when a
-        // container explicitly requested diagnostic logging.
+        envVars.put("DXVK_STATE_CACHE_PATH", "/data/data/app.gamenative/files/imagefs" + ImageFs.CACHE_PATH);
+        // Preserve explicit diagnostic logging in the FF7R Phase0 branch.
+        // The generated DXVK_CONFIG fix must not disable failure-only captures.
         String requestedDxvkLogLevel = envVars.get("DXVK_LOG_LEVEL");
         if ("1".equals(envVars.get("GN_DXVK_DIAGNOSTICS"))) {
             envVars.put("DXVK_LOG_LEVEL", requestedDxvkLogLevel.isEmpty() ? "info" : requestedDxvkLogLevel);
@@ -29,35 +68,15 @@ public class DXVKHelper {
             envVars.put("DXVK_LOG_LEVEL", "none");
         }
 
-        File rootDir = ImageFs.find(context).getRootDir();
-        File dxvkConfigFile = new File(imageFs.config_path+"/dxvk.conf");
-
-        String content = "\"";
-        String maxDeviceMemory = config.get("maxDeviceMemory");
-        if (!maxDeviceMemory.isEmpty() && !maxDeviceMemory.equals("0")) {
-            content += "dxgi.maxDeviceMemory = "+maxDeviceMemory+"\n";
-            content += "dxgi.maxSharedMemory = "+maxDeviceMemory+"\n";
-        }
+        File rootDir = imageFs.getRootDir();
 
         String maxFeatureLevel = config.get("maxFeatureLevel");
-        if (!maxFeatureLevel.isEmpty() && !maxFeatureLevel.equals("0")) {
-            content += "d3d11.maxFeatureLevel = "+maxFeatureLevel+"\n";
+        if (!maxFeatureLevel.isEmpty() && !maxFeatureLevel.equals("0"))
             envVars.put("DXVK_FEATURE_LEVEL", maxFeatureLevel);
-        }
-
 
         String framerate = config.get("framerate");
-        if (!framerate.isEmpty() && !framerate.equals("0")) {
+        if (!framerate.isEmpty() && !framerate.equals("0"))
             envVars.put("DXVK_FRAME_RATE", framerate);
-        }
-        String customDevice = config.get("customDevice");
-        if (customDevice.contains(":")) {
-            String[] parts = customDevice.split(":");
-            content = (((((content + "dxgi.customDeviceId = " + parts[0] + "\n") + "dxgi.customVendorId = " + parts[1] + "\n") + "d3d9.customDeviceId = " + parts[0] + "\n") + "d3d9.customVendorId = " + parts[1] + "\n") + "dxgi.customDeviceDesc = \"" + parts[2] + "\"\n") + "d3d9.customDeviceDesc = \"" + parts[2] + "\"\n";
-        }
-        if (config.getBoolean("constantBufferRangeCheck")) {
-            content = content + "d3d11.constantBufferRangeCheck = \"True\"\n";
-        }
 
         String async = config.get("async");
         if (!async.isEmpty() && !async.equals("0"))
@@ -66,11 +85,9 @@ public class DXVKHelper {
         String asyncCache = config.get("asyncCache");
         if (!asyncCache.isEmpty() && !asyncCache.equals("0"))
             envVars.put("DXVK_GPLASYNCCACHE", "1");
-        content = content + '\"';
 
-
-        envVars.put("DXVK_CONFIG_FILE", rootDir + ImageFs.CONFIG_PATH+"/dxvk.conf");
-        envVars.put("DXVK_CONFIG", content);
+        envVars.put("DXVK_CONFIG_FILE", rootDir + ImageFs.CONFIG_PATH + "/dxvk.conf");
+        envVars.put("DXVK_CONFIG", buildDxvkConfig(config));
     }
 
     public static void setVKD3DEnvVars(Context context, KeyValueSet config, EnvVars envVars) {

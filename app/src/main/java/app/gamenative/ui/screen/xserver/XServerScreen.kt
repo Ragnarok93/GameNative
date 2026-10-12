@@ -458,7 +458,10 @@ fun XServerScreen(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
-    val container = remember(appId) { ContainerUtils.getContainer(context, appId) }
+    val container = remember(appId) {
+        app.gamenative.diagnostics.BenchmarkRuntimeHooks.container(appId)
+            ?: ContainerUtils.getContainer(context, appId)
+    }
     val activity = remember(context) { BrightnessManager.findActivity(context) }
     val persistentState = rememberXServerScreenPersistentState(container)
     val controller = remember(appId, container.id) {
@@ -3427,6 +3430,10 @@ private fun initializeXServerViewRuntime(
         val initialLimit = if (fpsLimiterEnabled) fpsLimiterTarget else 0
         xServerView.setFrameRateLimit(effectiveSourceFpsCap(initialLimit))
         val renderer = xServerView.renderer
+        app.gamenative.diagnostics.BenchmarkRuntimeHooks.renderer(
+            container, if (renderer is VulkanRenderer) renderer.fpsLimit else effectiveSourceFpsCap(initialLimit),
+            renderer.javaClass.simpleName,
+        )
         if (!useGLRenderer && renderer is VulkanRenderer) {
             LsfgVkManager.attachRenderer(
                 renderer = renderer,
@@ -3442,6 +3449,7 @@ private fun initializeXServerViewRuntime(
                 (!container.isTouchscreenMode || currentGestureConfig.showCursorInTouchscreenMode),
         )
         renderer.setOnFrameRenderedListener {
+            app.gamenative.diagnostics.BenchmarkRuntimeHooks.frame(container)
             if (shouldTrackDisplayedFrames.get()) {
                 (context as? Activity)?.runOnUiThread {
                     frameRating?.update()
@@ -3514,7 +3522,9 @@ private fun startWineEnvironmentSetup(
             }
 
             setupExecutor.submit {
+                app.gamenative.diagnostics.BenchmarkRuntimeHooks.setup(container, true)
                 try {
+                    app.gamenative.diagnostics.BenchmarkRuntimeHooks.checkActive(container)
                     val containerManager = ContainerManager(context)
                     // Configure WinHandler with container's input API settings
                     val handler = xServerView.getxServer().winHandler
@@ -3643,6 +3653,7 @@ private fun startWineEnvironmentSetup(
                         onGameLaunchError,
                         isOffline
                     )
+                    app.gamenative.diagnostics.BenchmarkRuntimeHooks.checkActive(container)
 
                     // Autostart performance driver after environment is set up
                     PowerManager.autoStart(container.rootDir)
@@ -3700,6 +3711,7 @@ private fun startWineEnvironmentSetup(
                     PluviaApp.xEnvironment = null
                     onGameLaunchError?.invoke("Failed to setup wine: ${e.message}")
                 } finally {
+                    app.gamenative.diagnostics.BenchmarkRuntimeHooks.setup(container, false)
                     setupExecutor.shutdown()
                 }
             }
@@ -4023,6 +4035,7 @@ private fun setupXEnvironment(
     guestProgramLauncherComponent.envVars = envVars
 
     val gameTerminationCallback = Callback<Int> { status ->
+        app.gamenative.diagnostics.BenchmarkRuntimeHooks.terminated(container, status)
         if (status != 0) {
             Timber.e("Guest program terminated with status: $status")
             onGameLaunchError?.invoke("Game terminated with error status: $status")
@@ -4053,6 +4066,7 @@ private fun setupXEnvironment(
                 PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing prerequisites..."))
             }
             chainPreInstallSteps(nextRemaining)
+            app.gamenative.diagnostics.BenchmarkRuntimeHooks.checkActive(container)
             guestProgramLauncherComponent.start()
         }
     }
@@ -4136,6 +4150,7 @@ private fun setupXEnvironment(
     }
 
     try {
+        app.gamenative.diagnostics.BenchmarkRuntimeHooks.checkActive(container)
         environment.startEnvironmentComponents()
     } catch (e: Exception) {
         Timber.e(e, "Failed to start environment components, cleaning up")

@@ -17,7 +17,9 @@ class BenchmarkBridgeTest {
         require(file.length() in 1L..65536L)
         val request = JSONObject(file.readText())
         val result = try {
-            BenchmarkSessionManager.execute(instrumentation.targetContext, request)
+            BenchmarkSessionManager.execute(instrumentation.targetContext, request) { container, config, lab ->
+                BenchmarkWorkload(instrumentation, container, config, lab).run()
+            }
         } catch (failure: Exception) {
             JSONObject().put("run_id", request.optString("run_id"))
                 .put("status", "failed").put("error", failure.message ?: failure.javaClass.simpleName)

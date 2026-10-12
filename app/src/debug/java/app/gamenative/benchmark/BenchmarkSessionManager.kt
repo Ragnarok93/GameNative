@@ -9,6 +9,7 @@ import app.gamenative.utils.ContainerUtils
 import com.winlator.contents.ContentProfile
 import com.winlator.contents.ContentsManager
 import com.winlator.container.ContainerManager
+import com.winlator.container.Container
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -34,9 +35,23 @@ object BenchmarkSessionManager {
         "wineVersion" to String::class.java,
         "showFPS" to java.lang.Boolean::class.java,
         "wow64Mode" to java.lang.Boolean::class.java,
+        "extraData" to JSONObject::class.java,
+        "containerVariant" to String::class.java,
+        "displayRendererMode" to String::class.java,
+        "execArgs" to String::class.java,
+        "suspendPolicy" to String::class.java,
+        "micEnabled" to java.lang.Boolean::class.java,
+        "launchRealSteam" to java.lang.Boolean::class.java,
+        "launchBionicSteam" to java.lang.Boolean::class.java,
     )
 
-    fun execute(context: Context, request: JSONObject): JSONObject {
+    private val extraKeys = setOf("fpsLimiterEnabled", "fpsLimiterTarget", "lsfgEnabled",
+        "lsfgMultiplier", "lsfgFixedMultiplier", "lsfgFramegenMode", "lsfgAdaptiveTargetFps",
+        "lsfgFlowScale", "lsfgFlowScaleMode", "lsfgAdaptiveFlowPreset", "lsfgPerformanceMode",
+        "lsfgPresentMode", "lsfgFrameQueueEnabled", "lsfgFrameQueueTarget", "lsfgBackend")
+
+    fun execute(context: Context, request: JSONObject,
+        workload: ((Container, JSONObject, File) -> JSONObject)? = null): JSONObject {
         check(context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) { "Debug build required" }
         check(request.getInt("protocol_version") == 1) { "Unsupported protocol" }
         val runId = request.getString("run_id")
@@ -54,6 +69,8 @@ object BenchmarkSessionManager {
                     "install" -> install(context, request)
                     "prepare" -> prepare(context, request)
                     "config-roundtrip" -> roundtrip(context, request, lab, journal)
+                    "run" -> roundtrip(context, request, lab, journal, checkNotNull(workload))
+                    "attest" -> attest(context, request)
                     "recover" -> recover(context, lab, journal)
                     else -> error("Unsupported Phase 1 operation")
                 }
@@ -178,7 +195,25 @@ object BenchmarkSessionManager {
             .put("prefix_initialized", true).put("game_saves_copied", false)
     }
 
-    private fun roundtrip(context: Context, request: JSONObject, lab: File, journal: File): JSONObject {
+    private fun attest(context: Context, request: JSONObject): JSONObject {
+        val records = JSONArray()
+        val artifacts = request.getJSONArray("artifacts")
+        require(artifacts.length() in 1..128)
+        for (index in 0 until artifacts.length()) {
+            val artifact = artifacts.getJSONObject(index)
+            val path = artifact.getString("path")
+            val base = if (path.startsWith("native/")) File(context.applicationInfo.nativeLibraryDir) else context.dataDir
+            val file = File(base, if (path.startsWith("native/")) path.removePrefix("native/") else path).canonicalFile
+            require(file.path.startsWith(base.canonicalPath + "/") && file.isFile) { "Artifact outside allowed roots or missing" }
+            val hash = digest(file)
+            check(hash == artifact.getString("sha256")) { "Artifact hash mismatch: $path" }
+            records.put(JSONObject().put("path", path).put("sha256", hash))
+        }
+        return JSONObject().put("verified_artifacts", records)
+    }
+
+    private fun roundtrip(context: Context, request: JSONObject, lab: File, journal: File,
+        workload: ((Container, JSONObject, File) -> JSONObject)? = null): JSONObject {
         val id = request.getString("container_id")
         require(id.matches(Regex("BENCHMARK_[A-Za-z0-9_-]+"))) { "Only dedicated benchmark containers may be changed" }
         check(ContainerUtils.hasContainer(context, id)) { "Create a dedicated benchmark clone before testing" }
@@ -192,10 +227,38 @@ object BenchmarkSessionManager {
             val expected = configTypes[key] ?: error("Unsupported config key: $key")
             val value = patch.get(key)
             require(expected.isInstance(value)) { "Wrong type for $key" }
-            merged.put(key, value)
+            if (key == "extraData") {
+                val extras = value as JSONObject
+                require(extras.keys().asSequence().all { it in extraKeys }) { "Unsupported benchmark extra" }
+                val existing = merged.optJSONObject(key) ?: JSONObject()
+                extras.keys().forEach { extra ->
+                    require(extras.get(extra) is String) { "Benchmark extras must use canonical string values" }
+                    existing.put(extra, extras.getString(extra))
+                }
+                merged.put(key, existing)
+            } else merged.put(key, value)
         }
         if (patch.has("screenSize")) {
             require(patch.getString("screenSize").matches(Regex("[1-9][0-9]{1,3}x[1-9][0-9]{1,3}")))
+        }
+        if (workload != null) {
+            val token = request.getString("cache_token")
+            require(token.matches(Regex("[a-f0-9]{32}")))
+            val cache = File(container.rootDir, ".benchmark-cache/$token")
+            require(cache.canonicalPath.startsWith(container.rootDir.canonicalPath + "/"))
+            when (request.getString("cache_mode")) {
+                "cold" -> check(!cache.exists() && cache.mkdirs()) { "Cold cache must be a fresh benchmark directory" }
+                "warm" -> check(cache.isDirectory) { "Warm cache requires the paired cold trial" }
+                else -> error("Unknown cache mode")
+            }
+            val env = com.winlator.core.envvars.EnvVars(merged.getString("envVars"))
+            env.put("DXVK_STATE_CACHE_PATH", cache.path)
+            env.put("MESA_SHADER_CACHE_DIR", cache.path)
+            merged.put("envVars", env.toString())
+            // Record the generated paths as part of the requested patch too.
+            patch.put("envVars", env.toString())
+            request.getJSONObject("runtime_expectations").put("DXVK_STATE_CACHE_PATH", cache.path)
+                .put("MESA_SHADER_CACHE_DIR", cache.path)
         }
         val backup = File(lab, "original.json")
         atomicWrite(backup, original)
@@ -215,11 +278,23 @@ object BenchmarkSessionManager {
             effective.put("dxwrapperConfig", readback.getDXWrapperConfig())
             effective.put("wineVersion", readback.getWineVersion())
             patch.keys().forEach { key ->
-                check(effective.has(key) && effective.get(key) == patch.get(key)) { "Config readback mismatch: $key" }
+                if (key == "extraData") {
+                    patch.getJSONObject(key).keys().forEach { extra ->
+                        check(effective.getJSONObject(key).getString(extra) == patch.getJSONObject(key).getString(extra)) {
+                            "Config readback mismatch: $extra"
+                        }
+                    }
+                } else check(effective.has(key) && effective.get(key) == patch.get(key)) { "Config readback mismatch: $key" }
             }
-            return JSONObject().put("container_id", id).put("requested_patch", patch)
+            val result = JSONObject().put("container_id", id).put("requested_patch", patch)
                 .put("persisted_config", persisted).put("effective_container_config", effective).put("runtime_verified", false)
                 .put("original_sha256", digest(backup)).put("restored", true)
+            if (workload != null) {
+                val artifacts = attest(context, request)
+                result.put("binary_attestation", artifacts)
+                result.put("execution", workload(container, request, lab))
+            }
+            return result
         } finally {
             recover(context, lab, journal)
         }
@@ -230,6 +305,7 @@ object BenchmarkSessionManager {
         val pending = JSONObject(journal.readText())
         val id = pending.getString("container_id")
         require(id.matches(Regex("BENCHMARK_[A-Za-z0-9_-]+")))
+        check(!app.gamenative.diagnostics.BenchmarkRuntimeHooks.owns(id)) { "Benchmark runtime must retire before recovery" }
         val backup = File(lab, "original.json")
         check(digest(backup) == pending.getString("sha256")) { "Snapshot hash mismatch; manual recovery required" }
         val container = ContainerUtils.getContainer(context, id)

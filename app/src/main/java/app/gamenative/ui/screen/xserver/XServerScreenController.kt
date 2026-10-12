@@ -238,6 +238,7 @@ internal class XServerScreenController(
             }
 
             override fun onUpdateWindowContent(window: Window) {
+                app.gamenative.diagnostics.BenchmarkRuntimeHooks.content(container, window)
                 if (!xServerState.value.winStarted && window.isApplicationWindow()) {
                     if (shouldShowMouseCursor()) renderer?.setCursorVisible(true)
                     xServerState.value.winStarted = true

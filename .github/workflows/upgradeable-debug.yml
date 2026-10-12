@@ -95,6 +95,7 @@ jobs:
           --tests com.winlator.renderer.VulkanRendererAhbCacheContractTest
           --tests app.gamenative.ui.component.FpsLimiterUtilsTest
           --tests app.gamenative.powercontrol.metrics.FrameTimeRingTest
+          --tests com.winlator.core.DXVKHelperTest
           --tests com.winlator.widget.FrameRatingTest
           --tests com.winlator.widget.XServerFrameRatingRetargetContractTest
 

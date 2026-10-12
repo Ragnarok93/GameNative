@@ -9,6 +9,7 @@ from benchmark.device import Device, LabError, PACKAGE
 from benchmark.orchestrator import execute
 from benchmark.profiles import load_profile
 from benchmark.compare import compare
+from benchmark.backup import backup
 
 
 def main():
@@ -28,6 +29,8 @@ def main():
     config = sub.add_parser("verify-config")
     config.add_argument("--profile", required=True)
     sub.add_parser("recover")
+    backup_parser = sub.add_parser("backup")
+    backup_parser.add_argument("--destination", required=True)
     prepare = sub.add_parser("prepare-container")
     prepare.add_argument("--source", required=True, help="Existing STEAM_ or CUSTOM_GAME_ container ID")
     prepare.add_argument("--container", required=True, help="New BENCHMARK_ sandbox ID")
@@ -46,6 +49,8 @@ def main():
             device = Device(args.serial)
             if args.command == "device-info":
                 result = device.info()
+            elif args.command == "backup":
+                result = backup(device, args.destination)
             elif args.command == "install":
                 package = validate_package(args.package, args.component, args.version, args.sha256)
                 with device.lease():

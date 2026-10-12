@@ -16,6 +16,7 @@ LSFG gitlink and renderer JNI provenance. See `codex-upgradeable-builds.md`.
 
 ```bash
 python3 tools/benchmark.py --serial SERIAL device-info
+python3 tools/benchmark.py --serial SERIAL backup --destination ~/backups/gamenative
 python3 -m unittest discover -s tools/benchmark/tests -v
 python3 tools/benchmark.py validate-profile benchmark-profiles/ff7r-sd865.json
 python3 tools/benchmark.py --serial SERIAL list-components
@@ -31,6 +32,17 @@ Steam and custom-installed games are supported. For the connected S20+,
 FFVII Remake's existing container is `CUSTOM_GAME_227938910`; use that source
 instead of the Steam example when preparing its sandbox. A custom-game profile
 uses `source: "CUSTOM_GAME"` and the numeric custom ID, not a Steam store ID.
+
+`backup` is read-only and works before the instrumentation APK is installed.
+Close GameNative and all guest processes first. It captures the shared container
+home tree, datastore, databases (including any WAL), and shared preferences in a
+private host archive. It verifies archive completeness, SHA-256, and hashes of
+container configs, database/settings files and `.sav` files. Failed transfers
+remain `.partial`; they are not reported as completed backups. Reserve the device
+for the copy. Symlinks are retained, not followed: external game folders or saves
+behind external links need their own backup. Inspect `manifest.json` for link
+targets before treating the backup as complete coverage. This command does not
+implement restoration or copy installed content packages and Proton bases.
 
 Copy `ff7r-sd865.example.json` and replace every version/source hash with verified
 values. The formal schema is `benchmark-profiles/schema.json`; the CLI enforces

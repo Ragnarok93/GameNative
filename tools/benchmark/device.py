@@ -59,7 +59,7 @@ class Device:
             "abi": self.call("shell", "getprop", "ro.product.cpu.abilist"),
         }
 
-    def assert_idle_debug(self):
+    def assert_idle_debug(self, require_bridge=True):
         # Instrumentation can kill an existing target process: never invoke it
         # while the app or guest runtime is active, including read-only commands.
         # run-as both proves a debuggable target and obtains the real Linux UID.
@@ -74,9 +74,10 @@ class Device:
             owner, name = fields
             if owner == uid or re.search(r"app\.gamenative|wine|wineserver|FEX|fex|box64|box86", name):
                 raise LabError("Close GameNative and all guest processes before using the bridge")
-        instrumentation = self.call("shell", "pm", "list", "instrumentation")
-        if not any(BRIDGE in line and "(target=app.gamenative)" in line for line in instrumentation.splitlines()):
-            raise LabError("Matching debug androidTest APK is not installed")
+        if require_bridge:
+            instrumentation = self.call("shell", "pm", "list", "instrumentation")
+            if not any(BRIDGE in line and "(target=app.gamenative)" in line for line in instrumentation.splitlines()):
+                raise LabError("Matching debug androidTest APK is not installed")
 
     def bridge(self, request, timeout=180):
         run_id = request["run_id"]

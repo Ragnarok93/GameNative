@@ -58,7 +58,7 @@ def main():
                     staged = f"cache/lab-component-{uuid.uuid4().hex}.wcp"
                     try:
                         with open(package["path"], "rb") as stream:
-                            device.call("exec-out", "run-as", PACKAGE, "sh", "-c", f"'cat > {staged}'", stream=stream, timeout=180)
+                            device.call("shell", "-T", "run-as", PACKAGE, "sh", "-c", f"'cat > {staged}'", stream=stream, timeout=180)
                         result = execute(device, {"operation": "install", "package": staged, **package}, args.results)
                     finally:
                         device.call("shell", "run-as", PACKAGE, "rm", "-f", staged)

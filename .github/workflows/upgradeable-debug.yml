@@ -32,6 +32,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Validate device lab host tools
+        run: python3 -m unittest discover -s tools/benchmark/tests -v
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
@@ -133,7 +136,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew             -PupgradeSafeDebugSigning=true             -PciVersionCode="$VERSION_CODE"             -PciVersionName="$VERSION_NAME"             :app:assembleLegacyDebug             --no-daemon
+          ./gradlew             -PupgradeSafeDebugSigning=true             -PciVersionCode="$VERSION_CODE"             -PciVersionName="$VERSION_NAME"             :app:assembleLegacyDebug :app:assembleLegacyDebugAndroidTest             --no-daemon
 
       - name: Verify update identity and native provenance
         shell: bash
@@ -206,6 +209,18 @@ jobs:
           [[ "$expected_cert" == "$UPGRADEABLE_DEBUG_SIGNER_SHA256" ]]
           [[ "$actual_cert" == "$UPGRADEABLE_DEBUG_SIGNER_SHA256" ]]
 
+          # Publish the lab bridge from the same source/build and signing identity.
+          mapfile -t test_apks < <(find app/build/outputs/apk/androidTest/legacy/debug -maxdepth 1 -type f -name '*.apk' -print)
+          [[ ${#test_apks[@]} -eq 1 ]]
+          staged_test_apk="$stage/GameNative-lab-instrumentation.apk"
+          cp "${test_apks[0]}" "$staged_test_apk"
+          test_badging="$("$aapt" dump badging "$staged_test_apk" | head -n 1)"
+          [[ "$test_badging" == *"name='app.gamenative.test'"* ]]
+          "$apksigner" verify --verbose --print-certs "$staged_test_apk" > "$stage/instrumentation-signing-report.txt"
+          test_cert="$(sed -n 's/^.*certificate SHA-256 digest: //p' "$stage/instrumentation-signing-report.txt" | head -n 1 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          [[ "$test_cert" == "$UPGRADEABLE_DEBUG_SIGNER_SHA256" ]]
+          sha256sum "$staged_test_apk" > "$stage/GameNative-lab-instrumentation.apk.sha256"
+
           {
             echo "lineage=$UPGRADEABLE_DEBUG_LINEAGE"
             echo "game_commit=$GITHUB_SHA"
@@ -244,6 +259,9 @@ jobs:
             ${{ runner.temp }}/gamenative-upgradeable-debug/GameNative-upgradeable-debug.apk.sha256
             ${{ runner.temp }}/gamenative-upgradeable-debug/build-metadata.txt
             ${{ runner.temp }}/gamenative-upgradeable-debug/signing-report.txt
+            ${{ runner.temp }}/gamenative-upgradeable-debug/GameNative-lab-instrumentation.apk
+            ${{ runner.temp }}/gamenative-upgradeable-debug/GameNative-lab-instrumentation.apk.sha256
+            ${{ runner.temp }}/gamenative-upgradeable-debug/instrumentation-signing-report.txt
           if-no-files-found: error
           retention-days: 14
 

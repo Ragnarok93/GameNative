@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "ff7r-sd865",
+  "device": {"model": "SM-G986U1", "soc": "SM8250"},
+  "game": {"source": "STEAM", "app_id": 1462040, "container_id": "BENCHMARK_FF7R"},
+  "pins": {
+    "dxvk": {"version": "2.7.1", "source_sha256": "REPLACE_WITH_VERIFIED_SOURCE_HASH"},
+    "fex": {"version": "2610", "source_sha256": "REPLACE_WITH_VERIFIED_SOURCE_HASH"},
+    "turnip": {"version": "T30", "source_sha256": "REPLACE_WITH_VERIFIED_SOURCE_HASH"},
+    "proton": {"version": "REPLACE_WITH_INSTALLED_VERSION", "source_sha256": "REPLACE_WITH_VERIFIED_SOURCE_HASH"},
+    "lsfg": {"version": "REPLACE_WITH_PINNED_NATIVE_REVISION", "source_sha256": "REPLACE_WITH_VERIFIED_SOURCE_HASH"}
+  },
+  "config": {"screenSize": "1152x648", "showFPS": false},
+  "workload": {
+    "description": "Proposed reference: replace with a fixed save, route and readiness signal before gameplay automation",
+    "source_fps": 30,
+    "trials": 3,
+    "cache_modes": ["cold", "warm"]
+  }
+}

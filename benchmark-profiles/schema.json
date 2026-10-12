@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GameNative Phase 1 profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "device", "game", "pins", "config", "workload"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "name": {"type": "string", "minLength": 1},
+    "device": {
+      "type": "object", "additionalProperties": false, "required": ["model", "soc"],
+      "properties": {"model": {"type": "string", "minLength": 1}, "soc": {"type": "string", "minLength": 1}}
+    },
+    "game": {
+      "type": "object", "additionalProperties": false, "required": ["source", "app_id", "container_id"],
+      "properties": {
+        "source": {"const": "STEAM"}, "app_id": {"type": "integer", "minimum": 1},
+        "container_id": {"type": "string", "pattern": "^BENCHMARK_[A-Za-z0-9_-]+$"}
+      }
+    },
+    "pins": {
+      "type": "object", "additionalProperties": false, "required": ["dxvk", "fex", "turnip", "proton", "lsfg"],
+      "properties": {
+        "dxvk": {"$ref": "#/$defs/pin"}, "fex": {"$ref": "#/$defs/pin"},
+        "turnip": {"$ref": "#/$defs/pin"}, "proton": {"$ref": "#/$defs/pin"}, "lsfg": {"$ref": "#/$defs/pin"}
+      }
+    },
+    "config": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {
+        "screenSize": {"type": "string", "pattern": "^[1-9][0-9]{1,3}x[1-9][0-9]{1,3}$"},
+        "envVars": {"type": "string"}, "cpuList": {"type": "string"}, "cpuListWoW64": {"type": "string"},
+        "graphicsDriver": {"type": "string"}, "graphicsDriverVersion": {"type": "string"},
+        "graphicsDriverConfig": {"type": "string"}, "rendererPresentMode": {"type": "string"},
+        "dxwrapper": {"type": "string"}, "dxwrapperConfig": {"type": "string"},
+        "emulator": {"type": "string"}, "fexcoreVersion": {"type": "string"}, "fexcorePreset": {"type": "string"},
+        "wineVersion": {"type": "string"}, "showFPS": {"type": "boolean"}, "wow64Mode": {"type": "boolean"}
+      }
+    },
+    "workload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["description", "source_fps", "trials", "cache_modes"],
+      "properties": {
+        "description": {"type": "string", "minLength": 1},
+        "source_fps": {"type": "integer", "minimum": 1}, "trials": {"type": "integer", "minimum": 1},
+        "cache_modes": {"const": ["cold", "warm"]}
+      }
+    }
+  },
+  "$defs": {
+    "pin": {
+      "type": "object", "additionalProperties": false, "required": ["version", "source_sha256"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$", "not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}}
+      }
+    }
+  }
+}

@@ -14,7 +14,7 @@ class BenchmarkBridgeTest {
         val path = InstrumentationRegistry.getArguments().getString("lab_request") ?: return
         require(path.matches(Regex("cache/lab-[a-f0-9]{32}\\.json")))
         val file = File(instrumentation.targetContext.dataDir, path)
-        require(file.length() in 1..65536)
+        require(file.length() in 1L..65536L)
         val request = JSONObject(file.readText())
         val result = try {
             BenchmarkSessionManager.execute(instrumentation.targetContext, request)

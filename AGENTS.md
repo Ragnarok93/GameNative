@@ -15,7 +15,7 @@ Before installing an APK or making device-wide changes, check for explicit user
 authorization in the current session; ask only if it has not already been given.
 Never interrupt an active game, mutate its container, or expose lab commands
 through exported production activities/receivers. Phase 1 configuration checks
-are limited to dedicated `BENCHMARK_` clones while the device is idle.
+are limited to dedicated `BENCHMARK_` sandboxes while the device is idle.
 
 Report requested configuration separately from persisted readback and effective
 runtime configuration. Phase 1 produces no FPS/frametime claims. Stable promotion

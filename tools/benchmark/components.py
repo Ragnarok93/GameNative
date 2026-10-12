@@ -56,7 +56,7 @@ def validate_package(path, component, version, expected_hash):
             if type(profile.get("versionCode")) is not int or profile["versionCode"] < 0:
                 raise LabError("Invalid content versionCode")
             files = profile.get("files")
-            if not isinstance(files, list) or not files:
+            if not isinstance(files, list) or (not files and component != "proton"):
                 raise LabError("Content manifest must list payload files")
             if component == "proton":
                 wine = profile.get("proton", profile.get("wine"))

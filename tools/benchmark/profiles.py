@@ -28,7 +28,7 @@ def load_profile(path):
         raise LabError("Game requires source, app_id, container_id")
     if profile["game"]["source"] != "STEAM" or type(profile["game"]["app_id"]) is not int or profile["game"]["app_id"] <= 0:
         raise LabError("Phase 1 profiles require a positive Steam app ID")
-    # Phase 1 does not touch the active game container. Prepare a dedicated clone in the UI.
+    # Phase 1 does not touch the active game container. Prepare a dedicated sandbox.
     if not re.fullmatch(r"BENCHMARK_[A-Za-z0-9_-]+", profile["game"]["container_id"]):
         raise LabError("A dedicated BENCHMARK_ container is required")
     if set(profile["pins"]) != {"dxvk", "fex", "turnip", "proton", "lsfg"}:

@@ -14,7 +14,7 @@ Use `tools/benchmark.py` rather than writing container files through ADB.
 - Use the persistent upgradeable debug identity and a matching instrumentation
   APK from the same build. Check existing user authorization before APK installs
   or device-wide changes; ask only when it is missing.
-- Configuration checks use a dedicated `BENCHMARK_` container clone. On failure,
+- Use `prepare-container` for a dedicated `BENCHMARK_` configuration sandbox. On failure,
   retain JSONL evidence and run `recover` while idle before another mutation.
 - Record workload/save/route/readiness and separate cold/warm trials when adding
   gameplay testing. Do not clear production shader caches or app data.

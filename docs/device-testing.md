@@ -19,6 +19,7 @@ python3 tools/benchmark.py --serial SERIAL device-info
 python3 -m unittest discover -s tools/benchmark/tests -v
 python3 tools/benchmark.py validate-profile benchmark-profiles/ff7r-sd865.json
 python3 tools/benchmark.py --serial SERIAL list-components
+python3 tools/benchmark.py --serial SERIAL prepare-container --source STEAM_1462040 --container BENCHMARK_FF7R
 python3 tools/benchmark.py --serial SERIAL install --component dxvk \
   --package artifacts/candidate.wcp --version UNIQUE_VERSION --sha256 VERIFIED_HASH
 python3 tools/benchmark.py --serial SERIAL verify-config --profile benchmark-profiles/ff7r-sd865.json
@@ -27,15 +28,21 @@ python3 tools/benchmark.py compare --baseline benchmark-results/BASE_ID --candid
 ```
 
 Copy `ff7r-sd865.example.json` and replace every version/source hash with verified
-values. The proposed 1152x648 / 30 FPS / three cold and warm trial settings are
+values. The formal schema is `benchmark-profiles/schema.json`; the CLI enforces
+its Phase 1 constraints without a third-party schema dependency.
+The proposed 1152x648 / 30 FPS / three cold and warm trial settings are
 workload metadata, not applied gameplay settings or measurements. Phase 1 only
 validates supported configuration fields; it does not yet resolve or prove every
 FEX/LSFG/Proton setting. `source_sha256` pins document source provenance; only
 the explicitly supplied WCP package hash is verified against transferred bytes.
 Pins are not claimed as installed-runtime attestations.
 
-Create a dedicated clone named `BENCHMARK_FF7R` using the app's container tools;
-keep the production game container unchanged. Close GameNative and all guests
+Use `prepare-container` to initialize a dedicated `BENCHMARK_FF7R` configuration
+sandbox through `ContainerManager.createContainer`, using the source container's
+settings and a separate initialized prefix. This does not copy game saves or
+produce a playable benchmark scenario. Existing benchmark IDs are never reused
+or replaced by preparation. Keep the production game container unchanged.
+Close GameNative and all guests
 yourself before calling the bridge. The host rejects active app/guest processes
 because Android instrumentation may kill a running target. Reserve the device
 for the operation; concurrent interactive launches and other ADB hosts are not
@@ -71,7 +78,8 @@ It is configuration recovery, not a backup of game saves or a running process.
 4. Try a corrupt hash and wrong component/version WCP; no install should occur.
    Install a unique known-good DXVK candidate and confirm returned registration.
    Repeat the same version and verify rejection rather than replacement.
-5. On the dedicated clone, check explicit false/empty/default-valued patches,
+5. Prepare the dedicated sandbox and verify the source config hash is unchanged.
+   On that sandbox, check explicit false/empty/default-valued patches,
    saved readback, and identical original/restored config SHA-256. Confirm the
    production container and saves are unchanged.
 6. Interrupt configuration instrumentation after the journal exists. New

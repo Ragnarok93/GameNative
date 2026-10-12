@@ -8,6 +8,7 @@ import app.gamenative.PluviaApp
 import app.gamenative.utils.ContainerUtils
 import com.winlator.contents.ContentProfile
 import com.winlator.contents.ContentsManager
+import com.winlator.container.ContainerManager
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -51,6 +52,7 @@ object BenchmarkSessionManager {
                 val result = when (operation) {
                     "list" -> JSONObject().put("components", listContents(context))
                     "install" -> install(context, request)
+                    "prepare" -> prepare(context, request)
                     "config-roundtrip" -> roundtrip(context, request, lab, journal)
                     "recover" -> recover(context, lab, journal)
                     else -> error("Unsupported Phase 1 operation")
@@ -155,6 +157,27 @@ object BenchmarkSessionManager {
         }
     }
 
+    private fun prepare(context: Context, request: JSONObject): JSONObject {
+        val sourceId = request.getString("source_container_id")
+        val id = request.getString("container_id")
+        require(sourceId.matches(Regex("STEAM_[0-9]+")))
+        require(id.matches(Regex("BENCHMARK_[A-Za-z0-9_-]+")))
+        val manager = ContainerManager(context)
+        check(manager.hasContainer(sourceId)) { "Source game container does not exist" }
+        check(!manager.hasContainer(id)) { "Benchmark container already exists" }
+        val source = manager.getContainerById(sourceId)
+        val before = digest(source.configFile)
+        val data = JSONObject(source.configFile.readText()).put("name", id)
+        // Existing manager initializes a separate prefix. Never copy/rename the
+        // source prefix or saves, and never silently reuse a production ID.
+        val created = checkNotNull(manager.createContainer(id, data)) { "Could not initialize benchmark container" }
+        check(created.configFile.isFile && JSONObject(created.configFile.readText()).getString("id") == id)
+        check(digest(source.configFile) == before) { "Source configuration changed during preparation" }
+        return JSONObject().put("container_id", id).put("source_container_id", sourceId)
+            .put("source_config_sha256", before).put("config_sha256", digest(created.configFile))
+            .put("prefix_initialized", true).put("game_saves_copied", false)
+    }
+
     private fun roundtrip(context: Context, request: JSONObject, lab: File, journal: File): JSONObject {
         val id = request.getString("container_id")
         require(id.matches(Regex("BENCHMARK_[A-Za-z0-9_-]+"))) { "Only dedicated benchmark containers may be changed" }
@@ -182,12 +205,20 @@ object BenchmarkSessionManager {
             check(PluviaApp.xEnvironment == null) { "Guest started during validation" }
             container.loadData(merged)
             check(container.saveDataChecked()) { "Could not save test config" }
-            val effective = JSONObject(config.readText())
+            val persisted = JSONObject(config.readText())
+            val effective = JSONObject(persisted.toString())
+            // Container's serializer omits these default/empty values. Reload
+            // through the manager to verify their meaning rather than reject a
+            // deliberate empty patch or infer it from the requested value.
+            val readback = ContainerUtils.getContainer(context, id)
+            effective.put("graphicsDriverConfig", readback.getGraphicsDriverConfig())
+            effective.put("dxwrapperConfig", readback.getDXWrapperConfig())
+            effective.put("wineVersion", readback.getWineVersion())
             patch.keys().forEach { key ->
                 check(effective.has(key) && effective.get(key) == patch.get(key)) { "Config readback mismatch: $key" }
             }
             return JSONObject().put("container_id", id).put("requested_patch", patch)
-                .put("effective_persisted_config", effective).put("runtime_verified", false)
+                .put("persisted_config", persisted).put("effective_container_config", effective).put("runtime_verified", false)
                 .put("original_sha256", digest(backup)).put("restored", true)
         } finally {
             recover(context, lab, journal)

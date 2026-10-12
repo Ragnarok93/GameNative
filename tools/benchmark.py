@@ -28,6 +28,9 @@ def main():
     config = sub.add_parser("verify-config")
     config.add_argument("--profile", required=True)
     sub.add_parser("recover")
+    prepare = sub.add_parser("prepare-container")
+    prepare.add_argument("--source", required=True, help="Existing STEAM_ game container ID")
+    prepare.add_argument("--container", required=True, help="New BENCHMARK_ sandbox ID")
     comparison = sub.add_parser("compare")
     comparison.add_argument("--baseline", required=True)
     comparison.add_argument("--candidate", required=True)
@@ -59,6 +62,13 @@ def main():
                 with device.lease():
                     result = execute(device, {"operation": "config-roundtrip", "container_id": profile["game"]["container_id"],
                                              "config": profile["config"]}, args.results, profile)
+            elif args.command == "prepare-container":
+                import re
+                if not re.fullmatch(r"STEAM_[0-9]+", args.source) or not re.fullmatch(r"BENCHMARK_[A-Za-z0-9_-]+", args.container):
+                    raise LabError("Preparation requires a STEAM_ source and a new BENCHMARK_ ID")
+                with device.lease():
+                    result = execute(device, {"operation": "prepare", "source_container_id": args.source,
+                                             "container_id": args.container}, args.results)
             else:
                 with device.lease():
                     result = execute(device, {"operation": "recover" if args.command == "recover" else "list"}, args.results)

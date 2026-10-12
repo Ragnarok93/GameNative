@@ -60,7 +60,7 @@ class LsfgNativeActivationInteractionAuditTest {
     private fun commit(snapshot: LsfgVkManager.NativeRuntimeConfigSnapshot): Boolean =
         LsfgVkManager::class.java.declaredMethods.single { it.name == "commitNativeApply" }
             .apply { isAccessible = true }
-            .invoke(LsfgVkManager, renderer, container, snapshot, 30L, initialized, false, null) as Boolean
+            .invoke(LsfgVkManager, renderer, container, snapshot, 30L, initialized, false, null, snapshot) as Boolean
 
     @Before fun setup() {
         for (field in LsfgVkManager::class.java.declaredFields) {

@@ -85,8 +85,11 @@ class Device:
             raise LabError("Invalid run ID")
         self.assert_idle_debug()
         path = f"cache/lab-{run_id}.json"
+        payload = json.dumps(request, allow_nan=False).encode()
+        if not 1 <= len(payload) <= 65536:
+            raise LabError("Bridge request exceeds the instrumentation size limit")
         self.call("shell", "-T", "run-as", PACKAGE, "tee", path,
-                  data=json.dumps(request, allow_nan=False).encode())
+                  data=payload)
         try:
             output = self.call(
                 "shell", "am", "instrument", "-w", "-r", "-e", "class",

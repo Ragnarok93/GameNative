@@ -10,6 +10,10 @@ import app.gamenative.ui.theme.PluviaTheme
 
 /** Non-exported. A live instrumentation-owned session is mandatory. */
 class BenchmarkGameActivity : ComponentActivity() {
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        val consumed = PluviaApp.events.emit(app.gamenative.events.AndroidEvent.KeyEvent(event)) { results -> results.any { it } } == true
+        return consumed || super.dispatchKeyEvent(event)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val appId = checkNotNull(intent.getStringExtra("lab_app_id"))

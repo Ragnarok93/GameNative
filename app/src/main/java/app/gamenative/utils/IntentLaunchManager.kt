@@ -29,6 +29,7 @@ object IntentLaunchManager {
     data class LaunchRequest(
         val appId: String,
         val containerConfig: ContainerData? = null,
+        val suppliedConfigKeys: Set<String>? = null,
     )
 
     fun parseLaunchIntent(intent: Intent): LaunchRequest? {
@@ -81,12 +82,16 @@ object IntentLaunchManager {
         val appId = "${gameSource}_$gameId"
         Timber.d("[IntentLaunchManager]: Converted to appId: $appId")
 
-        return LaunchRequest(appId, containerConfig)
+        val suppliedKeys = if (containerConfig != null) intent.getStringExtra(EXTRA_CONTAINER_CONFIG)?.let {
+            JSONObject(it).keys().asSequence().toSet()
+        } else null
+        return LaunchRequest(appId, containerConfig, suppliedKeys)
     }
 
-    fun applyTemporaryConfigOverride(context: Context, appId: String, configOverride: ContainerData) {
+    fun applyTemporaryConfigOverride(context: Context, appId: String, configOverride: ContainerData,
+        suppliedKeys: Set<String>? = null) {
         try {
-            TemporaryConfigStore.setOverride(appId, configOverride)
+            TemporaryConfigStore.setOverride(appId, configOverride, suppliedKeys)
 
             if (ContainerUtils.hasContainer(context, appId)) {
                 val container = ContainerUtils.getContainer(context, appId)
@@ -124,7 +129,7 @@ object IntentLaunchManager {
             val override = TemporaryConfigStore.getOverride(appId)
 
             when {
-                override != null && baseConfig != null -> mergeConfigurations(baseConfig, override)
+                override != null && baseConfig != null -> mergeConfigurations(baseConfig, override, TemporaryConfigStore.getSuppliedKeys(appId))
                 override != null -> override
                 else -> baseConfig
             }
@@ -269,7 +274,8 @@ object IntentLaunchManager {
         return config
     }
 
-    private fun mergeConfigurations(base: ContainerData, override: ContainerData): ContainerData {
+    internal fun mergeConfigurations(base: ContainerData, override: ContainerData, suppliedKeys: Set<String>? = null): ContainerData {
+        if (suppliedKeys != null) return explicitPatch(base, override, suppliedKeys)
         // Quick return if no actual overrides
         if (override == base) return base
 
@@ -344,16 +350,47 @@ object IntentLaunchManager {
             useGLSL = if (override.useGLSL != "enabled") override.useGLSL else base.useGLSL,
         )
     }
+
+    private fun explicitPatch(base: ContainerData, patch: ContainerData, keys: Set<String>): ContainerData {
+        fun <T> select(key: String, original: T, value: T): T = if (key in keys) value else original
+        return base.copy(
+            name = select("name", base.name, patch.name), screenSize = select("screenSize", base.screenSize, patch.screenSize),
+            envVars = select("envVars", base.envVars, patch.envVars), graphicsDriver = select("graphicsDriver", base.graphicsDriver, patch.graphicsDriver),
+            graphicsDriverVersion = select("graphicsDriverVersion", base.graphicsDriverVersion, patch.graphicsDriverVersion),
+            dxwrapper = select("dxwrapper", base.dxwrapper, patch.dxwrapper), dxwrapperConfig = select("dxwrapperConfig", base.dxwrapperConfig, patch.dxwrapperConfig),
+            audioDriver = select("audioDriver", base.audioDriver, patch.audioDriver), wincomponents = select("wincomponents", base.wincomponents, patch.wincomponents),
+            drives = select("drives", base.drives, patch.drives), execArgs = select("execArgs", base.execArgs, patch.execArgs),
+            executablePath = select("executablePath", base.executablePath, patch.executablePath), installPath = select("installPath", base.installPath, patch.installPath),
+            showFPS = select("showFPS", base.showFPS, patch.showFPS), launchRealSteam = select("launchRealSteam", base.launchRealSteam, patch.launchRealSteam),
+            launchBionicSteam = select("launchBionicSteam", base.launchBionicSteam, patch.launchBionicSteam),
+            cpuList = select("cpuList", base.cpuList, patch.cpuList), cpuListWoW64 = select("cpuListWoW64", base.cpuListWoW64, patch.cpuListWoW64),
+            wow64Mode = select("wow64Mode", base.wow64Mode, patch.wow64Mode), startupSelection = select("startupSelection", base.startupSelection, patch.startupSelection),
+            box86Version = select("box86Version", base.box86Version, patch.box86Version), box64Version = select("box64Version", base.box64Version, patch.box64Version),
+            box86Preset = select("box86Preset", base.box86Preset, patch.box86Preset), box64Preset = select("box64Preset", base.box64Preset, patch.box64Preset),
+            desktopTheme = select("desktopTheme", base.desktopTheme, patch.desktopTheme), csmt = select("csmt", base.csmt, patch.csmt),
+            videoPciDeviceID = select("videoPciDeviceID", base.videoPciDeviceID, patch.videoPciDeviceID),
+            offScreenRenderingMode = select("offScreenRenderingMode", base.offScreenRenderingMode, patch.offScreenRenderingMode),
+            strictShaderMath = select("strictShaderMath", base.strictShaderMath, patch.strictShaderMath), videoMemorySize = select("videoMemorySize", base.videoMemorySize, patch.videoMemorySize),
+            mouseWarpOverride = select("mouseWarpOverride", base.mouseWarpOverride, patch.mouseWarpOverride),
+            sdlControllerAPI = select("sdlControllerAPI", base.sdlControllerAPI, patch.sdlControllerAPI), enableXInput = select("enableXInput", base.enableXInput, patch.enableXInput),
+            enableDInput = select("enableDInput", base.enableDInput, patch.enableDInput), dinputMapperType = select("dinputMapperType", base.dinputMapperType, patch.dinputMapperType),
+            disableMouseInput = select("disableMouseInput", base.disableMouseInput, patch.disableMouseInput), suspendPolicy = select("suspendPolicy", base.suspendPolicy, patch.suspendPolicy),
+            shaderBackend = select("shaderBackend", base.shaderBackend, patch.shaderBackend), useGLSL = select("useGLSL", base.useGLSL, patch.useGLSL),
+        )
+    }
 }
 
 private object TemporaryConfigStore {
     private val overrides = mutableMapOf<String, ContainerData>()
     private val originalConfigs = mutableMapOf<String, ContainerData>()
+    private val suppliedKeys = mutableMapOf<String, Set<String>>()
     private val lock = Any()
 
-    fun setOverride(appId: String, config: ContainerData) = synchronized(lock) {
+    fun setOverride(appId: String, config: ContainerData, keys: Set<String>?) = synchronized(lock) {
         overrides[appId] = config
+        if (keys == null) suppliedKeys.remove(appId) else suppliedKeys[appId] = keys.toSet()
     }
+    fun getSuppliedKeys(appId: String): Set<String>? = synchronized(lock) { suppliedKeys[appId] }
 
     fun getOverride(appId: String): ContainerData? = synchronized(lock) {
         overrides[appId]
@@ -362,6 +399,7 @@ private object TemporaryConfigStore {
     fun clearOverride(appId: String) = synchronized(lock) {
         overrides.remove(appId)
         originalConfigs.remove(appId)
+        suppliedKeys.remove(appId)
     }
 
     fun hasOverride(appId: String): Boolean = synchronized(lock) {
@@ -379,5 +417,6 @@ private object TemporaryConfigStore {
     fun clearAll() = synchronized(lock) {
         overrides.clear()
         originalConfigs.clear()
+        suppliedKeys.clear()
     }
 }

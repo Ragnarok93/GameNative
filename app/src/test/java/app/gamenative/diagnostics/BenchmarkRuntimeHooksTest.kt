@@ -21,6 +21,7 @@ class BenchmarkRuntimeHooksTest {
         override fun frame() { frames++ }
         override fun renderer(sourceCap: Int, renderer: String) {}
         override fun terminated(status: Int) {}
+        override fun controls(server: com.winlator.xserver.XServer, stop: () -> Unit) {}
     }
 
     @Test fun ownershipDoesNotRedirectOrSampleUnrelatedGames() {

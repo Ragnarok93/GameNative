@@ -71,6 +71,7 @@ object BenchmarkSessionManager {
                     "config-roundtrip" -> roundtrip(context, request, lab, journal)
                     "run" -> roundtrip(context, request, lab, journal, checkNotNull(workload))
                     "attest" -> attest(context, request)
+                    "inspect" -> inspect(context, request)
                     "recover" -> recover(context, lab, journal)
                     else -> error("Unsupported Phase 1 operation")
                 }
@@ -195,7 +196,7 @@ object BenchmarkSessionManager {
             .put("prefix_initialized", true).put("game_saves_copied", false)
     }
 
-    private fun attest(context: Context, request: JSONObject): JSONObject {
+    fun attest(context: Context, request: JSONObject): JSONObject {
         val records = JSONArray()
         val artifacts = request.getJSONArray("artifacts")
         require(artifacts.length() in 1..128)
@@ -212,9 +213,22 @@ object BenchmarkSessionManager {
         return JSONObject().put("verified_artifacts", records)
     }
 
+    private fun inspect(context: Context, request: JSONObject): JSONObject {
+        val id = request.getString("container_id")
+        require(id.matches(Regex("BENCHMARK_[A-Za-z0-9_-]+")))
+        val container = ContainerUtils.getContainer(context, id)
+        val file = container.configFile.canonicalFile
+        require(file.path.startsWith(context.dataDir.canonicalPath + "/"))
+        return JSONObject().put("config_sha256", digest(file))
+            .put("config_path", file.path.removePrefix(context.dataDir.canonicalPath + "/"))
+            .put("config", JSONObject(file.readText()))
+    }
+
     private fun roundtrip(context: Context, request: JSONObject, lab: File, journal: File,
         workload: ((Container, JSONObject, File) -> JSONObject)? = null): JSONObject {
         val id = request.getString("container_id")
+        val fault = request.optString("fault", "")
+        require(fault.isEmpty() || (workload == null && fault == "process-death-after-write"))
         require(id.matches(Regex("BENCHMARK_[A-Za-z0-9_-]+"))) { "Only dedicated benchmark containers may be changed" }
         check(ContainerUtils.hasContainer(context, id)) { "Create a dedicated benchmark clone before testing" }
         val container = ContainerUtils.getContainer(context, id)
@@ -268,6 +282,7 @@ object BenchmarkSessionManager {
             check(PluviaApp.xEnvironment == null) { "Guest started during validation" }
             container.loadData(merged)
             check(container.saveDataChecked()) { "Could not save test config" }
+            if (fault == "process-death-after-write") android.os.Process.killProcess(android.os.Process.myPid())
             val persisted = JSONObject(config.readText())
             val effective = JSONObject(persisted.toString())
             // Container's serializer omits these default/empty values. Reload

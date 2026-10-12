@@ -535,7 +535,7 @@ fun PluviaMain(
                 is GameResolutionResult.Success -> {
                     if (launchRequest.containerConfig != null) {
                         IntentLaunchManager.applyTemporaryConfigOverride(
-                            context, launchRequest.appId, launchRequest.containerConfig,
+                            context, launchRequest.appId, launchRequest.containerConfig, launchRequest.suppliedConfigKeys,
                         )
                     }
                     launchIntentApp(resolution.finalAppId, launchRequest.containerConfig != null)
@@ -591,7 +591,7 @@ fun PluviaMain(
                 is GameResolutionResult.Success -> {
                     if (launchRequest.containerConfig != null) {
                         IntentLaunchManager.applyTemporaryConfigOverride(
-                            context, launchRequest.appId, launchRequest.containerConfig,
+                            context, launchRequest.appId, launchRequest.containerConfig, launchRequest.suppliedConfigKeys,
                         )
                     }
                     val homeRoute = PluviaScreen.Home.route + "?offline={offline}"

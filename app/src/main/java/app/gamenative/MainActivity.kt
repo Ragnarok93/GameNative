@@ -366,7 +366,7 @@ class MainActivity : ComponentActivity() {
                     // UI is already up — emit directly, ViewModel listener exists
                     Timber.d("[IntentLaunch]: Emitting ExternalGameLaunch event for app ${launchRequest.appId}")
                     launchRequest.containerConfig?.let { config ->
-                        IntentLaunchManager.applyTemporaryConfigOverride(this, launchRequest.appId, config)
+                        IntentLaunchManager.applyTemporaryConfigOverride(this, launchRequest.appId, config, launchRequest.suppliedConfigKeys)
                     }
                     lifecycleScope.launch {
                         PluviaApp.events.emit(AndroidEvent.ExternalGameLaunch(launchRequest.appId))

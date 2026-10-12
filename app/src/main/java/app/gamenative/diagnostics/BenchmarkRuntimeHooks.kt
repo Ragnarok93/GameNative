@@ -17,6 +17,7 @@ object BenchmarkRuntimeHooks {
         fun frame()
         fun renderer(sourceCap: Int, renderer: String)
         fun terminated(status: Int)
+        fun controls(server: com.winlator.xserver.XServer, stop: () -> Unit)
     }
 
     @Volatile private var session: Session? = null
@@ -47,4 +48,5 @@ object BenchmarkRuntimeHooks {
     fun frame(container: Container) { owner(container)?.frame() }
     fun renderer(container: Container, cap: Int, renderer: String) { owner(container)?.renderer(cap, renderer) }
     fun terminated(container: Container, status: Int) { owner(container)?.terminated(status) }
+    fun controls(container: Container, server: com.winlator.xserver.XServer, stop: () -> Unit) { owner(container)?.controls(server, stop) }
 }

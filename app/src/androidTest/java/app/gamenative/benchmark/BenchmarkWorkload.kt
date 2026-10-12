@@ -27,7 +27,7 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
     private val statusFile = File(directory, "status.json")
     private val readyPattern = Regex(workload.getString("window_pattern"))
     private val frames = ArrayList<Long>()
-    private val start = System.nanoTime()
+    private var start = 0L
     @Volatile private var cancelled = false
     @Volatile private var settingUp = false
     @Volatile private var setupFinished = false
@@ -39,6 +39,9 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
     @Volatile private var termination: Int? = null
     @Volatile private var phase = "LAUNCHING"
     private var activity: BenchmarkGameActivity? = null
+    private var stopControls: (() -> Unit)? = null
+    private var server: com.winlator.xserver.XServer? = null
+    private var phaseStarted = 0L
 
     override fun checkActive() { check(!cancelled) { "Benchmark cancelled" } }
     override fun setup(started: Boolean) { settingUp = started; if (!started) setupFinished = true }
@@ -52,6 +55,7 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
     }
     override fun renderer(sourceCap: Int, renderer: String) { this.sourceCap = sourceCap; rendererName = renderer }
     override fun terminated(status: Int) { termination = status }
+    override fun controls(server: com.winlator.xserver.XServer, stop: () -> Unit) { this.server = server; stopControls = stop }
     override fun content(window: Window) {
         if (window.isApplicationWindow && readyPattern.containsMatchIn("${window.name} ${window.className}")) {
             contentCount++
@@ -64,6 +68,7 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
 
     private fun status(next: String) {
         phase = next
+        phaseStarted = SystemClock.uptimeMillis()
         val value = JSONObject().put("run_id", request.getString("run_id")).put("phase", next)
             .put("device_monotonic_ns", System.nanoTime()).put("content_updates", contentCount)
         File(directory, "status.tmp").apply { writeText(value.toString()); check(renameTo(statusFile)) }
@@ -72,8 +77,11 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
     private fun waitFor(timeoutMs: Long, predicate: () -> Boolean) {
         val deadline = SystemClock.uptimeMillis() + timeoutMs
         while (!predicate()) {
+            check(!File(directory, "cancel").exists()) { "Host cancelled benchmark" }
+            if (phase == "WARMING_UP" || phase == "MEASURING") check(activity?.hasWindowFocus() == true) { "Benchmark lost focus" }
             check(BenchmarkGameState.failure == null) { BenchmarkGameState.failure ?: "Game launch failed" }
             check(termination == null) { "Guest exited before workload completion: $termination" }
+            consumeControls()
             check(SystemClock.uptimeMillis() < deadline) { "Readiness/workload timed out" }
             Thread.sleep(50)
         }
@@ -104,20 +112,67 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
         when (action.getString("type")) {
             "key" -> {
                 val code = action.getInt("code")
-                require(code in 7..288 && code !in setOf(KeyEvent.KEYCODE_HOME, KeyEvent.KEYCODE_POWER, KeyEvent.KEYCODE_APP_SWITCH))
-                instrumentation.sendKeySync(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0))
-                instrumentation.sendKeySync(KeyEvent(now, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0))
+                require(code in 7..16 || code in 19..22 || code in 29..62 || code == 66 || code in 96..114 || code in 131..142)
+                val keyboard = checkNotNull(server).keyboard
+                check(keyboard.onKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0)))
+                val duration = action.optLong("duration_ms", 0)
+                require(duration in 0..10000)
+                try { if (duration > 0) Thread.sleep(duration) }
+                finally { keyboard.onKeyEvent(KeyEvent(now, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0)) }
             }
             "tap" -> {
-                val view = checkNotNull(activity).window.decorView
                 val x = action.getDouble("x").toFloat(); val y = action.getDouble("y").toFloat()
-                require(x >= 0 && y >= 0 && x < view.width && y < view.height)
-                for (event in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
-                    val motion = MotionEvent.obtain(now, SystemClock.uptimeMillis(), event, x, y, 0)
-                    try { instrumentation.sendPointerSync(motion) } finally { motion.recycle() }
+                val dimensions = container.screenSize.split('x').map { it.toInt() }
+                require(x >= 0 && y >= 0 && x < dimensions[0] && y < dimensions[1])
+                val guest = checkNotNull(server)
+                guest.injectPointerMove(x.toInt(), y.toInt())
+                guest.injectPointerButtonPress(com.winlator.xserver.Pointer.Button.BUTTON_LEFT)
+                guest.injectPointerButtonRelease(com.winlator.xserver.Pointer.Button.BUTTON_LEFT)
+            }
+            "look" -> {
+                val dx = action.getInt("dx"); val dy = action.getInt("dy")
+                val duration = action.getLong("duration_ms")
+                require(dx in -8192..8192 && dy in -8192..8192 && duration in 16..10000)
+                val steps = (duration / 16).toInt().coerceAtLeast(1)
+                var lastX = 0; var lastY = 0
+                for (index in 1..steps) {
+                    val x = dx * index / steps; val y = dy * index / steps
+                    checkNotNull(server).injectPointerMoveDelta(x - lastX, y - lastY)
+                    lastX = x; lastY = y
+                    Thread.sleep(duration / steps)
                 }
             }
             else -> error("Unsupported workload input")
+        }
+    }
+    private fun consumeControls() {
+        if (phase != "WARMING_UP" && phase != "MEASURING") return
+        val inbox = File(directory, "commands").apply { mkdirs() }
+        for (file in inbox.listFiles().orEmpty().filter { it.name.matches(Regex("[a-f0-9]{32}\\.json")) }.take(16)) {
+            require(file.length() in 1..8192)
+            val command = JSONObject(file.readText())
+            val id = file.name.removeSuffix(".json")
+            require(command.getString("command_id") == id && command.getString("run_id") == request.getString("run_id"))
+            val action = command.getJSONObject("action")
+            val reply = JSONObject().put("command_id", id).put("run_id", request.getString("run_id"))
+            try {
+                check(workload.getString("kind") == "exploration") { "Live controls are allowed only in exploration sessions" }
+                val at = SystemClock.uptimeMillis() - phaseStarted
+                if (action.getString("type") == "screenshot") {
+                    check(activity?.hasWindowFocus() == true)
+                    val image = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+                    File(directory, "$id.png").outputStream().use { image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                    image.recycle()
+                    reply.put("screenshot", "files/benchmark-lab/${request.getString("run_id")}/$id.png")
+                } else {
+                    inject(action)
+                    File(directory, "interactive-input.jsonl").appendText(JSONObject().put("phase", phase)
+                        .put("at_ms", at).put("action", action).put("device_monotonic_ns", System.nanoTime()).toString() + "\n")
+                }
+                reply.put("status", "complete")
+            } catch (error: Exception) { reply.put("status", "failed").put("error", error.message) }
+            File(directory, "$id.reply.tmp").apply { writeText(reply.toString()); check(renameTo(File(directory, "$id.reply.json"))) }
+            file.delete()
         }
     }
     fun run(): JSONObject {
@@ -133,11 +188,14 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
         var measureStart = 0L
         var measureEnd = 0L
         try {
+            start = System.nanoTime()
             status("LAUNCHING")
             activity = instrumentation.startActivitySync(Intent(instrumentation.targetContext, BenchmarkGameActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("lab_app_id", appId)) as BenchmarkGameActivity
             waitFor(workload.getLong("startup_timeout_ms")) { readyAt > 0 && contentCount >= 2 && runtimeEnvironment != null && sourceCap >= 0 }
             check(sourceCap == workload.getInt("source_fps")) { "Effective renderer source cap differs from requested cap: $sourceCap" }
+            val runtimeBinaries = BenchmarkSessionManager.attest(instrumentation.targetContext,
+                JSONObject().put("artifacts", request.getJSONArray("runtime_artifacts")))
             status("WARMING_UP")
             val warmup = workload.getLong("warmup_ms")
             val warmStart = SystemClock.uptimeMillis()
@@ -148,6 +206,14 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
                 inject(action)
             }
             waitFor(warmup + 1000) { SystemClock.uptimeMillis() - warmStart >= warmup }
+            val lsfg = app.gamenative.utils.LsfgVkManager.readRuntimeState(container)
+            if (container.getExtra("lsfgEnabled", "false") == "true") {
+                check(lsfg.readyForGeneration) { "Requested LSFG generation policy is not ready: ${lsfg.status}" }
+            }
+            val lsfgReadback = JSONObject().put("status", lsfg.status.name).put("fresh", lsfg.fresh)
+                .put("multiplier", lsfg.multiplier).put("ready_for_generation", lsfg.readyForGeneration)
+                .put("display_confirmation_available", lsfg.displayConfirmationAvailable)
+                .put("display_confirmed_generating", lsfg.displayConfirmedGenerating).put("degraded", lsfg.degraded)
             measureStart = System.nanoTime()
             status("MEASURING")
             val duration = workload.getLong("measure_ms")
@@ -169,6 +235,10 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
                 .put("measurement_start_ns", measureStart).put("measurement_end_ns", measureEnd)
                 .put("renderer", rendererName).put("source_fps_cap", sourceCap)
                 .put("runtime_environment", runtimeEnvironment).put("environment_verified", true)
+                .put("runtime_binary_attestation", runtimeBinaries)
+                .put("harness_build", app.gamenative.BuildConfig.VERSION_NAME)
+                .put("lsfg_runtime", lsfgReadback)
+                .put("exploratory", workload.getString("kind") == "exploration")
                 .put("guest_exit_status", termination ?: JSONObject.NULL)
                 .put("artifacts", "files/benchmark-lab/${request.getString("run_id")}")
         } finally {
@@ -179,6 +249,7 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
             val deadline = SystemClock.uptimeMillis() + 120000
             while (settingUp && SystemClock.uptimeMillis() < deadline) Thread.sleep(50)
             check(!settingUp) { "Setup still active; recovery journal retained" }
+            stopControls?.invoke()
             PluviaApp.shutdownEnvironment()
             app.gamenative.utils.PerfSampler.stop()
             val retireDeadline = SystemClock.uptimeMillis() + 15000
@@ -187,6 +258,7 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
             check(ProcessHelper.listSubProcesses().none { it.name.contains("wine", true) || it.name.contains("fex", true) }) {
                 "Guest processes remain; recovery journal retained"
             }
+            instrumentation.waitForIdleSync()
             BenchmarkRuntimeHooks.retire(this)
             status("RESTORING_CONFIG")
         }

@@ -3428,6 +3428,7 @@ private fun initializeXServerViewRuntime(
 ) {
     with(controller) {
         val initialLimit = if (fpsLimiterEnabled) fpsLimiterTarget else 0
+        app.gamenative.diagnostics.BenchmarkRuntimeHooks.controls(container, xServerView.getxServer()) { xServerView.getxServer().winHandler.stop() }
         xServerView.setFrameRateLimit(effectiveSourceFpsCap(initialLimit))
         val renderer = xServerView.renderer
         app.gamenative.diagnostics.BenchmarkRuntimeHooks.renderer(
@@ -3656,7 +3657,7 @@ private fun startWineEnvironmentSetup(
                     app.gamenative.diagnostics.BenchmarkRuntimeHooks.checkActive(container)
 
                     // Autostart performance driver after environment is set up
-                    PowerManager.autoStart(container.rootDir)
+                    if (!app.gamenative.diagnostics.BenchmarkRuntimeHooks.owns(container.id)) PowerManager.autoStart(container.rootDir)
 
                     if (debugRun) {
                         app.gamenative.utils.PerfSampler.start(
@@ -3672,6 +3673,7 @@ private fun startWineEnvironmentSetup(
                     }
 
                     // Pin game process to performance cores (CPUs 4-7)
+                    if (!app.gamenative.diagnostics.BenchmarkRuntimeHooks.owns(container.id)) {
                     container.executablePath
                         .substringAfterLast('/')
                         .substringAfterLast('\\')
@@ -3689,6 +3691,7 @@ private fun startWineEnvironmentSetup(
 
                     // Pin Background processes for better performance
                     PowerManager.pinBackgroundProcesses()
+                    }
 
                     if (!PluviaApp.isActivityInForeground && !neverSuspend) {
                         PluviaApp.xEnvironment?.onPause()

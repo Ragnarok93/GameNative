@@ -3,6 +3,8 @@ name: Upgradeable Debug APK
 on:
   push:
     branches:
+      - "master"
+      - "Codex-Automated-Testing"
       - "feature/**"
       - "fix/**"
   workflow_dispatch:

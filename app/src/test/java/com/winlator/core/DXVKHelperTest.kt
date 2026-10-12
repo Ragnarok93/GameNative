@@ -49,7 +49,11 @@ class DXVKHelperTest {
         configs.forEach { raw ->
             val value = DXVKHelper.buildDxvkConfig(KeyValueSet(raw))
             assertFalse("Outer shell quotes cannot be parsed by DXVK: $raw", value.startsWith("\""))
-            assertFalse("No trailing shell quote on complete value: $raw", value.endsWith("\""))
+            // A quoted GPU description is a legitimate DXVK value. Only a
+            // shell quote that wraps the *entire* environment is forbidden.
+            if (!raw.startsWith("customDevice=")) {
+                assertFalse("No trailing outer quote: $raw", value.endsWith("\""))
+            }
         }
     }
 }

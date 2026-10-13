@@ -673,8 +673,55 @@ public class ContentsManager {
                 File targetFile = new File(getPathFromTemplate(contentFile.target));
                 File sourceFile = new File(getInstallDir(context, profile), contentFile.source);
 
-                targetFile.delete();
-                FileUtils.copy(sourceFile, targetFile);
+                if (profile.type == ContentProfile.ContentType.CONTENT_TYPE_DXVK) {
+                    // A successful import does not mean a selected DXVK profile
+                    // actually reached Wine's system32/syswow64. Stage the DLL,
+                    // validate the copy and atomically replace the target.
+                    // Report errors instead of silently continuing with a
+                    // stale DLL from the previous WCP.
+                    if (!sourceFile.isFile()) {
+                        Log.e("ContentsManager", "DXVK source DLL missing: " + sourceFile);
+                        return false;
+                    }
+                    File stage = new File(targetFile.getParentFile(),
+                            targetFile.getName() + ".gamenative-stage");
+                    File backup = new File(targetFile.getParentFile(),
+                            targetFile.getName() + ".gamenative-previous");
+                    if ((stage.exists() && !stage.delete())
+                            || (backup.exists() && !backup.delete())) {
+                        Log.e("ContentsManager", "DXVK staging cleanup failed: " + targetFile);
+                        return false;
+                    }
+                    if (!FileUtils.copy(sourceFile, stage) || !stage.isFile()
+                            || stage.length() != sourceFile.length()) {
+                        stage.delete();
+                        Log.e("ContentsManager", "DXVK DLL copy incomplete: " + sourceFile
+                                + " -> " + targetFile);
+                        return false;
+                    }
+                    if (targetFile.exists() && !targetFile.renameTo(backup)) {
+                        stage.delete();
+                        Log.e("ContentsManager", "DXVK previous DLL could not be backed up: " + targetFile);
+                        return false;
+                    }
+                    if (!stage.renameTo(targetFile)) {
+                        if (backup.exists() && !backup.renameTo(targetFile)) {
+                            Log.e("ContentsManager", "DXVK DLL rollback also failed: " + targetFile);
+                        }
+                        stage.delete();
+                        Log.e("ContentsManager", "DXVK DLL activation failed: " + targetFile);
+                        return false;
+                    }
+                    backup.delete();
+                    Log.i("ContentsManager", "DXVK profile=" + profile.verName
+                            + " activated " + targetFile + " bytes=" + targetFile.length());
+                } else {
+                    targetFile.delete();
+                    if (!FileUtils.copy(sourceFile, targetFile)) {
+                        Log.e("ContentsManager", "Component file copy failed: " + targetFile);
+                        return false;
+                    }
+                }
 
                 if (profile.type == ContentProfile.ContentType.CONTENT_TYPE_BOX64) {
                     Log.d("ContentsManager", "found box64 profile type - running chmod on " + targetFile);

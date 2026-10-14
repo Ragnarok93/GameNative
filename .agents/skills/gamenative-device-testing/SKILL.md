@@ -3,6 +3,12 @@ name: gamenative-device-testing
 description: Operate GameNative's WSL ADB lab for pinned deployment, isolated guest sessions, autonomous route discovery/replay, presentation telemetry, recovery and controlled baseline comparisons.
 ---
 
+Use the project's Agent Skills workflow in `AGENTS.md`: invoke the available
+`using-agent-skills` entrypoint and only phase-relevant skills. Use measurement
+before performance changes, error recovery plus regression tests for failures,
+and shipping gates for APK deployment. Do not claim completion until runtime
+acceptance is evidenced; preserve the existing device safety boundaries below.
+
 Read `docs/device-testing.md` from the repository root before a device lab run.
 For gameplay, read `docs/benchmark-campaigns.md` and validate a schema-v2 profile.
 Use `tools/benchmark.py` rather than writing container files through ADB.
@@ -60,3 +66,13 @@ Propose one-component experiments backed by pinned build-set/dispatch-build and
 existing strict campaign comparisons; never automatically promote experimental
 results or modify production saves/configuration for comparison. Unvalidated
 live-session runs remain regression_eligible=false even if closure succeeds.
+
+## Direct verified DXVK selection
+
+For the user's explicitly authorized existing FF7R container, prefer API-v2
+`tools/benchmark_control.py` import/select/restore transactions documented in
+`docs/device-testing.md`. No screenshot-driven settings fallback. Require matching
+upgradeable APKs, idle full UID, immutable payload pins and pending-journal recovery.
+Pass `--component-verification` to live-session before candidate inputs/capture;
+only mapped matching DLLs establish a loaded build. Restore selection while idle
+and separately verify baseline runtime DLLs after its normal launch when needed.

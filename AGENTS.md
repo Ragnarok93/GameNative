@@ -26,3 +26,28 @@ Discover routes with exploration/screenshots/guest controls, then freeze and rep
 them for comparative trials. Keep production saves unchanged; benchmark prefixes
 receive pinned copies. Do not infer source-game FPS from synthetic/display frames,
 accept partial ring coverage as complete, or fabricate source/binary hashes.
+
+## Engineering workflow: Agent Skills
+
+At session start or a phase change, use the installed `using-agent-skills` skill
+when available; load only the phase skills needed for the current task. Do not
+run the full lifecycle for every small fix. If a skill is unavailable in WSL,
+state that limit and apply the project gates below, without claiming invocation.
+
+- State material assumptions before non-trivial changes; resolve contradictory
+  requirements before risky action. Existing user authorization remains scoped.
+- Define the next observable acceptance event, implement one small slice, and
+  verify it before expanding scope. Prefer native APIs/CLI over UI retries.
+- Bugs: debugging/error recovery, targeted regression test, scoped review.
+  Optimization: performance-optimization; measure a pinned baseline first.
+  Critical logs: observability-and-instrumentation during implementation.
+- Keep completion distinct from build success: tests, applicable lint/build,
+  runtime behavior, integration, documentation and rollback must be evidenced.
+  Mark pending device validation explicitly; do not label it done.
+- For component trials, record source, package and mapped runtime hashes plus
+  imported/selected/loaded/gameplay-captured stages. Same hashes are not new builds;
+  unmatched gameplay captures are not measured improvements.
+- Reuse completed checks/artifacts. Report meaningful transitions or failures,
+  not unchanged polls. Preserve detailed logs without rereading them per tick.
+- Review scope, simplicity and relevant security before commit; obtain required
+  human review/authorization before merge/deploy. Never infer broader permissions.

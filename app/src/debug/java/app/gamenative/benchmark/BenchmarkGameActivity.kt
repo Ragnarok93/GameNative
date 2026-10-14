@@ -18,6 +18,9 @@ class BenchmarkGameActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val appId = checkNotNull(intent.getStringExtra("lab_app_id"))
         check(BenchmarkRuntimeHooks.container(appId) != null)
+        // The lab bypasses MainActivity, which normally initializes this
+        // singleton before XServerScreen scans physical input devices.
+        com.winlator.inputcontrols.ControllerManager.getInstance().init(applicationContext)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             PluviaTheme {

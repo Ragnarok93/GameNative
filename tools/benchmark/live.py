@@ -187,6 +187,8 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
                 'dxgi.log':('shell','tail','-c','2097152','/storage/emulated/0/Download/FF7RLogs/ff7remake__dxgi.log'),
                 'd3d11.log':('shell','tail','-c','2097152','/storage/emulated/0/Download/FF7RLogs/ff7remake__d3d11.log'),
                 'crash.log':('logcat','-b','crash','-d'),
+                'kernel.txt':('shell','dmesg'),
+                'package.txt':('shell','dumpsys','package',PACKAGE),
                 'processes.txt':('shell','ps','-A','-o','UID,PID,PPID,NAME'),
                 'guest-stat.txt':('shell','run-as',PACKAGE,'cat','/proc/'+pid+'/stat'),
                 'guest-wchan.txt':('shell','run-as',PACKAGE,'cat','/proc/'+pid+'/wchan'),
@@ -197,6 +199,13 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
             for n,args in requests.items():
                 try: save(n,device.call(*args,timeout=8))
                 except (LabError,OSError) as e: manifest['unavailable'].append({'path':n,'error':str(e)})
+            try:
+                power_root='/storage/emulated/0/Android/data/'+PACKAGE+'/files/powercontrol/'
+                names=device.call('shell','ls','-t',power_root,timeout=5).splitlines()
+                latest=next((n for n in names if re.fullmatch(r'metrics-[0-9]+\.jsonl',n)),None)
+                if latest is None:raise LabError('No GameNative power metrics file')
+                save('power-metrics.jsonl',device.call('shell','tail','-c','1048576',power_root+latest,timeout=8))
+            except LabError as exc:manifest['unavailable'].append({'path':'power-metrics.jsonl','error':str(exc)})
             runtime={'hashes':[], 'unavailable':[], 'scope':'Mapped paths at collection, not complete guest DLL attestation'}
             mapped=t.directory/'guest-maps.txt'
             if mapped.exists():

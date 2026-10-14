@@ -5,6 +5,28 @@ Turnip, Proton and LSFG. It does not launch workflows, compile code, install
 components, claim compatibility, or promote builds. Dispatch adapters and a
 validated end-to-end build/test pipeline remain roadmap work.
 
+## Dispatch a pinned workflow
+
+`dispatch-build --manifest PLAN.json --output NEW_LEDGER.json` validates a ref
+and active workflow without submitting a build. Add `--execute` to submit it.
+The plan has exactly `schema_version: 1`, `component`, `repository`, `commit`,
+`ref`, `workflow`, and `inputs` (string key/value map). Component names are the
+same six names below. GameNative requires `.github/workflows/upgradeable-debug.yml`.
+Other workflows must be explicitly selected from their actual repositories.
+
+The ref must resolve to the pinned full commit at preflight. GitHub dispatches
+by branch/tag, so a concurrent ref move after preflight is still possible; the
+resulting run MUST be verified against the intended commit before collection.
+This command does not claim the build started at the requested commit, correlate
+a run ID, wait for completion, or infer success from dispatch acceptance.
+
+A durable ledger is written before submission. `dispatched_uncorrelated` means
+the API accepted the request; `dispatch_unknown` means acceptance is uncertain.
+Never blindly retry either state. Inspect GitHub for the matching workflow/ref,
+event, timing and exact commit first, then supply its verified run ID to build-set.
+Existing ledger paths refuse reuse. An HTTP error or timeout may leave a real
+build running; no automatic cancellation or resubmission occurs.
+
 ```bash
 python3 tools/benchmark.py build-set --manifest /path/to/pinned-builds.json \
   --output /path/to/fresh-evidence

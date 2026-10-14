@@ -20,6 +20,7 @@ from benchmark.workload_snapshot import snapshot
 from benchmark.drivers import validate_driver
 from benchmark.package_build import package_dxvk
 from benchmark.build_set import resolve as resolve_build_set
+from benchmark.build_dispatch import dispatch as dispatch_build
 
 
 def main():
@@ -29,6 +30,10 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("device-info")
     sub.add_parser("list-components")
+    dispatch_parser = sub.add_parser("dispatch-build")
+    dispatch_parser.add_argument("--manifest", required=True)
+    dispatch_parser.add_argument("--output", required=True)
+    dispatch_parser.add_argument("--execute", action="store_true", help="Actually submit the workflow; default is validation only")
     build_set = sub.add_parser("build-set")
     build_set.add_argument("--manifest", required=True)
     build_set.add_argument("--output", required=True)
@@ -95,7 +100,9 @@ def main():
     comparison.add_argument("--candidate-variant")
     args = parser.parse_args()
     try:
-        if args.command == "build-set":
+        if args.command == "dispatch-build":
+            result = dispatch_build(args.manifest, args.output, args.execute)
+        elif args.command == "build-set":
             result = resolve_build_set(args.manifest, args.output, args.download)
         elif args.command == "compare":
             from pathlib import Path

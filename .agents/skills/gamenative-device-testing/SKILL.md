@@ -87,3 +87,10 @@ settle, verify fixed landmarks throughout the measurement, and use `STOP` if it
 drifts. Reject the pairing, not the algorithm, when cameras differ. Reuse pinned
 binaries and existing valid scene captures; do not rebuild components to repair
 a mismatched workload. Normal gameplay may autosave; never overwrite saves.
+
+## Upstream and fork resources
+
+Before a new component optimization, consult `docs/optimization-source-resources.md`,
+refresh relevant exact source revisions, compare with existing backports, and
+apply its compatibility/provenance/measurement gates. StevenMXZ A6xx/A7xx and
+DXVK-Sarek/mobile forks are research resources, not automatic replacement builds.

@@ -13,5 +13,15 @@
     "Repository ledger preserves hypotheses/revisions/measurements/rejections/next action"
   ],
   "last_device_state": "Original selector/env and pristine prefix DLL hashes restored; Engine unchanged, fullUID idle, pending journal ABSENT",
-  "active_experiment": "TURNIP-PROFILED-AUTOTUNE-20261014"
+  "active_experiment": "TURNIP-PROFILED-AUTOTUNE-20261014",
+  "source_resources_document": "/home/main/projects/GameNative/docs/optimization-source-resources.md",
+  "source_resource_snapshot": {
+    "stevenmxz_a6xx_sha": "a6aa12c71bb49789d0a53c6d96ccfdd3d34659a5",
+    "dxvk_reference_heads": {
+      "https://github.com/pythonlover02/dxvk-sarek": "0c0e8f6f62c7cb37dbf5d38413517efa00c08fef",
+      "https://github.com/zeyadadev/DXVK-Sarek": "b6653094a2b8f3b824ffcf8f50aaa3b3da41263b",
+      "https://github.com/doitsujin/dxvk": "a78a467cadb22bee928904290cf8e7921b121851"
+    },
+    "status": "Research references only; no new component selected or performance change"
+  }
 }

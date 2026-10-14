@@ -2,6 +2,7 @@
 import hashlib
 import re
 import shlex
+from datetime import datetime, timezone
 from .device import LabError, PACKAGE
 
 
@@ -16,8 +17,10 @@ def collect(device, telemetry, run_id):
         'device-processes.txt': ('shell', 'ps', '-A', '-o', 'UID,PID,PPID,NAME'),
         'device-thermal.txt': ('shell', 'dumpsys', 'thermalservice'),
     }
-    manifest = {'run_id': run_id, 'files': [], 'unavailable': [],
+    manifest = {'run_id': run_id, 'collection_utc': datetime.now(timezone.utc).isoformat(),
+                'files': [], 'unavailable': [],
                 'scope': 'Diagnostic evidence only; not successful benchmark or source-game FPS'}
+    manifest['process_scope'] = 'Host-collected process/thermal snapshots reflect collection time, not necessarily trial time'
     for name, args in requests.items():
         try:
             value = device.call(*args, timeout=15)

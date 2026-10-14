@@ -9,11 +9,11 @@ import time
 from .device import LabError
 
 
-def navigate(device, actions, observe, *, duration_s=300, clock=time.monotonic):
+def navigate(device, actions, observe, *, duration_s=300, clock=time.monotonic, stationary=False, sleeper=time.sleep):
     if (type(duration_s) not in (int, float) or not math.isfinite(duration_s)
             or not 0 < duration_s <= 300):
         raise LabError("Navigation duration must be finite and at most 300 seconds")
-    if not actions:
+    if not actions and not stationary:
         raise LabError("Navigation requires a route")
     for keys, hold_ms in actions:
         if (not isinstance(keys, (list, tuple)) or len(keys) != 2
@@ -32,6 +32,9 @@ def navigate(device, actions, observe, *, duration_s=300, clock=time.monotonic):
         remaining_ms = int((deadline - clock()) * 1000)
         if remaining_ms <= 0:
             break
+        if stationary:
+            sleeper(min(1, remaining_ms / 1000))
+            continue
         keys, requested = actions[count % len(actions)]
         hold = min(requested, remaining_ms)
         device.call("shell", "input", "keycombination", "-t", str(hold),
@@ -42,7 +45,7 @@ def navigate(device, actions, observe, *, duration_s=300, clock=time.monotonic):
 
 
 def execute_session(device, actions, observe, collect, close, *, duration_s=300,
-                    clock=time.monotonic):
+                    clock=time.monotonic, stationary=False):
     """Retire a caller-owned game even if input or diagnostics fail.
 
     Caller is responsible for launch ownership and user permission to close.
@@ -53,7 +56,7 @@ def execute_session(device, actions, observe, collect, close, *, duration_s=300,
               "collection": None, "errors": [], "close_completed": False}
     try:
         result["navigation"] = navigate(device, actions, observe,
-                                         duration_s=duration_s, clock=clock)
+                                         duration_s=duration_s, clock=clock, stationary=stationary)
     except Exception as exc:
         result["errors"].append({"stage": "navigation", "error": str(exc)})
     finally:

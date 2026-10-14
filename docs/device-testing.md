@@ -187,3 +187,6 @@ this is not FEX-only overhead. Host intervals include ADB sampling latency.
 For the Android13 MainActivity live path, the collector selects the anchored
 SurfaceView BLAST buffer layer, not its parent/background. Zero or multiple
 buffer matches remain unavailable rather than silently selecting a layer.
+
+### Detailed log archival
+After successful owned-guest/UID retirement, live-session additionally pulls full current DXGI and D3D11 logs with before/after remote SHA-256 and local SHA-256 verification. It preserves existing pre-close tails, does not delete/rotate device logs, and reports unavailable archives instead of treating tails as complete logs. Full logs can contain startup; use measurement markers for performance. Native Windows ADB from WSL requires `export GAMENATIVE_WINDOWS_STAGING=/mnt/c/Users/Admin/GameNative-lab/adb-archives`. Unique staging directories remain as evidence; no existing archive is overwritten.

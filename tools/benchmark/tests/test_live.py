@@ -16,6 +16,7 @@ class Fake:
     serial='mock';adb='/bin/echo';execute=staticmethod(subprocess.run)
     def __init__(self):self.alive=True;self.calls=[];self.now=0
     def lease(self):return nullcontext()
+    def assert_idle_debug(self,require_bridge=True):raise LabError('Mock full archival unavailable')
     def info(self):return {'model':'mock'}
     def call(self,*a,**kw):
         self.calls.append(a)
@@ -27,6 +28,7 @@ class Fake:
         if 'sha256sum' in a:return 'a'*64+' file'
         if 'readlink' in a:return './xuser-CUSTOM_GAME_1'
         if a[-1]=='/proc/uptime':return '100 50'
+        if a[:3]==('shell','stat','-c'):return '0'
         if a[-1].endswith('d3d11.log'):return 'DXVK queue info'
         if a[-1].endswith('dxgi.log'):return 'DXVK-FF7R-FRAMES: ts_us=101 mean_us=33000 p95_us=50000'
         return ''

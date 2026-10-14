@@ -14,6 +14,7 @@ from .navigation import execute_session
 from .telemetry import Telemetry
 from .collectors import Collectors
 from .guest_cpu import summarize_cpu
+from .log_archive import archive_log
 
 LIVE_LAYER_PATTERN = r'^SurfaceView\[app\.gamenative/app\.gamenative\.MainActivity\]@\d+\(BLAST\)#\d+$'
 
@@ -46,7 +47,7 @@ def validate_route(value):
     if not isinstance(value['description'], str) or not value['description'].strip():
         raise LabError('Route description required')
     actions=value['actions']
-    if not isinstance(actions,list) or not 1 <= len(actions) <= 128:
+    if not isinstance(actions,list) or not 0 <= len(actions) <= 128:
         raise LabError('Route requires 1..128 actions')
     for a in actions:
         if not isinstance(a,dict) or set(a) != {'keys','hold_ms'}:
@@ -110,7 +111,10 @@ def analyze(directory):
     root=Path(directory)
     result=json.loads((root/'result.json').read_text())
     diag=json.loads((root/'diagnostic-manifest.json').read_text())
-    text='\n'.join((root/f['path']).read_text(errors='replace') for f in diag['files'] if f['path'] in {'dxgi.log','d3d11.log'})
+    available={f['path'] for f in diag['files']}
+    log_sources=[c+'.full.log' if c+'.full.log' in available else c+'.log'
+        for c in ('dxgi','d3d11') if c+'.full.log' in available or c+'.log' in available]
+    text='\n'.join((root/name).read_text(errors='replace') for name in log_sources)
     windows=[dict((k,int(v)) for k,v in re.findall(r'(ts_us|mean_us|p95_us|p99_us|max_us)=(\d+)',line))
              for line in text.splitlines() if 'DXVK-FF7R-FRAMES:' in line]
     samples=[json.loads(l) for l in (root/'events.jsonl').read_text().splitlines()]
@@ -136,6 +140,7 @@ def analyze(directory):
         'gpu_busy_percent_samples':gpu,
         'system_cpu_scope':'Whole-device proc/stat deltas, not game-only CPU utilization',
         'source_game_fps':{'available':False,'reason':'No independently instrumented source presents'},
+        'log_sources':log_sources,
         'log_window_scope':'DXVK files include startup; summaries not guaranteed measurement-only',
         'unavailable':diag['unavailable'],
         'presentation_coverage':presentation,
@@ -211,6 +216,9 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
                 if latest is None:raise LabError('No GameNative power metrics file')
                 save('power-metrics.jsonl',device.call('shell','tail','-c','1048576',power_root+latest,timeout=8))
             except LabError as exc:manifest['unavailable'].append({'path':'power-metrics.jsonl','error':str(exc)})
+            if measurement_offset is not None:
+                try:save('measurement-dxgi.log',device.call('shell','tail','-c','+'+str(measurement_offset+1),'/storage/emulated/0/Download/FF7RLogs/ff7remake__dxgi.log',timeout=8))
+                except LabError as exc:manifest['unavailable'].append({'path':'measurement-dxgi.log','error':str(exc)})
             runtime={'hashes':[], 'unavailable':[], 'scope':'Mapped paths at collection, not complete guest DLL attestation'}
             mapped=t.directory/'guest-maps.txt'
             if mapped.exists():
@@ -231,25 +239,31 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
             t.artifact('diagnostic-manifest.json',manifest)
             return manifest
         count=0
+        last_sample=0.0
+        measurement_offset=None
         def observe():
-            nonlocal count, logger
+            nonlocal count, logger, last_sample, measurement_offset
             if count==0:
                 logger=subprocess.Popen([device.adb,'-s',device.serial,'logcat','-v','threadtime','-T','1'],stdout=logger_out,stderr=logger_err)
                 capture(device,t.directory,'initial-gameplay')
+                measurement_offset=int(device.call('shell','stat','-c','%s','/storage/emulated/0/Download/FF7RLogs/ff7remake__dxgi.log',timeout=5))
+                t.artifact('measurement-log-offset.json',{'dxgi_byte_offset':measurement_offset,'first_post_start_window_may_overlap':True})
                 t.event('measurement_start',device_uptime=device.call('shell','cat','/proc/uptime',timeout=5))
             if (t.directory/'STOP').exists():return False
             if game_pid(device)!=pid:raise LabError('Guest identity changed')
             log=(t.directory/'logcat.txt').read_text(errors='replace')
             if 'VK_ERROR_DEVICE_LOST' in log or 'Fatal signal' in log:
                 t.event('fatal_detected');return False
-            if count%3==0:
+            if (actions and count%3==0) or (not actions and time.monotonic()-last_sample>=10):
+                last_sample=time.monotonic()
                 try:
                     stat=device.call('shell','run-as',PACKAGE,'cat','/proc/'+pid+'/stat',timeout=5)
                     t.event('guest_cpu_counter',pid=pid,stat=stat,clock_ticks=device.call('shell','getconf','CLK_TCK',timeout=5))
                 except LabError as exc:t.event('guest_cpu_counter_unavailable',error=str(exc))
                 collectors.sample()
                 capture(device,t.directory,'observation-'+str(count))
-            t.event('input_start',action=route['actions'][count%len(actions)],guest_pid=pid)
+            if actions:t.event('input_start',action=route['actions'][count%len(actions)],guest_pid=pid)
+            else:t.event('stationary_observation',guest_pid=pid)
             count+=1
             return True
         def close():
@@ -275,7 +289,7 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
             save('processes-after-close.txt',processes)
         try:
             with command_ledger(device,t.directory):
-                result=execute_session(device,actions,observe,collect,close,duration_s=duration)
+                result=execute_session(device,actions,observe,collect,close,duration_s=duration,stationary=not actions)
         finally:
             if logger is not None:
                 logger.terminate()
@@ -283,6 +297,18 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
                 except subprocess.TimeoutExpired:logger.kill();logger.wait()
             logger_out.close();logger_err.close()
             t.artifact('logcat-process.json',{'command':[device.adb,'-s',device.serial,'logcat','-v','threadtime','-T','1'], 'pid':logger.pid if logger else None,'exit_status':logger.returncode if logger else None,'termination':'owned logger stopped after session'})
+        # Full logs are pulled only after ownership-checked close succeeds;
+        # retain bounded pre-close tails and failures as supplemental evidence.
+        if result.get('close_completed'):
+            with command_ledger(device,t.directory):
+                for component in ('dxgi','d3d11'):
+                    name=component+'.full.log'
+                    try:
+                        manifest['files'].append(archive_log(device,
+                            '/storage/emulated/0/Download/FF7RLogs/ff7remake__'+component+'.log',t.directory/name))
+                    except (LabError,OSError,subprocess.SubprocessError) as exc:
+                        manifest['unavailable'].append({'path':name,'error':str(exc)})
+            t.artifact('diagnostic-manifest.json',manifest)
         after=attest(device,container); t.artifact('after.json',after)
         unchanged=(after['config_sha256']==initial['config_sha256'] and after['engine_ini_sha256']==initial['engine_ini_sha256'])
         result['configuration_unchanged']=unchanged

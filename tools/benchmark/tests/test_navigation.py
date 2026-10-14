@@ -65,3 +65,15 @@ class SessionTests(unittest.TestCase):
                                lambda:{"fex":"unavailable"},close)
         self.assertFalse(result["close_completed"])
         self.assertEqual(result["errors"][0]["stage"],"close")
+
+
+class StationaryTests(unittest.TestCase):
+    def test_static_sample_never_sends_input(self):
+        class Device:
+            now=0
+            def call(self,*a,**kw):raise AssertionError('Stationary input')
+        d=Device()
+        def sleep(s):d.now+=s
+        r=navigate(d,[],lambda:True,duration_s=3,clock=lambda:d.now,stationary=True,sleeper=sleep)
+        self.assertEqual(r['actions'],0)
+        self.assertEqual(r['elapsed_s'],3)

@@ -190,3 +190,10 @@ buffer matches remain unavailable rather than silently selecting a layer.
 
 ### Detailed log archival
 After successful owned-guest/UID retirement, live-session additionally pulls full current DXGI and D3D11 logs with before/after remote SHA-256 and local SHA-256 verification. It preserves existing pre-close tails, does not delete/rotate device logs, and reports unavailable archives instead of treating tails as complete logs. Full logs can contain startup; use measurement markers for performance. Native Windows ADB from WSL requires `export GAMENATIVE_WINDOWS_STAGING=/mnt/c/Users/Admin/GameNative-lab/adb-archives`. Unique staging directories remain as evidence; no existing archive is overwritten.
+
+### Faster optimization feedback
+Full detailed logs remain intact. Fatal-log observation scans only appended bytes (including split error tokens); analysis and SHA-256 use streaming reads. A saved277MB run produced identical canonical report hashes before/after; observed host analysis5.35s->1.91s and peakRSS831292KB->36828KB. These are host-loop measurements, not gameFPS gains.
+
+`benchmark.ui_navigation.configure_dxvk(device, container, title, registered_version, render_passes, fresh_evidence_directory)` uses bounded semantic UI lookup, exact title/version/field matching, orientation-derived bounds, non-edge tab swipes, and persisted readback. It refuses active guests and records every command/XML; only the DXVK selector and named diagnostic flag can change. UI restoration does not restore installed prefix DLLs until a normal baseline launch; verify both DLL hashes and full config/Engine.ini before declaring rollback complete. SCREEN_WAKEUP is not lockscreen unlocking; user action is required for a credential lock.
+
+Use60s genuine-gameplay diagnostic screening to reject unsupported hypotheses quickly; require matched longer repeats and full correctness/rollback checks before any performance promotion. Do not claim short exploratory runs as stable improvements, menus as gameplay, or reduce detailed component log cadence.

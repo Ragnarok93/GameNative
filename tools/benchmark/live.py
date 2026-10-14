@@ -59,9 +59,9 @@ def validate_route(value):
     return [(a['keys'],a['hold_ms']) for a in actions]
 
 
-def game_pid(device):
+def game_pid(device, uid=None):
     raw=device.call('shell','ps','-A','-o','UID,PID,NAME',timeout=5)
-    uid=device.call('shell','run-as',PACKAGE,'id','-u',timeout=5)
+    if uid is None:uid=device.call('shell','run-as',PACKAGE,'id','-u',timeout=5)
     values=[]
     for line in raw.splitlines():
         f=line.split(maxsplit=2)
@@ -107,6 +107,33 @@ def capture(device,root,name):
     return str(out)
 
 
+class IncrementalFatalLog:
+    """Scan every newly appended byte once; retain the complete on-disk log."""
+    def __init__(self, path):
+        self.path=Path(path);self.offset=0;self.carry=b'';self.identity=None;self.bytes_read=0
+    def poll(self):
+        with self.path.open('rb') as f:
+            stat=self.path.stat();identity=(stat.st_dev,stat.st_ino)
+            if self.identity!=identity or stat.st_size<self.offset:
+                self.offset=0;self.carry=b''
+            self.identity=identity;f.seek(self.offset)
+            while True:
+                chunk=f.read(65536)
+                if not chunk:break
+                self.bytes_read+=len(chunk);self.offset+=len(chunk)
+                text=self.carry+chunk
+                if b'VK_ERROR_DEVICE_LOST' in text or b'Fatal signal' in text:return True
+                self.carry=text[-32:]
+        return False
+
+
+def hash_file(path):
+    value=hashlib.sha256()
+    with Path(path).open('rb') as f:
+        for chunk in iter(lambda:f.read(1048576),b''):value.update(chunk)
+    return value.hexdigest()
+
+
 def analyze(directory):
     root=Path(directory)
     result=json.loads((root/'result.json').read_text())
@@ -114,16 +141,21 @@ def analyze(directory):
     available={f['path'] for f in diag['files']}
     log_sources=[c+'.full.log' if c+'.full.log' in available else c+'.log'
         for c in ('dxgi','d3d11') if c+'.full.log' in available or c+'.log' in available]
-    text='\n'.join((root/name).read_text(errors='replace') for name in log_sources)
-    windows=[dict((k,int(v)) for k,v in re.findall(r'(ts_us|mean_us|p95_us|p99_us|max_us)=(\d+)',line))
-             for line in text.splitlines() if 'DXVK-FF7R-FRAMES:' in line]
+    windows=[];queue={};device_lost=0
+    # One streaming pass: detailed logs remain intact, without materializing
+    # hundreds of MB repeatedly or scanning them separately for each label.
+    for name in log_sources:
+        with (root/name).open(errors='replace') as source:
+            for line in source:
+                device_lost+=line.count('VK_ERROR_DEVICE_LOST')
+                if 'DXVK-FF7R-FRAMES:' in line:
+                    windows.append(dict((k,int(v)) for k,v in re.findall(r'(ts_us|mean_us|p95_us|p99_us|max_us)=(\d+)',line)))
+                for label in ('GPU-WAIT','QUEUE-SUBMIT','ENQUEUE','QUEUE-PRESENT'):
+                    if 'DXVK-FF7R-'+label+':' in line:
+                        queue[label]=dict((k,int(v)) for k,v in re.findall(r'(samples|mean_us|max_us|over_10ms|over_33ms)=(\d+)',line))
     samples=[json.loads(l) for l in (root/'events.jsonl').read_text().splitlines()]
     presentation=json.loads((root/'presentation.json').read_text()) if (root/'presentation.json').exists() else {'unavailable':'No presentation collector result'}
     thermals=[e['thermal_status'] for e in samples if 'thermal_status' in e]
-    queue={}
-    for label in ('GPU-WAIT','QUEUE-SUBMIT','ENQUEUE','QUEUE-PRESENT'):
-        lines=[line for line in text.splitlines() if 'DXVK-FF7R-'+label+':' in line]
-        if lines:queue[label]=dict((k,int(v)) for k,v in re.findall(r'(samples|mean_us|max_us|over_10ms|over_33ms)=(\d+)',lines[-1]))
     cpu=[e['system_cpu_busy_percent'] for e in samples if 'system_cpu_busy_percent' in e]
     gpu=[]
     for e in samples:
@@ -132,7 +164,7 @@ def analyze(directory):
             gpu.append(100*int(raw[0])/int(raw[1]))
     report={'status':result['status'],'regression_eligible':False,
         'scope':'Existing-prefix exploratory sample, not source-game FPS or controlled A/B',
-        'device_lost_occurrences':text.count('VK_ERROR_DEVICE_LOST'),
+        'device_lost_occurrences':device_lost,
         'dxvk_window_summaries':windows,'thermal_statuses':thermals,
         'dxvk_queue_cumulative':queue,
         'system_cpu_busy_percent_samples':cpu,
@@ -178,7 +210,7 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
     if type(duration) is not int or not 1<=duration<=300:
         raise LabError('Duration must be 1..300 seconds')
     with device.lease():
-        initial=attest(device,container); pid=game_pid(device)
+        initial=attest(device,container); uid=device.call('shell','run-as',PACKAGE,'id','-u',timeout=5);pid=game_pid(device,uid)
         t=Telemetry(results,uuid.uuid4().hex)
         t.artifact('before.json',initial); t.artifact('device.json',device.info());t.artifact('route.json',route)
         t.artifact('request.json',{'serial':device.serial,'container':container,'duration_s':duration,
@@ -187,6 +219,7 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
             'config_mutation':False,'regression_eligible':False})
         logger_out=(t.directory/'logcat.txt').open('wb'); logger_err=(t.directory/'logcat-stderr.txt').open('wb')
         logger=None
+        fatal_log=IncrementalFatalLog(t.directory/'logcat.txt')
         collectors=Collectors(device,t,{'layer_pattern':LIVE_LAYER_PATTERN,'sample_interval_ms':1000})
         manifest={'files':[],'unavailable':[]}
         def save(name,value):
@@ -250,9 +283,8 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
                 t.artifact('measurement-log-offset.json',{'dxgi_byte_offset':measurement_offset,'first_post_start_window_may_overlap':True})
                 t.event('measurement_start',device_uptime=device.call('shell','cat','/proc/uptime',timeout=5))
             if (t.directory/'STOP').exists():return False
-            if game_pid(device)!=pid:raise LabError('Guest identity changed')
-            log=(t.directory/'logcat.txt').read_text(errors='replace')
-            if 'VK_ERROR_DEVICE_LOST' in log or 'Fatal signal' in log:
+            if game_pid(device,uid)!=pid:raise LabError('Guest identity changed')
+            if fatal_log.poll():
                 t.event('fatal_detected');return False
             if (actions and count%3==0) or (not actions and time.monotonic()-last_sample>=10):
                 last_sample=time.monotonic()
@@ -316,7 +348,7 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
         t.artifact('diagnostic-manifest.json',manifest);t.artifact('result.json',result)
         t.event('retired',status=result['status'],close_verified=result['close_completed'],device_uptime=device.call('shell','cat','/proc/uptime',timeout=5))
         report=analyze(t.directory)
-        hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in t.directory.iterdir() if p.is_file() and p.name!='hashes.json'}
+        hashes={p.name:hash_file(p) for p in t.directory.iterdir() if p.is_file() and p.name!='hashes.json'}
         t.artifact('hashes.json',hashes)
         return {'directory':str(t.directory),'result':result,'analysis':report}
 

@@ -22,5 +22,8 @@ object BenchmarkProcessGuard {
         } finally { process.destroy() }
     }
 
-    fun assertIdle() { check(remaining().isEmpty()) { "App-owned subprocesses must retire before configuration restoration" } }
+    fun assertIdle() {
+        val active = remaining()
+        check(active.isEmpty()) { "App-owned subprocesses must retire before configuration restoration: $active" }
+    }
 }

@@ -17,6 +17,17 @@ class BenchmarkBridgeTest {
         require(file.length() in 1L..65536L)
         val request = JSONObject(file.readText())
         val result = try {
+            // Application startup may create PostHog's replay logcat reader.
+            // Retire the owned analytics integration, never whitelist processes
+            // by name or weaken the complete-UID guest retirement guard.
+            // This affects only this instrumentation process, not preferences.
+            com.posthog.PostHog.close()
+            val retirementDeadline = android.os.SystemClock.elapsedRealtime() + 5_000
+            while (BenchmarkProcessGuard.remaining().isNotEmpty() &&
+                android.os.SystemClock.elapsedRealtime() < retirementDeadline) {
+                Thread.sleep(50)
+            }
+            BenchmarkProcessGuard.assertIdle()
             BenchmarkSessionManager.execute(instrumentation.targetContext, request) { container, config, lab ->
                 BenchmarkWorkload(instrumentation, container, config, lab).run()
             }

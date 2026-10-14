@@ -52,9 +52,12 @@ data_sources {{ config {{ name: "linux.ftrace" ftrace_config {{ ftrace_events: "
             path = self.telemetry.directory / "trace.pftrace"
             with path.open("wb") as stream:
                 result = self.device.execute([self.device.adb, "-s", self.device.serial,
-                    "shell", "-T", "cat", self.remote], stdout=stream, stderr=subprocess.PIPE, timeout=60, check=False)
+                    "exec-out", "cat", self.remote], stdout=stream, stderr=subprocess.PIPE, timeout=60, check=False)
             if result.returncode or path.stat().st_size == 0:
                 raise LabError("Perfetto trace collection failed: " + result.stderr.decode(errors="replace"))
+            remote_hash = self.device.call("shell", "sha256sum", self.remote).split()[0]
+            if remote_hash != sha256(path):
+                raise LabError("Perfetto transfer hash mismatch; trace is not verified")
             self.telemetry.artifact("trace-manifest.json", {"file": path.name, "sha256": sha256(path),
                 "session": self.name, "frame_timeline_availability": "Inspect trace; enabling a source does not prove frame coverage"})
         finally:

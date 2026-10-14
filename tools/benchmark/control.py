@@ -55,7 +55,7 @@ def command(device, run_id, action, output=None):
                 path = Path(output)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with path.open("xb") as stream:
-                    result = device.execute([device.adb, "-s", device.serial, "shell", "-T", "run-as", PACKAGE, "cat", remote],
+                    result = device.execute([device.adb, "-s", device.serial, "exec-out", "run-as", PACKAGE, "cat", remote],
                         stdout=stream, stderr=subprocess.PIPE, timeout=30, check=False)
                 binary = path.read_bytes()
                 require(result.returncode == 0 and binary.startswith(b"\x89PNG\r\n\x1a\n") and binary.endswith(b"\0\0\0\0IEND\xaeB`\x82"), "Screenshot transfer failed")

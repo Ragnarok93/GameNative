@@ -1,17 +1,17 @@
 {
   "objective": "Stable native30FPS at highest practical quality on S20+/Adreno650; full pipeline optimization with no compatibility regressions",
   "status": "active",
-  "last_confirmed_experiment": "TURNIP-PROFILED-SCREEN-20261014",
+  "last_confirmed_experiment": "TURNIP-WALL-MATCHED-SCREEN-20261014",
   "performance_improvement_verified": false,
   "known_good_dxvk": "749729333e9b",
   "installed_debug_game_commit": "517494711f515d385443956eddcf78432f462489",
   "candidate_f5": "gameplay-confirmed, diagnostic only, reverted",
-  "next_action": "Repeat bandwidth using a settled wall/speakers/blue-cloth camera matching the retained profiled measurement snapshots; compare actual initial/mid/final captures, not preflight. Stop/reject comparison on drift. Reuse existing binaries/APKs and captured profiled trial; no new build. Any gain requires at least3 matched repeats each and stable clocks/cache/correctness evidence.",
+  "next_action": "Collect interleaved matched stationary warm runs, >=3 per algorithm, with settled measured camera and existing exact binaries. Compare measured clocks/cache/thermals before causal interpretation; no new build/import. Keep native FPS unavailable unless independently measured.",
   "rules": [
     "Every investigation ends in an actionable finding, hypothesis or explicit stop reason",
     "Compilation/tests are not measured performance gains",
     "Repository ledger preserves hypotheses/revisions/measurements/rejections/next action"
   ],
-  "last_device_state": "Baseline restored, pristine prefix DLL hashes verified, Engine unchanged, fullUID idle, no pending selection",
+  "last_device_state": "Original selector/env and pristine prefix DLL hashes restored; Engine unchanged, fullUID idle, pending journal ABSENT",
   "active_experiment": "TURNIP-PROFILED-AUTOTUNE-20261014"
 }

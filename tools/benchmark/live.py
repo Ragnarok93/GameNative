@@ -13,6 +13,9 @@ from .device import Device, LabError, PACKAGE
 from .navigation import execute_session
 from .telemetry import Telemetry
 from .collectors import Collectors
+from .guest_cpu import summarize_cpu
+
+LIVE_LAYER_PATTERN = r'^SurfaceView\[app\.gamenative/app\.gamenative\.MainActivity\]@\d+\(BLAST\)#\d+$'
 
 
 @contextmanager
@@ -129,6 +132,7 @@ def analyze(directory):
         'dxvk_window_summaries':windows,'thermal_statuses':thermals,
         'dxvk_queue_cumulative':queue,
         'system_cpu_busy_percent_samples':cpu,
+        'guest_process_cpu':summarize_cpu(samples),
         'gpu_busy_percent_samples':gpu,
         'system_cpu_scope':'Whole-device proc/stat deltas, not game-only CPU utilization',
         'source_game_fps':{'available':False,'reason':'No independently instrumented source presents'},
@@ -153,6 +157,7 @@ def analyze(directory):
     markdown+='Thermal statuses: '+str(thermals)+'. GPU busy mean: '+(str(round(sum(gpu)/len(gpu),2))+'%' if gpu else 'unavailable')+'.\n\n'
     markdown+='Whole-device CPU busy mean: '+(str(round(sum(cpu)/len(cpu),2))+'%' if cpu else 'unavailable')+'; not game-only utilization.\n\n'
     markdown+='Presentation/frequency collector limitations: '+json.dumps(presentation.get('unavailable',{}))+'\n\n'
+    markdown+='Guest CPU: '+json.dumps(report['guest_process_cpu'])+'\n\n'
     markdown+='Source FPS, complete FEX profiling, unique driver GPU faults and route-progress validation are unavailable. DXVK logs may include startup; no aggregate percentiles from window summaries.\n\n'
     markdown+='## Next controlled experiments\n'+''.join('- '+x+'\n' for x in report['opportunities'])
     (root/(name+'.md')).write_text(markdown)
@@ -177,7 +182,7 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
             'config_mutation':False,'regression_eligible':False})
         logger_out=(t.directory/'logcat.txt').open('wb'); logger_err=(t.directory/'logcat-stderr.txt').open('wb')
         logger=None
-        collectors=Collectors(device,t,{'layer_pattern':'SurfaceView.*MainActivity','sample_interval_ms':1000})
+        collectors=Collectors(device,t,{'layer_pattern':LIVE_LAYER_PATTERN,'sample_interval_ms':1000})
         manifest={'files':[],'unavailable':[]}
         def save(name,value):
             data=value.encode();(t.directory/name).write_bytes(data)

@@ -180,3 +180,10 @@ wall time. Run status fails on input/collection/close/integrity errors; rejected
 observation is aborted. Collectors may have unavailable counters without failing
 all diagnostics. Full translated-code profiling/GPU fault attribution needs
 additional instrumented components and hardware access, not invented metrics.
+
+Guest CPU analysis now computes user+system tick deltas with observed CLK_TCK
+and PID/start-time reuse checks. 100% means one core and values may exceed100%;
+this is not FEX-only overhead. Host intervals include ADB sampling latency.
+For the Android13 MainActivity live path, the collector selects the anchored
+SurfaceView BLAST buffer layer, not its parent/background. Zero or multiple
+buffer matches remain unavailable rather than silently selecting a layer.

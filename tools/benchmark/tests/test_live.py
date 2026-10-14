@@ -1,3 +1,4 @@
+import re
 import json
 import subprocess
 import sys
@@ -8,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from benchmark.device import LabError
-from benchmark.live import validate_route, run_live, analyze, command_ledger, attest, launch_live
+from benchmark.live import validate_route, run_live, analyze, command_ledger, attest, launch_live, LIVE_LAYER_PATTERN
 from benchmark.navigation import execute_session
 
 class Fake:
@@ -129,3 +130,9 @@ class LiveTests(unittest.TestCase):
             with patch('benchmark.live.Collectors',Collector),patch('benchmark.live.capture',return_value='mock.png'),patch('benchmark.live.execute_session',side_effect=session):
                 value=run_live(d,'CUSTOM_GAME_1',p,td,duration=1,confirmed=True,allow_close=True)
             self.assertTrue(value['result']['close_completed'])
+
+    def test_surface_layer_excludes_background_and_parent(self):
+        layers=['Background for SurfaceView[app.gamenative/app.gamenative.MainActivity]@0#20185',
+                'SurfaceView[app.gamenative/app.gamenative.MainActivity]@0#20183',
+                'SurfaceView[app.gamenative/app.gamenative.MainActivity]@0(BLAST)#20184']
+        self.assertEqual([x for x in layers if re.search(LIVE_LAYER_PATTERN,x)],[layers[-1]])

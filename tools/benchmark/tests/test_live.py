@@ -138,3 +138,27 @@ class LiveTests(unittest.TestCase):
                 'SurfaceView[app.gamenative/app.gamenative.MainActivity]@0#20183',
                 'SurfaceView[app.gamenative/app.gamenative.MainActivity]@0(BLAST)#20184']
         self.assertEqual([x for x in layers if re.search(LIVE_LAYER_PATTERN,x)],[layers[-1]])
+
+class GpuTraceContextsTest(unittest.TestCase):
+    def test_empty_context_does_not_hide_active_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            route=Path(td)/'route.json';route.write_text(json.dumps({'schema_version':1,'description':'mock','actions':[{'keys':[51,59],'hold_ms':1000}]}))
+            d=Fake();original=d.call;prefix='/storage/emulated/0/Download/FF7RLogs/gpu-'+('a'*32)
+            template=prefix+'-%p-%i.log'
+            def call(*a,**kw):
+                if a[-1].endswith('/.container'):return json.dumps({'screenSize':'1280x720','envVars':'MESA_GPU_TRACES=print MESA_GPU_TRACEFILE='+template})
+                if a[-1].endswith('/environ'):return 'MESA_GPU_TRACES=print\0MESA_GPU_TRACEFILE='+template+'\0'
+                if a[:2]==('shell','find'):return '\n'.join(prefix+'-7-'+str(i)+'.log' for i in range(3))
+                return original(*a,**kw)
+            d.call=call
+            def archive(device,remote,output):
+                count=0 if remote.endswith('-0.log') or remote.endswith('-2.log') else 10
+                Path(output).write_bytes(b'x'*count)
+                return {'path':Path(output).name,'bytes':count,'sha256':'a'*64}
+            def session(*a,**kw):return execute_session(*a,**kw,clock=lambda:d.now)
+            with patch('benchmark.live.Collectors',Collector),patch('benchmark.live.capture',return_value='mock.png'),patch('benchmark.live.execute_session',side_effect=session),patch('benchmark.live.archive_log',side_effect=archive) as archives:
+                result=run_live(d,'CUSTOM_GAME_1',route,td,duration=2,confirmed=True,allow_close=True)
+            files=result['result']['collection']['files']
+            traces=[f for f in files if f['path'].startswith('gpu-')]
+            self.assertEqual([f['bytes'] for f in traces],[0,10,0])
+            self.assertEqual(archives.call_count,5)

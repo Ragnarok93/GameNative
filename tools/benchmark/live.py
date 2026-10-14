@@ -360,9 +360,10 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
                         for path in paths:
                             if not re.fullmatch(re.escape(directory+trace.group(1))+r'-[0-9]+-[0-9]+\.log',path):raise LabError('Unexpected GPU trace identity')
                             record=archive_log(device,path,t.directory/Path(path).name)
-                            if record['bytes']==0:raise LabError('GPU trace file empty; no timing evidence')
                             record['scope']='Run-scoped GPU trace, includes startup; GPU durations/path must be parsed and correlated'
                             manifest['files'].append(record)
+                            if record['bytes']==0:
+                                manifest['unavailable'].append({'path':Path(path).name,'error':'Empty context; no GPU timing evidence. Other contexts still collected.'})
                     except (LabError,OSError,subprocess.SubprocessError) as exc:
                         manifest['unavailable'].append({'path':'gpu-trace','error':str(exc)})
             t.artifact('diagnostic-manifest.json',manifest)

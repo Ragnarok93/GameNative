@@ -153,7 +153,7 @@ object ExistingDxvkControl {
         }
         write(journal, pending.put("state", "applied"))
         return JSONObject().put("selected", true).put("selection_run_id", pending.getString("run_id"))
-            .put("persisted_config", after).put("config_sha256", hash(config)).put("engine_sha256", hash(engine))
+            .put("persisted_config", JSONObject(config.readText())).put("config_sha256", hash(config)).put("engine_sha256", hash(engine))
             .put("component", attested).put("source_commit", source).put("runtime_loaded_verified", false)
     }
 }

@@ -36,3 +36,11 @@ class ArchiveTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as p:
             with self.assertRaises(LabError):archive_log(d,REMOTE,Path(p)/'full.log',windows_staging='/tmp/no')
         self.assertFalse(any(c.args[0]=='pull' for c in d.call.call_args_list))
+
+    def test_run_scoped_gpu_trace_only(self):
+        remote='/storage/emulated/0/Download/FF7RLogs/gpu-'+('a'*32)+'-123-0.log'
+        with tempfile.TemporaryDirectory() as td:
+            result=archive_log(self.device(b'gpu timing'),remote,Path(td)/'trace.log')
+            self.assertEqual(result['bytes'],10)
+            for invalid in [remote.replace('a'*32,'../escape'),remote.replace('-123-0','-%p-%i'),remote.replace('-123-0','-other')]:
+                with self.assertRaises(LabError):archive_log(self.device(b'x'),invalid,Path(td)/'bad.log')

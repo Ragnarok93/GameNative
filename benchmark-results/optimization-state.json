@@ -6,11 +6,12 @@
   "known_good_dxvk": "749729333e9b",
   "installed_debug_game_commit": "56e5ec7c11c10ef6fd8bf3e6991b54f4319e0321",
   "candidate_f5": "gameplay-confirmed, diagnostic only, reverted",
-  "next_action": "Inspect actual 76b9372 Turnip GMEM/SYSMEM autotune/trace support. Use smallest matched rendering-path experiment without changing Engine.ini, resolution, FEX, LSFG or vkBasalt. Require observed path identity and matched repeated gameplay before retention. Do not rebuild DXVK solely for more logging.",
+  "next_action": "Wait exact GPU-experiment paired APK CI, validate/upgrade only UID idle. Verify capability, select f5 with bandwidth plus GPU tracing, normal launch/Continue, mapped hashes and native environment gate, then short actual gameplay trace. Inspect GPU durations and path before profiled A/B.",
   "rules": [
     "Every investigation ends in an actionable finding, hypothesis or explicit stop reason",
     "Compilation/tests are not measured performance gains",
     "Repository ledger preserves hypotheses/revisions/measurements/rejections/next action"
   ],
-  "last_device_state": "baseline selected, pristine prefix DLL hashes restored, UID idle, no pending selection journal"
+  "last_device_state": "baseline selected, pristine prefix DLL hashes restored, UID idle, no pending selection journal",
+  "active_experiment": "TURNIP-PROFILED-AUTOTUNE-20261014"
 }

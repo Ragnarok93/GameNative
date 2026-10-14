@@ -226,3 +226,24 @@ GAMEPLAY_CAPTURED. Captured live exploration is not a matched performance win.
 commands.jsonl preserves command stdout/stderr/status; runtime-component.json
 records exact source/version/mapped hashes. No new Turnip/FEX optimization or
 FPS improvement is implied by import, selection, startup or diagnostic success.
+
+### Turnip GPU experiment options
+
+The matching GPU-experiment debug APK pair advertises `turnip_gpu_experiments`;
+older builds are rejected before any selection mutation. `benchmark_control.py
+select` supports only `--turnip-autotune bandwidth|profiled|unchanged` and
+`--gpu-trace`. The latter sets existing Mesa u_trace text output to a fixed,
+run-scoped external log name with process/context expansion. Existing controlled
+environment variables are never overwritten. Native CAS, rollback ownership,
+Engine.ini and unrelated-field preservation remain unchanged. Restoring removes
+only transaction-added settings; telemetry never deletes trace files.
+
+The installed Mesa76b9372 SD865 pipeline512k binary contains these controls;
+string presence is not runtime timestamp evidence. Trace archives are collected
+only after owned UID retirement, with remote/local SHA verification; absent/empty
+traces remain unavailable. Use identical tracing settings in both sides of a
+comparison and exclude startup/loading. First inspect a short actual gameplay
+trace for valid GPU timestamps and GMEM/SYSMEM path, then screen profiled versus
+bandwidth with fixed FEX/DXVK/driver/LSFG/vkBasalt/resolution/camera/cache conditions.
+Retain only repeatable gains beyond run variance with no correctness regression;
+no forced algorithm, package or diagnostic is automatically promoted.

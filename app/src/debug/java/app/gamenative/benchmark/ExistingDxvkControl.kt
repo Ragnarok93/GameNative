@@ -134,11 +134,14 @@ object ExistingDxvkControl {
         require(parts.count { it.startsWith("version=") } == 1)
         val selectedWrapper = parts.joinToString(",") { if (it.startsWith("version=")) "version=$selector" else it }
         val env = before.getString("envVars"); require(!env.split(' ').any { it.startsWith("DXVK_FF7R_RENDER_PASSES=") })
-        val selectedEnv = if (request.getBoolean("render_passes")) "$env $FLAG" else env
+        val selectedEnv = TurnipExperimentOptions.apply(
+            if (request.getBoolean("render_passes")) "$env $FLAG" else env, request)
         val pending = JSONObject().put("container_id", ID).put("run_id", request.getString("run_id"))
             .put("engine_sha256", hash(engine)).put("original_wrapper", before.getString("dxwrapperConfig"))
             .put("original_env", env).put("selected_wrapper", selectedWrapper).put("selected_env", selectedEnv)
             .put("component", pin).put("state", "prepared")
+            .put("turnip_autotune", request.optString("turnip_autotune", "unchanged"))
+            .put("gpu_trace", request.optBoolean("gpu_trace", false))
             .put("original_config_sha256", hash(config))
             .put("original_config_base64", android.util.Base64.encodeToString(config.readBytes(), android.util.Base64.NO_WRAP))
         write(journal, pending)
@@ -155,5 +158,7 @@ object ExistingDxvkControl {
         return JSONObject().put("selected", true).put("selection_run_id", pending.getString("run_id"))
             .put("persisted_config", JSONObject(config.readText())).put("config_sha256", hash(config)).put("engine_sha256", hash(engine))
             .put("component", attested).put("source_commit", source).put("runtime_loaded_verified", false)
+            .put("turnip_autotune", pending.getString("turnip_autotune"))
+            .put("gpu_trace_path", if (pending.getBoolean("gpu_trace")) TurnipExperimentOptions.tracePath(pending.getString("run_id")) else JSONObject.NULL)
     }
 }

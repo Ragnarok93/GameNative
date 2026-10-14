@@ -113,6 +113,7 @@ jobs:
           ./gradlew -PupgradeSafeDebugSigning=true
           -PciVersionCode="$VERSION_CODE" -PciVersionName="$VERSION_NAME"
           :app:testLegacyDebugUnitTest --no-daemon
+          --tests app.gamenative.diagnostics.TurnipExperimentOptionsTest
           --tests app.gamenative.diagnostics.LsfgDiagnosticExporterTest
           --tests com.winlator.container.ContainerConfigPersistenceTest
           --tests app.gamenative.diagnostics.BenchmarkRuntimeHooksTest

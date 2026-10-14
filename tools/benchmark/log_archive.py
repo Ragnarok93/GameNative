@@ -17,7 +17,7 @@ def digest(path):
 def archive_log(device,remote,output,*,windows_staging=None,convert=None):
     output=Path(output)
     if output.exists():raise LabError('Archive output already exists')
-    if not re.fullmatch(r'/storage/emulated/0/Download/FF7RLogs/ff7remake__(dxgi|d3d11)\.log',remote):
+    if not re.fullmatch(r'/storage/emulated/0/Download/FF7RLogs/(?:ff7remake__(?:dxgi|d3d11)|gpu-[a-f0-9]{32}-[0-9]+-[0-9]+)\.log',remote):
         raise LabError('Only known FF7R diagnostic logs may be archived')
     device.assert_idle_debug(require_bridge=False)
     def remote_hash():

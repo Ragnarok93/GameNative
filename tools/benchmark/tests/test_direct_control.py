@@ -44,3 +44,23 @@ class DirectTests(unittest.TestCase):
         self.assertTrue(verify_loaded(d,7,identity,'CUSTOM_GAME_227938910')['runtime_loaded_verified'])
         d.digest='d'*64
         with self.assertRaises(LabError):verify_loaded(d,7,identity,'CUSTOM_GAME_227938910')
+
+    def test_gpu_experiment_refuses_old_apk_before_mutation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);v=self.doc(root)
+            with patch('benchmark.direct_control.execute',return_value={'result':{'api_revision':2,'direct_existing_dxvk':True}}) as call:
+                with self.assertRaises(LabError):select(Device(),v,root/'out',allow_existing=True,turnip_autotune='profiled')
+                self.assertEqual(call.call_count,1)
+    def test_invalid_gpu_experiment_never_calls_device(self):
+        with self.assertRaises(LabError):select(Device(),'unused','unused',allow_existing=True,turnip_autotune='arbitrary')
+
+    def test_effective_gpu_env_required_before_measurement(self):
+        from benchmark.direct_control import verify_gpu_environment
+        d=Device();d.call=lambda *a,**kw:'TU_AUTOTUNE_ALGO=profiled\0MESA_GPU_TRACES=print\0TOKEN=not-exported\0'
+        result=verify_gpu_environment(d,7,{'envVars':'TU_AUTOTUNE_ALGO=profiled MESA_GPU_TRACES=print'})
+        self.assertTrue(result['verified']);self.assertNotIn('TOKEN',result['effective'])
+        with self.assertRaises(LabError):verify_gpu_environment(d,7,{'envVars':'TU_AUTOTUNE_ALGO=bandwidth'})
+    def test_no_gpu_options_do_not_read_environment(self):
+        from benchmark.direct_control import verify_gpu_environment
+        d=Device();d.call=lambda *a,**k:self.fail('Should not read environment')
+        self.assertIsNone(verify_gpu_environment(d,7,{'envVars':'TU_DEBUG=noconform'}))

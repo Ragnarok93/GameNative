@@ -69,7 +69,7 @@ object BenchmarkSessionManager {
                     "Pending existing-container selection must restore first"
                 }
                 val result = when (operation) {
-                    "capabilities" -> JSONObject().put("api_revision", 2).put("direct_existing_dxvk", true).put("component_payload_attestation", true)
+                    "capabilities" -> JSONObject().put("api_revision", 2).put("direct_existing_dxvk", true).put("component_payload_attestation", true).put("turnip_gpu_experiments", true)
                     "component-inspect", "existing-dxvk-inspect", "existing-dxvk-select", "existing-dxvk-restore" -> ExistingDxvkControl.execute(context, request, lab)
                     "list" -> JSONObject().put("components", listContents(context))
                     "install" -> install(context, request)

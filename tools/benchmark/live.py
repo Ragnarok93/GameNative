@@ -219,6 +219,9 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
             loaded=verify_loaded(device,pid,identity,container)
             t.artifact('runtime-component.json',loaded)
             t.event('LOADED_VERIFIED',**loaded)
+        from .direct_control import verify_gpu_environment
+        gpu_environment=verify_gpu_environment(device,pid,initial['config'])
+        if gpu_environment:t.artifact('gpu-runtime-environment.json',gpu_environment)
         t.artifact('before.json',initial); t.artifact('device.json',device.info());t.artifact('route.json',route)
         t.artifact('request.json',{'serial':device.serial,'container':container,'duration_s':duration,
             'guest_pid':pid,'initial_gameplay_visually_confirmed':True,'subsequent_scene_validation':'unavailable',
@@ -347,6 +350,21 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
                             '/storage/emulated/0/Download/FF7RLogs/ff7remake__'+component+'.log',t.directory/name))
                     except (LabError,OSError,subprocess.SubprocessError) as exc:
                         manifest['unavailable'].append({'path':name,'error':str(exc)})
+                trace = re.search(r'(?:^|\s)MESA_GPU_TRACEFILE=/storage/emulated/0/Download/FF7RLogs/(gpu-[a-f0-9]{32})-%p-%i\.log(?:\s|$)', initial['config'].get('envVars',''))
+                if trace:
+                    try:
+                        directory='/storage/emulated/0/Download/FF7RLogs/'
+                        paths=device.call('shell','find',directory,'-maxdepth','1','-type','f','-name',shlex.quote(trace.group(1)+'-*.log')).splitlines()
+                        if not paths:raise LabError('Requested GPU trace did not produce files; timestamp support unverified')
+                        if len(paths)>64:raise LabError('GPU trace context count exceeds bounded archive limit')
+                        for path in paths:
+                            if not re.fullmatch(re.escape(directory+trace.group(1))+r'-[0-9]+-[0-9]+\.log',path):raise LabError('Unexpected GPU trace identity')
+                            record=archive_log(device,path,t.directory/Path(path).name)
+                            if record['bytes']==0:raise LabError('GPU trace file empty; no timing evidence')
+                            record['scope']='Run-scoped GPU trace, includes startup; GPU durations/path must be parsed and correlated'
+                            manifest['files'].append(record)
+                    except (LabError,OSError,subprocess.SubprocessError) as exc:
+                        manifest['unavailable'].append({'path':'gpu-trace','error':str(exc)})
             t.artifact('diagnostic-manifest.json',manifest)
         after=attest(device,container); t.artifact('after.json',after)
         unchanged=(after['config_sha256']==initial['config_sha256'] and after['engine_ini_sha256']==initial['engine_ini_sha256'])

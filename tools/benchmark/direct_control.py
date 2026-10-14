@@ -59,15 +59,18 @@ def ensure_imported(device,verification,root):
         event(root,'IMPORTED_VERIFIED',component=identity,already_installed=False,attestation=inspection)
         return dict(already_installed=False,component=identity,attestation=inspection)
 
-def select(device,verification,root,*,allow_existing=False,render_passes=True):
+def select(device,verification,root,*,allow_existing=False,render_passes=True,turnip_autotune="unchanged",gpu_trace=False):
     if allow_existing is not True:raise LabError('Explicit existing-container authorization required')
+    if turnip_autotune not in {'unchanged','bandwidth','profiled'} or type(gpu_trace) is not bool:raise LabError('Invalid fixed GPU experiment option')
     root=Path(root);root.mkdir(parents=True,exist_ok=False);identity,_=pin(verification)
     with device.lease(), command_ledger(device,root):
-        require_api(device)
+        capability=require_api(device)
+        if (turnip_autotune!='unchanged' or gpu_trace) and capability.get('turnip_gpu_experiments') is not True:
+            raise LabError('Matching GPU-experiment APK pair required; old APK must not silently ignore options')
         before=execute(device,{'operation':'existing-dxvk-inspect','container_id':'CUSTOM_GAME_227938910'},root/'before')['result']
         result=execute(device,{'operation':'existing-dxvk-select','container_id':'CUSTOM_GAME_227938910',
             'allow_existing_container':True,'expected_config_sha256':before['config_sha256'],
-            'expected_engine_sha256':before['engine_sha256'],'component':identity,'render_passes':render_passes},root/'selection')['result']
+            'expected_engine_sha256':before['engine_sha256'],'component':identity,'render_passes':render_passes,'turnip_autotune':turnip_autotune,'gpu_trace':gpu_trace},root/'selection')['result']
         (root/'selection.json').write_text(json.dumps(result,indent=2))
         event(root,'SELECTED_VERIFIED',component=identity,selection_run_id=result['selection_run_id'],runtime_loaded=False,gameplay_measured=False)
         return result
@@ -92,3 +95,14 @@ def verify_loaded(device,guest_pid,identity,container):
         if actual!=identity['payload_sha256']['x64/'+dll]:raise LabError('Mapped runtime DLL does not match selected build: '+dll)
         result[dll]=actual
     return dict(source_commit=identity['source_commit'],version=identity['version'],mapped_dll_sha256=result,runtime_loaded_verified=True)
+
+
+def verify_gpu_environment(device,guest_pid,config):
+    expected=dict(re.findall(r'(?:^|\s)(TU_AUTOTUNE_ALGO|MESA_GPU_TRACES|MESA_GPU_TRACEFILE)=([^\s]+)',config.get('envVars','')))
+    if not expected:return None
+    if not re.fullmatch('[0-9]+',str(guest_pid)):raise LabError('Invalid guest PID')
+    # Keep only these nonsecret controls, never export the complete process environment.
+    environment=device.call('shell','run-as',PACKAGE,'cat','/proc/'+str(guest_pid)+'/environ')
+    actual=dict(entry.split('=',1) for entry in environment.split('\0') if '=' in entry and entry.split('=',1)[0] in expected)
+    if actual!=expected:raise LabError('GPU experiment runtime environment mismatch: '+json.dumps({'expected':expected,'effective':actual}))
+    return dict(expected=expected,effective=actual,verified=True,scope='Native process environment; trace/driver results still required')

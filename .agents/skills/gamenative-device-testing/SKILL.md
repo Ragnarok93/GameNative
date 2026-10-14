@@ -81,7 +81,10 @@ and separately verify baseline runtime DLLs after its normal launch when needed.
 
 A preflight gameplay screenshot is not proof of the measured camera. Compare
 both runs' actual `initial-gameplay.png`, periodic observations and final capture
-before accepting an A/B delta. Loading-to-gameplay camera changes can make a
+before accepting an A/B delta. The user-selected benchmark view is the busy
+street in Sector5 Center District, not the wall/speakers/blue-cloth view. Wall
+captures remain descriptive and are excluded from target-workload comparisons.
+Loading-to-gameplay camera changes can make a
 preflight wall view turn into a busy street before sampling. Let the camera
 settle, verify fixed landmarks throughout the measurement, and use `STOP` if it
 drifts. Reject the pairing, not the algorithm, when cameras differ. Reuse pinned

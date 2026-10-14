@@ -1,18 +1,18 @@
 {
   "objective": "Stable native30FPS at highest practical quality on S20+/Adreno650; full pipeline optimization with no compatibility regressions",
   "status": "active",
-  "last_confirmed_experiment": "TURNIP-WALL-MATCHED-SCREEN-20261014",
+  "last_confirmed_experiment": "TURNIP-PROFILED-BUSY-STREET-SCREEN-20261014",
   "performance_improvement_verified": false,
   "known_good_dxvk": "749729333e9b",
   "installed_debug_game_commit": "517494711f515d385443956eddcf78432f462489",
   "candidate_f5": "gameplay-confirmed, diagnostic only, reverted",
-  "next_action": "Collect interleaved matched stationary warm runs, >=3 per algorithm, with settled measured camera and existing exact binaries. Compare measured clocks/cache/thermals before causal interpretation; no new build/import. Keep native FPS unavailable unless independently measured.",
+  "next_action": "Run bandwidth using the same busy-street reference/calibrated camera, inspect actual initial/mid/last frames before accepting comparisons. Collect >=3 matched repeats each. Keep wall captures out of target-workload comparisons; no new build/import; source FPS remains unavailable.",
   "rules": [
     "Every investigation ends in an actionable finding, hypothesis or explicit stop reason",
     "Compilation/tests are not measured performance gains",
     "Repository ledger preserves hypotheses/revisions/measurements/rejections/next action"
   ],
-  "last_device_state": "Original selector/env and pristine prefix DLL hashes restored; Engine unchanged, fullUID idle, pending journal ABSENT",
+  "last_device_state": "Baseline selector/env and pristine prefix DLL hashes restored; Engine unchanged, fullUID idle, no pending journal",
   "active_experiment": "TURNIP-PROFILED-AUTOTUNE-20261014",
   "source_resources_document": "/home/main/projects/GameNative/docs/optimization-source-resources.md",
   "source_resource_snapshot": {
@@ -23,5 +23,7 @@
       "https://github.com/doitsujin/dxvk": "a78a467cadb22bee928904290cf8e7921b121851"
     },
     "status": "Research references only; no new component selected or performance change"
-  }
+  },
+  "benchmark_camera": "Busy street in Sector5 Center District, as explicitly requested by user; not wall/speakers view",
+  "benchmark_camera_reference": "/home/main/artifacts/turnip-renderpath-76b9372/profiled-street1/PS1-visual/settled-street.png"
 }

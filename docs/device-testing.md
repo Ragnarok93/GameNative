@@ -197,3 +197,32 @@ Full detailed logs remain intact. Fatal-log observation scans only appended byte
 `benchmark.ui_navigation.configure_dxvk(device, container, title, registered_version, render_passes, fresh_evidence_directory)` uses bounded semantic UI lookup, exact title/version/field matching, orientation-derived bounds, non-edge tab swipes, and persisted readback. It refuses active guests and records every command/XML; only the DXVK selector and named diagnostic flag can change. UI restoration does not restore installed prefix DLLs until a normal baseline launch; verify both DLL hashes and full config/Engine.ini before declaring rollback complete. SCREEN_WAKEUP is not lockscreen unlocking; user action is required for a credential lock.
 
 Use60s genuine-gameplay diagnostic screening to reject unsupported hypotheses quickly; require matched longer repeats and full correctness/rollback checks before any performance promotion. Do not claim short exploratory runs as stable improvements, menus as gameplay, or reduce detailed component log cadence.
+
+## Direct component-control API v2 (debug only)
+
+This separate, explicitly authorized transaction supports only the existing
+FF7R container CUSTOM_GAME_227938910; Phase 1 sandbox restrictions are unchanged.
+Install the matching upgradeable API-v2 debug app and instrumentation APK pair
+first. There is no UI fallback. All operations require an idle app/guest UID.
+
+Use `python3 tools/benchmark_control.py --serial SERIAL --output FRESH_DIRECTORY`
+with `import --verification VERIFIED_JSON`, then `select --verification VERIFIED_JSON
+--allow-existing-container`. Import checks package SHA, private staging SHA and all
+four installed DXVK DLL hashes. Identical installed payloads skip transfer/import;
+conflicting payloads fail instead of relabeling an old component.
+Selection uses app-native container setters, compare-and-swap preflight,
+Engine.ini preservation and durable recovery ownership. Only the selector and named
+render-pass diagnostic flag may change; serializer failures immediately restore
+exact pre-write bytes. A pending journal blocks new mutations until restoration.
+After interrupted writes, inspect the journal; never clear it or overwrite saves
+as a shortcut. Restore with `restore --selection SELECTION_JSON` while idle.
+Normal baseline launch and mapped DLL verification are still needed to establish
+that runtime DLLs have returned to baseline; restoring a selector alone is not it.
+
+Use `live-session --component-verification VERIFIED_JSON` to gate inputs/capture
+on the guest's actual mapped d3d11/dxgi hashes. A mismatch fails before input.
+Evidence distinguishes IMPORTED_VERIFIED, SELECTED_VERIFIED, LOADED_VERIFIED and
+GAMEPLAY_CAPTURED. Captured live exploration is not a matched performance win.
+commands.jsonl preserves command stdout/stderr/status; runtime-component.json
+records exact source/version/mapped hashes. No new Turnip/FEX optimization or
+FPS improvement is implied by import, selection, startup or diagnostic success.

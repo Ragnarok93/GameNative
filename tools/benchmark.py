@@ -104,6 +104,7 @@ def main():
     live = sub.add_parser("live-session", help="Existing FF7R diagnostic navigation; no component/config changes")
     live.add_argument("--container", required=True)
     live.add_argument("--route", required=True)
+    live.add_argument("--component-verification", help="Require mapped runtime DLLs to match exact build hashes before inputs")
     live.add_argument("--duration", type=int, default=300)
     live.add_argument("--confirm-gameplay", action="store_true", help="Attest that current screen is actual gameplay, not loading/menu")
     live.add_argument("--allow-close", action="store_true", help="Authorize closing this current game after diagnostics")
@@ -140,7 +141,7 @@ def main():
                 result = launch_live(device,args.container,args.results)
             elif args.command == "live-session":
                 result = run_live(device, args.container, args.route, args.results, duration=args.duration,
-                                  confirmed=args.confirm_gameplay, allow_close=args.allow_close)
+                                  confirmed=args.confirm_gameplay, allow_close=args.allow_close, component_verification=args.component_verification)
             elif args.command == "device-info":
                 result = device.info()
             elif args.command == "backup":

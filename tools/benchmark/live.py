@@ -203,7 +203,7 @@ def analyze(directory):
     return report
 
 
-def _run_live(device,container,route_path,results,*,duration=300,confirmed=False,allow_close=False):
+def _run_live(device,container,route_path,results,*,duration=300,confirmed=False,allow_close=False,component_verification=None):
     route=json.loads(Path(route_path).read_text()); actions=validate_route(route)
     if not confirmed or not allow_close:
         raise LabError('Requires visually confirmed gameplay and explicit permission to close the current game')
@@ -212,6 +212,13 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
     with device.lease():
         initial=attest(device,container); uid=device.call('shell','run-as',PACKAGE,'id','-u',timeout=5);pid=game_pid(device,uid)
         t=Telemetry(results,uuid.uuid4().hex)
+        loaded=None
+        if component_verification:
+            from .direct_control import pin,verify_loaded
+            identity,_=pin(component_verification)
+            loaded=verify_loaded(device,pid,identity,container)
+            t.artifact('runtime-component.json',loaded)
+            t.event('LOADED_VERIFIED',**loaded)
         t.artifact('before.json',initial); t.artifact('device.json',device.info());t.artifact('route.json',route)
         t.artifact('request.json',{'serial':device.serial,'container':container,'duration_s':duration,
             'guest_pid':pid,'initial_gameplay_visually_confirmed':True,'subsequent_scene_validation':'unavailable',
@@ -347,14 +354,16 @@ def _run_live(device,container,route_path,results,*,duration=300,confirmed=False
         if not unchanged:result['status']='failed';result['errors'].append({'stage':'integrity','error':'Config or Engine.ini changed'})
         t.artifact('diagnostic-manifest.json',manifest);t.artifact('result.json',result)
         t.event('retired',status=result['status'],close_verified=result['close_completed'],device_uptime=device.call('shell','cat','/proc/uptime',timeout=5))
+        if loaded:
+            t.event('GAMEPLAY_CAPTURED',component=loaded,status=result['status'],regression_eligible=False)
         report=analyze(t.directory)
         hashes={p.name:hash_file(p) for p in t.directory.iterdir() if p.is_file() and p.name!='hashes.json'}
         t.artifact('hashes.json',hashes)
         return {'directory':str(t.directory),'result':result,'analysis':report}
 
-def run_live(device,container,route_path,results,*,duration=300,confirmed=False,allow_close=False):
+def run_live(device,container,route_path,results,*,duration=300,confirmed=False,allow_close=False,component_verification=None):
     return _run_live(device,container,route_path,results,duration=duration,
-                     confirmed=confirmed,allow_close=allow_close)
+                     confirmed=confirmed,allow_close=allow_close,component_verification=component_verification)
 
 
 def launch_live(device, container, results):

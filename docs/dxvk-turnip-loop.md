@@ -31,6 +31,14 @@ source-game FPS is not inferred from presentation or overlay counters.
 
 ## Failure logging
 
+For explicitly requested temperature-monitor-only diagnostics set
+`telemetry.thermal_max_status` to `null`. Thermal sampling continues during
+measurement, but runner admission/measurement does not reject heat. Android's
+thermal protections are never changed. These trials are marked `monitor_only`
+and ineligible for regression promotion; heat remains a confounder. Integer
+0..3 retains the original enforced policy. Startup failure diagnostics also
+collect final thermal state; source-game FPS is still not inferred.
+
 Host `diagnostic-manifest.json` is attempted for both successful and failed trials.
 It hashes captured files and records absent/failed retrievals explicitly. Status,
 phase events, UID process inventory and thermal state remain available after

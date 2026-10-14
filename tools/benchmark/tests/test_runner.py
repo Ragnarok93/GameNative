@@ -37,6 +37,15 @@ def profile():
 
 
 class RunnerTests(unittest.TestCase):
+    def test_explicit_monitor_only_thermal_policy(self):
+        value = profile()
+        value["telemetry"]["thermal_max_status"] = None
+        self.assertIsNone(validate_run_profile(value)["telemetry"]["thermal_max_status"])
+        for invalid in (True, 4, "monitor"):
+            value["telemetry"]["thermal_max_status"] = invalid
+            with self.assertRaises(LabError):
+                validate_run_profile(value)
+
     def test_profiles_require_full_config_real_hashes_and_matching_selections(self):
         self.assertEqual(validate_run_profile(profile())["schema_version"], 2)
         for change in (lambda p: p["variants"]["baseline"]["pins"]["fex"].update(source_sha256="0" * 64),

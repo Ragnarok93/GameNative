@@ -927,7 +927,7 @@
           "type": "boolean"
         },
         "thermal_max_status": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
           "maximum": 3
         }

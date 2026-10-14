@@ -48,7 +48,10 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
             if info[key] != value:
                 raise LabError(f"Device {key} does not match profile")
         device.assert_idle_debug()
-        thermal_gate(device, profile["telemetry"]["thermal_max_status"])
+        if profile["telemetry"]["thermal_max_status"] is not None:
+            thermal_gate(device, profile["telemetry"]["thermal_max_status"])
+        else:
+            telemetry.event("thermal_monitor_only", comparability_controlled=False)
         if profile["telemetry"]["perfetto"]:
             trace.start(workload["startup_timeout_ms"] + workload["warmup_ms"] + workload["measure_ms"] + 180000)
         uid = device.call("shell", "run-as", PACKAGE, "id", "-u")
@@ -74,7 +77,7 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
                     last_phase = phase
                 if phase == "MEASURING":
                     sample = collector.sample()
-                    if sample.get("thermal_status", 0) > profile["telemetry"]["thermal_max_status"]:
+                    if profile["telemetry"]["thermal_max_status"] is not None and sample.get("thermal_status", 0) > profile["telemetry"]["thermal_max_status"]:
                         raise LabError("Thermal gate exceeded during measurement")
             except LabError as exc:
                 # Before the activity creates its status file there is no state
@@ -109,7 +112,8 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
             output.write_text(device.call("shell", "run-as", PACKAGE, "cat", shlex.quote(remote), timeout=30))
         collector.finish()
         metrics = summarize(execution, collector.presented, submitted)
-        metrics["eligible_for_regression"] = workload["kind"] != "exploration" and all(
+        metrics["thermal_policy"] = "monitor_only" if profile["telemetry"]["thermal_max_status"] is None else "gated"
+        metrics["eligible_for_regression"] = profile["telemetry"]["thermal_max_status"] is not None and workload["kind"] != "exploration" and all(
             pin["source_kind"] != "installed_manifest" for pin in variant["pins"].values())
         metrics["provenance_kinds"] = {name: pin["source_kind"] for name, pin in variant["pins"].items()}
         if collector.coverage_gaps:

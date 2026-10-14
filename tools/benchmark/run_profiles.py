@@ -117,7 +117,9 @@ def validate_run_profile(profile):
     telemetry = profile["telemetry"]
     require(set(telemetry) == {"layer_pattern", "sample_interval_ms", "perfetto", "thermal_max_status"}, "Invalid telemetry fields")
     require(type(telemetry["perfetto"]) is bool and type(telemetry["sample_interval_ms"]) is int and 250 <= telemetry["sample_interval_ms"] <= 1000, "Invalid telemetry options")
-    require(type(telemetry["thermal_max_status"]) is int and 0 <= telemetry["thermal_max_status"] <= 3, "Invalid thermal gate")
+    require(telemetry["thermal_max_status"] is None or
+            (type(telemetry["thermal_max_status"]) is int and 0 <= telemetry["thermal_max_status"] <= 3),
+            "Thermal gate must be null (monitor only) or integer 0..3")
     require(isinstance(telemetry["layer_pattern"], str) and 1 <= len(telemetry["layer_pattern"]) <= 128, "Surface layer selection required")
     re.compile(telemetry["layer_pattern"])
     return profile

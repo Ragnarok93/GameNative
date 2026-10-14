@@ -62,8 +62,10 @@ crash records must not contaminate gameplay conclusions. Missing FEX profiler or
 Turnip fault access is missing evidence, not a zero or proof of no bottleneck.
 
 For optimization, prioritize reproducible device loss and validated movement.
-Propose one-component experiments backed by pinned build-set/dispatch-build and
-existing strict campaign comparisons; never automatically promote experimental
+Prefer high-impact experimental profiles backed by pinned build-set/dispatch-build.
+Clearly labeled combined profiles are allowed during aggressive screening; their
+effects cannot be attributed to individual changes until a winning bundle is dissected.
+Use existing strict campaign comparisons for single-component validation; never automatically promote experimental
 results or modify production saves/configuration for comparison. Unvalidated
 live-session runs remain regression_eligible=false even if closure succeeds.
 
@@ -97,3 +99,17 @@ Before a new component optimization, consult `docs/optimization-source-resources
 refresh relevant exact source revisions, compare with existing backports, and
 apply its compatibility/provenance/measurement gates. StevenMXZ A6xx/A7xx and
 DXVK-Sarek/mobile forks are research resources, not automatic replacement builds.
+
+## Aggressive screening (user-authorized)
+
+Prioritize large measured bottlenecks over repeating a2% exploratory signal.
+Use one60-second busy-street screen per profile. Bundled experimental changes are
+allowed when every change and binary is pinned and reversibly applied. As triage
+heuristics, prioritize profiles showing >=10% mean completion-interval or >=15%
+P99 improvement, with no crash/device-loss/visible graphics regression; these
+thresholds are not statistical proof. Repeat promising winners >=3 times per
+profile and confirm native performance independently before retention/promotion.
+Bisect winning bundles afterward; never attribute a bundle's effect to one knob.
+Preserve saves, Engine.ini,720p target, rollback and OS thermal protections.
+Driver changes require real A650 compatibility and mapped-binary verification.
+No new instrumentation unless it enables a concrete high-impact experiment.

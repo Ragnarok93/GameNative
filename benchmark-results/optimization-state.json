@@ -6,14 +6,14 @@
   "known_good_dxvk": "749729333e9b",
   "installed_debug_game_commit": "517494711f515d385443956eddcf78432f462489",
   "candidate_f5": "gameplay-confirmed, diagnostic only, reverted",
-  "next_action": "Run interleaved busy-street repeats until >=3 per algorithm, same reference and actual snapshots. Calibrated swipe replay alone produced different angle; use visual feedback correction before measuring. Do not claim2.1% as improvement or compare wall data. No new builds/imports.",
+  "next_action": "Screen larger render-path alternatives on the fixed busy street: forced SYSMEM versus current autotuned rendering, then StevenMXZ A6xx/A7xx R6 driver candidate if compatible. Use one60s screen per profile; repeat only promising winners. Existing bridge cannot force SYSMEM or switch this production driver yet: add a narrowly scoped reversible control or pinned driver variant, not arbitrary configuration writes. Do not return to2.1% autotuner repeats before high-impact screens.",
   "rules": [
     "Every investigation ends in an actionable finding, hypothesis or explicit stop reason",
     "Compilation/tests are not measured performance gains",
     "Repository ledger preserves hypotheses/revisions/measurements/rejections/next action"
   ],
   "last_device_state": "Baseline selector/env/pristine DLL hashes restored, Engine unchanged, UIDidle, no pending journal",
-  "active_experiment": "TURNIP-PROFILED-AUTOTUNE-20261014",
+  "active_experiment": "HIGH-IMPACT-RENDERPATH-SCREENING",
   "source_resources_document": "/home/main/projects/GameNative/docs/optimization-source-resources.md",
   "source_resource_snapshot": {
     "stevenmxz_a6xx_sha": "a6aa12c71bb49789d0a53c6d96ccfdd3d34659a5",
@@ -25,5 +25,24 @@
     "status": "Research references only; no new component selected or performance change"
   },
   "benchmark_camera": "Busy street in Sector5 Center District, as explicitly requested by user; not wall/speakers view",
-  "benchmark_camera_reference": "/home/main/artifacts/turnip-renderpath-76b9372/profiled-street1/PS1-visual/settled-street.png"
+  "benchmark_camera_reference": "/home/main/artifacts/turnip-renderpath-76b9372/profiled-street1/PS1-visual/settled-street.png",
+  "optimization_policy": {
+    "mode": "aggressive_screening",
+    "bundled_experiments_allowed": true,
+    "screening_trials_per_profile": 1,
+    "screening_gameplay_seconds": 60,
+    "promotion_repeats_per_profile": 3,
+    "promising_mean_interval_reduction_percent": 10,
+    "promising_p99_reduction_percent": 15,
+    "threshold_scope": "Triage heuristics, not proof of statistical significance",
+    "stop_on": [
+      "crash",
+      "device_loss",
+      "visible_graphics_regression",
+      "wrong_scene"
+    ],
+    "attribution": "Combined experimental profile may show only whole-profile effect; bisect a winner afterward",
+    "safety": "Preserve saves, Engine.ini,720p target, rollback and OS thermal protections; monitor temperature",
+    "parked_small_signal": "Profiled-vs-bandwidth first busy-streetpair2.1%; not proven ineffective, no priority for repeated micro-tuning"
+  }
 }

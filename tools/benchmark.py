@@ -19,6 +19,7 @@ from benchmark.control import command as control_command, status as session_stat
 from benchmark.workload_snapshot import snapshot
 from benchmark.drivers import validate_driver
 from benchmark.package_build import package_dxvk
+from benchmark.build_set import resolve as resolve_build_set
 
 
 def main():
@@ -28,6 +29,10 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("device-info")
     sub.add_parser("list-components")
+    build_set = sub.add_parser("build-set")
+    build_set.add_argument("--manifest", required=True)
+    build_set.add_argument("--output", required=True)
+    build_set.add_argument("--download", action="store_true")
     validate = sub.add_parser("validate-profile")
     validate.add_argument("profile")
     install = sub.add_parser("install")
@@ -90,7 +95,9 @@ def main():
     comparison.add_argument("--candidate-variant")
     args = parser.parse_args()
     try:
-        if args.command == "compare":
+        if args.command == "build-set":
+            result = resolve_build_set(args.manifest, args.output, args.download)
+        elif args.command == "compare":
             from pathlib import Path
             root = Path(args.baseline)
             result = compare_performance(args.baseline, args.candidate, args.component,

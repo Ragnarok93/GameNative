@@ -6,6 +6,28 @@ from datetime import datetime, timezone
 from .device import LabError, PACKAGE
 
 
+def startup_snapshot(device):
+    """Read-only per-process progress, sampled before retirement loses state."""
+    uid = device.call('shell', 'run-as', PACKAGE, 'id', '-u')
+    processes = device.call('shell', 'ps', '-A', '-o', 'UID,PID,NAME')
+    record = {'utc': datetime.now(timezone.utc).isoformat(), 'processes': []}
+    for row in processes.splitlines()[1:]:
+        fields = row.split(maxsplit=2)
+        if len(fields) != 3 or fields[0] != uid or not fields[1].isdigit() or not fields[2].lower().endswith('.exe'):
+            continue
+        item = {'pid': fields[1], 'name': fields[2]}
+        # Bound observer overhead. These counters do not measure game FPS.
+        for name in ('stat', 'wchan'):
+            try:
+                item[name] = device.call('shell', 'run-as', PACKAGE, 'cat', '/proc/'+fields[1]+'/'+name, timeout=5)
+            except LabError as exc:
+                item[name] = {'unavailable': str(exc)}
+        record['processes'].append(item)
+        if len(record['processes']) >= 12:
+            break
+    return record
+
+
 def collect(device, telemetry, run_id):
     if not re.fullmatch(r'[a-f0-9]{32}', run_id):
         raise LabError('Invalid diagnostic run ID')

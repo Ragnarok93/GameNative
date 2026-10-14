@@ -15,6 +15,7 @@ from .metrics import summarize
 from .run_profiles import validate_run_profile
 from .trace import Trace
 from .diagnostics import collect as collect_diagnostics
+from .diagnostics import startup_snapshot
 
 
 def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, results):
@@ -40,6 +41,7 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
     thread = None
     mailbox = queue.Queue()
     last_phase = None
+    last_startup_sample = 0
     root = f"files/benchmark-lab/{run_id}"
     try:
         info = device.info()
@@ -75,6 +77,14 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
                 if phase != last_phase:
                     telemetry.event("device_phase", **status)
                     last_phase = phase
+                if phase == "LAUNCHING" and time.monotonic() - last_startup_sample >= 10:
+                    last_startup_sample = time.monotonic()
+                    try:
+                        snapshot = startup_snapshot(device)
+                        with (telemetry.directory / "startup-processes.jsonl").open("a") as stream:
+                            stream.write(json.dumps(snapshot) + "\n")
+                    except LabError as diagnostic_error:
+                        telemetry.event("startup_snapshot_unavailable", error=str(diagnostic_error))
                 if phase == "MEASURING":
                     sample = collector.sample()
                     if profile["telemetry"]["thermal_max_status"] is not None and sample.get("thermal_status", 0) > profile["telemetry"]["thermal_max_status"]:

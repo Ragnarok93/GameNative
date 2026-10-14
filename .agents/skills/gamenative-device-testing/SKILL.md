@@ -76,3 +76,14 @@ upgradeable APKs, idle full UID, immutable payload pins and pending-journal reco
 Pass `--component-verification` to live-session before candidate inputs/capture;
 only mapped matching DLLs establish a loaded build. Restore selection while idle
 and separately verify baseline runtime DLLs after its normal launch when needed.
+
+## Camera matching at the measurement boundary
+
+A preflight gameplay screenshot is not proof of the measured camera. Compare
+both runs' actual `initial-gameplay.png`, periodic observations and final capture
+before accepting an A/B delta. Loading-to-gameplay camera changes can make a
+preflight wall view turn into a busy street before sampling. Let the camera
+settle, verify fixed landmarks throughout the measurement, and use `STOP` if it
+drifts. Reject the pairing, not the algorithm, when cameras differ. Reuse pinned
+binaries and existing valid scene captures; do not rebuild components to repair
+a mismatched workload. Normal gameplay may autosave; never overwrite saves.

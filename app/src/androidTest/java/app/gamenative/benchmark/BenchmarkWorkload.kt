@@ -277,6 +277,25 @@ class BenchmarkWorkload(private val instrumentation: Instrumentation,
                 .put("artifacts", "files/benchmark-lab/${request.getString("run_id")}")
         } finally {
             cancelled = true
+            // Preserve startup failures too, before guest retirement removes
+            // process evidence. Diagnostics must never mask restoration errors.
+            runCatching {
+                File(directory, "failure-diagnostics.json").writeText(
+                    JSONObject().put("run_id", request.getString("run_id"))
+                        .put("last_phase", phase).put("content_updates", contentCount)
+                        .put("runtime_environment", runtimeEnvironment ?: JSONObject.NULL)
+                        .put("guest_exit_status", termination ?: JSONObject.NULL)
+                        .put("failure", BenchmarkGameState.failure ?: JSONObject.NULL)
+                        .put("remaining_processes", JSONArray(BenchmarkProcessGuard.remaining()))
+                        .toString())
+                val logs = File(container.rootDir, ".wine/drive_c/gamenative-lab/${request.getString("run_id")}")
+                val captured = File(directory, "dxvk").apply { mkdirs() }
+                logs.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".log") }.take(16).forEach {
+                    if (it.length() <= 16777216) it.copyTo(File(captured, it.name), overwrite = true)
+                }
+            }.onFailure {
+                File(directory, "diagnostic-capture-error.txt").writeText(it.toString())
+            }
             status("RETIRING_PROCESSES")
             instrumentation.runOnMainSync { activity?.finish() }
             instrumentation.waitForIdleSync()

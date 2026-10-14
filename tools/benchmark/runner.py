@@ -14,6 +14,7 @@ from .collectors import Collectors, thermal_gate
 from .metrics import summarize
 from .run_profiles import validate_run_profile
 from .trace import Trace
+from .diagnostics import collect as collect_diagnostics
 
 
 def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, results):
@@ -139,6 +140,10 @@ def trial(device, profile, variant_name, trial_index, cache_mode, cache_token, r
                 uid_log.kill(); uid_log.wait()
         if log_file:
             log_file.close()
+        try:
+            collect_diagnostics(device, telemetry, run_id)
+        except (LabError, OSError) as exc:
+            telemetry.event("diagnostic_collection_failed", error=str(exc))
         try:
             trace.finish()
         except (LabError, OSError, subprocess.TimeoutExpired) as exc:

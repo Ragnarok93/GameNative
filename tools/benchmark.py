@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import uuid
+from benchmark.live import run_live, launch_live, analyze as analyze_live
 from benchmark.components import validate_package
 from benchmark.device import Device, LabError, PACKAGE
 from benchmark.orchestrator import execute
@@ -98,9 +99,21 @@ def main():
     comparison.add_argument("--component", choices=["dxvk", "fex", "turnip", "proton", "lsfg"], default="dxvk")
     comparison.add_argument("--baseline-variant")
     comparison.add_argument("--candidate-variant")
+    launch = sub.add_parser("live-launch", help="Launch the existing FF7R container without overrides")
+    launch.add_argument("--container", required=True)
+    live = sub.add_parser("live-session", help="Existing FF7R diagnostic navigation; no component/config changes")
+    live.add_argument("--container", required=True)
+    live.add_argument("--route", required=True)
+    live.add_argument("--duration", type=int, default=300)
+    live.add_argument("--confirm-gameplay", action="store_true", help="Attest that current screen is actual gameplay, not loading/menu")
+    live.add_argument("--allow-close", action="store_true", help="Authorize closing this current game after diagnostics")
+    analysis = sub.add_parser("analyze-live")
+    analysis.add_argument("--directory", required=True)
     args = parser.parse_args()
     try:
-        if args.command == "dispatch-build":
+        if args.command == "analyze-live":
+            result = analyze_live(args.directory)
+        elif args.command == "dispatch-build":
             result = dispatch_build(args.manifest, args.output, args.execute)
         elif args.command == "build-set":
             result = resolve_build_set(args.manifest, args.output, args.download)
@@ -123,7 +136,12 @@ def main():
             if not args.serial:
                 raise LabError("--serial is required for all device operations")
             device = Device(args.serial)
-            if args.command == "device-info":
+            if args.command == "live-launch":
+                result = launch_live(device,args.container,args.results)
+            elif args.command == "live-session":
+                result = run_live(device, args.container, args.route, args.results, duration=args.duration,
+                                  confirmed=args.confirm_gameplay, allow_close=args.allow_close)
+            elif args.command == "device-info":
                 result = device.info()
             elif args.command == "backup":
                 result = backup(device, args.destination)
@@ -181,6 +199,8 @@ def main():
                 with device.lease():
                     result = execute(device, {"operation": "recover" if args.command == "recover" else "list"}, args.results)
         print(json.dumps(result, indent=2, allow_nan=False))
+        if args.command == "live-session" and result["result"]["status"] != "complete":
+            return 1
         return 0
     except (LabError, OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}), file=sys.stderr)

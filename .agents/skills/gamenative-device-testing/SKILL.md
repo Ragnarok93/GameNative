@@ -28,3 +28,35 @@ Use `tools/benchmark.py` rather than writing container files through ADB.
 - Keep source-game FPS, renderer submissions and display cadence separate. Inspect
   capability/coverage limitations, thermals and trace/native diagnostics. Comparison
   refuses mismatched controls and never automatically promotes a stable build.
+
+
+## User-authorized existing-container exploration
+
+When the user requires their existing FF7R container, use `live-launch` and
+`live-session` instead of a fresh benchmark prefix. Never claim source save
+immutability: normal gameplay may autosave. Do not supply container overrides.
+Codex must visually inspect title, Continue selection, confirmation, loading and
+actual controllable gameplay before passing `--confirm-gameplay`. Log screenshot
+paths and phase transitions in the checkpoint. No blind timed loading as FPS.
+Use the exact serial, `--allow-close` only with user-authorized test retirement,
+and `--duration 300`. Inspect periodic screenshots and STOP if loading, a dialog,
+blocked movement or another game appears. A process PID or changing screenshot
+hash is not semantic gameplay/progress confirmation. Navigation actions must be
+calibrated WASD/Shift combinations; do not change user input profiles to repair
+controls. The CLI can issue inputs/log/retire autonomously; Codex supplies visual
+supervision, route decisions and optimization analysis. Independent scene
+recognition and obstacle avoidance are not implemented.
+
+Inspect `result.json`, `analysis.json`, `commands.jsonl`, `diagnostic-manifest.json`,
+`presentation.json`, screenshots and raw native/logcat records after closure.
+Check original guest retirement, config/Engine.ini hashes and unavailable counters.
+Separate cumulative queue timings from per-frame metrics and whole-device CPU
+counters from frequency proxies. Correlate log timestamps; startup and historical
+crash records must not contaminate gameplay conclusions. Missing FEX profiler or
+Turnip fault access is missing evidence, not a zero or proof of no bottleneck.
+
+For optimization, prioritize reproducible device loss and validated movement.
+Propose one-component experiments backed by pinned build-set/dispatch-build and
+existing strict campaign comparisons; never automatically promote experimental
+results or modify production saves/configuration for comparison. Unvalidated
+live-session runs remain regression_eligible=false even if closure succeeds.

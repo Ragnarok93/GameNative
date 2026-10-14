@@ -118,3 +118,65 @@ optional Perfetto capture are described in [benchmark-campaigns.md](benchmark-ca
 Phase 1 commands retain their deployment-only meaning. Normal JSON launch intents
 now preserve supplied field presence; privileged lab sessions use the dedicated
 instrumentation transaction rather than that exported action.
+
+### Existing-game navigation safety primitive
+
+`tools/benchmark/navigation.py` supplies a host-side `navigate` function for
+visually supervised existing-game exploration without instrumentation. It does
+not launch or close games and never edits container configuration. The caller
+must confirm gameplay and provide an observation callback that rejects loading,
+crashes and blocked movement; image changes alone do not prove map progress.
+Android held key combinations are bounded to 10 seconds and the final hold is
+clipped to the remaining monotonic time budget (maximum 300 seconds). Slow
+observation/ADB calls can still make elapsed wall time exceed the deadline;
+this is not a hard real-time or device-side watchdog. Caller integration,
+physical held-key calibration, autonomous obstacle recovery, automatic close,
+and per-run collection remain required. Results are never regression eligible.
+
+`execute_session` wraps caller-owned navigation: diagnostics collection is
+attempted before shutdown, shutdown still runs after input/collection failures,
+and errors retain their stage. Rejected visual observation yields `aborted`, not
+a completed workload. Close callbacks must verify guest retirement before returning;
+a returned callback alone cannot prove that Android processes exited. These
+callbacks still require a physical adapter and calibrated navigation route.
+
+
+## Codex-supervised existing FF7R diagnostic loop
+
+This path respects the user-selected existing container and Engine.ini. It is
+separate from sandbox benchmark campaigns and never changes component selectors,
+settings, caches or saves. Normal gameplay may autosave. It is exploratory only.
+
+```bash
+export GAMENATIVE_ADB=/mnt/c/Users/Admin/AppData/Local/Android/platform-tools/adb.exe
+python3 tools/benchmark.py --serial R5CN102RCQZ live-launch --container CUSTOM_GAME_227938910
+# Codex inspects screenshots, selects Continue and Yes, then visually confirms gameplay.
+python3 tools/benchmark.py --serial R5CN102RCQZ live-session \
+  --container CUSTOM_GAME_227938910 --route /home/main/artifacts/ff7r-live-route.json \
+  --duration 300 --confirm-gameplay --allow-close
+python3 tools/benchmark.py analyze-live --directory /absolute/run/directory
+```
+
+Routes contain schema_version=1, description and 1..128 actions, each with keys
+(two distinct Android WASD/Shift codes) and hold_ms (1..10000). Launch refuses an
+active guest. Session requires explicit initial gameplay confirmation and close
+permission. It checks active home alias and original guest PID, takes screenshots,
+samples CPU counters/GPU busy/frequencies/thermals/process memory/presentation,
+logs inputs and literal ADB outputs/statuses, captures bounded DXVK tails, logcat,
+crash-buffer and guest stat/wchan, then attempts shutdown and verifies UID idle.
+Config and Engine.ini are hashed before and after; save hashes are NOT claimed
+unchanged. Captured files have SHA-256 manifests. STOP in the result directory
+aborts before another movement. Device-loss signals abort navigation.
+
+Missing FEX profiling, driver fault dumps, source FPS, inaccessible frequency
+counters and partial presentation-ring coverage remain explicit limitations.
+Initial gameplay confirmation is supplied by Codex, not an image classifier.
+Periodic screenshots are evidence for Codex supervision, not automatic semantic
+scene recognition or obstacle recovery. A small scripted route can hit a wall;
+map traversal/replay must be visually validated before comparative trials.
+No automatic component edits, setting changes, or stable promotion are allowed.
+A deadline clips input holds; slow observer/collection calls can extend elapsed
+wall time. Run status fails on input/collection/close/integrity errors; rejected
+observation is aborted. Collectors may have unavailable counters without failing
+all diagnostics. Full translated-code profiling/GPU fault attribution needs
+additional instrumented components and hardware access, not invented metrics.

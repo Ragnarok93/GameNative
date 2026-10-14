@@ -113,3 +113,7 @@ Bisect winning bundles afterward; never attribute a bundle's effect to one knob.
 Preserve saves, Engine.ini,720p target, rollback and OS thermal protections.
 Driver changes require real A650 compatibility and mapped-binary verification.
 No new instrumentation unless it enables a concrete high-impact experiment.
+
+User restriction: do not download/install StevenMXZ driver binaries. Use their
+code/patches as references only, adapt justified changes in our Banners-Turnip
+repository, and build/attest our own experimental driver.

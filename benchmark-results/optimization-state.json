@@ -6,14 +6,14 @@
   "known_good_dxvk": "749729333e9b",
   "installed_debug_game_commit": "517494711f515d385443956eddcf78432f462489",
   "candidate_f5": "gameplay-confirmed, diagnostic only, reverted",
-  "next_action": "Screen larger render-path alternatives on the fixed busy street: forced SYSMEM versus current autotuned rendering, then StevenMXZ A6xx/A7xx R6 driver candidate if compatible. Use one60s screen per profile; repeat only promising winners. Existing bridge cannot force SYSMEM or switch this production driver yet: add a narrowly scoped reversible control or pinned driver variant, not arbitrary configuration writes. Do not return to2.1% autotuner repeats before high-impact screens.",
+  "next_action": "Inspect own Banners-Turnip CI38623433461 for exact924488b41217f748fad3e63efa9cf979d9f3b4ed. On success verify our candidate ZIP/manifest/binary and additive import, then reversible selection with current driver rollback and60s busy-street screen. No StevenMXZ driver binaries. Native driver deployment/control may require a narrowly scoped debug bridge; do not use arbitrary production configuration writes.",
   "rules": [
     "Every investigation ends in an actionable finding, hypothesis or explicit stop reason",
     "Compilation/tests are not measured performance gains",
     "Repository ledger preserves hypotheses/revisions/measurements/rejections/next action"
   ],
   "last_device_state": "Baseline selector/env/pristine DLL hashes restored, Engine unchanged, UIDidle, no pending journal",
-  "active_experiment": "HIGH-IMPACT-RENDERPATH-SCREENING",
+  "active_experiment": "OWN-TURNIP-A650-SYSMEM-SCREEN",
   "source_resources_document": "/home/main/projects/GameNative/docs/optimization-source-resources.md",
   "source_resource_snapshot": {
     "stevenmxz_a6xx_sha": "a6aa12c71bb49789d0a53c6d96ccfdd3d34659a5",
@@ -44,5 +44,16 @@
     "attribution": "Combined experimental profile may show only whole-profile effect; bisect a winner afterward",
     "safety": "Preserve saves, Engine.ini,720p target, rollback and OS thermal protections; monitor temperature",
     "parked_small_signal": "Profiled-vs-bandwidth first busy-streetpair2.1%; not proven ineffective, no priority for repeated micro-tuning"
+  },
+  "external_driver_binaries": "Forbidden by user: do not pull/install StevenMXZ drivers; reference code only",
+  "own_turnip_candidate": {
+    "repository": "Ragnarok93/Banners-Turnip",
+    "checkout": "/home/main/projects/Banners-Turnip",
+    "branch": "codex/ff7r-a650-sysmem",
+    "commit": "924488b41217f748fad3e63efa9cf979d9f3b4ed",
+    "mesa": "76b9372c4e5d186f57d22d3a4f95dd1c5e04ece2",
+    "profile": "sd865-sysmem-screen",
+    "ci_run": 38623433461,
+    "status": "CI in_progress; compiled predicate/strict patch/rollback locally pass; no driver binary installed or measured"
   }
 }

@@ -1,5 +1,20 @@
 # Pinned component build sets
 
+## WSL with native Windows ADB
+
+If large USB transfers stall through WSL USB/IP, the runner can invoke native
+Windows ADB while repository/Python work remains in WSL:
+
+```bash
+export GAMENATIVE_ADB=/mnt/c/Users/Admin/AppData/Local/Android/platform-tools/adb.exe
+python3 tools/benchmark.py --serial R5CN102RCQZ device-info
+```
+
+Detach the device from usbipd before using native Windows USB. Do not run competing
+Windows/Linux ADB servers against it. Local file arguments passed to native ADB
+need Windows-accessible paths; the lab's shell-stdin component staging does not
+use `adb push` paths. Revalidate binary transfers and traces on a changed transport.
+
 `build-set` is a host-only CI resolver/collector for GameNative, DXVK, FEX,
 Turnip, Proton and LSFG. It does not launch workflows, compile code, install
 components, claim compatibility, or promote builds. Dispatch adapters and a

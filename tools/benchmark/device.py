@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -16,10 +17,10 @@ BRIDGE = "app.gamenative.test/androidx.test.runner.AndroidJUnitRunner"
 
 
 class Device:
-    def __init__(self, serial, adb="adb", execute=subprocess.run):
+    def __init__(self, serial, adb=None, execute=subprocess.run):
         if not re.fullmatch(r"[A-Za-z0-9_.:-]+", serial):
             raise LabError("An explicit valid device serial is required")
-        self.serial, self.adb, self.execute = serial, adb, execute
+        self.serial, self.adb, self.execute = serial, adb or os.environ.get("GAMENATIVE_ADB", "adb"), execute
 
     @contextmanager
     def lease(self):

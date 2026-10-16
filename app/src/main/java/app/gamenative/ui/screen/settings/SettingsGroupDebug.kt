@@ -160,10 +160,7 @@ fun SettingsGroupDebug() {
         )
     }
 
-    /* Driver performance capture: start before reproducing a hitch, then click again to stop/export. */
-    var driverCaptureActive by rememberSaveable {
-        mutableStateOf(if (isPreview) false else DriverPerformanceCapture.isCapturing())
-    }
+    /* Export only: capture start/stop controls live in the in-game Quick Menu. */
     val saveDriverCapture = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
     ) { resultUri ->
@@ -172,7 +169,6 @@ fun SettingsGroupDebug() {
             context = context.applicationContext,
             uri = resultUri,
         ) { result ->
-            driverCaptureActive = DriverPerformanceCapture.isCapturing()
             result.onSuccess { bytes ->
                 SnackbarManager.show("Driver performance bundle exported ($bytes bytes)")
             }.onFailure {
@@ -234,27 +230,13 @@ fun SettingsGroupDebug() {
         )
         SettingsMenuLink(
             colors = settingsTileColors(),
-            title = { Text(text = if (driverCaptureActive) "Stop & Export Driver Capture" else "Start Driver Performance Capture") },
+            title = { Text(text = "Export Driver Performance Capture") },
             subtitle = {
                 Text(
-                    text = if (driverCaptureActive)
-                        "Capture is active. Stop it and export a ZIP with frame timestamps, GameNative logs, Vulkan/LSFG metadata, and available metrics."
-                    else
-                        "Start before reproducing a frame-time dip, then return here and tap again to export a diagnostic ZIP. No ADB or PC-side capture is required."
+                    text = "Export the most recently stopped in-game driver capture as a ZIP with frame timestamps, GameNative logs, Vulkan/LSFG metadata, and available metrics."
                 )
             },
-            onClick = {
-                if (driverCaptureActive) {
-                    saveDriverCapture.launch(DriverPerformanceCapture.defaultFileName())
-                } else {
-                    driverCaptureActive = DriverPerformanceCapture.start()
-                    if (!driverCaptureActive) {
-                        SnackbarManager.show("A driver performance capture is already active")
-                    } else {
-                        SnackbarManager.show("Driver performance capture started")
-                    }
-                }
-            },
+            onClick = { saveDriverCapture.launch(DriverPerformanceCapture.defaultFileName()) },
         )
         // Link to open channel selector
         SettingsMenuLink(

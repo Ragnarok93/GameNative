@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import app.gamenative.CrashHandler
 import app.gamenative.diagnostics.LsfgDiagnosticExporter
+import app.gamenative.diagnostics.DriverPerformanceCapture
 import coil.annotation.ExperimentalCoilApi
 import coil.imageLoader
 import app.gamenative.R
@@ -159,6 +160,27 @@ fun SettingsGroupDebug() {
         )
     }
 
+    /* Driver performance capture: start before reproducing a hitch, then click again to stop/export. */
+    var driverCaptureActive by rememberSaveable {
+        mutableStateOf(if (isPreview) false else DriverPerformanceCapture.isCapturing())
+    }
+    val saveDriverCapture = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip"),
+    ) { resultUri ->
+        resultUri ?: return@rememberLauncherForActivityResult
+        DriverPerformanceCapture.exportAsync(
+            context = context.applicationContext,
+            uri = resultUri,
+        ) { result ->
+            driverCaptureActive = DriverPerformanceCapture.isCapturing()
+            result.onSuccess { bytes ->
+                SnackbarManager.show("Driver performance bundle exported ($bytes bytes)")
+            }.onFailure {
+                SnackbarManager.show("Driver capture export failed: ${it.message ?: it.javaClass.simpleName}")
+            }
+        }
+    }
+
     /* Wine Debug Log export setup */
     var showWineLogDialog by rememberSaveable { mutableStateOf(false) }
     var latestWineLogFile: File? by rememberSaveable { mutableStateOf(null) }
@@ -209,6 +231,30 @@ fun SettingsGroupDebug() {
                 Text(text = "Export the latest rolling LSFG, frame pacing, Vulkan, wrapper, and app diagnostics")
             },
             onClick = { saveLsfgDiagnostics.launch(LsfgDiagnosticExporter.defaultFileName()) },
+        )
+        SettingsMenuLink(
+            colors = settingsTileColors(),
+            title = { Text(text = if (driverCaptureActive) "Stop & Export Driver Capture" else "Start Driver Performance Capture") },
+            subtitle = {
+                Text(
+                    text = if (driverCaptureActive)
+                        "Capture is active. Stop it and export a ZIP with frame timestamps, GameNative logs, Vulkan/LSFG metadata, and available metrics."
+                    else
+                        "Start before reproducing a frame-time dip, then return here and tap again to export a diagnostic ZIP. No ADB or PC-side capture is required."
+                )
+            },
+            onClick = {
+                if (driverCaptureActive) {
+                    saveDriverCapture.launch(DriverPerformanceCapture.defaultFileName())
+                } else {
+                    driverCaptureActive = DriverPerformanceCapture.start()
+                    if (!driverCaptureActive) {
+                        SnackbarManager.show("A driver performance capture is already active")
+                    } else {
+                        SnackbarManager.show("Driver performance capture started")
+                    }
+                }
+            },
         )
         // Link to open channel selector
         SettingsMenuLink(

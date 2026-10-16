@@ -2,6 +2,7 @@ package app.gamenative.diagnostics
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import java.io.File
 import org.junit.Test
 
 class DriverPerformanceCaptureTest {
@@ -30,4 +31,25 @@ class DriverPerformanceCaptureTest {
         assertEquals("elapsed_ms,frame_delta_ms,timestamp_ns", csv.trim())
         assertTrue(csv.endsWith("\n"))
     }
+    @Test
+    fun findDxvkLogFiles_returnsOnlyLogFilesInStableNameOrder() {
+        val directory = File(
+            System.getProperty("java.io.tmpdir"),
+            "dxvk-log-test-${System.nanoTime()}",
+        )
+        assertTrue(directory.mkdirs())
+        try {
+            File(directory, "z_game_dxgi.log").writeText("dxgi")
+            File(directory, "a_game_d3d11.LOG").writeText("d3d11")
+            File(directory, "notes.txt").writeText("not a DXVK log")
+            File(directory, "ignored.log").mkdir()
+
+            val files = DriverPerformanceCapture.findDxvkLogFiles(directory)
+
+            assertEquals(listOf("a_game_d3d11.LOG", "z_game_dxgi.log"), files.map { it.name })
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
 }

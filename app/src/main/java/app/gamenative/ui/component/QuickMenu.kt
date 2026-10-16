@@ -1215,7 +1215,7 @@ private fun ToolsQuickMenuTab(
 ) {
     val scrollState = rememberScrollState()
     val accentColor = PluviaTheme.colors.accentPurple
-    var driverCaptureActive by rememberSaveable { mutableStateOf(DriverPerformanceCapture.isCapturing()) }
+    var driverCaptureActive by remember { mutableStateOf(DriverPerformanceCapture.isCapturing()) }
 
     Column(
         modifier = modifier
@@ -1233,8 +1233,10 @@ private fun ToolsQuickMenuTab(
             accentColor = accentColor,
             onActivate = {
                 if (driverCaptureActive) {
-                    driverCaptureActive = !DriverPerformanceCapture.stop()
-                    if (!driverCaptureActive) SnackbarManager.show("Driver performance capture stopped. Export it from Settings > Debug.")
+                    val stopped = DriverPerformanceCapture.stop()
+                    driverCaptureActive = DriverPerformanceCapture.isCapturing()
+                    if (stopped) SnackbarManager.show("Driver performance capture stopped. Export it from Settings > Debug.")
+                    else SnackbarManager.show("No active driver performance capture was found")
                 } else {
                     driverCaptureActive = DriverPerformanceCapture.start()
                     if (driverCaptureActive) SnackbarManager.show("Driver performance capture started")

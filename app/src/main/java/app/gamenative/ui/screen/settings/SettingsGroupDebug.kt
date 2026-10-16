@@ -233,7 +233,7 @@ fun SettingsGroupDebug() {
             title = { Text(text = "Export Driver Performance Capture") },
             subtitle = {
                 Text(
-                    text = "Export the most recently stopped in-game driver capture as a ZIP with frame timestamps, GameNative logs, Vulkan/LSFG metadata, and available metrics."
+                    text = "Export the most recently stopped in-game capture as a ZIP with frame timestamps, Turnip/app logs, DXVK startup logs, Vulkan/LSFG metadata, and available metrics."
                 )
             },
             onClick = { saveDriverCapture.launch(DriverPerformanceCapture.defaultFileName()) },

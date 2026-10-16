@@ -23,7 +23,7 @@ public class DXVKHelper {
         // during process startup, so the in-game capture toggle cannot enable startup
         // messages retroactively. Keep logs in a dedicated container directory and
         // collect them alongside the Turnip/app logcat when the user exports a capture.
-        File dxvkLogDir = new File(imageFs.getTmpDir(), "dxvk_logs");
+        File dxvkLogDir = new File(imageFs.getRootDir(), "tmp/dxvk_logs");
         resetDxvkLogDirectory(dxvkLogDir);
         envVars.put("DXVK_LOG_LEVEL", "info");
         envVars.put("DXVK_LOG_PATH", "/tmp/dxvk_logs");

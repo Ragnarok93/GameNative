@@ -1250,9 +1250,9 @@ private fun DriverCaptureQuickMenuTab(
         QuickMenuDetailRow(
             title = if (driverCaptureActive) "Stop Driver Performance Capture" else "Start Driver Performance Capture",
             subtitle = if (driverCaptureActive)
-                "Stop and retain this capture. Export the ZIP later from Settings > Debug."
+                "Stop and retain this capture. Export the ZIP from Settings > Debug; DXVK logs include game startup."
             else
-                "Record frame-time and GameNative driver/runtime diagnostics while reproducing a hitch.",
+                "Record frame times and Turnip/app diagnostics. DXVK startup logs are included in the exported ZIP.",
             accentColor = accentColor,
             onActivate = {
                 if (driverCaptureActive) {

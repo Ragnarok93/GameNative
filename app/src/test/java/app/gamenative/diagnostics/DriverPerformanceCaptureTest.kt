@@ -1,8 +1,8 @@
 package app.gamenative.diagnostics
 
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import java.io.File
 import org.junit.Test
 
 class DriverPerformanceCaptureTest {
@@ -31,6 +31,7 @@ class DriverPerformanceCaptureTest {
         assertEquals("elapsed_ms,frame_delta_ms,timestamp_ns", csv.trim())
         assertTrue(csv.endsWith("\n"))
     }
+
     @Test
     fun findDxvkLogFiles_returnsOnlyLogFilesInStableNameOrder() {
         val directory = File(
@@ -51,5 +52,4 @@ class DriverPerformanceCaptureTest {
             directory.deleteRecursively()
         }
     }
-
 }

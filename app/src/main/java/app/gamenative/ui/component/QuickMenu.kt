@@ -137,6 +137,7 @@ private object QuickMenuTab {
     const val IMMERSIVE = 5
     const val INVITE = 6
     const val POWER = 7
+    const val CAPTURE = 8
 }
 
 data class QuickMenuItem(
@@ -507,6 +508,7 @@ fun QuickMenu(
     }
     val selectedTabLabelResId = when (selectedTab) {
         QuickMenuTab.HUD -> R.string.performance_hud
+        QuickMenuTab.CAPTURE -> R.string.driver_performance_capture
         QuickMenuTab.LSFG -> R.string.lsfg_tab_title
         QuickMenuTab.EFFECTS -> R.string.screen_effects
         QuickMenuTab.TOOLS -> R.string.task_manager
@@ -525,11 +527,13 @@ fun QuickMenu(
     val hudTabFocusRequester = remember { FocusRequester() }
     val controllerTabFocusRequester = remember { FocusRequester() }
     val toolsTabFocusRequester = remember { FocusRequester() }
+    val captureTabFocusRequester = remember { FocusRequester() }
     val powerTabFocusRequester = remember { FocusRequester() }
     val hudItemFocusRequester = remember { FocusRequester() }
     val effectsItemFocusRequester = remember { FocusRequester() }
     val controllerItemFocusRequester = remember { FocusRequester() }
     val toolsItemFocusRequester = remember { FocusRequester() }
+    val captureItemFocusRequester = remember { FocusRequester() }
     val lsfgItemFocusRequester = remember { FocusRequester() }
     val inviteTabFocusRequester = remember { FocusRequester() }
     val inviteItemFocusRequester = remember { FocusRequester() }
@@ -573,6 +577,7 @@ fun QuickMenu(
     val availableTabs = remember(isLsfgAvailable, renderer, glRenderer, immersiveControls, inviteMenu)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           {
         buildList {
             add(QuickMenuTab.HUD)
+            add(QuickMenuTab.CAPTURE)
             add(QuickMenuTab.POWER)
             if (isLsfgAvailable) add(QuickMenuTab.LSFG)
             if (inviteMenu != null) add(QuickMenuTab.INVITE)
@@ -587,6 +592,7 @@ fun QuickMenu(
         immersiveHooks?.registerFocusTabRail?.invoke {
             val requester = when (selectedTab) {
                 QuickMenuTab.HUD -> hudTabFocusRequester
+                QuickMenuTab.CAPTURE -> captureTabFocusRequester
                 QuickMenuTab.LSFG -> lsfgTabFocusRequester
                 QuickMenuTab.EFFECTS -> effectsTabFocusRequester
                 QuickMenuTab.CONTROLLER -> controllerTabFocusRequester
@@ -767,6 +773,18 @@ fun QuickMenu(
                                     },
                                     modifier = Modifier.width(56.dp),
                                     focusRequester = hudTabFocusRequester,
+                                )
+                                QuickMenuTabButton(
+                                    icon = Icons.Default.QueryStats,
+                                    contentDescriptionResId = R.string.driver_performance_capture,
+                                    selected = selectedTab == QuickMenuTab.CAPTURE,
+                                    accentColor = PluviaTheme.colors.accentPurple,
+                                    onSelected = {
+                                        selectedTab = QuickMenuTab.CAPTURE
+                                        PrefManager.quickMenuLastTab = selectedTab
+                                    },
+                                    modifier = Modifier.width(56.dp),
+                                    focusRequester = captureTabFocusRequester,
                                 )
                                 QuickMenuTabButton(
                                     icon = Icons.Default.BatteryChargingFull,
@@ -1038,6 +1056,13 @@ fun QuickMenu(
                                         }
                                     }
 
+                                    QuickMenuTab.CAPTURE -> {
+                                        DriverCaptureQuickMenuTab(
+                                            firstItemFocusRequester = captureItemFocusRequester,
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                    }
+
                                     QuickMenuTab.POWER -> {
                                         PowerControlQuickMenuTab(
                                             focusRequester = powerItemFocusRequester,
@@ -1125,6 +1150,7 @@ fun QuickMenu(
                 try {
                     when (selectedTab) {
                         QuickMenuTab.HUD -> hudItemFocusRequester.requestFocus()
+                        QuickMenuTab.CAPTURE -> captureItemFocusRequester.requestFocus()
                         QuickMenuTab.LSFG -> lsfgItemFocusRequester.requestFocus()
                         QuickMenuTab.INVITE -> inviteItemFocusRequester.requestFocus()
                         QuickMenuTab.EFFECTS -> effectsItemFocusRequester.requestFocus()
@@ -1206,10 +1232,7 @@ private fun SteamInviteQuickMenuTab(
 }
 
 @Composable
-private fun ToolsQuickMenuTab(
-    processes: List<ProcessInfo>,
-    isLoadingProcesses: Boolean,
-    onEndProcess: (ProcessInfo) -> Unit,
+private fun DriverCaptureQuickMenuTab(
     firstItemFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -1245,7 +1268,26 @@ private fun ToolsQuickMenuTab(
             },
             focusRequester = firstItemFocusRequester,
         )
+    }
+}
 
+@Composable
+private fun ToolsQuickMenuTab(
+    processes: List<ProcessInfo>,
+    isLoadingProcesses: Boolean,
+    onEndProcess: (ProcessInfo) -> Unit,
+    firstItemFocusRequester: FocusRequester? = null,
+    modifier: Modifier = Modifier,
+) {
+    val scrollState = rememberScrollState()
+    val accentColor = PluviaTheme.colors.accentPurple
+
+    Column(
+        modifier = modifier
+            .verticalScroll(scrollState)
+            .focusGroup(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         QuickMenuSectionHeader(
             title = if (isLoadingProcesses) {
                 stringResource(R.string.main_loading)
@@ -1270,7 +1312,7 @@ private fun ToolsQuickMenuTab(
                     onActivate = {
                         onEndProcess(process)
                     },
-                    focusRequester = null,
+                    focusRequester = if (index == 0) firstItemFocusRequester else null,
                 )
             }
         }

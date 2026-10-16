@@ -34,3 +34,10 @@ jobs:
           git fetch origin feature/lsfg-host-presentation-feedback-20261007
           git merge --no-edit origin/feature/lsfg-host-presentation-feedback-20261007
           git push origin HEAD:feature/ff7r-driver-diagnostics-upgradeable-debug-20261015
+
+      # Pushes authenticated with GITHUB_TOKEN do not trigger push workflows. Explicitly
+      # dispatch the upgradeable APK workflow so every successful sync gets a fresh build.
+      - name: Build upgradeable debug APK for synced branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run upgradeable-debug.yml --ref feature/ff7r-driver-diagnostics-upgradeable-debug-20261015

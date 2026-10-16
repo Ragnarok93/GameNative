@@ -3,14 +3,12 @@ package app.gamenative.diagnostics
 import android.content.Context
 import android.net.Uri
 import android.util.Log
-import app.gamenative.CrashHandler
 import app.gamenative.powercontrol.metrics.FrameTimeRing
 import app.gamenative.powercontrol.metrics.PerformanceMetricsCollector
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.Executors
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.CoroutineScope

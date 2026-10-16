@@ -1,0 +1,36 @@
+name: Sync driver diagnostics with LSFG base
+
+on:
+  push:
+    branches:
+      - "feature/lsfg-host-presentation-feedback-20261007"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-driver-diagnostics-from-lsfg
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout diagnostics branch
+        uses: actions/checkout@v5
+        with:
+          ref: feature/ff7r-driver-diagnostics-upgradeable-debug-20261015
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge latest LSFG base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin feature/lsfg-host-presentation-feedback-20261007
+          git merge --no-edit origin/feature/lsfg-host-presentation-feedback-20261007
+          git push origin HEAD:feature/ff7r-driver-diagnostics-upgradeable-debug-20261015

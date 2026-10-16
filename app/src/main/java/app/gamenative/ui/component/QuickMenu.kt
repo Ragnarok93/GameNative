@@ -99,6 +99,8 @@ import app.gamenative.PrefManager
 import app.gamenative.R
 import app.gamenative.powercontrol.PowerManager
 import app.gamenative.ui.component.quickMenus.PowerControlQuickMenuTab
+import app.gamenative.diagnostics.DriverPerformanceCapture
+import app.gamenative.ui.util.SnackbarManager
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.theme.PluviaTheme
@@ -1213,6 +1215,7 @@ private fun ToolsQuickMenuTab(
 ) {
     val scrollState = rememberScrollState()
     val accentColor = PluviaTheme.colors.accentPurple
+    var driverCaptureActive by rememberSaveable { mutableStateOf(DriverPerformanceCapture.isCapturing()) }
 
     Column(
         modifier = modifier
@@ -1220,6 +1223,27 @@ private fun ToolsQuickMenuTab(
             .focusGroup(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        QuickMenuSectionHeader(title = "Driver Performance Capture")
+        QuickMenuDetailRow(
+            title = if (driverCaptureActive) "Stop Driver Performance Capture" else "Start Driver Performance Capture",
+            subtitle = if (driverCaptureActive)
+                "Stop and retain this capture. Export the ZIP later from Settings > Debug."
+            else
+                "Record frame-time and GameNative driver/runtime diagnostics while reproducing a hitch.",
+            accentColor = accentColor,
+            onActivate = {
+                if (driverCaptureActive) {
+                    driverCaptureActive = !DriverPerformanceCapture.stop()
+                    if (!driverCaptureActive) SnackbarManager.show("Driver performance capture stopped. Export it from Settings > Debug.")
+                } else {
+                    driverCaptureActive = DriverPerformanceCapture.start()
+                    if (driverCaptureActive) SnackbarManager.show("Driver performance capture started")
+                    else SnackbarManager.show("A driver performance capture is already active")
+                }
+            },
+            focusRequester = firstItemFocusRequester,
+        )
+
         QuickMenuSectionHeader(
             title = if (isLoadingProcesses) {
                 stringResource(R.string.main_loading)

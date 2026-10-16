@@ -18,7 +18,16 @@ public class DXVKHelper {
     public static void setEnvVars(Context context, KeyValueSet config, EnvVars envVars) {
         ImageFs imageFs = ImageFs.find(context);
         envVars.put("DXVK_STATE_CACHE_PATH", "/data/data/app.gamenative/files/imagefs"+ImageFs.CACHE_PATH);
-        envVars.put("DXVK_LOG_LEVEL", "none");
+
+        // This branch is the upgradeable diagnostics build. DXVK creates its loggers
+        // during process startup, so the in-game capture toggle cannot enable startup
+        // messages retroactively. Keep logs in a dedicated container directory and
+        // collect them alongside the Turnip/app logcat when the user exports a capture.
+        File dxvkLogDir = new File(imageFs.getTmpDir(), "dxvk_logs");
+        resetDxvkLogDirectory(dxvkLogDir);
+        envVars.put("DXVK_LOG_LEVEL", "info");
+        envVars.put("DXVK_LOG_PATH", "/tmp/dxvk_logs");
+        envVars.put("GN_DXVK_DIAGNOSTICS", "1");
 
         File rootDir = ImageFs.find(context).getRootDir();
         File dxvkConfigFile = new File(imageFs.config_path+"/dxvk.conf");
@@ -62,6 +71,34 @@ public class DXVKHelper {
 
         envVars.put("DXVK_CONFIG_FILE", rootDir + ImageFs.CONFIG_PATH+"/dxvk.conf");
         envVars.put("DXVK_CONFIG", content);
+    }
+
+    private static void resetDxvkLogDirectory(File directory) {
+        if (directory.exists()) {
+            File[] children = directory.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        if (!directory.exists() && !directory.mkdirs()) {
+            android.util.Log.w("DXVKHelper", "Unable to create DXVK log directory: " + directory);
+        }
+    }
+
+    private static void deleteRecursively(File file) {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        if (file.exists() && !file.delete()) {
+            android.util.Log.w("DXVKHelper", "Unable to clear stale DXVK log entry: " + file);
+        }
     }
 
     public static void setVKD3DEnvVars(Context context, KeyValueSet config, EnvVars envVars) {

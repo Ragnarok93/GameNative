@@ -82,45 +82,42 @@ object DriverPerformanceCapture {
                 val metricsPath = PerformanceMetricsCollector.activeSessionLogPath
                 val metricsFile = metricsPath?.let(::File)?.takeIf { it.isFile && it.canRead() }
                 val resolver = appContext.contentResolver
-                val output = runCatching { resolver.openOutputStream(uri, "rwt") }.getOrNull()
-                    ?: resolver.openOutputStream(uri)
-                    ?: error("Unable to open selected destination")
-
-                output.use { raw ->
-                    ZipOutputStream(raw).use { zip ->
-                        zip.putNextEntry(ZipEntry("capture-metadata.txt"))
-                        zip.write(buildMetadata(capture, nowMillis, frameCount, metricsFile).toByteArray())
-                        zip.closeEntry()
-
-                        zip.putNextEntry(ZipEntry("driver-and-runtime-report.txt"))
-                        zip.write(report.toByteArray(Charsets.UTF_8))
-                        zip.closeEntry()
-
-                        zip.putNextEntry(ZipEntry("frame-times.csv"))
-                        zip.write(buildFrameCsv(capture?.startedAtNanos, frameTimestamps, frameCount).toByteArray())
-                        zip.closeEntry()
-
-                        if (metricsFile != null) {
-                            zip.putNextEntry(ZipEntry("performance-metrics.jsonl"))
-                            metricsFile.inputStream().use { it.copyTo(zip) }
+                val preparedZip = File.createTempFile("driver-capture-", ".zip", appContext.cacheDir)
+                try {
+                    preparedZip.outputStream().use { raw ->
+                        ZipOutputStream(raw).use { zip ->
+                            zip.putNextEntry(ZipEntry("capture-metadata.txt"))
+                            zip.write(buildMetadata(capture, nowMillis, frameCount, metricsFile).toByteArray())
                             zip.closeEntry()
-                        }
 
-                        zip.finish()
+                            zip.putNextEntry(ZipEntry("driver-and-runtime-report.txt"))
+                            zip.write(report.toByteArray(Charsets.UTF_8))
+                            zip.closeEntry()
+
+                            zip.putNextEntry(ZipEntry("frame-times.csv"))
+                            zip.write(buildFrameCsv(capture?.startedAtNanos, frameTimestamps, frameCount).toByteArray())
+                            zip.closeEntry()
+
+                            if (metricsFile != null) {
+                                zip.putNextEntry(ZipEntry("performance-metrics.jsonl"))
+                                metricsFile.inputStream().use { it.copyTo(zip) }
+                                zip.closeEntry()
+                            }
+                        }
+                    }
+                    val destination = runCatching { resolver.openOutputStream(uri, "rwt") }.getOrNull()
+                        ?: resolver.openOutputStream(uri)
+                        ?: error("Unable to open selected destination")
+                    destination.use { output ->
+                        preparedZip.inputStream().use { input -> input.copyTo(output) }
+                        output.flush()
+                    }
+                    preparedZip.length().also { check(it > 0L) { "Driver diagnostic ZIP was empty" } }
+                } finally {
+                    if (!preparedZip.delete()) {
+                        Log.w(TAG, "Unable to delete temporary driver capture ZIP")
                     }
                 }
-                val bytes = resolver.openInputStream(uri)?.use { input ->
-                    var total = 0L
-                    val buffer = ByteArray(8192)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        total += read
-                    }
-                    total
-                } ?: 0L
-                check(bytes > 0L) { "Driver diagnostic ZIP was empty" }
-                bytes
             }
             result.onSuccess { Log.i(TAG, "Driver performance capture exported bytes=$it") }
                 .onFailure { Log.e(TAG, "Driver performance capture export failed", it) }

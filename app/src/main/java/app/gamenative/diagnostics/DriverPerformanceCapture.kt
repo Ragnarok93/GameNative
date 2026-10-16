@@ -66,7 +66,7 @@ object DriverPerformanceCapture {
         "gamenative-driver-capture-${SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(now)}.zip"
 
     /**
-     * Stop the active window and export a ZIP through Android's document picker.
+     * Export the most recently stopped capture through Android's document picker.
      * This deliberately uses only data available inside GameNative; it does not require ADB.
      */
     fun exportAsync(

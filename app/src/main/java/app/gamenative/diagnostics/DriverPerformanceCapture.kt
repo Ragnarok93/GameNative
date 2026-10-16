@@ -9,6 +9,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.List
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.CoroutineScope
@@ -91,18 +92,31 @@ object DriverPerformanceCapture {
                     }
                 val metricsPath = PerformanceMetricsCollector.activeSessionLogPath
                 val metricsFile = metricsPath?.let(::File)?.takeIf { it.isFile && it.canRead() }
+                val dxvkLogDir = File(appContext.filesDir, "imagefs/tmp/dxvk_logs")
+                val dxvkLogs = findDxvkLogFiles(dxvkLogDir)
                 val resolver = appContext.contentResolver
                 val preparedZip = File.createTempFile("driver-capture-", ".zip", appContext.cacheDir)
                 try {
                     preparedZip.outputStream().use { raw ->
                         ZipOutputStream(raw).use { zip ->
                             zip.putNextEntry(ZipEntry("capture-metadata.txt"))
-                            zip.write(buildMetadata(capture, nowMillis, frameCount, metricsFile).toByteArray())
+                            zip.write(buildMetadata(capture, nowMillis, frameCount, metricsFile, dxvkLogs.size).toByteArray())
                             zip.closeEntry()
 
                             zip.putNextEntry(ZipEntry("driver-and-runtime-report.txt"))
                             zip.write(report.toByteArray(Charsets.UTF_8))
                             zip.closeEntry()
+
+                            zip.putNextEntry(ZipEntry("dxvk-logs/README.txt"))
+                            zip.write(
+                                buildDxvkLogReadme(dxvkLogDir, dxvkLogs).toByteArray(Charsets.UTF_8),
+                            )
+                            zip.closeEntry()
+                            dxvkLogs.forEach { logFile ->
+                                zip.putNextEntry(ZipEntry("dxvk-logs/${logFile.name}"))
+                                logFile.inputStream().use { it.copyTo(zip) }
+                                zip.closeEntry()
+                            }
 
                             zip.putNextEntry(ZipEntry("frame-times.csv"))
                             zip.write(buildFrameCsv(capture.startedAtNanos, frameTimestamps, frameCount).toByteArray())
@@ -161,6 +175,7 @@ object DriverPerformanceCapture {
         endedAtMillis: Long,
         frameCount: Int,
         metricsFile: File?,
+        dxvkLogCount: Int,
     ): String = buildString {
         appendLine("format=GameNative driver performance capture v1")
         appendLine("started_at=${capture?.startedAtMillis?.let(::formatTime) ?: "not-recorded"}")
@@ -169,8 +184,28 @@ object DriverPerformanceCapture {
         appendLine("frame_timestamp_count=$frameCount")
         appendLine("frame_timestamp_source=GameNative FrameTimeRing; only present while the metrics frame hook is recording")
         appendLine("performance_metrics_file=${metricsFile?.name ?: "unavailable"}")
+        appendLine("dxvk_log_count=$dxvkLogCount")
+        appendLine("dxvk_log_scope=DXVK initializes file logging at game-process startup; these files include startup messages and are not limited to the in-game capture window")
         appendLine("gpu_hardware_counters=not directly available through the GameNative app API; driver-provided counters are included only if present in logs")
-        appendLine("capture_scope=GameNative process logs, LSFG/Vulkan/runtime report, retained frame timestamps, and current metrics JSONL when available")
+        appendLine("capture_scope=GameNative/Turnip logcat, DXVK startup log files, LSFG/Vulkan/runtime report, retained frame timestamps, and current metrics JSONL when available")
+    }
+
+    internal fun findDxvkLogFiles(directory: File): List<File> =
+        directory.listFiles { file -> file.isFile && file.extension.equals("log", ignoreCase = true) }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+
+    private fun buildDxvkLogReadme(directory: File, files: List<File>): String = buildString {
+        appendLine("DXVK diagnostic logs")
+        appendLine("source_directory=${directory.absolutePath}")
+        appendLine("file_count=${files.size}")
+        appendLine("capture_window_note=DXVK loggers initialize when the game process starts, so startup messages cannot be toggled on from the in-game Quick Menu. These files cover the process lifetime up to export, while the capture metadata/frame timestamps describe the selected in-game window.")
+        if (files.isEmpty()) {
+            appendLine("status=no DXVK .log files were found")
+            appendLine("check=Confirm the game uses DXVK and inspect the app/container startup log for log-directory write errors.")
+        } else {
+            appendLine("files=${files.joinToString(",") { it.name }}")
+        }
     }
 
     private fun formatTime(timeMillis: Long): String =

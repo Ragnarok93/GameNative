@@ -2980,4 +2980,5 @@
     <string name="support_notify_me">Notify me when the reply arrives</string>
     <string name="copy_from">Copy From</string>
     <string name="toast_controls_reset">Controls reset</string>
+    <string name="driver_performance_capture">Driver Capture</string>
 </resources>

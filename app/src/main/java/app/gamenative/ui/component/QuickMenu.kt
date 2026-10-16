@@ -1244,7 +1244,7 @@ private fun ToolsQuickMenuTab(
                     onActivate = {
                         onEndProcess(process)
                     },
-                    focusRequester = if (index == 0) firstItemFocusRequester else null,
+                    focusRequester = null,
                 )
             }
         }

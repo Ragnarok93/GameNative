@@ -37,16 +37,30 @@ object DriverPerformanceCapture {
 
     @Volatile
     private var window: Window? = null
+    @Volatile
+    private var completedWindow: Window? = null
 
     fun isCapturing(): Boolean = window != null
 
     /** Start a capture window. Returns false if a capture is already active. */
     fun start(): Boolean = synchronized(lock) {
         if (window != null) return false
+        completedWindow = null
         window = Window(System.currentTimeMillis(), System.nanoTime())
         Log.i(TAG, "Driver performance capture started")
         true
     }
+
+    /** Stop capture and retain the completed window for export from Debug Settings. */
+    fun stop(): Boolean = synchronized(lock) {
+        val active = window ?: return false
+        window = null
+        completedWindow = active
+        Log.i(TAG, "Driver performance capture stopped")
+        true
+    }
+
+    fun hasCompletedCapture(): Boolean = completedWindow != null
 
     fun defaultFileName(now: Date = Date()): String =
         "gamenative-driver-capture-${SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(now)}.zip"
@@ -61,17 +75,15 @@ object DriverPerformanceCapture {
         onResult: (Result<Long>) -> Unit,
     ) {
         val appContext = context.applicationContext
-        val capture = synchronized(lock) {
-            val active = window
-            window = null
-            active
-        }
+        val capture = synchronized(lock) { completedWindow }
         scope.launch {
             val result = runCatching {
+                check(capture != null) {
+                    if (isCapturing()) "Stop driver capture from the in-game Quick Menu before exporting"
+                    else "No completed driver capture is available; start and stop one from the in-game Quick Menu first"
+                }
                 val frameTimestamps = LongArray(FrameTimeRing.capacity())
-                val frameCount = capture?.let {
-                    FrameTimeRing.copySince(it.startedAtNanos, frameTimestamps)
-                } ?: 0
+                val frameCount = FrameTimeRing.copySince(capture.startedAtNanos, frameTimestamps)
                 val nowMillis = System.currentTimeMillis()
                 val report = runCatching { LsfgDiagnosticExporter.buildReport(appContext) }
                     .getOrElse { error ->
@@ -93,7 +105,7 @@ object DriverPerformanceCapture {
                             zip.closeEntry()
 
                             zip.putNextEntry(ZipEntry("frame-times.csv"))
-                            zip.write(buildFrameCsv(capture?.startedAtNanos, frameTimestamps, frameCount).toByteArray())
+                            zip.write(buildFrameCsv(capture.startedAtNanos, frameTimestamps, frameCount).toByteArray())
                             zip.closeEntry()
 
                             if (metricsFile != null) {
@@ -117,8 +129,10 @@ object DriverPerformanceCapture {
                     }
                 }
             }
-            result.onSuccess { Log.i(TAG, "Driver performance capture exported bytes=$it") }
-                .onFailure { Log.e(TAG, "Driver performance capture export failed", it) }
+            result.onSuccess {
+                synchronized(lock) { if (completedWindow === capture) completedWindow = null }
+                Log.i(TAG, "Driver performance capture exported bytes=$it")
+            }.onFailure { Log.e(TAG, "Driver performance capture export failed", it) }
             withContext(Dispatchers.Main.immediate) { onResult(result) }
         }
     }
